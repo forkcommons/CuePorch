@@ -12,6 +12,7 @@ from flask import abort, request, send_file
 import library_thumbnail
 import library_versions
 import library_privacy
+import library_peer_handoff
 import review_links
 from catalog import copy_work
 from library_trash import hidden
@@ -66,6 +67,8 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
                    ORDER BY CASE kind WHEN 'work' THEN 0 WHEN 'meeting' THEN 1 ELSE 2 END, kind LIMIT 1""",
                 (uid,),
             ).fetchone()
+            if library_peer_handoff.get(con, uid):
+                route = None
             title = title_for(con, work)
             thumbnail = library_thumbnail.selected_thumbnail(con, work)
             policy = library_privacy.get_privacy(con, uid)

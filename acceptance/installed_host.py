@@ -10,6 +10,7 @@ from operator_walkthrough import walkthrough
 from installed_trash import check_hosted
 from installed_cards import check_hosted_cards
 from installed_versions import check_hosted_versions, generate_replacement
+from installed_migrated_privacy import check_hosted_handoff
 import psutil
 
 p = argparse.ArgumentParser()
@@ -131,6 +132,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     video_versions=check_hosted_versions(
                         base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
                     ),
+                    hosted_privacy_handoff=check_hosted_handoff(base, a.origin, keys),
                 )
             if a.station_package:
                 evidence["station_review"] = check_station_review(base, keys, a.station_package)

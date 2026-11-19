@@ -9,6 +9,7 @@ import time
 from filelock import FileLock, Timeout
 from peertube_destination import PeerTube, SourceReplacementUnavailable
 import library_trash
+import library_peer_handoff
 from library_actions import sync_edits, title_for
 from library_privacy import manages_sharing
 from library_thumbnail import selected_thumbnail
@@ -85,6 +86,7 @@ def start(app, root, db, tx, action, apply_routes):
                 try:
                     with FileLock(str(receipts / "worker.lock"), timeout=0):
                         origin = os.environ.get("CUEPORCH_PEERTUBE_ORIGIN")
+                        library_peer_handoff.process(tx, receipts, origin, connect, apply_routes)
                         library_trash.process(tx, receipts, origin, root, connect)
                         if origin:
                             stamp = manifest_path.stat().st_mtime_ns
@@ -118,6 +120,7 @@ def start(app, root, db, tx, action, apply_routes):
                         bool(prior["want_public"])
                         and work.get("source_privacy") in ("public", "anybody")
                         and work.get("source_embed_policy") in ("public", "anywhere")
+                        and not manages_sharing(con, work["id"])
                     )
                     enqueue(con, work, public, prior["scheduled"], prior["kind"])
 

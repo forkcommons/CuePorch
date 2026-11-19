@@ -37,6 +37,7 @@ from cueporch import verify
 import library_actions
 import library_folder_privacy
 import library_folders
+import library_peer_handoff
 import library_privacy
 import library_thumbnail
 import library_trash
@@ -96,6 +97,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_worker.SCHEMA
         + library_folders.SCHEMA
         + library_folder_privacy.SCHEMA
+        + library_peer_handoff.SCHEMA
         + library_privacy.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
@@ -312,7 +314,7 @@ def create_app(root, database, operator, institution, simulation=None):
                                         library_worker.enqueue(
                                             con,
                                             merged,
-                                            bool(prior and prior[0] and permitted),
+                                            bool(prior and prior[0] and permitted and not library_privacy.manages_sharing(con, item["id"])),
                                             prior[1] if prior else 0,
                                             prior[2] if prior else "work",
                                         )
@@ -898,6 +900,8 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(400)
         step = "replay" if kind == "meeting" else "publication"
         with tx() as con:
+            if library_peer_handoff.get(con, slug):
+                abort(409, "This library video uses CuePorch-managed viewer links.")
             if (
                 library_trash.hidden(con, "work", slug)
                 or con.execute(
@@ -928,6 +932,7 @@ def create_app(root, database, operator, institution, simulation=None):
             routes = con.execute(
                 """SELECT kind,slug,description FROM route
                    WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)
+                   AND NOT EXISTS (SELECT 1 FROM library_peer_handoff h WHERE h.work=route.slug)
                    ORDER BY description,slug"""
             ).fetchall()
             routes = [dict(route) for route in routes]
@@ -958,6 +963,8 @@ def create_app(root, database, operator, institution, simulation=None):
             if local is not None:
                 return local
         with tx() as con:
+            if library_peer_handoff.get(con, slug):
+                abort(404)
             row = con.execute(
                 """SELECT * FROM route WHERE kind=? AND slug=?
                    AND NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)""",
@@ -1108,7 +1115,8 @@ def create_app(root, database, operator, institution, simulation=None):
             }
             protected = {row[0] for row in con.execute("SELECT slug FROM route WHERE public_record=1")}
             local_delivery = {row[0] for row in con.execute(
-                "SELECT work FROM library_privacy UNION SELECT work FROM library_privacy_change"
+                "SELECT work FROM library_privacy UNION SELECT work FROM library_privacy_change "
+                "UNION SELECT work FROM library_peer_handoff"
             )}
             deleted = {
                 row[0]
@@ -1188,7 +1196,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 r["slug"]: r["kind"]
                 for r in con.execute(
                     """SELECT kind,slug FROM route WHERE NOT EXISTS
-                       (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)"""
+                       (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)
+                       AND NOT EXISTS (SELECT 1 FROM library_peer_handoff h WHERE h.work=route.slug)"""
                 )
             }
             local_routes = {

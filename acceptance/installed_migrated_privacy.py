@@ -2,12 +2,15 @@
 
 import csv
 import io
+import time
 from urllib.parse import urlsplit
 
 import requests
 from playwright.sync_api import expect
 
 from installed_cards import select_action
+from browser import chromium
+from playwright.sync_api import sync_playwright
 
 
 def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
@@ -108,3 +111,60 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
     return dict(unlisted_key_and_source_map=True, browser_playback_width=320,
                 replacement_password_and_embed_allowlist=True, embed_only_preserved=True,
                 missing_source_allowlist_stays_private=True, repeat_import_revokes_old_access=True)
+
+
+def check_hosted_handoff(base, origin, keys):
+    auth = {"Authorization": "Bearer " + keys["operator"]}
+    jobs = requests.get(base + "/api/delivery", headers=auth, timeout=10).json()
+    public = next(job for job in jobs if job["want_public"] and job["status"] == "playable" and job["kind"] == "work")
+    uid, video_id = public["work"], public["remote"]
+    endpoint = f"{base}/api/library/work/{uid}/source-privacy"
+    protected = next(job for job in jobs if not job["want_public"] and job["status"] == "playable" and job["work"] != uid)
+    protected_watch = f"{base}/watch/meeting/{protected['work']}"
+    protected_before = requests.get(protected_watch, timeout=10)
+    protected_before.raise_for_status()
+    protected_update = requests.put(f"{base}/api/library/work/{protected['work']}/source-privacy", headers=auth, timeout=10, json={})
+    assert protected_update.status_code == 409
+    assert requests.get(protected_watch, timeout=10).text == protected_before.text
+
+    watch = f"/watch/work/{uid}"
+    embed = f"/embed/work/{uid}"
+    response = requests.get(base + embed, timeout=10, allow_redirects=False)
+    assert response.status_code == 302 and response.headers["Location"].endswith("/" + video_id)
+    remote = origin.rstrip("/") + "/api/v1/videos/" + video_id
+    previous = requests.get(remote, timeout=10)
+    previous.raise_for_status()
+    playlist = previous.json()["streamingPlaylists"][0]["playlistUrl"]
+    assert requests.get(playlist, timeout=10).status_code == 200
+    requested = requests.put(endpoint, headers=auth, json={}, timeout=10)
+    requested.raise_for_status()
+    assert requested.json()["handoff"] == "pending"
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        status = requests.get(endpoint, headers=auth, timeout=10).json()
+        if status["handoff"] == "private" and not status["pending"]:
+            break
+        time.sleep(0.4)
+    else:
+        raise AssertionError("PeerTube handoff did not finish: " + str(status.get("handoff_error")))
+
+    assert status["paths"] == {"watch": watch, "embed_url": embed}
+    assert requests.get(remote, timeout=10).status_code in (401, 403, 404)
+    assert requests.get(playlist, timeout=10).status_code in (401, 403, 404)
+    with sync_playwright() as pw:
+        browser = chromium(pw)
+        try:
+            page = browser.new_page()
+            page.goto(base + watch)
+            player = page.locator("video")
+            width = player.evaluate("async v => {v.muted=true;await v.play();return v.videoWidth;}")
+            assert width == 320
+            expect(player.locator("track[kind=captions]")).to_have_count(1)
+        finally:
+            browser.close()
+    reject = requests.post(base + "/api/delivery/" + uid, headers=auth, timeout=10, json={"public": True})
+    assert reject.status_code == 400
+    assert requests.get(remote, timeout=10).status_code in (401, 403, 404)
+    return dict(managed_peertube_public_copy_made_private=True, old_peertube_playlist_denied=True,
+                same_cueporch_work_links=True, routed_video_width=width, caption_track_present=True,
+                protects_designated_public_records=True, independent_republish_blocked=True)

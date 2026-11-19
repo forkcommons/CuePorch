@@ -13,6 +13,7 @@ from flask import abort, make_response, render_template, request, send_file, url
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import library_peer_handoff
 from library_trash import hidden
 
 SCHEMA = """
@@ -113,7 +114,8 @@ def get_privacy(con, uid):
 def manages_sharing(con, uid):
     return con.execute(
         "SELECT 1 FROM library_privacy WHERE work=? UNION ALL "
-        "SELECT 1 FROM library_privacy_change WHERE work=? LIMIT 1", (uid, uid),
+        "SELECT 1 FROM library_privacy_change WHERE work=? UNION ALL "
+        "SELECT 1 FROM library_peer_handoff WHERE work=? LIMIT 1", (uid, uid, uid),
     ).fetchone() is not None
 
 
@@ -121,7 +123,9 @@ def apply_pending(con):
     rows = con.execute(
         """SELECT p.*, a.status AS publication_status, c.status AS catalog_status
            FROM library_privacy_change p JOIN action a ON a.id=p.approval
-           LEFT JOIN action c ON c.id=p.listing"""
+           LEFT JOIN action c ON c.id=p.listing
+           WHERE NOT EXISTS (SELECT 1 FROM library_peer_handoff h
+               WHERE h.work=p.work AND h.state='pending')"""
     ).fetchall()
     for row in rows:
         if protected_route(con, row["work"]):
@@ -337,6 +341,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     def watch(uid, embed, frame):
         with tx() as con:
             row = get_privacy(con, uid)
+            handoff = library_peer_handoff.get(con, uid)
+            if handoff and handoff["state"] == "pending":
+                abort(404)
             if row is None or protected_route(con, uid):
                 return None
             if blocked(con, uid):

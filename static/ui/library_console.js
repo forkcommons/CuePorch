@@ -401,7 +401,8 @@ function editPrivacy(work) {
 }
 async function restoreVimeoPrivacy(work) {
     const endpoint = workEndpoint(work) + "/source-privacy";
-    const state = await (await completed(await request(endpoint))).json();
+    const read = async () => (await completed(await request(endpoint))).json();
+    const state = await read();
     const body = openWorkDialog("Restore Vimeo privacy");
     const detail = document.createElement("p");
     const mode = state.settings.visibility.replace("_", " ");
@@ -410,11 +411,16 @@ async function restoreVimeoPrivacy(work) {
     body.append(detail);
     if (state.issue || !state.eligible) {
         const status = document.createElement("p");
-        status.textContent = state.issue || "A local MP4 and a completed public hosted handoff are required.";
+        status.textContent = state.issue || "A local MP4 and a CuePorch-managed work route are required to switch a public hosted copy.";
         body.append(status);
     }
     if (!state.eligible)
         return;
+    if (state.hosted) {
+        const handoff = document.createElement("p");
+        handoff.textContent = "CuePorch will make the hosted copy private before enabling these viewer links. Existing CuePorch work addresses are retained.";
+        body.append(handoff);
+    }
     const form = document.createElement("form");
     const password = document.createElement("input");
     if (state.settings.visibility === "password") {
@@ -431,8 +437,34 @@ async function restoreVimeoPrivacy(work) {
     save.textContent = "Apply recorded privacy";
     form.append(save);
     body.append(form);
-    if (state.pending)
-        workDialogStatus.textContent = "Waiting for the configured publication approval.";
+    function status(current, saved) {
+        save.disabled = current.handoff === "pending";
+        if (current.handoff === "pending") {
+            workDialogStatus.textContent = current.handoff_error || "Confirming the hosted copy is private…";
+            window.setTimeout(async () => {
+                if (!workDialog.open || !body.contains(form))
+                    return;
+                try {
+                    const latest = await read();
+                    if (workDialog.open && body.contains(form))
+                        status(latest, true);
+                    if (latest.handoff !== "pending")
+                        await load();
+                }
+                catch (error) {
+                    workDialogStatus.textContent = String(error);
+                    save.disabled = false;
+                }
+            }, 1500);
+        }
+        else if (current.pending) {
+            workDialogStatus.textContent = "Waiting for the configured publication approval.";
+        }
+        else if (saved) {
+            workDialogStatus.textContent = "Source privacy applied. Open Share to copy the available CuePorch links.";
+        }
+    }
+    status(state, false);
     form.onsubmit = async (event) => {
         event.preventDefault();
         save.disabled = true;
@@ -440,14 +472,11 @@ async function restoreVimeoPrivacy(work) {
             const updated = await (await completed(await request(endpoint, "PUT", { password: password.value }))).json();
             password.value = "";
             password.required = state.settings.visibility === "password" && !updated.has_password;
-            workDialogStatus.textContent = updated.pending ? "Waiting for the configured publication approval."
-                : "Source privacy applied. Open Share to copy the available CuePorch links.";
+            status(updated, true);
             await load();
         }
         catch (error) {
             workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
-        }
-        finally {
             save.disabled = false;
         }
     };

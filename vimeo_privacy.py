@@ -5,6 +5,7 @@ import json
 from flask import abort, request
 
 import library_privacy as sharing
+import library_peer_handoff as handoff
 from library_trash import hidden
 
 VIEW_MODES = {
@@ -63,12 +64,13 @@ def register(app, tx, staff, action, read_works):
             if not work or work["provider"] != "vimeo" or hidden(con, "work", uid):
                 abort(404)
             settings, issue = target_settings(work)
-            hosted = con.execute(
-                "SELECT 1 FROM route WHERE slug=? UNION ALL "
+            managed_video = handoff.managed_route(con, uid)
+            recent_handoff = handoff.get(con, uid)
+            transferring = con.execute(
                 "SELECT 1 FROM publication_job WHERE work=? AND want_public=1 AND status IN ('queued','waiting','processing') LIMIT 1",
-                (uid, uid),
+                (uid,),
             ).fetchone()
-            eligible = sharing.playback(work) is not None and not hosted
+            eligible = sharing.playback(work) is not None and managed_video is not False and not transferring
             current = sharing.get_privacy(con, uid)
             if request.method == "PUT":
                 if not eligible:
@@ -80,6 +82,9 @@ def register(app, tx, staff, action, read_works):
                     dict(settings, password=body.get("password", "")),
                     current["password_hash"] if current and json.loads(current["settings"])["visibility"] == "password" else None,
                 )
+                if managed_video:
+                    handoff.request_handoff(con, uid, managed_video)
+                    recent_handoff = handoff.get(con, uid)
                 sharing.apply_settings(con, action, work, settings, password)
                 sharing.apply_pending(con)
                 current = sharing.get_privacy(con, uid)
@@ -90,5 +95,8 @@ def register(app, tx, staff, action, read_works):
                 eligible=eligible,
                 has_password=bool(current and current["password_hash"]),
                 pending=bool(pending),
+                hosted=bool(managed_video),
+                handoff=recent_handoff["state"] if recent_handoff else None,
+                handoff_error=recent_handoff["error"] if recent_handoff else None,
                 paths=sharing.share_paths(uid, current) if current and permits(work, json.loads(current["settings"])) else None,
             )
