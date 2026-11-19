@@ -48,6 +48,11 @@ def export(collection, database, target):
                 "institution": owner[0],
                 "collection": "collection/manifest.json",
             }
+            for table in ("library_folder", "library_placement"):
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone():
+                    tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
         dump(root / "rights-and-routes.json", record)

@@ -7,6 +7,7 @@ import requests
 from playwright.sync_api import sync_playwright
 from demo_source import build_server
 from browser import chromium
+from installed_library import check_folders
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -146,6 +147,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     works = requests.get(base + "/api/library", headers=auth).json()
                     assert len(works) == 3 and len({w["id"] for w in works}) == 3
                     assert sum(w["quality"] == "owner file needed" for w in works) == 1
+                    library_result = check_folders(page, base, auth, works)
                     copy = next(
                         w
                         for w in requests.get(
@@ -216,6 +218,7 @@ with tempfile.TemporaryDirectory() as tmp:
                             repeat_ids_unique=True,
                             playback_width=width,
                             anonymous_denied=True,
+                            library=library_result,
                         )
                     )
                 quit_response = requests.post(

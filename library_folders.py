@@ -1,0 +1,101 @@
+"""Operator library folders and organization, indexed by existing work IDs."""
+
+import re
+import uuid
+
+from flask import abort, request
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS library_folder(
+ id TEXT PRIMARY KEY, parent TEXT REFERENCES library_folder(id),
+ name TEXT NOT NULL, color TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS library_folder_sibling
+ ON library_folder(COALESCE(parent, ''), name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS library_placement(
+ work TEXT PRIMARY KEY, folder TEXT REFERENCES library_folder(id));
+"""
+
+
+def register(app, tx, staff, read_works):
+    @app.get("/api/library/folders")
+    def library_folders():
+        staff()
+        with tx() as con:
+            return [
+                dict(row)
+                for row in con.execute(
+                    "SELECT * FROM library_folder ORDER BY name COLLATE NOCASE, id"
+                )
+            ]
+
+    @app.post("/api/library/folders")
+    @app.put("/api/library/folders/<folder>")
+    def save_folder(folder=None):
+        staff()
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        name, color, parent = body.get("name"), body.get("color"), body.get("parent")
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 32:
+            abort(400, "Folder names must contain 1 to 32 characters.")
+        name = name.strip()
+        if not isinstance(color, str) or not re.fullmatch(r"#[a-fA-F0-9]{6}", color):
+            abort(400, "Use a six-digit folder color.")
+        if parent is not None and not isinstance(parent, str):
+            abort(400)
+        uid = folder or uuid.uuid4().hex
+        with tx() as con:
+            if folder and not con.execute(
+                "SELECT 1 FROM library_folder WHERE id=?", (folder,)
+            ).fetchone():
+                abort(404)
+            ancestor = parent
+            while ancestor is not None:
+                if ancestor == uid:
+                    abort(409, "Choose a folder outside this branch.")
+                row = con.execute(
+                    "SELECT parent FROM library_folder WHERE id=?", (ancestor,)
+                ).fetchone()
+                if row is None:
+                    abort(404, "The selected folder no longer exists.")
+                ancestor = row["parent"]
+            if con.execute(
+                "SELECT 1 FROM library_folder WHERE parent IS ? AND name = ? COLLATE NOCASE AND id <> ?",
+                (parent, name, uid),
+            ).fetchone():
+                abort(409, "A folder with this name already exists here.")
+            con.execute(
+                """INSERT INTO library_folder(id,parent,name,color) VALUES(?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,
+                   name=excluded.name,color=excluded.color""",
+                (uid, parent, name, color),
+            )
+        return dict(id=uid, parent=parent, name=name, color=color), 200 if folder else 201
+
+    @app.put("/api/library/placement")
+    def move_library_works():
+        staff()
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        works, folder = body.get("works"), body.get("folder")
+        if (
+            not isinstance(works, list)
+            or not works
+            or any(not isinstance(work, str) for work in works)
+            or (folder is not None and not isinstance(folder, str))
+        ):
+            abort(400)
+        with tx() as con:
+            if folder is not None and not con.execute(
+                "SELECT 1 FROM library_folder WHERE id=?", (folder,)
+            ).fetchone():
+                abort(404, "The selected folder no longer exists.")
+            if not set(works) <= {work["id"] for work in read_works()}:
+                abort(404, "A selected work no longer exists.")
+            con.executemany(
+                """INSERT INTO library_placement(work,folder) VALUES(?,?)
+                   ON CONFLICT(work) DO UPDATE SET folder=excluded.folder""",
+                [(work, folder) for work in works],
+            )
+        return "", 204

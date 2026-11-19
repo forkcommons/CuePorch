@@ -34,6 +34,7 @@ from flask import (
 from waitress import serve
 
 from cueporch import verify
+import library_folders
 import library_worker
 
 STEPS = (
@@ -80,7 +81,7 @@ def create_app(root, database, operator, institution, simulation=None):
         raise ValueError("Collection does not belong to this institution")
     works = {work["id"]: work for work in manifest["works"]}
     db = sqlite3.connect(database)
-    db.executescript(SCHEMA + library_worker.SCHEMA)
+    db.executescript(SCHEMA + library_worker.SCHEMA + library_folders.SCHEMA)
     db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
     db.execute("BEGIN IMMEDIATE")
     existing = db.execute("SELECT institution FROM owner").fetchone()
@@ -1021,19 +1022,28 @@ def create_app(root, database, operator, institution, simulation=None):
             )
         return "", 204
 
+    def read_library_works():
+        return json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
+
+    library_folders.register(app, tx, staff, read_library_works)
+
     @app.get("/api/library")
     def library():
         staff()
-        data = json.loads((root / "manifest.json").read_text(encoding="utf8"))
+        data = read_library_works()
         with tx() as con:
             jobs = con.execute(
                 "SELECT j.work,j.status,j.remote,j.error,r.kind AS route_kind FROM publication_job j LEFT JOIN route r ON r.slug=j.work AND r.kind=j.kind ORDER BY j.rowid"
             ).fetchall()
+            placement = dict(con.execute("SELECT work,folder FROM library_placement"))
         latest = {r["work"]: dict(r) for r in jobs}
         return [
             dict(
                 id=w["id"],
                 title=w["title"],
+                folder=placement.get(w["id"]),
+                source_privacy=w.get("source_privacy"),
+                duration_seconds=w.get("duration_seconds"),
                 source=w["source_url"],
                 quality=w["disposition"],
                 exceptions=w.get("transfer_issues", []),
@@ -1041,7 +1051,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 and w.get("source_embed_policy") in ("anywhere", "public"),
                 delivery=latest.get(w["id"]),
             )
-            for w in data["works"]
+            for w in data
         ]
 
     @app.get("/api/embed-map.csv")

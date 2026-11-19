@@ -1,0 +1,81 @@
+"""Drive the packaged operator's folder workflow with imported records."""
+
+import requests
+from playwright.sync_api import expect
+
+
+def check_folders(page, base, auth, works):
+    page.goto(base + "/operator/library")
+    page.get_by_role("button", name="Load library").click()
+    expect(page.locator("#items tr")).to_have_count(3)
+
+    def create(name):
+        page.get_by_role("button", name="New folder").click()
+        page.get_by_label("Folder name").fill(name)
+        page.get_by_role("button", name="Save folder").click()
+        expect(page.get_by_role("status")).to_have_text("Folder saved.")
+
+    tree = page.get_by_role("navigation", name="Folders")
+    create("Station programs")
+    tree.get_by_role("button", name="Station programs", exact=True).click()
+    create("November")
+    tree.get_by_role("button", name="November", exact=True).click()
+    page.get_by_role("button", name="Edit folder").click()
+    page.get_by_label("Folder name").fill("November meetings")
+    page.get_by_label("Folder color").fill("#794522")
+    page.get_by_role("button", name="Save folder").click()
+    expect(tree.get_by_role("button", name="November meetings")).to_be_visible()
+
+    root = tree.get_by_role("button", name="Library", exact=True)
+    root.click()
+    search = page.get_by_label("Search titles")
+    search.fill(works[0]["title"])
+    expect(page.locator("#items tr")).to_have_count(sum(work["title"] == works[0]["title"] for work in works))
+    search.clear()
+    columns = page.locator("#items tr td:nth-child(2)")
+    page.get_by_label("Sort").select_option("title-desc")
+    expect(columns).to_have_text(sorted((work["title"] for work in works), reverse=True))
+    page.get_by_label("View").select_option("grid")
+    expect(page.locator("#workTable")).to_have_attribute("data-view", "grid")
+
+    boxes = page.locator("#items input[type=checkbox]")
+    boxes.nth(0).check()
+    boxes.nth(1).check()
+    page.get_by_label("Destination").select_option(label="Station programs / November meetings")
+    page.get_by_role("button", name="Move selected").click()
+    expect(page.get_by_role("status")).to_have_text("Moved 2 works.")
+    expect(page.locator("#items tr")).to_have_count(1)
+
+    folders_url = base + "/api/library/folders"
+    folders = {item["name"]: item for item in requests.get(folders_url, headers=auth).json()}
+    parent = folders["Station programs"]
+    child = folders["November meetings"]
+    assert child["parent"] == parent["id"] and child["color"] == "#794522"
+    assert requests.get(folders_url).status_code == 403
+    assert requests.put(
+        folders_url + "/" + parent["id"],
+        headers=auth,
+        json=dict(name=parent["name"], color=parent["color"], parent=child["id"]),
+    ).status_code == 409
+    placed = requests.get(base + "/api/library", headers=auth).json()
+    moved = next(work["id"] for work in placed if work["folder"] == child["id"])
+    assert requests.put(
+        base + "/api/library/placement",
+        headers=auth,
+        json=dict(works=[moved, "unknown-work"], folder=None),
+    ).status_code == 404
+
+    page.reload()
+    page.get_by_role("button", name="Load library").click()
+    tree.get_by_role("button", name="November meetings").click()
+    expect(page.locator("#items tr")).to_have_count(2)
+    page.get_by_label("Source privacy").select_option(
+        label=page.locator("#items tr td:nth-child(3)").first.inner_text()
+    )
+    expect(page.locator("#items tr")).to_have_count(1)
+    return {
+        "nested_edit_and_persistence": True,
+        "bulk_move": 2,
+        "authorization_and_cycle_check": True,
+        "invalid_batch_rejected": True,
+    }

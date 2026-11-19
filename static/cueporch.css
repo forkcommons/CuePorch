@@ -27,3 +27,27 @@ pre, output { white-space: pre-wrap; overflow-wrap: anywhere; }
 video { display: block; width: 100%; background: #111; max-height: 88vh; }
 body:has(>video) { background: #111; color: white; max-width: none; padding: 0; }
 @media (max-width: 42rem) { table { display: block; overflow-x: auto; } }
+
+/* Operator library */
+.library-layout:not([hidden]) { display: grid; grid-template-columns: minmax(11rem, 1fr) minmax(0, 4fr); gap: 1.5rem; }
+.library-layout aside { border-inline-end: 1px solid #becac7; padding-inline-end: 1rem; }
+.library-layout h2, #folderEditor h2 { margin-top: 0; }
+#folderTree ul { list-style: none; margin: .2rem 0; padding-inline-start: .8rem; }
+#folderTree > ul { padding-inline-start: 0; }
+#folderTree button { background: #e6ece6; color: #152e33; text-align: start; overflow-wrap: anywhere; }
+#folderTree button[aria-current="true"] { background: #164e5a; color: white; }
+.folder-dot { display: inline-block; width: .7rem; height: .7rem; margin-inline-end: .4rem; border: 1px solid currentColor; border-radius: 50%; }
+.library-tools { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; padding-block: .3rem; }
+.library-layout td { overflow-wrap: anywhere; }
+#workTable[data-view="grid"] thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#workTable[data-view="grid"] tbody { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .8rem; }
+#workTable[data-view="grid"] tr { display: block; background: #fff; border: 1px solid #becac7; border-radius: .4rem; padding: .5rem; }
+#workTable[data-view="grid"] td { display: block; padding: .22rem .35rem; border-bottom: 0; }
+#folderEditor { border: 1px solid #6e8387; border-radius: .5rem; width: min(28rem, 90vw); }
+#folderEditor::backdrop { background: #152e33a0; }
+#folderError:empty { display: none; }
+@media (max-width: 52rem) {
+  .library-layout:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+  .library-layout aside { border: 0; border-bottom: 1px solid #becac7; padding-bottom: .5rem; }
+  #workTable:not([data-view="grid"]) { display: block; overflow: auto; }
+}
