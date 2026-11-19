@@ -18,6 +18,7 @@ interface Work {
   folder: string | null;
   source_privacy: string | null;
   editable_privacy: boolean;
+  vimeo_source: boolean;
   visibility: string | null;
   duration_seconds: number | null;
   quality: string;
@@ -121,6 +122,14 @@ interface FolderPrivacy {
   settings: SharingSettings | null;
   has_password: boolean;
   affected: number;
+}
+
+interface SourceSharing {
+  settings: SharingSettings;
+  issue: string | null;
+  eligible: boolean;
+  has_password: boolean;
+  pending: boolean;
 }
 
 const key = document.querySelector<HTMLInputElement>("#key")!;
@@ -526,6 +535,7 @@ function cardMenu(work: Work) {
     [work.asset_type === "video" ? "Video info" : "File info", () => infoDialog(work, false)],
     ["Download", () => infoDialog(work, true)],
   ];
+  if (work.vimeo_source) entries.push(["Restore Vimeo privacy", () => restoreVimeoPrivacy(work)]);
   for (const [label, run] of entries) {
     const button = document.createElement("button");
     button.type = "button";
@@ -562,6 +572,56 @@ function editPrivacy(work: Work) {
     absolute: publicAddress,
     status: workDialogStatus,
   });
+}
+
+async function restoreVimeoPrivacy(work: Work) {
+  const endpoint = workEndpoint(work) + "/source-privacy";
+  const state: SourceSharing = await (await completed(await request(endpoint))).json();
+  const body = openWorkDialog("Restore Vimeo privacy");
+  const detail = document.createElement("p");
+  const mode = state.settings.visibility.replace("_", " ");
+  const sites = state.settings.embed === "domains" ? state.settings.domains.join(", ") : state.settings.embed;
+  detail.textContent = `Recorded visibility: ${mode}. Embedding: ${sites}. Downloads: ${state.settings.download ? "on" : "off"}.`;
+  body.append(detail);
+  if (state.issue || !state.eligible) {
+    const status = document.createElement("p");
+    status.textContent = state.issue || "A local MP4 and a completed public hosted handoff are required.";
+    body.append(status);
+  }
+  if (!state.eligible) return;
+  const form = document.createElement("form");
+  const password = document.createElement("input");
+  if (state.settings.visibility === "password") {
+    const label = document.createElement("label");
+    label.textContent = "Replacement viewer password";
+    password.type = "password";
+    password.maxLength = 256;
+    password.required = !state.has_password;
+    label.append(password);
+    form.append(label);
+  }
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Apply recorded privacy";
+  form.append(save);
+  body.append(form);
+  if (state.pending) workDialogStatus.textContent = "Waiting for the configured publication approval.";
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    try {
+      const updated: SourceSharing = await (await completed(await request(endpoint, "PUT", { password: password.value }))).json();
+      password.value = "";
+      password.required = state.settings.visibility === "password" && !updated.has_password;
+      workDialogStatus.textContent = updated.pending ? "Waiting for the configured publication approval."
+        : "Source privacy applied. Open Share to copy the available CuePorch links.";
+      await load();
+    } catch (error) {
+      workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      save.disabled = false;
+    }
+  };
 }
 
 async function defaultPrivacy(): Promise<Sharing> {

@@ -44,6 +44,7 @@ import library_upload
 import library_worker
 import review_links
 import review_push
+import vimeo_privacy
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
@@ -932,7 +933,7 @@ def create_app(root, database, operator, institution, simulation=None):
             routes = [dict(route) for route in routes]
             route_ids = {route["slug"] for route in routes}
             explicit = {
-                row["work"]
+                row["work"]: json.loads(row["settings"])
                 for row in con.execute("SELECT work,settings FROM library_privacy")
                 if json.loads(row["settings"])["visibility"] == "public"
                 and row["work"] not in route_ids
@@ -942,7 +943,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 routes.extend(
                     dict(kind="work", slug=w["id"], description=library_actions.title_for(con, w))
                     for w in read_library_works()
-                    if w["id"] in explicit
+                    if w["id"] in explicit and vimeo_privacy.permits(w, explicit[w["id"]])
                 )
                 routes.sort(key=lambda row: (row["description"] or "", row["slug"]))
         return render_template("catalog.html", name=institution, rows=routes)
@@ -1085,10 +1086,11 @@ def create_app(root, database, operator, institution, simulation=None):
     def remember_work(work):
         works[work["id"]] = work
 
-    library_actions.register(app, tx, staff, read_library_works, root, remember_work)
+    library_actions.register(app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits)
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
+    vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
-        app, tx, staff, action, read_library_works, root, library_actions.title_for, operator
+        app, tx, staff, action, read_library_works, root, library_actions.title_for, operator, vimeo_privacy.permits
     )
 
     @app.get("/api/library")
@@ -1105,6 +1107,9 @@ def create_app(root, database, operator, institution, simulation=None):
                 for row in con.execute("SELECT work,settings FROM library_privacy")
             }
             protected = {row[0] for row in con.execute("SELECT slug FROM route WHERE public_record=1")}
+            local_delivery = {row[0] for row in con.execute(
+                "SELECT work FROM library_privacy UNION SELECT work FROM library_privacy_change"
+            )}
             deleted = {
                 row[0]
                 for row in con.execute(
@@ -1139,6 +1144,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 if w["id"] in titles
                 else False,
                 source_privacy=w.get("source_privacy"),
+                vimeo_source=w["provider"] == "vimeo",
                 editable_privacy=w["id"] not in protected and library_privacy.editable(w),
                 visibility=visibility.get(w["id"]) if w["id"] not in protected else None,
                 duration_seconds=w.get("duration_seconds"),
@@ -1165,7 +1171,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 quality=w["disposition"],
                 exceptions=w.get("transfer_issues", []),
                 public_eligible=w.get("source_privacy") in ("public", "anybody")
-                and w.get("source_embed_policy") in ("anywhere", "public"),
+                and w.get("source_embed_policy") in ("anywhere", "public")
+                and w["id"] not in local_delivery,
                 delivery=latest.get(w["id"]),
             )
             for w in data
@@ -1184,6 +1191,11 @@ def create_app(root, database, operator, institution, simulation=None):
                        (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)"""
                 )
             }
+            local_routes = {
+                row["work"]: row for row in con.execute("SELECT * FROM library_privacy")
+                if not library_privacy.blocked(con, row["work"])
+                and not library_privacy.protected_route(con, row["work"])
+            }
         buf = io.StringIO(newline="")
         csvout = csv.writer(buf)
         csvout.writerow(
@@ -1201,14 +1213,20 @@ def create_app(root, database, operator, institution, simulation=None):
         for w in data["works"]:
             kind = routes.get(w["id"])
             prefix = kind + "/" + w["id"] if kind else ""
+            local = local_routes.get(w["id"])
+            if local and vimeo_privacy.permits(w, json.loads(local["settings"])):
+                paths = library_privacy.share_paths(w["id"], local)
+            else:
+                paths = dict(watch="/watch/" + prefix if kind else None,
+                             embed_url="/embed/" + prefix if kind else None)
             for site in w.get("known_embed_pages", []) or [""]:
                 csvout.writerow(
                     [
                         w["source_id"],
                         w["source_url"],
                         w["id"],
-                        base + "/watch/" + prefix if kind else "",
-                        base + "/embed/" + prefix if kind else "",
+                        base + paths["watch"] if paths["watch"] else "",
+                        base + paths["embed_url"] if paths["embed_url"] else "",
                         w["disposition"],
                         site,
                     ]
@@ -1284,6 +1302,7 @@ def create_app(root, database, operator, institution, simulation=None):
                     or item.get("source_privacy") not in ("public", "anybody")
                     or item.get("source_embed_policy") not in ("public", "anywhere")
                     or item.get("transfer_issues")
+                    or library_privacy.manages_sharing(con, item["id"])
                 ):
                     continue
                 last = con.execute(

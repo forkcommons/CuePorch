@@ -105,8 +105,26 @@ def build_server(directory, port=0):
                             download=[],
                         ),
                     ]
+                    if getattr(self.server, "privacy_fixture", None):
+                        stage = self.server.privacy_fixture
+                        for identifier, title, privacy, embed, download in (
+                            (74, "Migrated unlisted", "unlisted" if stage == "initial" else "nobody", "private", True),
+                            (75, "Migrated password", "password", "whitelist", False),
+                            (76, "Migrated embed", "disable", "whitelist", False),
+                            (77, "Missing embed allowlist", "disable", "whitelist", False),
+                        ):
+                            values.append(dict(
+                                uri=f"/videos/{identifier}", name=title, duration=4,
+                                link=f"https://vimeo.com/{identifier}/abcdef1234" if identifier == 74 and stage == "initial" else f"https://vimeo.com/{identifier}",
+                                modified_time="2026-11-10" if stage == "initial" or identifier != 74 else "2026-11-18",
+                                privacy=dict(view=privacy, embed=embed, download=download),
+                                download=[dict(quality="hd", type="video/mp4", size=len(media),
+                                               link=f"{origin}/media/{identifier}.mp4")],
+                            ))
                 elif path == "/videos/72/privacy/domains":
                     values = [{"domain": "museum.example"}]
+                elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):
+                    values = [{"domain": self.server.privacy_domain}]
                 elif path.endswith("/texttracks"):
                     values = (
                         [

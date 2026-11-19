@@ -45,7 +45,7 @@ def title_for(con, work):
     return row[0] if row else work["title"]
 
 
-def register(app, tx, staff, read_works, root, remember_work):
+def register(app, tx, staff, read_works, root, remember_work, permits):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -69,7 +69,11 @@ def register(app, tx, staff, read_works, root, remember_work):
             title = title_for(con, work)
             thumbnail = library_thumbnail.selected_thumbnail(con, work)
             policy = library_privacy.get_privacy(con, uid)
-            shared = library_privacy.share_paths(uid, policy) if policy and not library_privacy.protected_route(con, uid) else None
+            shared = None
+            if policy and not library_privacy.protected_route(con, uid):
+                shared = dict(watch=None, embed_url=None)
+                if permits(work, json.loads(policy["settings"])):
+                    shared = library_privacy.share_paths(uid, policy)
         files = [
             {
                 k: f[k]

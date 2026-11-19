@@ -15,6 +15,7 @@ from installed_versions import check_versions, generate_replacement
 from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
+from installed_migrated_privacy import check_migrated_privacy
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -326,6 +327,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
                     )
+                    migrated_privacy = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                     browser.close()
                     results.append(
                         dict(
@@ -345,6 +347,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             library_privacy=privacy_result,
                             privacy_defaults=privacy_defaults,
                             folder_privacy=folder_privacy,
+                            migrated_privacy=migrated_privacy,
                         )
                     )
                 quit_response = requests.post(

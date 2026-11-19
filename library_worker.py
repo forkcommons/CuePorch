@@ -10,6 +10,7 @@ from filelock import FileLock, Timeout
 from peertube_destination import PeerTube, SourceReplacementUnavailable
 import library_trash
 from library_actions import sync_edits, title_for
+from library_privacy import manages_sharing
 from library_thumbnail import selected_thumbnail
 
 SCHEMA = """
@@ -22,6 +23,8 @@ CREATE TABLE IF NOT EXISTS publication_job(
 def enqueue(con, work, public, scheduled=0, kind="work"):
     if work.get("asset_type", "video") != "video":
         raise ValueError("Only videos can be delivered to PeerTube")
+    if public and manages_sharing(con, work["id"]):
+        raise ValueError("This video uses CuePorch viewer links. Its hosted copy stays private.")
     if public and (
         work.get("source_privacy") not in ("public", "anybody")
         or work.get("source_embed_policy") not in ("anywhere", "public")

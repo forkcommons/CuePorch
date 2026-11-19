@@ -186,6 +186,23 @@ class RefreshLinks(Exception):
     pass
 
 
+def original_url(video, vid):
+    fallback = "https://vimeo.com/" + vid
+    link = video.get("link")
+    if not isinstance(link, str):
+        return fallback
+    try:
+        parsed = urlsplit(link)
+    except ValueError:
+        return fallback
+    if (
+        parsed.scheme == "https" and parsed.netloc in {"vimeo.com", "www.vimeo.com"}
+        and re.fullmatch(r"/" + vid + r"(?:/[a-zA-Z0-9]+)?/?", parsed.path)
+    ):
+        return "https://vimeo.com" + parsed.path.rstrip("/")
+    return fallback
+
+
 def migrate(institution, root, source, dry_run=False):
     from filelock import FileLock
 
@@ -243,7 +260,7 @@ def _migrate(institution, root, source, dry_run, refresh):
             id=work_id(institution, "vimeo", vid),
             provider="vimeo",
             source_id=vid,
-            source_url="https://vimeo.com/" + vid,
+            source_url=original_url(video, vid),
             title=video["name"],
             description=video.get("description"),
             duration_seconds=video.get("duration"),

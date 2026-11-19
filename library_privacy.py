@@ -110,6 +110,13 @@ def get_privacy(con, uid):
     return con.execute("SELECT * FROM library_privacy WHERE work=?", (uid,)).fetchone()
 
 
+def manages_sharing(con, uid):
+    return con.execute(
+        "SELECT 1 FROM library_privacy WHERE work=? UNION ALL "
+        "SELECT 1 FROM library_privacy_change WHERE work=? LIMIT 1", (uid, uid),
+    ).fetchone() is not None
+
+
 def apply_pending(con):
     rows = con.execute(
         """SELECT p.*, a.status AS publication_status, c.status AS catalog_status
@@ -240,7 +247,7 @@ def apply_settings(con, action, work, settings, password_hash):
     )
 
 
-def register(app, tx, staff, action, read_works, root, title_for, operator):
+def register(app, tx, staff, action, read_works, root, title_for, operator, permits):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
 
@@ -361,7 +368,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator):
                     ancestors = frame_policy(settings["domains"])
             work = find_work(uid)
             video = playback(work) if work else None
-            if video is None:
+            if video is None or not permits(work, settings):
                 abort(404)
             locked = mode == "password" and not (
                 request.method == "POST" and try_password(con, uid, request.form.get("password", ""), row["password_hash"])
@@ -393,10 +400,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator):
                 abort(404)
             work = find_work(uid)
             video = playback(work) if work else None
-            if video is None or video["sha256"] != digest:
+            settings = json.loads(row["settings"])
+            if video is None or video["sha256"] != digest or not permits(work, settings):
                 abort(404)
             download = request.args.get("download") == "1"
-            if download and (track is not None or not json.loads(row["settings"])["download"]):
+            if download and (track is not None or not settings["download"]):
                 abort(403)
         if track is not None:
             tracks = captions(work)
