@@ -2,6 +2,7 @@ import { drawRecording, mediaPreview, recordingMime, recordingSize } from "./rec
 import { openRecordingStorage } from "./recording_draft.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { BrowserBroadcast } from "./event_broadcast.js";
+import { setupSceneDeck } from "./event_scenes.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const select = (id) => element(id);
@@ -22,6 +23,8 @@ const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
 const broadcastEndpoint = document.body.dataset.eventBroadcast || "";
 const mode = document.querySelector("#browserProductionMode");
+const sceneEndpoint = document.body.dataset.sceneEndpoint;
+const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, updateControls, selectClipAudio) : null;
 let camera = null;
 let screen = null;
 let active = null;
@@ -31,6 +34,8 @@ let audio = null;
 let analyser = null;
 let mix = null;
 let audioSources = [];
+let studioClip;
+let clipSource;
 let busy = false;
 let pictureStream = null;
 let lastPaint = performance.now();
@@ -43,6 +48,9 @@ function message(error) {
 function hasSource(source) {
     return source?.stream.getTracks().some(track => track.readyState === "live");
 }
+function ready() {
+    return Boolean(hasSource(screen) || hasSource(camera) || scenes?.ready());
+}
 function closeSource(source) {
     source?.stream.getTracks().forEach(track => track.stop());
     if (source?.preview)
@@ -50,7 +58,7 @@ function closeSource(source) {
 }
 function updateControls() {
     const running = Boolean(active);
-    button("beginRecord").disabled = busy || running || !(hasSource(screen) || hasSource(camera));
+    button("beginRecord").disabled = busy || running || !ready();
     const live = mode?.value === "broadcast";
     button("beginRecord").textContent = live ? "Go live" : "Start recording";
     button("pauseRecord").hidden = !running || Boolean(active?.broadcast);
@@ -97,6 +105,18 @@ function wireAudio() {
         audioSources.push(node);
     }
 }
+function selectClipAudio(video) {
+    if (studioClip !== video) {
+        clipSource?.disconnect();
+        clipSource = undefined;
+        studioClip = video;
+    }
+    if (video && audio && mix && !clipSource) {
+        clipSource = audio.createMediaElementSource(video);
+        clipSource.connect(mix);
+        video.muted = false;
+    }
+}
 async function sound() {
     if (!audio) {
         audio = new AudioContext();
@@ -105,6 +125,7 @@ async function sound() {
         mix = audio.createMediaStreamDestination();
     }
     wireAudio();
+    selectClipAudio(studioClip);
     await audio.resume();
 }
 function draw(now) {
@@ -113,7 +134,9 @@ function draw(now) {
         return;
     const options = { layout: select("recordLayout").value, color: input("recordColor").value,
         background: select("recordBackground").value };
-    drawRecording(context, options, camera?.preview || null, screen?.preview || null);
+    const painted = scenes?.draw(context, camera?.preview || null, screen?.preview || null);
+    if (!painted)
+        drawRecording(context, options, camera?.preview || null, screen?.preview || null);
     if (analyser && audioSources.length) {
         analyser.getByteTimeDomainData(audioSamples);
         const total = audioSamples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0);
@@ -254,7 +277,7 @@ async function showDrafts() {
     }
 }
 async function start() {
-    if (active || busy || !(hasSource(screen) || hasSource(camera)))
+    if (active || busy || !ready())
         return;
     busy = true;
     element("savedRecording").hidden = true;
@@ -267,7 +290,7 @@ async function start() {
         }
         await sound();
         stream = canvasStream();
-        if (audioSources.length && mix) {
+        if ((audioSources.length || scenes) && mix) {
             const track = mix.stream.getAudioTracks()[0];
             if (track)
                 stream.addTrack(track.clone());
@@ -488,12 +511,15 @@ async function open() {
     }
     if (navigator.mediaDevices)
         await listDevices();
+    if (scenes)
+        await scenes.load().catch(message);
     requestAnimationFrame(draw);
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)
     run(open);
 window.addEventListener("pagehide", () => {
+    scenes?.close();
     closeSource(camera);
     closeSource(screen);
     pictureStream?.getTracks().forEach(track => track.stop());

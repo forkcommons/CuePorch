@@ -6,7 +6,7 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }} · CuePorch</title>
 </head>
-<body data-event-broadcast="{{ broadcast_endpoint or '' }}">
+<body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}">
   <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
@@ -34,6 +34,41 @@
         <ul id="recordDrafts" aria-label="Recovered recordings"></ul>
       </section>
       <aside aria-label="Recording controls">
+        {% if scene_endpoint %}
+        <details id="studioScenes">
+          <summary>Scenes and graphics</summary>
+          <label>Scene template <select id="studioTemplate"></select></label>
+          <button type="button" id="addStudioScene" disabled>Add scene</button>
+          <ol id="studioSceneList"></ol>
+          <form id="studioSceneForm" hidden>
+            <label>Scene name <input name="title" maxlength="72" required></label>
+            <label>Scene layout <select name="layout"><option value="title">Title or full-screen image</option><option value="screen">Presenter or shared screen</option><option value="inset">Camera inset</option><option value="side">Side by side</option></select></label>
+            <label>Scene background <select name="background"><option value="solid">Solid</option><option value="gradient">Gradient</option></select></label>
+            <label>Scene color <input name="color" type="color"></label>
+            <label>Title subtitle <input name="subtitle" maxlength="120"></label>
+            <label>Lower-third primary text <input name="headline" maxlength="72"></label>
+            <label>Lower-third secondary text <input name="credit" maxlength="90"></label>
+            <label>Scene image <select name="image"></select></label>
+            <label>Scene video <select name="clip"></select></label>
+            <canvas id="studioPreview" width="384" height="216" aria-label="Selected scene preview"></canvas>
+            <button type="submit">Save scene</button>
+            <button type="button" id="takeStudioScene">Take scene</button>
+            <button type="button" id="duplicateStudioScene">Duplicate scene</button>
+            <button type="button" id="deleteStudioScene">Delete scene</button>
+          </form>
+          <form id="studioBrandForm">
+            <label>Graphic color <input name="primary" type="color"></label>
+            <label>Graphic text color <input name="text" type="color"></label>
+            <label>Event logo <select name="logo"></select></label>
+            <button type="submit" id="saveStudioBrand" disabled>Save brand</button>
+          </form>
+          <button type="button" id="hideStudioGraphic" disabled>Show lower third</button>
+          <button type="button" id="toggleStudioClip" hidden>Pause clip</button>
+          <button type="button" id="restartStudioClip" hidden>Restart clip</button>
+          <button type="button" id="clearStudioScene" disabled>Return to camera and screen</button>
+          <p id="studioSceneStatus" role="status"></p>
+        </details>
+        {% endif %}
         <fieldset id="recordSources">
           <legend>Sources</legend>
           <label><input id="recordCameraEnabled" type="checkbox" checked> Camera</label>

@@ -17,6 +17,7 @@ import event_chat
 import event_engagement
 import event_program
 import event_schedule
+import event_scenes
 from catalog import video_version_key
 from library_actions import title_for
 from library_interactivity import text_field
@@ -30,7 +31,7 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
-""" + event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA
+""" + event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -198,7 +199,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
-        return render_template("record_studio.html", broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens))
+        return render_template("record_studio.html", broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens),
+                               scene_endpoint=url_for("studio_scene_deck", uid=uid, opens=opens))
 
     @app.route("/api/live-events", methods=["GET", "POST"])
     def list_events():
@@ -311,6 +313,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
     event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
+    event_scenes.register(app, tx, staff, root, read_works, operator_chat)
 
     def provision_event(uid, opens, browser=False, automatic=False):
         try:

@@ -64,13 +64,28 @@ def check_recording(playwright, base, auth):
         page.reload()
         page.get_by_role("button", name="Recover " + title, exact=True).click()
         expect(page.locator("#recordStatus")).to_contain_text("Recovered recording.")
-        assert video.evaluate("""async v=>{
+        decoded = video.evaluate("""async v=>{
           v.muted=true;await v.play();
           const c=document.createElement('canvas'); c.width=720;c.height=720;
-          const ctx=c.getContext('2d');ctx.drawImage(v,0,0);
-          const left=ctx.getImageData(180,360,1,1).data;
-          return v.videoWidth===720 && left[2]>200 && left[0]<40;
+          const ctx=c.getContext('2d');
+          return new Promise(resolve => {
+            const read = () => {
+              ctx.drawImage(v,0,0);
+              const left=Array.from(ctx.getImageData(180,360,1,1).data);
+              return {width:v.videoWidth, height:v.videoHeight, left, currentTime:v.currentTime};
+            };
+            let frame;
+            const done = value => {clearTimeout(timeout);v.cancelVideoFrameCallback(frame);resolve(value);};
+            const timeout = setTimeout(() => done(read()), 4500);
+            const sample = () => {
+              const value = read();
+              if (value.left[2]>200 && value.left[0]<40) done(value);
+              else frame = v.requestVideoFrameCallback(sample);
+            };
+            frame = v.requestVideoFrameCallback(sample);
+          });
         }""")
+        assert decoded["width"] == decoded["height"] == 720 and decoded["left"][2] > 200 and decoded["left"][0] < 40, decoded
         assert page.get_by_label("Destination folder").input_value() == folder
         page.get_by_role("button", name="Save recording", exact=True).click()
         expect(page.locator("#recordStatus")).to_have_text("Recording saved to the library.", timeout=30000)

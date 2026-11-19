@@ -1,8 +1,10 @@
 """Exercise the packaged calendar, publication switch and stable viewer address."""
 
 from contextlib import closing, contextmanager
+from array import array
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import socket
 import sqlite3
 import subprocess
@@ -369,7 +371,147 @@ def check_registered_live(base, origin, keys, home, ffmpeg, port):
             browser.close()
 
 
-def check_browser_delivery(base, keys):
+def prepare_live_scenes(operator, base, studio, auth, scratch, ffmpeg):
+    def image(name, color):
+        path = scratch / (name + ".png")
+        subprocess.run([str(ffmpeg), "-v", "error", "-f", "lavfi", "-i", f"color={color}:s=160x90",
+                        "-frames:v", "1", "-threads", "1", str(path)], check=True, capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with path.open("rb") as content:
+            uploaded = requests.post(base + "/api/library/uploads", headers=auth, timeout=30,
+                                     data={"upload_id": str(uuid.uuid4())}, files={"file": (path.name, content, "image/png")})
+        uploaded.raise_for_status()
+        return uploaded.json()["id"]
+
+    logo, slate = image("Station logo", "yellow"), image("Second slate", "lime")
+    clip = scratch / "Archive contribution.mp4"
+    subprocess.run([str(ffmpeg), "-v", "error", "-f", "lavfi", "-i", "color=magenta:s=320x180:r=24:d=28",
+                    "-f", "lavfi", "-i", "sine=frequency=1232:duration=28", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", str(clip)], check=True, capture_output=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    with clip.open("rb") as content:
+        uploaded = requests.post(base + "/api/library/uploads", headers=auth, timeout=30,
+                                 data={"upload_id": str(uuid.uuid4())}, files={"file": (clip.name, content, "video/mp4")})
+    uploaded.raise_for_status()
+    endpoint = studio.removesuffix("browser") + "scenes"
+    assert requests.get(endpoint, timeout=10).status_code == 403
+    assert requests.get(f"{endpoint}/image/{logo}", timeout=10).status_code == 403
+    operator.reload()
+    operator.get_by_text("Scenes and graphics", exact=True).click()
+    panel = operator.locator("#studioScenes")
+    expect(panel.get_by_role("button", name="Add scene")).to_be_enabled()
+
+    def save(button):
+        with operator.expect_response(lambda response: response.url == endpoint and response.request.method == "PUT") as written:
+            panel.get_by_role("button", name=button, exact=True).click()
+        assert written.value.ok, f"Scene save returned HTTP {written.value.status}"
+
+    editor = panel.locator("#studioSceneForm")
+    panel.get_by_label("Graphic color", exact=True).fill("#2146e0")
+    panel.get_by_label("Event logo").select_option(logo)
+    save("Save brand")
+    panel.get_by_label("Scene template").select_option(label="Opening title")
+    save("Add scene")
+    editor.get_by_label("Scene color").fill("#ba202b")
+    editor.get_by_label("Scene background").select_option("solid")
+    editor.get_by_label("Lower-third primary text").fill("Festival opening")
+    editor.get_by_label("Lower-third secondary text").fill("Host greeting")
+    save("Save scene")
+    save("Duplicate scene")
+    editor.get_by_label("Scene name").fill("Film program")
+    editor.get_by_label("Scene image").select_option(slate)
+    save("Save scene")
+    save("Duplicate scene")
+    editor.get_by_label("Scene name").fill("Archive clip")
+    editor.get_by_label("Scene image").select_option("")
+    editor.get_by_label("Scene video").select_option(label="Archive contribution")
+    save("Save scene")
+    panel.get_by_role("button", name="Move scene up (Film program)").click()
+    expect(panel.locator("#studioSceneList li").first).to_contain_text("Film program")
+    operator.reload()
+    operator.get_by_text("Scenes and graphics", exact=True).click()
+    expect(panel.locator("#studioSceneList li").first).to_contain_text("Film program")
+    panel.get_by_role("button", name="Opening title", exact=True).click()
+    panel.get_by_role("button", name="Take scene").click()
+    expect(panel.locator("#studioSceneStatus")).to_have_text("On stage: Opening title")
+    return panel
+
+
+def check_broadcast_graphics(guest, panel):
+    video = guest.frame_locator('iframe[title="Event video"]').locator("video").first
+
+    def pixel(x, y, rgb):
+        panel.page.wait_for_function("""({x,y,rgb}) => {
+            const canvas = document.querySelector('#recordCanvas');
+            const result = [...canvas.getContext('2d').getImageData(canvas.width*x,canvas.height*y,1,1).data].slice(0,3);
+            return result.every((value, index) => Math.abs(value-rgb[index]) < 45);
+        }""", arg={"x": x, "y": y, "rgb": rgb}, timeout=12000)
+        observed = video.evaluate("""async (video, {x,y,rgb}) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 1;
+            const context = canvas.getContext('2d', {willReadFrequently: true});
+            const start = video.currentTime;
+            const end = performance.now() + 45000;
+            let result;
+            while (performance.now() < end) {
+                context.drawImage(video, video.videoWidth*x, video.videoHeight*y,1,1,0,0,1,1);
+                result = [...context.getImageData(0,0,1,1).data].slice(0,3);
+                if (result.every((value, index) => Math.abs(value-rgb[index]) < 45)) return {matched:true};
+                await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            return {matched:false, result, start, currentTime:video.currentTime, paused:video.paused,
+                    readyState:video.readyState, width:video.videoWidth,
+                    bufferedEnd:video.buffered.length ? video.buffered.end(video.buffered.length-1) : null};
+        }""", {"x": x, "y": y, "rgb": rgb})
+        assert observed["matched"], f"Guest did not decode {rgb} at {x}, {y}: {observed}"
+
+    pixel(.22, .31, [186, 32, 43])
+    pixel(.91, .89, [255, 255, 0])
+    panel.get_by_role("button", name="Show lower third").click()
+    pixel(.05, .81, [33, 70, 224])
+    panel.get_by_role("button", name="Hide lower third").click()
+    pixel(.05, .81, [186, 32, 43])
+    panel.get_by_role("button", name="Film program", exact=True).click()
+    panel.get_by_role("button", name="Take scene").click()
+    expect(panel.locator("#studioSceneStatus")).to_have_text("On stage: Film program")
+    pixel(.25, .28, [0, 255, 0])
+    pixel(.91, .89, [255, 255, 0])
+    panel.get_by_role("button", name="Archive clip", exact=True).click()
+    panel.get_by_role("button", name="Take scene").click()
+    expect(panel.locator("#studioSceneStatus")).to_have_text("On stage: Archive clip")
+    pixel(.25, .28, [255, 0, 255])
+    panel.get_by_role("button", name="Pause clip").click()
+    expect(panel.get_by_role("button", name="Play clip")).to_be_visible()
+    panel.get_by_role("button", name="Restart clip").click()
+    expect(panel.get_by_role("button", name="Pause clip")).to_be_visible()
+    return dict(scene_order_saved_after_reopen=True, operator_only_graphic_sources=True, scene_changed_during_live=True,
+                lower_third_toggle_decoded=True, logo_remained_across_scenes=True, full_screen_library_image_decoded=True,
+                library_video_decoded=True, clip_pause_and_restart=True)
+
+
+def archive_has_scene_audio(operator, ffmpeg):
+    with operator.expect_download() as downloaded:
+        operator.get_by_role("button", name="Download recording").click()
+    raw = subprocess.run([str(ffmpeg), "-v", "error", "-i", str(downloaded.value.path()), "-map", "0:a:0",
+                          "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"], check=True, capture_output=True,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    samples = array("h", raw)
+    size = 2000
+    angle = math.tau * 1232 / 8000
+    sine = [math.sin(index * angle) for index in range(size)]
+    cosine = [math.cos(index * angle) for index in range(size)]
+    for start in range(0, len(samples) - size, size):
+        part = samples[start:start + size]
+        energy = sum(sample * sample for sample in part)
+        if energy < size * 200 ** 2:
+            continue
+        components = (sum(sample * value for sample, value in zip(part, basis)) for basis in (sine, cosine))
+        if sum(value ** 2 for value in components) / (size * energy) > .18:
+            return True
+    return False
+
+
+def check_browser_delivery(base, keys, graphics=None):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
@@ -394,6 +536,7 @@ def check_browser_delivery(base, keys):
             operator.get_by_role("button", name="Open production for Installed browser broadcast", exact=False).click()
             operator.get_by_role("link", name="Open browser studio").click()
             expect(operator.get_by_role("heading", name="Live Studio")).to_be_visible()
+            panel = prepare_live_scenes(operator, base, studio, auth, *graphics) if graphics else None
             mode = operator.get_by_role("combobox", name="Production mode")
             mode.select_option("record")
             expect(operator.get_by_role("button", name="Start recording")).to_be_visible()
@@ -411,9 +554,13 @@ def check_browser_delivery(base, keys):
             expect(guest.locator("#eventStatus")).to_have_text("Live", timeout=65000)
             _, width, _ = play_event(guest, watch, "Live", navigate=False)
             assert width >= 320
+            scene_result = check_broadcast_graphics(guest, panel) if panel else {}
             operator.get_by_role("button", name="Stop", exact=True).click()
             expect(operator.locator("#recordStatus")).to_contain_text("Recording ready.", timeout=20000)
             expect(operator.get_by_label("Finished recording")).to_be_visible()
+            if graphics:
+                assert archive_has_scene_audio(operator, graphics[1]), "The downloaded recording lacks the injected clip tone"
+                scene_result["recording_contains_scene_video_audio"] = True
             operator.get_by_label("Recording title").fill("Browser live program archive")
             operator.get_by_role("button", name="Save recording", exact=True).click()
             expect(operator.locator("#recordStatus")).to_have_text("Recording saved to the library.", timeout=40000)
@@ -423,7 +570,8 @@ def check_browser_delivery(base, keys):
             assert metadata.json()["media"]["audio"]
             assert requests.get(f"{base}/watch/work/{archive}", timeout=10).status_code == 404
             return dict(browser_camera_and_mic=True, studio_ingest_requires_operator=True, guest_live_width=width,
-                        waiting_room_transitions_to_live=True, saved_private_local_archive=True, local_archive_has_audio=True)
+                        waiting_room_transitions_to_live=True, saved_private_local_archive=True, local_archive_has_audio=True,
+                        **scene_result)
         finally:
             browser.close()
 
