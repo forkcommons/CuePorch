@@ -17,8 +17,14 @@
   <main id="languagesEditor" hidden>
     <form id="sourceLanguage">
       <label>Original language <input name="language" required placeholder="en" maxlength="40"></label>
+      <label><input type="checkbox" name="generate" checked> Generate subtitles when setting the original language</label>
       <button type="submit">Set original language</button>
     </form>
+    <section aria-labelledby="automaticSubtitles">
+      <h2 id="automaticSubtitles">Automatic subtitles</h2>
+      <button type="button" id="generateCaptions" disabled>Generate subtitles with TextFlowKit</button>
+      <p id="captionJobStatus" aria-live="polite"></p>
+    </section>
     <form id="uploadSubtitle">
       <label>Subtitle language <input name="language" required placeholder="es" maxlength="40"></label>
       <label>Subtitle file <input name="track" type="file" accept=".vtt,.srt" required></label>

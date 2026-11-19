@@ -20,12 +20,14 @@ from installed_video_details import check_imported_video_details, check_video_de
 from installed_embed_builder import check_embed_builder
 from installed_appearance import check_appearance
 from installed_languages import check_languages
+from installed_caption_generation import check_caption_generation, speech_video
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("baseline", type=Path)
 p.add_argument("report", type=Path)
 p.add_argument("--review-push", action="store_true", help="Use the local encrypted review push receiver")
+p.add_argument("--caption-speech", type=Path, help="Synthetic narration for the installed local TextFlowKit runtime")
 p.add_argument(
     "--windows-setup",
     type=Path,
@@ -175,6 +177,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
     review_update = generate_replacement(root / "review-update.mp4", width=192)
+    caption_video = speech_video(args.caption_speech, root / "caption-speech.mp4") if args.caption_speech else None
     src = build_server(root / "fixture")
     source = serve(src)
     museum = ThreadingHTTPServer(("127.0.0.1", 0), Museum)
@@ -338,6 +341,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     embed_builder = check_embed_builder(page, browser, base, auth)
                     appearance = check_appearance(page, browser, base, auth)
                     languages = check_languages(page, browser, base, auth, home / "collection")
+                    generated = check_caption_generation(page, browser, base, auth, caption_video) if caption_video else None
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -365,7 +369,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             folder_privacy=folder_privacy,
                             migrated_privacy=migrated_privacy,
                             video_details=details, workspace=workspace, embed_builder=embed_builder, appearance=appearance,
-                            languages=languages,
+                            languages=languages, generated_captions=generated,
                         )
                     )
                 quit_response = requests.post(

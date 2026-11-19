@@ -95,7 +95,7 @@ def store_track(root, work, edit, language, cues, provenance, expected_digest=No
     edit["tracks"] = [item for item in available if track_language(item) != language] + [updated]
 
 
-def register(app, tx, staff, get_work, root, remember_work, title_for):
+def register(app, tx, staff, get_work, root, remember_work, title_for, request_caption):
     def video(con, uid):
         work = get_work(con, uid)
         if work.get("asset_type", "video") != "video":
@@ -110,9 +110,14 @@ def register(app, tx, staff, get_work, root, remember_work, title_for):
             if request.method == "PUT":
                 body = editable_body()
                 language = language_tag(body.get("language"))
+                generate = body.get("generate", True)
+                if type(generate) is not bool:
+                    abort(400, "Choose whether to generate subtitles automatically.")
                 work = update(root, uid, body.get("version"),
                               lambda _work, edit: edit.update(original_language=language))
                 remember_work(work)
+                if generate:
+                    request_caption(con, work)
             elif request.method == "POST":
                 request.max_content_length = 8 * 1024**2
                 upload = request.files.get("track")

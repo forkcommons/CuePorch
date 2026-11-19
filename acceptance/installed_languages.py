@@ -23,6 +23,7 @@ def check_languages(page, browser, base, auth, collection):
     page.get_by_role("link", name="Languages and subtitles").click()
     expect(page.get_by_role("heading", name="Languages for " + title)).to_be_visible()
     assert requests.get(endpoint, timeout=10).status_code == 403
+    page.get_by_label("Generate subtitles when setting the original language").uncheck()
     page.get_by_label("Original language", exact=True).fill("en")
     page.get_by_role("button", name="Set original language").click()
     expect(page.get_by_role("status")).to_have_text("Original language saved.")

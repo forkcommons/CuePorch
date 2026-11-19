@@ -15,6 +15,8 @@ const preview = document.querySelector("#languagePreview");
 const previous = document.querySelector("#previousCues");
 const next = document.querySelector("#nextCues");
 const save = document.querySelector("#saveCues");
+const generate = document.querySelector("#generateCaptions");
+const generationStatus = document.querySelector("#captionJobStatus");
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 const languages = endpoint + "/languages";
 const perPage = 30;
@@ -23,6 +25,8 @@ let selected = null;
 let draft = [];
 let track;
 let page = 0;
+let captionPoll;
+let refreshedJob = null;
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function request(path, method = "GET", body) {
     const headers = { Authorization: "Bearer " + credential.value };
@@ -169,11 +173,40 @@ async function openTrack(language) {
     editor.hidden = false;
     renderDraft();
 }
+async function renderJobs(data) {
+    clearTimeout(captionPoll);
+    if (!data)
+        data = await json(endpoint + "/caption-jobs");
+    const latest = data.jobs[0];
+    const running = latest && ["queued", "running", "waiting"].includes(latest.state);
+    generate.disabled = !data.available || !state.original_language || Boolean(running);
+    const messages = {
+        queued: "Subtitle generation queued.",
+        running: "TextFlowKit is generating subtitles.",
+        waiting: "Waiting for caption approval.",
+        complete: "TextFlowKit subtitles are ready.",
+        superseded: "A later edit or video version replaced this job.",
+        rejected: "Subtitle generation was rejected.",
+        failed: "TextFlowKit could not generate subtitles.",
+    };
+    generationStatus.textContent = latest ? (latest.error || messages[latest.state] || "")
+        : data.available ? (state.original_language ? "TextFlowKit is ready to caption this cut."
+            : "Set the original language to prepare automatic subtitles.")
+            : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.";
+    if (running) {
+        captionPoll = window.setTimeout(() => void renderJobs().catch((error) => { generationStatus.textContent = String(error); }), 1000);
+    }
+    else if (latest?.state === "complete" && refreshedJob !== latest.id) {
+        refreshedJob = latest.id;
+        present(await json(languages));
+    }
+}
 async function load() {
     present(await json(languages));
     sessionStorage.setItem("cueporchOperator", credential.value);
     identify.hidden = true;
     pane.hidden = false;
+    await renderJobs();
     const info = await json(endpoint);
     if (info.preview) {
         const ticket = await json(endpoint + "/ticket", "POST", { sha256: info.preview });
@@ -185,8 +218,10 @@ identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
 original.onsubmit = (event) => {
     event.preventDefault();
     void action(async () => {
-        const language = new FormData(original).get("language");
-        present(await json(languages, "PUT", { language, version: state.version }));
+        const settings = new FormData(original);
+        const language = settings.get("language");
+        present(await json(languages, "PUT", { language, generate: settings.has("generate"), version: state.version }));
+        await renderJobs();
     }, "Original language saved.");
 };
 upload.onsubmit = (event) => {
@@ -220,6 +255,10 @@ save.onclick = () => void action(async () => {
     present(await json(languages + "/" + encodeURIComponent(selected), "PUT", payload));
     await openTrack(selected);
 }, "Subtitles saved.");
+generate.onclick = () => void action(async () => {
+    const outcome = await json(endpoint + "/caption-jobs", "POST", { version: state.version });
+    await renderJobs(outcome);
+}, "Subtitle generation requested.");
 if (credential.value)
     void action(load);
 export {};

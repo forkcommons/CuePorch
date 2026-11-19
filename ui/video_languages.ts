@@ -5,6 +5,8 @@ interface Languages { title: string; version: string; original_language: string;
 interface Cue { start: number; end: number; text: string; settings: string; }
 interface TrackData { version: string; revision: string; cues: Cue[]; }
 interface DraftCue { start: string; end: string; text: string; settings: string; }
+interface CaptionJob { id: string; state: string; language: string; error: string | null; }
+interface CaptionJobs { available: boolean; jobs: CaptionJob[]; }
 
 const identify = document.querySelector<HTMLFormElement>("#identify")!;
 const credential = document.querySelector<HTMLInputElement>("#languageKey")!;
@@ -23,6 +25,8 @@ const preview = document.querySelector<HTMLVideoElement>("#languagePreview")!;
 const previous = document.querySelector<HTMLButtonElement>("#previousCues")!;
 const next = document.querySelector<HTMLButtonElement>("#nextCues")!;
 const save = document.querySelector<HTMLButtonElement>("#saveCues")!;
+const generate = document.querySelector<HTMLButtonElement>("#generateCaptions")!;
+const generationStatus = document.querySelector<HTMLElement>("#captionJobStatus")!;
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 const languages = endpoint + "/languages";
 const perPage = 30;
@@ -31,6 +35,8 @@ let selected: string | null = null;
 let draft: DraftCue[] = [];
 let track: TrackData;
 let page = 0;
+let captionPoll: number | undefined;
+let refreshedJob: string | null = null;
 
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
@@ -184,11 +190,41 @@ async function openTrack(language: string) {
   renderDraft();
 }
 
+async function renderJobs(data?: CaptionJobs) {
+  clearTimeout(captionPoll);
+  if (!data) data = await json<CaptionJobs>(endpoint + "/caption-jobs");
+  const latest = data.jobs[0];
+  const running = latest && ["queued", "running", "waiting"].includes(latest.state);
+  generate.disabled = !data.available || !state.original_language || Boolean(running);
+  const messages: Record<string, string> = {
+    queued: "Subtitle generation queued.",
+    running: "TextFlowKit is generating subtitles.",
+    waiting: "Waiting for caption approval.",
+    complete: "TextFlowKit subtitles are ready.",
+    superseded: "A later edit or video version replaced this job.",
+    rejected: "Subtitle generation was rejected.",
+    failed: "TextFlowKit could not generate subtitles.",
+  };
+  generationStatus.textContent = latest ? (latest.error || messages[latest.state] || "")
+    : data.available ? (state.original_language ? "TextFlowKit is ready to caption this cut."
+      : "Set the original language to prepare automatic subtitles.")
+    : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.";
+  if (running) {
+    captionPoll = window.setTimeout(
+      () => void renderJobs().catch((error) => { generationStatus.textContent = String(error); }), 1000,
+    );
+  } else if (latest?.state === "complete" && refreshedJob !== latest.id) {
+    refreshedJob = latest.id;
+    present(await json<Languages>(languages));
+  }
+}
+
 async function load() {
   present(await json<Languages>(languages));
   sessionStorage.setItem("cueporchOperator", credential.value);
   identify.hidden = true;
   pane.hidden = false;
+  await renderJobs();
   const info = await json<{preview: string | null}>(endpoint);
   if (info.preview) {
     const ticket = await json<{preview: string}>(endpoint + "/ticket", "POST", {sha256: info.preview});
@@ -201,8 +237,10 @@ identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
 original.onsubmit = (event) => {
   event.preventDefault();
   void action(async () => {
-    const language = new FormData(original).get("language");
-    present(await json<Languages>(languages, "PUT", {language, version: state.version}));
+    const settings = new FormData(original);
+    const language = settings.get("language");
+    present(await json<Languages>(languages, "PUT", {language, generate: settings.has("generate"), version: state.version}));
+    await renderJobs();
   }, "Original language saved.");
 };
 upload.onsubmit = (event) => {
@@ -235,4 +273,8 @@ save.onclick = () => void action(async () => {
   present(await json<Languages>(languages + "/" + encodeURIComponent(selected), "PUT", payload));
   await openTrack(selected);
 }, "Subtitles saved.");
+generate.onclick = () => void action(async () => {
+  const outcome = await json<CaptionJobs>(endpoint + "/caption-jobs", "POST", {version: state.version});
+  await renderJobs(outcome);
+}, "Subtitle generation requested.");
 if (credential.value) void action(load);

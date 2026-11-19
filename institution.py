@@ -36,6 +36,7 @@ from waitress import serve
 from cueporch import verify
 import library_actions
 import library_appearance
+import library_caption_jobs
 import library_details
 import library_embed
 import library_folder_privacy
@@ -108,6 +109,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_trash.SCHEMA
         + library_actions.SCHEMA
         + library_appearance.SCHEMA
+        + library_caption_jobs.SCHEMA
         + library_details.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
@@ -1097,7 +1099,7 @@ def create_app(root, database, operator, institution, simulation=None):
     def remember_work(work):
         works[work["id"]] = work
 
-    library_actions.register(app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits)
+    library_actions.register(app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action)
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
@@ -1347,6 +1349,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return {"queued": queued}, 202
 
     library_worker.start(app, root, database, tx, action, apply_routes)
+    library_caption_jobs.start(app, root, tx, remember_work)
     review_push.start(app, tx, database)
     return app
 
