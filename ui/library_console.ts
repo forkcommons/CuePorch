@@ -53,6 +53,17 @@ interface VideoVersion {
   video_files: FileInfo[];
 }
 
+interface ReviewLink {
+  id: string;
+  name: string;
+  path: string;
+  expires: number;
+  enabled: boolean;
+  password: boolean;
+  allow_download: boolean;
+  allow_versions: boolean;
+}
+
 type LibraryView = "Library" | "Starred" | "Watch later" | "Recently deleted";
 
 interface Deletion {
@@ -435,6 +446,7 @@ function cardMenu(work: Work) {
   const entries: [string, () => void | Promise<void>][] = [
     ["Share", () => shareDialog(work)],
     ["Copy link", () => shareDialog(work, "watch")],
+    ["Review link", () => reviewLinksDialog(work)],
     ["Copy embed code", () => shareDialog(work, "embed")],
     [
       work.watch_later ? "Remove from Watch later" : "Watch later",
@@ -465,7 +477,7 @@ function openWorkDialog(title: string) {
   workDialogTitle.textContent = title;
   workDialogBody.replaceChildren();
   workDialogStatus.textContent = "";
-  workDialog.showModal();
+  if (!workDialog.open) workDialog.showModal();
 }
 
 async function copyText(field: HTMLInputElement | HTMLTextAreaElement) {
@@ -524,6 +536,127 @@ async function mediaTicket(work: Work, sha256: string) {
   );
   const urls: { download: string; preview: string } = await response.json();
   return urls;
+}
+
+async function reviewLinksDialog(work: Work) {
+  const endpoint = workEndpoint(work) + "/review-links";
+  const links: ReviewLink[] = await (
+    await completed(await request(endpoint))
+  ).json();
+  openWorkDialog("Review links");
+  const editor = document.createElement("form");
+  const fields = {
+    name: reviewField("Review link name", "text"),
+    expires: reviewField("Expires", "datetime-local"),
+    password: reviewField("Review password", "password"),
+    removePassword: reviewField("Remove saved password", "checkbox"),
+    allowDownload: reviewField("Allow download", "checkbox"),
+    allowVersions: reviewField("Allow previous versions", "checkbox"),
+  };
+  fields.name.input.required = true;
+  fields.name.input.maxLength = 128;
+  fields.expires.input.required = true;
+  fields.password.input.maxLength = 256;
+  fields.password.input.autocomplete = "new-password";
+  const save = document.createElement("button");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "New review link";
+  function populate(link?: ReviewLink) {
+    const due = new Date(link ? link.expires * 1000 : Date.now() + 30 * 86400000);
+    const localDate = new Date(due.getTime() - due.getTimezoneOffset() * 60000);
+    fields.name.input.value = link?.name || "";
+    fields.expires.input.value = localDate.toISOString().slice(0, 16);
+    fields.password.input.value = "";
+    fields.removePassword.label.hidden = !link?.password;
+    fields.removePassword.input.checked = false;
+    fields.allowDownload.input.checked = !!link?.allow_download;
+    fields.allowVersions.input.checked = !!link?.allow_versions;
+    save.textContent = link ? "Save review settings" : "Create review link";
+    cancel.hidden = !link;
+    editor.onsubmit = async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      try {
+        const password = fields.password.input.value;
+        const body = {
+          name: fields.name.input.value,
+          expires: new Date(fields.expires.input.value).getTime() / 1000,
+          allow_download: fields.allowDownload.input.checked,
+          allow_versions: fields.allowVersions.input.checked,
+          ...(password || fields.removePassword.input.checked
+            ? { password: fields.removePassword.input.checked ? "" : password }
+            : {}),
+        };
+        await completed(await request(
+          link ? endpoint + "/" + link.id : endpoint,
+          link ? "PUT" : "POST",
+          body,
+        ));
+        await reopen();
+        workDialogStatus.textContent = link ? "Review link saved." : "Review link created.";
+      } catch (error) {
+        workDialogStatus.textContent = String(error);
+      } finally {
+        save.disabled = false;
+      }
+    };
+  }
+  const reopen = () => reviewLinksDialog(work);
+  cancel.onclick = () => populate();
+  editor.append(...Object.values(fields).map(({ label }) => label), save, cancel);
+  populate();
+
+  const list = document.createElement("ul");
+  for (const link of links) {
+    const row = document.createElement("li");
+    const title = document.createElement("strong");
+    title.textContent = link.name;
+    const state = link.expires <= Date.now() / 1000 ? "Expired" : link.enabled ? "Enabled" : "Disabled";
+    row.append(title, " · " + state + " · " + new Date(link.expires * 1000).toLocaleString());
+    const address = new URL(link.path, document.body.dataset.publicUrl || location.origin);
+    const field = document.createElement("input");
+    field.value = address.href;
+    field.readOnly = true;
+    field.setAttribute("aria-label", "Link for " + link.name);
+    const open = document.createElement("a");
+    open.href = address.href;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Review page";
+    row.append(field, open);
+    const update = async (path: string, method: string, data?: object) => {
+      try {
+        await completed(await request(endpoint + "/" + link.id + path, method, data));
+        await reopen();
+      } catch (error) {
+        workDialogStatus.textContent = String(error);
+      }
+    };
+    const buttons: [string, () => Promise<void>][] = [
+      ["Copy review link", () => copyText(field)],
+      ["Manage", async () => { populate(link); fields.name.input.focus(); }],
+      [link.enabled ? "Disable" : "Enable", () => update("", "PUT", { enabled: !link.enabled })],
+      ["Make a copy", () => update("/copy", "POST")],
+      ["Delete", () => update("", "DELETE")],
+    ];
+    for (const [label, click] of buttons) {
+      const button = document.createElement("button");
+      button.textContent = label;
+      action(button, click);
+      row.append(button);
+    }
+    list.append(row);
+  }
+  workDialogBody.append(list, editor);
+}
+
+function reviewField(text: string, type: string) {
+  const label = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = type;
+  label.append(text, input);
+  return { label, input };
 }
 
 let thumbnailUrl: string | undefined;

@@ -39,6 +39,7 @@ import library_folders
 import library_thumbnail
 import library_trash
 import library_worker
+import review_links
 
 STEPS = (
     "intake",
@@ -91,6 +92,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_trash.SCHEMA
         + library_actions.SCHEMA
         + library_thumbnail.SCHEMA
+        + review_links.SCHEMA
     )
     db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
     db.execute("BEGIN IMMEDIATE")

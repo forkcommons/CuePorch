@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title or "Video review" }}</title>
+  <link rel="stylesheet" href="/static/cueporch.css">
+</head>
+<body>
+  <main class="review-page">
+    <h1>{{ title or "Video review" }}</h1>
+    {% if locked %}
+    <form action="{{ url_for('unlock', uid=uid) }}" method="post">
+      <label>Review password <input type="password" name="password" required maxlength="256" autocomplete="current-password"></label>
+      <button>Open review</button>
+      {% if error %}<p role="alert">That password did not open the review.</p>{% endif %}
+    </form>
+    {% elif selected %}
+    {% if versions|length > 1 %}
+    <form method="get">
+      <label>Video version
+        <select name="version">
+          {% for id in versions %}
+          <option value="{{ id }}"{% if id == selected %} selected{% endif %}>{{ "Current version" if loop.first else "Previous version " ~ loop.index0 }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button>View version</button>
+    </form>
+    {% endif %}
+    <video controls preload="metadata" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
+      {% for item in tracks %}
+      <track kind="captions" srclang="{{ item.language }}" label="{{ item.language }}" src="{{ url_for('review_media', uid=uid, version=selected, track=loop.index0) }}">
+      {% endfor %}
+    </video>
+    {% if allow_download %}<a href="{{ url_for('review_media', uid=uid, version=selected, download=1) }}">Download this version</a>{% endif %}
+    {% else %}<p>This review has no playable copy yet.</p>{% endif %}
+  </main>
+</body>
+</html>

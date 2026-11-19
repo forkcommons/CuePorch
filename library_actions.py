@@ -11,6 +11,7 @@ from flask import abort, request, send_file
 
 import library_thumbnail
 import library_versions
+import review_links
 from catalog import copy_work
 from library_trash import hidden
 
@@ -47,6 +48,7 @@ def register(app, tx, staff, read_works, root, remember_work):
 
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_versions.register(app, tx, staff, get_work, root, remember_work)
+    review_links.register(app, tx, staff, get_work, title_for, root)
 
     @app.get("/api/library/work/<uid>")
     def work_info(uid):

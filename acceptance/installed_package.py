@@ -11,6 +11,7 @@ from installed_library import check_folders
 from installed_trash import check_private
 from installed_cards import check_cards
 from installed_versions import check_versions, generate_replacement
+from installed_review_links import check_review_links
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -301,6 +302,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
+                    review_result = check_review_links(page, base, auth, copy)
                     card_result, download_url = check_cards(
                         page, base, auth, home / "institution.sqlite",
                         next(w for w in works if w["title"] == "Station meeting"),
@@ -322,6 +324,7 @@ with tempfile.TemporaryDirectory() as tmp:
                             library=library_result,
                             card_actions=card_result,
                             video_versions=versions_result,
+                            review_links=review_result,
                             recently_deleted=trash_result,
                         )
                     )
