@@ -21,7 +21,7 @@ COLORS = (("primary", "#164e5a"), ("accent", "#a44913"), ("icon", "#ffffff"),
 SWITCHES = {
     "show_title": True, "show_chrome": True, "ambient": False, "crop": False,
     "description": True, "credits": True, "tags": True, "categories": True, "license": True,
-    "progress": True, "volume": True, "captions": True, "speed": True, "fullscreen": True, "pip": True,
+    "progress": True, "volume": True, "captions": True, "chapters": True, "speed": True, "fullscreen": True, "pip": True,
     "allow_seek": True, "right_click": True, "autoplay": False, "muted": False, "loop": False,
 }
 DEFAULTS = dict(COLORS) | SWITCHES | dict(theme="light", font="serif", play_position="bottom", logo=None)

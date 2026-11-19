@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Video interactivity · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  <h1 id="interactivityTitle">Video interactivity</h1>
+  <form id="identify">
+    <label>Operator credential <input id="chapterKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open interactivity</button>
+  </form>
+  <p id="chapterStatus" role="status"></p>
+  <main id="interactivityEditor" hidden>
+    <video id="chapterPreview" controls playsinline preload="metadata" aria-label="Video preview" hidden></video>
+    <form id="chapterEditor">
+      <h2>Chapters</h2>
+      <ol id="chapterRows"></ol>
+      <div class="library-tools">
+        <button type="button" id="addChapter">Add chapter</button>
+        <button type="submit">Save chapters</button>
+      </div>
+    </form>
+  </main>
+  <template id="chapterRow">
+    <li>
+      <label>Title <input name="title" maxlength="50" required></label>
+      <label>Start time <input name="timecode" inputmode="numeric" placeholder="00:00:00" required></label>
+      <button type="button" data-chapter-action="preview">Preview time</button>
+      <button type="button" data-chapter-action="remove">Remove chapter</button>
+    </li>
+  </template>
+  <script type="module" src="/static/ui/video_interactivity.js"></script>
+</body>
+</html>

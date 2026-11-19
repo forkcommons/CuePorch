@@ -12,6 +12,7 @@ from installed_cards import check_hosted_cards
 from installed_versions import check_hosted_versions, generate_replacement
 from installed_migrated_privacy import check_hosted_handoff
 from installed_languages import check_hosted_languages
+from installed_interactivity import check_hosted_chapters
 import psutil
 
 p = argparse.ArgumentParser()
@@ -134,6 +135,7 @@ with tempfile.TemporaryDirectory() as tmp:
                         base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
                     ),
                     hosted_languages=check_hosted_languages(base, a.origin, keys),
+                    hosted_chapters=check_hosted_chapters(base, a.origin, keys),
                     hosted_privacy_handoff=check_hosted_handoff(base, a.origin, keys),
                 )
             if a.station_package:

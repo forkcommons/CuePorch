@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 
+from catalog import cut_chapters
 from cueporch import dump, verify
 from library_languages import tracks_for
 
@@ -303,13 +304,14 @@ class PeerTube:
                 if error.response.status_code != 404:
                     raise
         state["caption_languages"] = sorted(attached)
-        if work.get("chapters") or state.get("has_chapters"):
+        selected_chapters = cut_chapters(work)
+        if selected_chapters or state.get("has_chapters"):
             chapters = [
                 {"title": chapter["title"], "timecode": int(chapter["timecode"])}
-                for chapter in work.get("chapters", [])
+                for chapter in selected_chapters
             ]
             self.call("PUT", path + "/chapters", json={"chapters": chapters})
-        state["has_chapters"] = bool(work.get("chapters"))
+        state["has_chapters"] = bool(selected_chapters)
         deadline = time.monotonic() + int(
             os.environ.get("CUEPORCH_PROCESSING_TIMEOUT", "3600")
         )

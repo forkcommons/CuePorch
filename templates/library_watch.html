@@ -40,6 +40,17 @@
     </video>
     {% if appearance %}
       {% include "archive_player_controls.html" %}
+    {% endif %}
+    {% if chapters %}
+      <label data-chapter-menu hidden>Chapters <select aria-label="Chapters">
+        <option value="">Choose a chapter</option>
+        {% for chapter in chapters %}
+        <option value="{{ chapter.timecode }}">{{ chapter.title }}</option>
+        {% endfor %}
+      </select></label>
+      <script type="module" src="/static/ui/video_chapters.js"></script>
+    {% endif %}
+    {% if appearance %}
       </div>
       <script type="module" src="/static/ui/archive_playback.js"></script>
     {% endif %}

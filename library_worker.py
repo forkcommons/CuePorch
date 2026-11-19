@@ -109,7 +109,7 @@ def start(app, root, db, tx, action, apply_routes):
         works = json.loads(manifest_path.read_text(encoding="utf8"))["works"]
         with tx() as con:
             for work in works:
-                if "library_version_changed" not in work and "language_edits" not in work:
+                if not any(field in work for field in ("library_version_changed", "language_edits", "chapter_edits")):
                     continue
                 prior = con.execute(
                     """SELECT want_public,scheduled,kind,status FROM publication_job

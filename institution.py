@@ -1273,6 +1273,10 @@ def create_app(root, database, operator, institution, simulation=None):
     def operator_languages(work):
         return render_template("video_languages.html", work=str(work))
 
+    @app.get("/operator/videos/<uuid:work>/interactivity")
+    def operator_interactivity(work):
+        return render_template("video_interactivity.html", work=str(work))
+
     @app.get("/player.js")
     def player_sdk():
         response = app.send_static_file("ui/embed_player.js")

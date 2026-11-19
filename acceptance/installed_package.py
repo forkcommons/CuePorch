@@ -21,6 +21,7 @@ from installed_embed_builder import check_embed_builder
 from installed_appearance import check_appearance
 from installed_languages import check_languages
 from installed_caption_generation import check_caption_generation, speech_video
+from installed_interactivity import check_chapters
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -342,6 +343,10 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     appearance = check_appearance(page, browser, base, auth)
                     languages = check_languages(page, browser, base, auth, home / "collection")
                     generated = check_caption_generation(page, browser, base, auth, caption_video) if caption_video else None
+                    chapters = check_chapters(
+                        page, browser, base, auth, source, museum, venue, replacement,
+                        next(work["id"] for work in works if work["title"] == "Station meeting"),
+                    )
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -369,7 +374,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             folder_privacy=folder_privacy,
                             migrated_privacy=migrated_privacy,
                             video_details=details, workspace=workspace, embed_builder=embed_builder, appearance=appearance,
-                            languages=languages, generated_captions=generated,
+                            languages=languages, generated_captions=generated, chapters=chapters,
                         )
                     )
                 quit_response = requests.post(

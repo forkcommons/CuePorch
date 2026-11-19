@@ -27,6 +27,10 @@ def version_snapshot(work):
     }
 
 
+def cut_chapters(work):
+    return work.get("chapter_edits", {}).get(video_version_key(work), work.get("chapters", []))
+
+
 def update_video_version(root, uid, expected, replacement=None, restore_key=None):
     """Commit an exact media version while retaining all previous screening objects."""
     with FileLock(str(root / ".catalog.lock"), timeout=30):
@@ -129,8 +133,9 @@ def merge_collection(source, destination):
                 work["library_added_at"] = added_at
             elif "library_added_at" in prior:
                 work["library_added_at"] = prior["library_added_at"]
-            if prior and "language_edits" in prior:
-                work["language_edits"] = prior["language_edits"]
+            for field in ("language_edits", "chapter_edits"):
+                if prior and field in prior:
+                    work[field] = prior[field]
             if prior and prior["files"] != work["files"]:
                 versions = prior.get("versions_history", [])
                 work["versions_history"] = versions + [version_snapshot(prior)]
@@ -175,8 +180,9 @@ def copy_work(collection, uid, title):
             library_added_at=datetime.now(timezone.utc).isoformat(),
         )
         key = video_version_key(source)
-        if key in source.get("language_edits", {}):
-            copy["language_edits"] = {key: source["language_edits"][key]}
+        for field in ("language_edits", "chapter_edits"):
+            if key in source.get(field, {}):
+                copy[field] = {key: source[field][key]}
         manifest["works"].append(copy)
         dump(path, manifest)
         return identity
