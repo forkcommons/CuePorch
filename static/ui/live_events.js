@@ -27,6 +27,10 @@ const replayCaptions = element("eventReplayCaptions");
 const replayCaptionForm = element("replaceReplayCaptions");
 const replayCaptionStatus = element("replayCaptionStatus");
 let replayCaptionRevision = "";
+const destinations = element("eventDestinations");
+const destinationList = element("destinationList");
+const destinationForm = element("addDestination");
+const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -135,6 +139,10 @@ function choose(event, instance) {
     replayCaptionForm.reset();
     replayCaptionStatus.textContent = replayCaptionRevision = "";
     button("downloadReplayCaptions").disabled = button("saveReplayCaptions").disabled = true;
+    destinations.open = false;
+    destinationForm.reset();
+    destinationList.replaceChildren();
+    destinationStatus.textContent = "";
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -304,6 +312,60 @@ button("stopSrt").onclick = () => void action(async () => {
 button("copySrtPassphrase").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(input("srtPassphrase").value);
 }, "SRT passphrase copied.");
+async function refreshDestinations(result) {
+    const selection = active;
+    result = result || await request(mediaPath("destinations"));
+    if (selection !== active)
+        return;
+    destinationForm.hidden = !result.available;
+    destinationStatus.textContent = result.available ? "" : "Destinations require an event open to the public without registration.";
+    const labels = {
+        waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
+        retrying: "Reconnecting", disabled: "Off",
+    };
+    destinationList.replaceChildren(...result.destinations.map(item => {
+        const row = document.createElement("li");
+        row.textContent = `${item.name} · ${item.server} · ${labels[item.state] || item.state}`;
+        const control = document.createElement("button");
+        control.type = "button";
+        control.textContent = item.enabled ? "Turn off" : "Turn on";
+        control.setAttribute("aria-label", `Turn ${item.enabled ? "off" : "on"} ${item.name}`);
+        control.disabled = !item.enabled && !result.available;
+        control.onclick = () => void action(async () => {
+            await request(mediaPath(`destinations/${item.id}`), "PUT", { enabled: !item.enabled });
+            await refreshDestinations();
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.setAttribute("aria-label", `Remove ${item.name}`);
+        remove.onclick = () => void action(async () => {
+            await request(mediaPath(`destinations/${item.id}`), "DELETE");
+            await refreshDestinations();
+        });
+        row.append(control, remove);
+        return row;
+    }));
+}
+destinations.ontoggle = () => { if (destinations.open)
+    void action(() => refreshDestinations()); };
+button("refreshDestinations").onclick = () => void action(() => refreshDestinations());
+destinationForm.onsubmit = event => {
+    event.preventDefault();
+    const values = new FormData(destinationForm);
+    void action(async () => {
+        const data = { name: values.get("name"), server: values.get("server"),
+            key: values.get("key"), enabled: values.has("enabled") };
+        const result = await request(mediaPath("destinations"), "POST", data);
+        destinationForm.reset();
+        await refreshDestinations(result);
+    });
+};
+window.setInterval(() => {
+    if (destinations.open && !document.hidden && !pending) {
+        void refreshDestinations().catch(() => { });
+    }
+}, 5000);
 function renderProgram() {
     const controls = element("eventProgramSources");
     controls.replaceChildren();

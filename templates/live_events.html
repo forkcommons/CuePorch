@@ -131,6 +131,19 @@
           <p>Use caller mode with MPEG-TS and a 128-bit encryption key.</p>
         </div>
       </details>
+      <details id="eventDestinations">
+        <summary>Simulcast destinations</summary>
+        <p id="destinationStatus" role="status"></p>
+        <ul id="destinationList"></ul>
+        <form id="addDestination">
+          <label>Destination name <input name="name" maxlength="80" required></label>
+          <label>RTMP or RTMPS server <input name="server" maxlength="500" required></label>
+          <label>Destination stream key <input name="key" maxlength="512" type="password" autocomplete="off" required></label>
+          <label><input name="enabled" type="checkbox" checked> Send when this event goes live</label>
+          <button type="submit">Add destination</button>
+        </form>
+        <button type="button" id="refreshDestinations">Refresh destinations</button>
+      </details>
       <details id="eventProgramPanel">
         <summary>Prerecorded event</summary>
         <p id="eventProgramStatus" role="status"></p>

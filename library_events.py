@@ -21,6 +21,7 @@ import event_program
 import event_replay_captions
 import event_schedule
 import event_scenes
+import event_simulcast
 import event_speakers
 from catalog import video_version_key
 from library_actions import title_for
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
-       + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA + event_replay_captions.SCHEMA)
+       + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
+       + event_replay_captions.SCHEMA + event_simulcast.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -201,6 +203,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
 
     def stop():
+        outputs.close()
         programs.close()
         studio.close()
         captions.close()
@@ -366,6 +369,33 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
     event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
     replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)
+
+    def can_simulcast(con, uid, event):
+        return event["visibility"] == "public" and library_registration.active(con, "event", uid) is None
+
+    def destination_access(con, uid, opens):
+        _, event = read(con, uid)
+        selected_open(event, opens)
+        return can_simulcast(con, uid, event)
+
+    def outgoing_programs(con):
+        now = datetime.now(timezone.utc)
+        candidates = {}
+        rows = con.execute("""SELECT o.*,e.settings FROM live_occurrence o JOIN live_event e ON e.id=o.event
+            JOIN action a ON a.id=e.publication WHERE o.delivery='ready' AND o.opens<=? AND a.status='eligible'
+            AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1)""",
+                           (int(now.timestamp()),))
+        for row in rows:
+            uid, opens = row["event"], row["opens"]
+            event = json.loads(row["settings"])
+            slot = find_open(event, opens)
+            if slot and datetime.fromisoformat(slot["end"]) > now and can_simulcast(con, uid, event):
+                targets = con.execute("SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1", (uid,)).fetchall()
+                candidates[uid, opens] = (row["origin"], row["remote"], targets)
+        return candidates
+
+    outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
+    event_simulcast.register(app, tx, staff, destination_access, outputs)
 
     def provision_event(uid, opens, browser=False, automatic=False):
         try:

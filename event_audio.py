@@ -35,20 +35,21 @@ def trusted_directory(origin, remote, address):
     return directory + "/", filename
 
 
-def selected_variant(master):
-    for line in master.splitlines():
-        if line.startswith("#EXT-X-MEDIA:TYPE=AUDIO,"):
-            names = MANIFEST_URI.findall(line)
-            if len(names) == 1 and HLS_FILE.fullmatch(names[0]) and names[0].endswith(".m3u8"):
-                return names[0]
+def selected_variant(master, audio=True):
+    if audio:
+        for line in master.splitlines():
+            if line.startswith("#EXT-X-MEDIA:TYPE=AUDIO,"):
+                names = MANIFEST_URI.findall(line)
+                if len(names) == 1 and HLS_FILE.fullmatch(names[0]) and names[0].endswith(".m3u8"):
+                    return names[0]
     ranked = []
     for attributes, filename in re.findall(r"^#EXT-X-STREAM-INF:([^\r\n]+)\r?\n([^\r\n]+)", master, re.MULTILINE):
         bandwidth = re.search(r"(?:^|,)BANDWIDTH=(\d+)(?:,|$)", attributes)
         if bandwidth and HLS_FILE.fullmatch(filename) and filename.endswith(".m3u8"):
             ranked.append((int(bandwidth[1]), filename))
     if not ranked:
-        raise ValueError("The host did not provide a live rendition for captioning.")
-    return min(ranked)[1]
+        raise ValueError("The host did not provide a usable live rendition.")
+    return (min(ranked) if audio else max(ranked))[1]
 
 
 def timed_fragments(playlist):
