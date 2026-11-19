@@ -116,3 +116,75 @@ def check_privacy(page, browser, base, auth, museum, venue):
                 outside_domain_denied=True, key_required_for_unlisted=True, download_control=True,
                 previous_media_revoked=True, publication_gate_optional=True,
                 private_and_unlisted_excluded_from_catalog=True)
+
+
+def check_privacy_defaults(page, browser, base, auth, source):
+    endpoint = base + "/api/library/upload-defaults"
+    second = {"Authorization": "Bearer fixture-distinct-operator-key"}
+    assert requests.get(endpoint, timeout=10).status_code == 403
+    page.get_by_role("button", name="Upload defaults").click()
+    options = page.get_by_role("dialog", name="Your upload defaults")
+    options.locator("select[name=visibility]").select_option("unlisted")
+    options.get_by_role("button", name="Save privacy").click()
+    expect(options.get_by_role("status")).to_have_text("Upload defaults saved.")
+    options.get_by_role("button", name="Close").click()
+    assert requests.get(endpoint, headers=second, timeout=10).json()["visibility"] == "private"
+
+    for name, override in [("Defaulted program", False), ("Explicitly private", True)]:
+        page.get_by_role("button", name="Upload", exact=True).click()
+        upload = page.get_by_role("dialog", name="Upload files")
+        expect(upload.locator("#uploadVisibility")).to_contain_text("Video default: unlisted")
+        if override:
+            upload.get_by_text("Customize privacy for these videos", exact=True).click()
+            upload.locator("select[name=visibility]").select_option("private")
+        upload.get_by_label("Choose files").set_input_files({
+            "name": name + ".mp4", "mimeType": "video/mp4", "buffer": source.read_bytes(),
+        })
+        upload.get_by_role("button", name="Upload selected files").click()
+        expect(upload.get_by_role("status")).to_have_text("All files added.", timeout=30000)
+        expect(upload.locator("#uploadFiles")).to_contain_text("Added privately" if override else "Added · unlisted")
+        upload.get_by_role("button", name="Close").click()
+    assert requests.get(endpoint, headers=auth, timeout=10).json()["visibility"] == "unlisted"
+
+    library = requests.get(base + "/api/library", headers=auth, timeout=10).json()
+    ids = {row["title"]: row["id"] for row in library}
+    default_watch = f"/watch/work/{ids['Defaulted program']}"
+    overridden_watch = f"/watch/work/{ids['Explicitly private']}"
+    assert requests.get(base + default_watch, timeout=10).status_code == 404
+    assert requests.get(base + overridden_watch, timeout=10).status_code == 404
+    info = requests.get(base + f"/api/library/work/{ids['Defaulted program']}", headers=auth, timeout=10).json()
+    assert info["watch"].startswith(default_watch + "?key=")
+    assert requests.get(base + info["watch"], timeout=10).status_code == 200
+
+    document = ids["Library notes"]
+    reject = requests.put(
+        base + "/api/library/privacy", headers=auth, timeout=10,
+        json=dict(works=[document, ids["Defaulted program"]], visibility="private", embed="disabled"),
+    )
+    assert reject.status_code == 409
+    assert requests.get(base + info["watch"], timeout=10).status_code == 200
+
+    for name in ("Defaulted program", "Explicitly private"):
+        page.get_by_role("checkbox", name="Select " + name, exact=True).check()
+    page.get_by_role("button", name="Privacy for selected").click()
+    bulk = page.get_by_role("dialog", name="Apply privacy to selected videos")
+    bulk.locator("select[name=visibility]").select_option("password")
+    bulk.get_by_label("Viewer password").fill("fixture-bulk-password")
+    bulk.locator("select[name=embed]").select_option("anywhere")
+    bulk.get_by_label("Allow viewers to download").check()
+    bulk.get_by_role("button", name="Save privacy").click()
+    expect(bulk.get_by_role("status")).to_have_text("Privacy saved.")
+    bulk.get_by_role("button", name="Close").click()
+    browser_context = browser.new_context()
+    try:
+        viewer = browser_context.new_page()
+        for path in [default_watch, overridden_watch]:
+            viewer.goto(base + path)
+            viewer.get_by_label("Video password").fill("fixture-bulk-password")
+            viewer.get_by_role("button", name="Watch video").click()
+            assert viewer.locator("video").evaluate("async v => {v.muted=true;await v.play();return v.videoWidth}") == 256
+            expect(viewer.get_by_role("link", name="Download video")).to_be_visible()
+    finally:
+        browser_context.close()
+    return dict(operator_default_isolation=True, default_applied_on_upload=True,
+                per_upload_override=True, bulk_access_and_download=True, atomic_mixed_selection=True)

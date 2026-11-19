@@ -1,3 +1,4 @@
+import { privateSettings, sharingFields } from "./library_privacy.js";
 export function libraryUploader(context) {
     const dialog = document.querySelector("#uploadDialog");
     const destination = document.querySelector("#uploadFolder");
@@ -7,12 +8,44 @@ export function libraryUploader(context) {
     const send = document.querySelector("#startUpload");
     const close = document.querySelector("#closeUpload");
     const open = document.querySelector("#uploadLibrary");
+    const summary = document.querySelector("#uploadVisibility");
+    const overrides = document.querySelector("#uploadPrivacy");
+    const fields = sharingFields(document.querySelector("#uploadSharingFields"));
     const entries = [];
     let running = false;
-    function openUpload() {
+    let defaults = null;
+    let opening = 0;
+    fields.save.hidden = true;
+    fields.form.onsubmit = (event) => event.preventDefault();
+    function updateSend() {
+        send.disabled = running || !defaults || entries.every((entry) => entry.saved);
+    }
+    async function openUpload() {
+        const invocation = ++opening;
+        defaults = null;
+        summary.textContent = "Reading your upload defaults…";
+        overrides.open = false;
         context.folderOptions(destination);
         destination.value = context.folder() || "";
         dialog.showModal();
+        try {
+            const settings = await context.defaults();
+            if (invocation !== opening)
+                return;
+            defaults = settings;
+            fields.populate(settings);
+            summary.textContent = `Video default: ${settings.visibility.replace("_", " ")}. Other files are private.`;
+        }
+        catch {
+            if (invocation !== opening)
+                return;
+            defaults = privateSettings;
+            fields.populate(privateSettings);
+            summary.textContent = "Your defaults could not load. Files will be added privately unless you choose another setting.";
+        }
+        finally {
+            updateSend();
+        }
     }
     function enqueue(files) {
         for (const file of files) {
@@ -28,13 +61,14 @@ export function libraryUploader(context) {
             list.append(row);
             entries.push({ file, id, progress, status: note, saved: false });
         }
-        send.disabled = !entries.some((entry) => !entry.saved);
+        updateSend();
     }
-    function upload(entry, folder) {
+    function upload(entry, folder, options) {
         const data = new FormData();
         data.set("file", entry.file);
         data.set("upload_id", entry.id);
         data.set("folder", folder);
+        data.set("privacy", JSON.stringify(options));
         entry.status.textContent = "Uploading…";
         entry.progress.value = 0;
         return new Promise((resolve, reject) => {
@@ -49,7 +83,12 @@ export function libraryUploader(context) {
             };
             request.onload = () => {
                 if (request.status >= 200 && request.status < 300) {
-                    resolve();
+                    try {
+                        resolve(JSON.parse(request.responseText));
+                    }
+                    catch (_error) {
+                        reject(new Error("The upload response was interrupted. Retry this file."));
+                    }
                     return;
                 }
                 const page = new DOMParser().parseFromString(request.responseText, "text/html");
@@ -64,11 +103,14 @@ export function libraryUploader(context) {
     }
     open.onclick = openUpload;
     function clearQueue() {
+        opening++;
         entries.length = 0;
         list.replaceChildren();
         status.textContent = "";
         send.textContent = "Upload selected files";
-        send.disabled = true;
+        defaults = null;
+        fields.populate(privateSettings);
+        updateSend();
     }
     close.onclick = () => {
         clearQueue();
@@ -104,6 +146,11 @@ export function libraryUploader(context) {
         enqueue(files);
     });
     send.onclick = async () => {
+        if (!defaults)
+            return;
+        if (overrides.open && !fields.form.reportValidity())
+            return;
+        const settings = overrides.open ? fields.values() : { ...defaults, password: "" };
         const folder = destination.value;
         let added = 0;
         running = true;
@@ -112,10 +159,11 @@ export function libraryUploader(context) {
         try {
             for (const entry of entries.filter((item) => !item.saved)) {
                 try {
-                    await upload(entry, folder);
+                    const receipt = await upload(entry, folder, settings);
                     entry.saved = true;
                     entry.progress.value = 100;
-                    entry.status.textContent = "Added privately";
+                    entry.status.textContent = receipt.pending ? "Added · sharing awaits approval"
+                        : receipt.visibility === "private" ? "Added privately" : "Added · " + receipt.visibility.replace("_", " ");
                     added++;
                 }
                 catch (error) {
@@ -135,7 +183,7 @@ export function libraryUploader(context) {
         finally {
             running = false;
             close.disabled = picker.disabled = destination.disabled = false;
-            send.disabled = entries.every((entry) => entry.saved);
+            updateSend();
         }
     };
 }

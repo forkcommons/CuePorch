@@ -12,6 +12,7 @@ from flask import abort, request
 
 from catalog import build_intake, merge_collection
 from cueporch import checksum, work_id
+from library_privacy import actor_defaults, apply_pending, apply_settings, get_privacy, requested_settings
 from library_trash import hidden
 from media_tools import prepare_screening
 from review_settings import new_upload
@@ -46,13 +47,21 @@ def prepare_asset(source, scratch, kind, decoder):
     return name, None
 
 
-def register(app, tx, staff, root, database, institution, remember_work):
+def register(app, tx, staff, action, root, database, institution, remember_work):
     def check_folder(con, folder):
         if folder and (
             hidden(con, "folder", folder)
             or not con.execute("SELECT 1 FROM library_folder WHERE id=?", (folder,)).fetchone()
         ):
             abort(404, "The selected folder no longer exists.")
+
+    def upload_receipt(con, uid, kind):
+        policy = get_privacy(con, uid) if kind == "video" else None
+        pending = kind == "video" and con.execute(
+            "SELECT 1 FROM library_privacy_change WHERE work=?", (uid,)
+        ).fetchone() is not None
+        return dict(id=uid, asset_type=kind, pending=pending,
+                    visibility=json.loads(policy["settings"])["visibility"] if policy else "private")
 
     @app.post("/api/library/uploads")
     def upload():
@@ -83,6 +92,12 @@ def register(app, tx, staff, root, database, institution, remember_work):
         else:
             abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
         folder = request.form.get("folder") or None
+        overrides = request.form.get("privacy") if kind == "video" else None
+        if overrides is not None:
+            try:
+                overrides = json.loads(overrides)
+            except ValueError:
+                abort(400, "Use valid upload privacy settings.")
         provider = "cueporch-upload"
         uid = work_id(institution, provider, identity)
         with tempfile.TemporaryDirectory(dir=database.parent) as tmp:
@@ -95,8 +110,12 @@ def register(app, tx, staff, root, database, institution, remember_work):
             with tx() as con:
                 prior, placed = prior_upload(con, uid, digest)
                 if placed:
-                    return {"id": uid, "asset_type": prior["asset_type"]}, 200
+                    return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
+                if kind == "video":
+                    choices, password = actor_defaults(con, actor)
+                    if overrides is not None:
+                        choices, password = requested_settings(overrides, password)
 
             files = [dict(role="original", path=source.name, format=fmt, name=name[:255])]
             duration = None
@@ -116,14 +135,17 @@ def register(app, tx, staff, root, database, institution, remember_work):
             with tx() as con:
                 prior, placed = prior_upload(con, uid, digest)
                 if placed:
-                    return {"id": uid, "asset_type": prior["asset_type"]}, 200
+                    return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
                 work = prior or merge_collection(staged, root)[uid]
                 con.execute("INSERT INTO library_placement(work,folder) VALUES(?,?)", (uid, folder))
                 if kind == "video":
                     new_upload(con, work)
+                    apply_settings(con, action, work, choices, password)
+                    apply_pending(con)
+                receipt = upload_receipt(con, uid, kind)
             remember_work(work)
-        return {"id": uid, "asset_type": kind}, 201
+        return receipt, 201
 
     def prior_upload(con, uid, digest):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))

@@ -38,7 +38,7 @@ def check_folders(page, base, auth, works):
     columns = page.locator("#items .work-title")
     page.get_by_label("Sort").select_option("title-desc")
     expect(columns).to_have_text(sorted((work["title"] for work in works), reverse=True))
-    page.get_by_label("View").select_option("grid")
+    page.locator("#workBrowse").get_by_label("View").select_option("grid")
     expect(page.locator("#workTable")).to_have_attribute("data-view", "grid")
 
     boxes = page.locator("#items input[type=checkbox]")

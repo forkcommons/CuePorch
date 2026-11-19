@@ -1,9 +1,11 @@
 import { renderCommentText } from "./review_comment_text.js";
 import { libraryUploader } from "./library_upload.js";
-import { openPrivacy } from "./library_privacy.js";
+import { openPrivacy, privateSettings } from "./library_privacy.js";
 const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
 const deleteWorks = document.querySelector("#deleteWorks");
+const privacySelected = document.querySelector("#privacySelected");
+const uploadDefaults = document.querySelector("#uploadDefaults");
 const workBrowse = document.querySelector("#workBrowse");
 const trashBrowse = document.querySelector("#trashBrowse");
 const trashType = document.querySelector("#trashType");
@@ -94,6 +96,7 @@ function folderOptions(select) {
 function updateMove() {
     destination.disabled = !selected.size;
     deleteWorks.disabled = move.disabled = !selected.size;
+    privacySelected.disabled = !selected.size || ![...selected].every((uid) => works.some((work) => work.id === uid && work.editable_privacy));
 }
 function renderTree() {
     function branch(parent) {
@@ -120,6 +123,7 @@ function renderTree() {
     workBrowse.hidden = section === "Recently deleted";
     document.querySelector("#uploadHint").hidden = section !== "Library";
     document.querySelector("#uploadLibrary").hidden = section !== "Library";
+    uploadDefaults.hidden = section !== "Library";
     trashBrowse.hidden = section !== "Recently deleted";
     const folder = folders.find((entry) => entry.id === current);
     heading.textContent =
@@ -390,6 +394,44 @@ function editPrivacy(work) {
         status: workDialogStatus,
     });
 }
+async function defaultPrivacy() {
+    const response = await completed(await request("/api/library/upload-defaults"));
+    return { ...privateSettings, ...await response.json() };
+}
+action(uploadDefaults, () => openPrivacy({
+    title: "Your upload defaults",
+    success: "Upload defaults saved.",
+    open: openWorkDialog,
+    read: defaultPrivacy,
+    save: async (settings) => {
+        const response = await completed(await request("/api/library/upload-defaults", "PUT", settings));
+        return { ...privateSettings, ...await response.json() };
+    },
+    reload: async () => { },
+    absolute: publicAddress,
+    status: workDialogStatus,
+}));
+action(privacySelected, async () => {
+    const selection = [...selected];
+    await openPrivacy({
+        title: "Apply privacy to selected videos",
+        open: openWorkDialog,
+        read: async () => privateSettings,
+        save: async ({ password, ...settings }) => {
+            const response = await completed(await request("/api/library/privacy", "PUT", {
+                ...settings, password, works: selection,
+            }));
+            const outcome = await response.json();
+            return {
+                ...privateSettings, ...settings,
+                pending: outcome.pending ? settings : null,
+            };
+        },
+        reload: load,
+        absolute: publicAddress,
+        status: workDialogStatus,
+    });
+});
 async function copyText(field) {
     try {
         await navigator.clipboard.writeText(field.value);
@@ -1165,6 +1207,7 @@ libraryUploader({
     folder: () => current,
     folderOptions,
     credential: () => key.value,
+    defaults: defaultPrivacy,
     reload: () => load(),
 });
 action(document.querySelector("#load"), async () => {

@@ -1083,7 +1083,7 @@ def create_app(root, database, operator, institution, simulation=None):
         works[work["id"]] = work
 
     library_actions.register(app, tx, staff, read_library_works, root, remember_work)
-    library_upload.register(app, tx, staff, root, database, institution, remember_work)
+    library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator
     )
@@ -1136,8 +1136,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 if w["id"] in titles
                 else False,
                 source_privacy=w.get("source_privacy"),
-                editable_privacy=w["provider"] == "cueporch-upload"
-                and w["id"] not in protected and library_privacy.playback(w) is not None,
+                editable_privacy=w["id"] not in protected and library_privacy.editable(w),
                 visibility=visibility.get(w["id"]) if w["id"] not in protected else None,
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),

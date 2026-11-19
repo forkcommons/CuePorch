@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS library_privacy_change(
 CREATE TABLE IF NOT EXISTS library_privacy_attempt(
  work TEXT NOT NULL, visitor TEXT NOT NULL, since REAL NOT NULL, attempts INTEGER NOT NULL,
  PRIMARY KEY(work,visitor));
+CREATE TABLE IF NOT EXISTS library_upload_defaults(
+ actor TEXT PRIMARY KEY, settings TEXT NOT NULL, password_hash TEXT);
 """
 MODES = {"private", "password", "unlisted", "public", "embed_only"}
 DEFAULTS = dict(visibility="private", embed="disabled", domains=[], download=False)
@@ -198,12 +200,87 @@ def protected_route(con, uid):
     ).fetchone() is not None
 
 
+def editable(work):
+    return work["provider"] == "cueporch-upload" and playback(work) is not None
+
+
+def actor_defaults(con, actor):
+    row = con.execute(
+        "SELECT settings,password_hash FROM library_upload_defaults WHERE actor=?", (actor,)
+    ).fetchone()
+    return (json.loads(row["settings"]), row["password_hash"]) if row else (DEFAULTS, None)
+
+
+def apply_settings(con, action, work, settings, password_hash):
+    uid = work["id"]
+    row = get_privacy(con, uid)
+    pending = con.execute("SELECT * FROM library_privacy_change WHERE work=?", (uid,)).fetchone()
+    previous = json.loads(row["settings"]) if row else DEFAULTS
+    if pending:
+        cancel_pending(con, pending)
+    if settings == previous and password_hash == (row["password_hash"] if row else None):
+        return
+    revision = secrets.token_hex(16)
+    share_key = None
+    if settings["visibility"] == "unlisted":
+        share_key = row["share_key"] if row and row["share_key"] else secrets.token_urlsafe(24)
+    encoded = json.dumps(settings)
+    if settings["visibility"] == "private":
+        save(con, uid, encoded, password_hash, revision, share_key)
+        return
+    approval = f"library-share-{revision}"
+    listing = approval + "-catalog" if settings["visibility"] == "public" else None
+    payload = dict(work=uid, title=work["title"], visibility=settings["visibility"])
+    action(con, approval, "publication", payload)
+    if listing:
+        action(con, listing, "catalog", payload)
+    con.execute(
+        "INSERT INTO library_privacy_change VALUES(?,?,?,?,?,?,?)",
+        (uid, encoded, password_hash, revision, share_key, approval, listing),
+    )
+
+
 def register(app, tx, staff, action, read_works, root, title_for, operator):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
+
+    @app.route("/api/library/upload-defaults", methods=["GET", "PUT"])
+    def upload_defaults():
+        actor = staff()
+        with tx() as con:
+            settings, password = actor_defaults(con, actor)
+            if request.method == "PUT":
+                settings, password = requested_settings(request.get_json(), password)
+                con.execute(
+                    """INSERT INTO library_upload_defaults VALUES(?,?,?) ON CONFLICT(actor) DO UPDATE SET
+                       settings=excluded.settings,password_hash=excluded.password_hash""",
+                    (actor, json.dumps(settings), password),
+                )
+        return dict(**settings, has_password=bool(password))
+
+    @app.put("/api/library/privacy")
+    def bulk_privacy():
+        staff()
+        body = request.get_json()
+        ids = body.get("works") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not ids or any(not isinstance(uid, str) for uid in ids):
+            abort(400, "Select videos to update.")
+        settings, password_hash = requested_settings(body)
+        members = set(ids)
+        with tx() as con:
+            works = [work for work in read_works() if work["id"] in members]
+            if len(works) != len(members) or any(hidden(con, "work", uid) for uid in members):
+                abort(404, "A selected work no longer exists.")
+            if any(not editable(work) for work in works) or any(protected_route(con, uid) for uid in members):
+                abort(409, "Select library uploads that can use these privacy settings.")
+            for work in works:
+                apply_settings(con, action, work, settings, password_hash)
+            apply_pending(con)
+            waiting = {row[0] for row in con.execute("SELECT work FROM library_privacy_change")}
+        return dict(updated=len(members - waiting), pending=len(members & waiting))
 
     @app.route("/api/library/work/<uid>/privacy", methods=["GET", "PUT"])
     def privacy(uid):
@@ -213,39 +290,17 @@ def register(app, tx, staff, action, read_works, root, title_for, operator):
             work = find_work(uid)
             if not work or hidden(con, "work", uid):
                 abort(404)
-            if work["provider"] != "cueporch-upload" or not playback(work):
+            if not editable(work):
                 abort(409, "This control currently applies to videos uploaded directly to the library.")
             if protected_route(con, uid):
                 abort(409, "This institution has designated the video as a public record.")
             row = get_privacy(con, uid)
-            pending = con.execute("SELECT * FROM library_privacy_change WHERE work=?", (uid,)).fetchone()
-            previous = json.loads(row["settings"]) if row else DEFAULTS
             if request.method == "PUT":
                 settings, password_hash = requested_settings(body, row["password_hash"] if row else None)
-                if pending:
-                    cancel_pending(con, pending)
-                if settings != previous or password_hash != (row["password_hash"] if row else None):
-                    revision = secrets.token_hex(16)
-                    share_key = None
-                    if settings["visibility"] == "unlisted":
-                        share_key = row["share_key"] if row and row["share_key"] else secrets.token_urlsafe(24)
-                    encoded = json.dumps(settings)
-                    if settings["visibility"] == "private":
-                        save(con, uid, encoded, password_hash, revision, share_key)
-                    else:
-                        approval = f"library-share-{revision}"
-                        listing = approval + "-catalog" if settings["visibility"] == "public" else None
-                        payload = dict(work=uid, title=work["title"], visibility=settings["visibility"])
-                        action(con, approval, "publication", payload)
-                        if listing:
-                            action(con, listing, "catalog", payload)
-                        con.execute(
-                            "INSERT INTO library_privacy_change VALUES(?,?,?,?,?,?,?)",
-                            (uid, encoded, password_hash, revision, share_key, approval, listing),
-                        )
-                        apply_pending(con)
+                apply_settings(con, action, work, settings, password_hash)
+                apply_pending(con)
                 row = get_privacy(con, uid)
-                pending = con.execute("SELECT * FROM library_privacy_change WHERE work=?", (uid,)).fetchone()
+            pending = con.execute("SELECT * FROM library_privacy_change WHERE work=?", (uid,)).fetchone()
             paths = share_paths(uid, row) if row else dict(watch=None, embed_url=None)
         return dict(
             **(json.loads(row["settings"]) if row else DEFAULTS),

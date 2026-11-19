@@ -29,6 +29,7 @@
       <h2 id="folderTitle">Library</h2>
       <div id="workBrowse">
       <button type="button" id="uploadLibrary">Upload</button>
+      <button type="button" id="uploadDefaults">Upload defaults</button>
       <p id="uploadHint">Drop files into this folder or choose Upload.</p>
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
@@ -48,6 +49,7 @@
         <label>Destination <select id="destination" disabled></select></label>
         <button type="button" id="move" disabled>Move selected</button>
         <button type="button" id="deleteWorks" disabled>Delete selected</button>
+        <button type="button" id="privacySelected" disabled>Privacy for selected</button>
       </div>
       <p id="empty" hidden>No works in this view.</p>
       <table id="workTable">
@@ -78,7 +80,11 @@
     <label>Upload to <select id="uploadFolder"></select></label>
     <label>Choose files <input type="file" id="libraryFiles" multiple accept=".mp4,.mov,.webm,.mkv,.jpg,.jpeg,.png,.webp,.mp3,.wav,.flac,.ogg,.m4a,.pdf,.docx,.txt"></label>
     <div id="uploadDrop">Drop video, audio, images or documents here.</div>
-    <p>Files are private when added.</p>
+    <p id="uploadVisibility">New files start private.</p>
+    <details id="uploadPrivacy">
+      <summary>Customize privacy for these videos</summary>
+      <div id="uploadSharingFields"></div>
+    </details>
     <ul id="uploadFiles"></ul>
     <p id="uploadStatus" role="status"></p>
     <button type="button" id="startUpload" disabled>Upload selected files</button>

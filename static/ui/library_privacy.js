@@ -1,6 +1,8 @@
-export async function openPrivacy(dialog) {
-    const initial = await dialog.read();
-    const body = dialog.open("Video privacy");
+export const privateSettings = {
+    visibility: "private", embed: "disabled", domains: [], download: false,
+    has_password: false, pending: null, watch: null, embed_url: null,
+};
+export function sharingFields(body) {
     const template = document.querySelector("#privacySettings");
     body.append(template.content.cloneNode(true));
     const form = body.querySelector("form");
@@ -10,18 +12,17 @@ export async function openPrivacy(dialog) {
     const domains = form.querySelector("[name=domains]");
     const download = form.querySelector("[name=download]");
     const save = form.querySelector("[type=submit]");
-    const links = body.querySelector("[data-privacy-links]");
-    let applied = initial;
+    let hasPassword = false;
     function toggleFields() {
         password.closest("label").hidden = visibility.value !== "password";
-        password.placeholder = applied.has_password ? "Leave blank to keep the current password" : "";
-        password.required = visibility.value === "password" && !applied.has_password;
+        password.placeholder = hasPassword ? "Leave blank to keep the saved password" : "";
+        password.required = visibility.value === "password" && !hasPassword;
         embed.disabled = download.disabled = visibility.value === "private";
         domains.closest("label").hidden = embed.disabled || embed.value !== "domains";
         domains.disabled = domains.closest("label").hidden;
     }
-    function present(state) {
-        applied = state;
+    function populate(state) {
+        hasPassword = state.has_password;
         const displayed = state.pending || state;
         visibility.value = displayed.visibility;
         embed.value = displayed.embed;
@@ -29,6 +30,26 @@ export async function openPrivacy(dialog) {
         download.checked = displayed.download;
         password.value = "";
         toggleFields();
+    }
+    function values() {
+        return {
+            visibility: visibility.value,
+            embed: embed.value,
+            domains: domains.value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean),
+            download: download.checked,
+            password: visibility.value === "password" ? password.value : "",
+        };
+    }
+    visibility.onchange = embed.onchange = toggleFields;
+    return { form, save, populate, values };
+}
+export async function openPrivacy(dialog) {
+    const initial = await dialog.read();
+    const body = dialog.open(dialog.title || "Video privacy");
+    const fields = sharingFields(body);
+    const links = body.querySelector("[data-privacy-links]");
+    function present(state) {
+        fields.populate(state);
         links.replaceChildren();
         for (const [label, path] of [["Watch link", state.watch], ["Embed link", state.embed_url]]) {
             if (!path)
@@ -45,29 +66,22 @@ export async function openPrivacy(dialog) {
         if (state.pending)
             dialog.status.textContent = "Waiting for the configured publication approval.";
     }
-    visibility.onchange = embed.onchange = toggleFields;
-    form.onsubmit = async (event) => {
+    fields.form.onsubmit = async (event) => {
         event.preventDefault();
-        save.disabled = true;
+        fields.save.disabled = true;
         dialog.status.textContent = "";
         try {
-            const state = await dialog.save({
-                visibility: visibility.value,
-                embed: embed.value,
-                domains: domains.value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean),
-                download: download.checked,
-                password: visibility.value === "password" ? password.value : "",
-            });
+            const state = await dialog.save(fields.values());
             present(state);
             if (!state.pending)
-                dialog.status.textContent = "Privacy saved.";
+                dialog.status.textContent = dialog.success || "Privacy saved.";
             await dialog.reload();
         }
         catch (error) {
             dialog.status.textContent = error instanceof Error ? error.message : String(error);
         }
         finally {
-            save.disabled = false;
+            fields.save.disabled = false;
         }
     };
     present(initial);

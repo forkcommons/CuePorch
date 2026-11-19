@@ -1,14 +1,14 @@
 type Visibility = "private" | "unlisted" | "password" | "public" | "embed_only";
 type Embedding = "disabled" | "anywhere" | "domains";
 
-interface SharingSettings {
+export interface SharingSettings {
   visibility: Visibility;
   embed: Embedding;
   domains: string[];
   download: boolean;
 }
 
-interface Sharing extends SharingSettings {
+export interface Sharing extends SharingSettings {
   has_password: boolean;
   pending: SharingSettings | null;
   watch: string | null;
@@ -16,6 +16,8 @@ interface Sharing extends SharingSettings {
 }
 
 interface SharingDialog {
+  title?: string;
+  success?: string;
   open(title: string): HTMLElement;
   read(): Promise<Sharing>;
   save(settings: SharingSettings & { password: string }): Promise<Sharing>;
@@ -24,9 +26,12 @@ interface SharingDialog {
   status: HTMLElement;
 }
 
-export async function openPrivacy(dialog: SharingDialog) {
-  const initial = await dialog.read();
-  const body = dialog.open("Video privacy");
+export const privateSettings: Sharing = {
+  visibility: "private", embed: "disabled", domains: [], download: false,
+  has_password: false, pending: null, watch: null, embed_url: null,
+};
+
+export function sharingFields(body: HTMLElement) {
   const template = document.querySelector<HTMLTemplateElement>("#privacySettings")!;
   body.append(template.content.cloneNode(true));
   const form = body.querySelector("form")!;
@@ -36,20 +41,19 @@ export async function openPrivacy(dialog: SharingDialog) {
   const domains = form.querySelector<HTMLTextAreaElement>("[name=domains]")!;
   const download = form.querySelector<HTMLInputElement>("[name=download]")!;
   const save = form.querySelector<HTMLButtonElement>("[type=submit]")!;
-  const links = body.querySelector<HTMLElement>("[data-privacy-links]")!;
-  let applied = initial;
+  let hasPassword = false;
 
   function toggleFields() {
     password.closest("label")!.hidden = visibility.value !== "password";
-    password.placeholder = applied.has_password ? "Leave blank to keep the current password" : "";
-    password.required = visibility.value === "password" && !applied.has_password;
+    password.placeholder = hasPassword ? "Leave blank to keep the saved password" : "";
+    password.required = visibility.value === "password" && !hasPassword;
     embed.disabled = download.disabled = visibility.value === "private";
     domains.closest("label")!.hidden = embed.disabled || embed.value !== "domains";
     domains.disabled = domains.closest("label")!.hidden;
   }
 
-  function present(state: Sharing) {
-    applied = state;
+  function populate(state: Sharing) {
+    hasPassword = state.has_password;
     const displayed = state.pending || state;
     visibility.value = displayed.visibility;
     embed.value = displayed.embed;
@@ -57,6 +61,30 @@ export async function openPrivacy(dialog: SharingDialog) {
     download.checked = displayed.download;
     password.value = "";
     toggleFields();
+  }
+
+  function values() {
+    return {
+      visibility: visibility.value as Visibility,
+      embed: embed.value as Embedding,
+      domains: domains.value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean),
+      download: download.checked,
+      password: visibility.value === "password" ? password.value : "",
+    };
+  }
+
+  visibility.onchange = embed.onchange = toggleFields;
+  return { form, save, populate, values };
+}
+
+export async function openPrivacy(dialog: SharingDialog) {
+  const initial = await dialog.read();
+  const body = dialog.open(dialog.title || "Video privacy");
+  const fields = sharingFields(body);
+  const links = body.querySelector<HTMLElement>("[data-privacy-links]")!;
+
+  function present(state: Sharing) {
+    fields.populate(state);
     links.replaceChildren();
     for (const [label, path] of [["Watch link", state.watch], ["Embed link", state.embed_url]]) {
       if (!path) continue;
@@ -72,26 +100,19 @@ export async function openPrivacy(dialog: SharingDialog) {
     if (state.pending) dialog.status.textContent = "Waiting for the configured publication approval.";
   }
 
-  visibility.onchange = embed.onchange = toggleFields;
-  form.onsubmit = async (event) => {
+  fields.form.onsubmit = async (event) => {
     event.preventDefault();
-    save.disabled = true;
+    fields.save.disabled = true;
     dialog.status.textContent = "";
     try {
-      const state = await dialog.save({
-        visibility: visibility.value as Visibility,
-        embed: embed.value as Embedding,
-        domains: domains.value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean),
-        download: download.checked,
-        password: visibility.value === "password" ? password.value : "",
-      });
+      const state = await dialog.save(fields.values());
       present(state);
-      if (!state.pending) dialog.status.textContent = "Privacy saved.";
+      if (!state.pending) dialog.status.textContent = dialog.success || "Privacy saved.";
       await dialog.reload();
     } catch (error) {
       dialog.status.textContent = error instanceof Error ? error.message : String(error);
     } finally {
-      save.disabled = false;
+      fields.save.disabled = false;
     }
   };
   present(initial);
