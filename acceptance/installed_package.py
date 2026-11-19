@@ -14,7 +14,7 @@ from installed_cards import check_cards
 from installed_versions import check_versions, generate_replacement
 from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
-from installed_privacy import check_privacy, check_privacy_defaults
+from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -321,6 +321,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     upload_result = check_uploads(page, base, auth, replacement)
                     privacy_result = check_privacy(page, browser, base, auth, museum, venue)
                     privacy_defaults = check_privacy_defaults(page, browser, base, auth, replacement)
+                    folder_privacy = check_folder_privacy(page, browser, base, auth, replacement)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -343,6 +344,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             library_uploads=upload_result,
                             library_privacy=privacy_result,
                             privacy_defaults=privacy_defaults,
+                            folder_privacy=folder_privacy,
                         )
                     )
                 quit_response = requests.post(

@@ -188,3 +188,86 @@ def check_privacy_defaults(page, browser, base, auth, source):
         browser_context.close()
     return dict(operator_default_isolation=True, default_applied_on_upload=True,
                 per_upload_override=True, bulk_access_and_download=True, atomic_mixed_selection=True)
+
+
+def check_folder_privacy(page, browser, base, auth, source):
+    tree = page.get_by_role("navigation", name="Folders")
+    parent = tree.get_by_role("button", name="Station programs", exact=True)
+    child = tree.get_by_role("button", name="November meetings", exact=True)
+    selected = page.get_by_role("button", name="Folder privacy", exact=True)
+    dialog = page.get_by_role("dialog", name="Folder privacy")
+
+    def work_id(name):
+        response = requests.get(base + "/api/library", headers=auth, timeout=10)
+        response.raise_for_status()
+        return next(row["id"] for row in response.json() if row["title"] == name)
+
+    def link(uid):
+        return base + "/watch/work/" + uid
+
+    program = work_id("Defaulted program")
+    assert requests.get(link(program), timeout=10).status_code == 200
+    parent.click()
+    selected.click()
+    dialog.locator("select[name=visibility]").select_option("private")
+    dialog.get_by_role("button", name="Apply folder override").click()
+    expect(dialog.get_by_role("status")).to_have_text("Folder override saved for 3 video(s).")
+    dialog.get_by_role("button", name="Close").click()
+    assert requests.get(link(program), timeout=10).status_code == 404
+
+    child.click()
+    page.get_by_role("button", name="Upload", exact=True).click()
+    upload = page.get_by_role("dialog", name="Upload files")
+    expect(upload.locator("#uploadVisibility")).to_contain_text("Folder privacy: private")
+    expect(upload.get_by_text("Customize privacy for these videos", exact=True)).not_to_be_visible()
+    upload.get_by_label("Choose files").set_input_files({
+        "name": "Inherited upload.mp4", "mimeType": "video/mp4", "buffer": source.read_bytes(),
+    })
+    upload.get_by_role("button", name="Upload selected files").click()
+    expect(upload.get_by_role("status")).to_have_text("All files added.", timeout=30000)
+    expect(upload.locator("#uploadFiles")).to_contain_text("Added privately")
+    upload.get_by_role("button", name="Close").click()
+    inherited = work_id("Inherited upload")
+    assert requests.get(link(inherited), timeout=10).status_code == 404
+
+    selected.click()
+    expect(dialog.get_by_text("This folder currently inherits its parent’s privacy settings.")).to_be_visible()
+    dialog.locator("select[name=visibility]").select_option("password")
+    dialog.get_by_label("Viewer password").fill("fixture-folder-specific")
+    dialog.get_by_role("button", name="Apply folder override").click()
+    expect(dialog.get_by_role("status")).to_have_text("Folder override saved for 4 video(s).")
+    dialog.get_by_role("button", name="Close").click()
+    parent.click()
+    selected.click()
+    dialog.locator("select[name=visibility]").select_option("public")
+    dialog.get_by_role("button", name="Apply folder override").click()
+    expect(dialog.get_by_role("status")).to_have_text("Folder override saved for 0 video(s).")
+    dialog.get_by_role("button", name="Close").click()
+    assert "Inherited upload" not in requests.get(base + "/", timeout=10).text
+
+    viewer_context = browser.new_context()
+    try:
+        viewer = viewer_context.new_page()
+        viewer.goto(link(inherited))
+        viewer.get_by_label("Video password").fill("fixture-folder-specific")
+        viewer.get_by_role("button", name="Watch video").click()
+        assert viewer.locator("video").evaluate("async v => {v.muted=true;await v.play();return v.videoWidth}") == 256
+        child.click()
+        selected.click()
+        dialog.get_by_role("button", name="Remove folder override").click()
+        expect(dialog.get_by_role("status")).to_contain_text("Existing video settings were kept")
+        dialog.get_by_role("button", name="Close").click()
+        assert "Protected video" in requests.get(link(inherited), timeout=10).text
+
+        page.get_by_role("checkbox", name="Select Inherited upload", exact=True).check()
+        page.get_by_label("Destination").select_option(label="Station programs")
+        page.get_by_role("button", name="Move selected").click()
+        expect(page.locator("#result")).to_have_text("Moved one work.")
+        viewer.goto(link(inherited))
+        assert viewer.locator("video").evaluate("async v => {v.muted=true;await v.play();return v.videoWidth}") == 256
+        assert "Inherited upload" in requests.get(base + "/", timeout=10).text
+    finally:
+        viewer_context.close()
+    return dict(parent_override_applied=True, overrides_operator_default=True,
+                nested_override_kept=True, remove_preserves_current=True,
+                destination_rule_on_move=True)

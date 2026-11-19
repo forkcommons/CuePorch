@@ -35,6 +35,7 @@ from waitress import serve
 
 from cueporch import verify
 import library_actions
+import library_folder_privacy
 import library_folders
 import library_privacy
 import library_thumbnail
@@ -93,6 +94,7 @@ def create_app(root, database, operator, institution, simulation=None):
         SCHEMA
         + library_worker.SCHEMA
         + library_folders.SCHEMA
+        + library_folder_privacy.SCHEMA
         + library_privacy.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
@@ -1077,7 +1079,8 @@ def create_app(root, database, operator, institution, simulation=None):
     def read_library_works():
         return json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
 
-    library_folders.register(app, tx, staff, read_library_works)
+    library_folders.register(app, tx, staff, action, read_library_works)
+    library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
     def remember_work(work):
         works[work["id"]] = work

@@ -1,6 +1,6 @@
 import { renderCommentText } from "./review_comment_text.js";
 import { libraryUploader } from "./library_upload.js";
-import { openPrivacy, privateSettings, type Sharing } from "./library_privacy.js";
+import { openPrivacy, privateSettings, sharingFields, type Sharing, type SharingSettings } from "./library_privacy.js";
 
 type AssetType = "video" | "audio" | "image" | "document";
 
@@ -115,6 +115,14 @@ interface Folder {
   starred: number;
 }
 
+interface FolderPrivacy {
+  enabled: boolean;
+  inherited: boolean;
+  settings: SharingSettings | null;
+  has_password: boolean;
+  affected: number;
+}
+
 const key = document.querySelector<HTMLInputElement>("#key")!;
 const deleteFolder =
   document.querySelector<HTMLButtonElement>("#deleteFolder")!;
@@ -145,6 +153,7 @@ const assetType = document.querySelector<HTMLSelectElement>("#assetType")!;
 const sort = document.querySelector<HTMLSelectElement>("#sort")!;
 const view = document.querySelector<HTMLSelectElement>("#view")!;
 const editFolder = document.querySelector<HTMLButtonElement>("#editFolder")!;
+const folderPrivacy = document.querySelector<HTMLButtonElement>("#folderPrivacy")!;
 const destination = document.querySelector<HTMLSelectElement>("#destination")!;
 const move = document.querySelector<HTMLButtonElement>("#move")!;
 const editor = document.querySelector<HTMLDialogElement>("#folderEditor")!;
@@ -263,10 +272,12 @@ function renderTree() {
   heading.textContent =
     section === "Library" ? folder?.name || "Library" : section;
   deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
+  folderPrivacy.hidden = !folder;
   starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
   if (folder) {
     action(starFolder, () => setStar("folder", folder.id, !folder.starred));
     action(deleteFolder, () => removeItems("folder", [folder.id]));
+    action(folderPrivacy, () => editFolderPrivacy(folder));
   }
   folderOptions(destination);
   destination.value = current || "";
@@ -354,7 +365,7 @@ function renderWorks() {
       (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
       work.title.toLocaleLowerCase().includes(query) &&
       (!assetType.value || (assetType.value === "video") === (work.asset_type === "video")) &&
-      (!privacy.value || (work.source_privacy || "Unknown") === privacy.value),
+      (!privacy.value || workPrivacy(work) === privacy.value),
   );
   visible.sort((a, b) => {
     const title = a.title.localeCompare(b.title);
@@ -556,6 +567,63 @@ function editPrivacy(work: Work) {
 async function defaultPrivacy(): Promise<Sharing> {
   const response = await completed(await request("/api/library/upload-defaults"));
   return { ...privateSettings, ...await response.json() };
+}
+
+function workPrivacy(work: Work) {
+  return work.visibility || work.source_privacy || "Unknown";
+}
+
+async function folderPolicy(id: string): Promise<FolderPrivacy> {
+  const response = await completed(await request(`/api/library/folders/${id}/privacy`));
+  return response.json();
+}
+
+async function uploadPrivacy(folder: string): Promise<Sharing> {
+  if (folder) {
+    const policy = await folderPolicy(folder);
+    if (policy.settings) {
+      return { ...privateSettings, ...policy.settings, has_password: policy.has_password, folder_override: true };
+    }
+  }
+  return defaultPrivacy();
+}
+
+async function editFolderPrivacy(folder: Folder) {
+  const existing = await folderPolicy(folder.id);
+  const body = openWorkDialog("Folder privacy");
+  const summary = document.createElement("p");
+  summary.textContent = existing.inherited ? "This folder currently inherits its parent’s privacy settings."
+    : "Apply these settings to videos in this folder and its subfolders. Subfolders with their own override keep it.";
+  body.append(summary);
+  const fields = sharingFields(body);
+  fields.populate({ ...privateSettings, ...existing.settings, has_password: existing.enabled && existing.has_password });
+  fields.save.textContent = "Apply folder override";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "Remove folder override";
+  remove.hidden = !existing.enabled;
+  body.append(remove);
+
+  async function save(enabled: boolean) {
+    fields.save.disabled = remove.disabled = true;
+    try {
+      const response = await completed(await request(`/api/library/folders/${folder.id}/privacy`, "PUT", {
+        ...fields.values(), enabled,
+      }));
+      const policy: FolderPrivacy = await response.json();
+      fields.populate({ ...privateSettings, ...policy.settings, has_password: policy.enabled && policy.has_password });
+      remove.hidden = !policy.enabled;
+      workDialogStatus.textContent = enabled ? `Folder override saved for ${policy.affected} video(s).`
+        : "Folder override removed. Existing video settings were kept.";
+      await load();
+    } catch (error) {
+      workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      fields.save.disabled = remove.disabled = false;
+    }
+  }
+  fields.form.onsubmit = (event) => { event.preventDefault(); void save(true); };
+  remove.onclick = () => { void save(false); };
 }
 
 action(uploadDefaults, () => openPrivacy({
@@ -1320,7 +1388,7 @@ async function load(refreshTrash = true) {
   selected.clear();
   const previous = privacy.value;
   const modes = [
-    ...new Set(works.map((work) => work.source_privacy || "Unknown")),
+    ...new Set(works.map(workPrivacy)),
   ].sort();
   privacy.replaceChildren(
     new Option("All", ""),
@@ -1409,7 +1477,7 @@ libraryUploader({
   folder: () => current,
   folderOptions,
   credential: () => key.value,
-  defaults: defaultPrivacy,
+  defaults: uploadPrivacy,
   reload: () => load(),
 });
 

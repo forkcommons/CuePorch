@@ -4,6 +4,8 @@ import re
 import uuid
 
 from flask import abort, request
+import library_folder_privacy
+import library_privacy
 from library_trash import hidden
 
 SCHEMA = """
@@ -19,7 +21,7 @@ CREATE TABLE IF NOT EXISTS library_star(
 """
 
 
-def register(app, tx, staff, read_works):
+def register(app, tx, staff, action, read_works):
     @app.put("/api/library/star/<kind>/<item>")
     def set_star(kind, item):
         actor = staff()
@@ -82,13 +84,11 @@ def register(app, tx, staff, read_works):
             abort(400)
         uid = folder or uuid.uuid4().hex
         with tx() as con:
-            if folder and (
-                hidden(con, "folder", folder)
-                or not con.execute(
-                    "SELECT 1 FROM library_folder WHERE id=?", (folder,)
-                ).fetchone()
-            ):
-                abort(404)
+            previous = None
+            if folder:
+                previous = con.execute("SELECT parent FROM library_folder WHERE id=?", (folder,)).fetchone()
+                if not previous or hidden(con, "folder", folder):
+                    abort(404)
             ancestor = parent
             while ancestor is not None:
                 if ancestor == uid:
@@ -114,6 +114,9 @@ def register(app, tx, staff, read_works):
                    name=excluded.name,color=excluded.color""",
                 (uid, parent, name, color),
             )
+            if previous and previous["parent"] != parent and library_folder_privacy.closest(con, uid):
+                library_folder_privacy.sync_branch(con, action, uid, {work["id"]: work for work in read_works()})
+                library_privacy.apply_pending(con)
         return dict(
             id=uid, parent=parent, name=name, color=color
         ), 200 if folder else 201
@@ -140,7 +143,8 @@ def register(app, tx, staff, read_works):
                 ).fetchone()
             ):
                 abort(404, "The selected folder no longer exists.")
-            if not set(works) <= {work["id"] for work in read_works()} or any(
+            available = {work["id"]: work for work in read_works()}
+            if not set(works) <= available.keys() or any(
                 hidden(con, "work", item) for item in works
             ):
                 abort(404, "A selected work no longer exists.")
@@ -149,4 +153,5 @@ def register(app, tx, staff, read_works):
                    ON CONFLICT(work) DO UPDATE SET folder=excluded.folder""",
                 [(work, folder) for work in works],
             )
+            library_folder_privacy.place_under_rule(con, action, (available[uid] for uid in set(works)), folder)
         return "", 204

@@ -72,12 +72,12 @@ def check_folders(page, base, auth, works):
     page.get_by_role("button", name="Load library").click()
     tree.get_by_role("button", name="November meetings").click()
     expect(page.locator("#items tr")).to_have_count(2)
-    page.get_by_label("Source privacy").select_option(
+    page.locator("#privacy").select_option(
         label=page.locator("#items tr td:nth-child(3)").first.inner_text()
     )
     expect(page.locator("#items tr")).to_have_count(1)
     root.click()
-    page.get_by_label("Source privacy").select_option("")
+    page.locator("#privacy").select_option("")
     page.get_by_role("navigation", name="Folders").get_by_role("button", name="November meetings").click()
     page.get_by_label("Created by").fill("Station")
     expect(page.locator("#items .work-title")).to_have_text(["Station meeting"])

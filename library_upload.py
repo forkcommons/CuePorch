@@ -12,6 +12,7 @@ from flask import abort, request
 
 from catalog import build_intake, merge_collection
 from cueporch import checksum, work_id
+from library_folder_privacy import closest as folder_privacy
 from library_privacy import actor_defaults, apply_pending, apply_settings, get_privacy, requested_settings
 from library_trash import hidden
 from media_tools import prepare_screening
@@ -113,9 +114,7 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
                 if kind == "video":
-                    choices, password = actor_defaults(con, actor)
-                    if overrides is not None:
-                        choices, password = requested_settings(overrides, password)
+                    upload_privacy(con, actor, folder, overrides)
 
             files = [dict(role="original", path=source.name, format=fmt, name=name[:255])]
             duration = None
@@ -137,6 +136,8 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                 if placed:
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
+                if kind == "video":
+                    choices, password = upload_privacy(con, actor, folder, overrides)
                 work = prior or merge_collection(staged, root)[uid]
                 con.execute("INSERT INTO library_placement(work,folder) VALUES(?,?)", (uid, folder))
                 if kind == "video":
@@ -146,6 +147,13 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                 receipt = upload_receipt(con, uid, kind)
             remember_work(work)
         return receipt, 201
+
+    def upload_privacy(con, actor, folder, overrides):
+        rule = folder_privacy(con, folder)
+        if rule:
+            return json.loads(rule["settings"]), rule["password_hash"]
+        settings, password = actor_defaults(con, actor)
+        return requested_settings(overrides, password) if overrides is not None else (settings, password)
 
     def prior_upload(con, uid, digest):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))

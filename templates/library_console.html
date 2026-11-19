@@ -22,6 +22,7 @@
       <nav id="folderTree" aria-label="Folders"></nav>
       <button type="button" id="newFolder">New folder</button>
       <button type="button" id="editFolder" hidden>Edit folder</button>
+      <button type="button" id="folderPrivacy" hidden>Folder privacy</button>
       <button type="button" id="starFolder" hidden>Star folder</button>
       <button type="button" id="deleteFolder" hidden>Delete folder</button>
     </aside>
@@ -34,7 +35,7 @@
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
         <label>Type <select id="assetType"><option value="">All</option><option value="video">Videos</option><option value="files">Files</option></select></label>
-        <label>Source privacy <select id="privacy"><option value="">All</option></select></label>
+        <label for="privacy">Privacy</label><select id="privacy"><option value="">All</option></select>
         <label>Created by <input id="creator" type="search" list="creators"></label>
         <datalist id="creators"></datalist>
         <label>Sort <select id="sort">
@@ -53,7 +54,7 @@
       </div>
       <p id="empty" hidden>No works in this view.</p>
       <table id="workTable">
-        <thead><tr><th scope="col">Select</th><th scope="col">Work</th><th scope="col">Source privacy</th>
+        <thead><tr><th scope="col">Select</th><th scope="col">Work</th><th scope="col">Privacy</th>
         <th scope="col">Recovery</th><th scope="col">Delivery</th><th scope="col">Actions</th></tr></thead>
         <tbody id="items"></tbody>
       </table>

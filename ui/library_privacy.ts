@@ -13,6 +13,7 @@ export interface Sharing extends SharingSettings {
   pending: SharingSettings | null;
   watch: string | null;
   embed_url: string | null;
+  folder_override?: boolean;
 }
 
 interface SharingDialog {

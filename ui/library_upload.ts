@@ -5,7 +5,7 @@ interface UploadContext {
   folder(): string | null;
   folderOptions(select: HTMLSelectElement): void;
   credential(): string;
-  defaults(): Promise<Sharing>;
+  defaults(folder: string): Promise<Sharing>;
   reload(): Promise<void>;
 }
 
@@ -45,28 +45,42 @@ export function libraryUploader(context: UploadContext) {
     send.disabled = running || !defaults || entries.every((entry) => entry.saved);
   }
 
-  async function openUpload() {
+  async function readDestination() {
     const invocation = ++opening;
     defaults = null;
-    summary.textContent = "Reading your upload defaults…";
+    const folder = destination.value;
+    summary.textContent = "Reading upload privacy…";
     overrides.open = false;
-    context.folderOptions(destination);
-    destination.value = context.folder() || "";
-    dialog.showModal();
+    overrides.hidden = true;
+    updateSend();
     try {
-      const settings = await context.defaults();
+      const settings = await context.defaults(folder);
       if (invocation !== opening) return;
       defaults = settings;
       fields.populate(settings);
-      summary.textContent = `Video default: ${settings.visibility.replace("_", " ")}. Other files are private.`;
+      overrides.hidden = Boolean(settings.folder_override);
+      const label = settings.folder_override ? "Folder privacy" : "Video default";
+      summary.textContent = `${label}: ${settings.visibility.replace("_", " ")}. Other files are private.`;
     } catch {
       if (invocation !== opening) return;
-      defaults = privateSettings;
       fields.populate(privateSettings);
-      summary.textContent = "Your defaults could not load. Files will be added privately unless you choose another setting.";
+      if (folder) {
+        summary.textContent = "This folder’s privacy settings could not load. Reopen Upload or choose another folder.";
+      } else {
+        defaults = privateSettings;
+        overrides.hidden = false;
+        summary.textContent = "Your defaults could not load. Files will be added privately unless you choose another setting.";
+      }
     } finally {
       updateSend();
     }
+  }
+
+  function openUpload() {
+    context.folderOptions(destination);
+    destination.value = context.folder() || "";
+    dialog.showModal();
+    void readDestination();
   }
 
   function enqueue(files: FileList) {
@@ -88,12 +102,12 @@ export function libraryUploader(context: UploadContext) {
     updateSend();
   }
 
-  function upload(entry: UploadEntry, folder: string, options: object) {
+  function upload(entry: UploadEntry, folder: string, options: object | null) {
     const data = new FormData();
     data.set("file", entry.file);
     data.set("upload_id", entry.id);
     data.set("folder", folder);
-    data.set("privacy", JSON.stringify(options));
+    if (options) data.set("privacy", JSON.stringify(options));
     entry.status.textContent = "Uploading…";
     entry.progress.value = 0;
     return new Promise<UploadReceipt>((resolve, reject) => {
@@ -126,6 +140,7 @@ export function libraryUploader(context: UploadContext) {
   }
 
   open.onclick = openUpload;
+  destination.onchange = () => { void readDestination(); };
   function clearQueue() {
     opening++;
     entries.length = 0;
@@ -167,7 +182,8 @@ export function libraryUploader(context: UploadContext) {
   send.onclick = async () => {
     if (!defaults) return;
     if (overrides.open && !fields.form.reportValidity()) return;
-    const settings = overrides.open ? fields.values() : { ...defaults, password: "" };
+    const settings = defaults.folder_override ? null
+      : overrides.open ? fields.values() : { ...defaults, password: "" };
     const folder = destination.value;
     let added = 0;
     running = true;
