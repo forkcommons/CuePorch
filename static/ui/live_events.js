@@ -223,6 +223,7 @@ function showPlayerOptions(options) {
     eventPlayerForm.reset();
     playerOption("show_schedule").checked = options.show_schedule;
     playerOption("show_recurring").checked = options.show_recurring;
+    playerOption("show_latest").checked = options.show_latest;
     playerOption("show_recurring").disabled = !options.recurring;
     button("saveEventPlayer").disabled = false;
     paintWaitingPreview();
@@ -261,6 +262,7 @@ eventPlayerForm.onsubmit = (event) => {
         }
         showPlayerOptions(await request(`${root}/${active.event.id}/player`, "PUT", {
             poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
+            show_latest: playerOption("show_latest").checked,
         }));
         eventPlayerStatus.textContent = "Event player saved.";
     });

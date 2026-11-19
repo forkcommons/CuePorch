@@ -13,7 +13,8 @@ const previous = document.querySelector("#archivePrevious");
 const next = document.querySelector("#archiveNext");
 const waiting = waitingPlayer(lobby);
 const openingOccurrence = Number(lobby.dataset.occurrence) || null;
-let currentOccurrence = openingOccurrence;
+let currentOccurrence = Number(lobby.dataset.playing) || openingOccurrence;
+let previewReplay = lobby.dataset.previewReplay === "yes";
 let playlist = null;
 let entrySignature = "";
 let playNextMuted;
@@ -147,7 +148,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before } = await response.json();
+        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback } = await response.json();
         if (requested !== location.href)
             return;
         const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
@@ -159,6 +160,10 @@ async function checkStatus() {
         }
         audiencePanels.hidden = currentOccurrence !== openingOccurrence;
         showPlaylist(archives);
+        if (previewReplay && !src)
+            closePlayer();
+        previewReplay = fallback;
+        lobby.dataset.previewReplay = fallback ? "yes" : "no";
         const current = player.querySelector("iframe");
         if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
             closePlayer();
@@ -178,7 +183,7 @@ async function checkStatus() {
             frame.allowFullscreen = true;
             captions.bind();
             player.replaceChildren(frame);
-            if (next === "Replay" && !archives)
+            if (next === "Replay" && !archives && !previewReplay)
                 stopChecking();
         }
         else if (current && !src && next === "The stream is unavailable") {
@@ -217,7 +222,7 @@ lobby.addEventListener("click", (event) => {
 if (!viewer && document.querySelector('[name="enrollment"]'))
     stopChecking();
 const initial = player.querySelector("video");
-if (!playlist && (eventStatus.textContent === "This occurrence was withdrawn" ||
+if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence was withdrawn" ||
     (!initial && eventStatus.textContent === "Replay")))
     stopChecking();
 if (initial && player.dataset.address)

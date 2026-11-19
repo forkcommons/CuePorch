@@ -33,7 +33,8 @@ interface ReplayCaptions {state: string; language: string; revision: string; has
 interface LibraryRecording {state: string; work: string | null; error: string | null;}
 interface PlaylistOptions {enabled: boolean; autoplay_next: boolean; loop: boolean;}
 interface EventPlayerOptions {
-  show_schedule: boolean; show_recurring: boolean; poster: string | null; image: string | null; recurring: string;
+  show_schedule: boolean; show_recurring: boolean; show_latest: boolean;
+  poster: string | null; image: string | null; recurring: string;
 }
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
@@ -273,6 +274,7 @@ function showPlayerOptions(options: EventPlayerOptions) {
   eventPlayerForm.reset();
   playerOption("show_schedule").checked = options.show_schedule;
   playerOption("show_recurring").checked = options.show_recurring;
+  playerOption("show_latest").checked = options.show_latest;
   playerOption("show_recurring").disabled = !options.recurring;
   button("saveEventPlayer").disabled = false;
   paintWaitingPreview();
@@ -310,6 +312,7 @@ eventPlayerForm.onsubmit = (event) => {
     }
     showPlayerOptions(await request<EventPlayerOptions>(`${root}/${active.event.id}/player`, "PUT", {
       poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
+      show_latest: playerOption("show_latest").checked,
     }));
     eventPlayerStatus.textContent = "Event player saved.";
   });

@@ -11,7 +11,8 @@ from library_appearance import brand_image
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_player_settings(event TEXT PRIMARY KEY, settings TEXT NOT NULL);
 """
-DEFAULTS = {"show_schedule": False, "show_recurring": False, "poster": None}
+SWITCHES = ("show_schedule", "show_recurring", "show_latest")
+DEFAULTS = dict.fromkeys(SWITCHES, False) | {"poster": None}
 
 
 def settings(con, event):
@@ -53,12 +54,12 @@ def register(app, tx, staff, read):
             values = settings(con, uid)
             if request.method == "PUT":
                 body = request.get_json()
-                if not isinstance(body, dict) or any(type(body.get(key)) is not bool for key in ("show_schedule", "show_recurring")):
+                if not isinstance(body, dict) or any(type(body.get(key, values[key])) is not bool for key in SWITCHES):
                     abort(422, "Choose event player settings.")
-                poster = body.get("poster")
+                poster = body.get("poster", values["poster"])
                 if poster is not None and (not isinstance(poster, str) or not con.execute(
                         "SELECT 1 FROM review_logo WHERE digest=?", (poster,)).fetchone()):
                     abort(422, "Choose an uploaded poster image.")
-                values = {key: body.get(key) for key in DEFAULTS}
+                values = {key: body.get(key, values[key]) for key in DEFAULTS}
                 con.execute("INSERT OR REPLACE INTO live_player_settings VALUES(?,?)", (uid, json.dumps(values)))
             return dict(values, image=brand_image(con, values["poster"]), recurring=recurring(event["schedule"]))

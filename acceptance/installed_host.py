@@ -18,6 +18,7 @@ from installed_live_captions import check_live_captions
 from installed_library_recording import check_library_recording
 from installed_event_playlist import check_event_playlist
 from installed_event_waiting import check_event_waiting
+from installed_waiting_replay import check_waiting_replay
 from installed_program_graphics import check_program_graphics
 from installed_replay_captions import check_replay_captions
 from installed_simulcast import check_simulcast, tls_certificate
@@ -47,6 +48,7 @@ live_modes.add_argument("--replay-captions", action="store_true", help="Verify l
 live_modes.add_argument("--library-replay", action="store_true", help="Verify a private Library copy of the hosted replay")
 live_modes.add_argument("--replay-playlist", action="store_true", help="Verify a recurring event's watch and iframe playlist")
 live_modes.add_argument("--event-waiting", action="store_true", help="Verify event poster and schedule through transition to live playback")
+live_modes.add_argument("--waiting-replay", action="store_true", help="Verify registered replay and live transition on the same event player")
 live_modes.add_argument("--simulcast-event", action="store_true", help="Verify real RTMP and RTMPS event receivers")
 p.add_argument("--caption-speech", type=Path, help="Use a spoken audio fixture for live caption acceptance")
 live_modes.add_argument("--srt-event", action="store_true", help="Test encrypted SRT through the installed production controls")
@@ -55,7 +57,7 @@ a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or a.studio_slides or
-        a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.simulcast_event or
+        a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.waiting_replay or a.simulcast_event or
         a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
 if (a.captions_event or a.replay_captions) and (not a.caption_speech or not a.caption_speech.is_file()):
@@ -181,6 +183,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_event_playlist(base, keys, ffmpeg)
                 elif a.event_waiting:
                     evidence["event_delivery"] = check_event_waiting(base, keys, ffmpeg)
+                elif a.waiting_replay:
+                    evidence["event_delivery"] = check_waiting_replay(base, keys, ffmpeg)
                 elif a.simulcast_event:
                     evidence["event_delivery"] = check_simulcast(base, keys, ffmpeg, root, material)
                 elif a.captions_event:

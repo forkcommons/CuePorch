@@ -29,6 +29,11 @@ def archive_playlist(con, uid, options, schedule):
     return dict(entries=entries, autoplay_next=options["autoplay_next"], loop=options["loop"])
 
 
+def latest_released(con, uid):
+    return con.execute("SELECT * FROM live_occurrence WHERE event=? AND delivery='replay' ORDER BY opens DESC LIMIT 1",
+                       (uid,)).fetchone()
+
+
 def register(app, tx, staff, event_for):
     @app.route("/api/live-events/<uid>/playlist", methods=["GET", "PUT"])
     def playlist_settings(uid):

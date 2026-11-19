@@ -17,10 +17,12 @@ interface EventView {
   status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
   occurrence: {id: number; start: string; local: string} | null; playlist: ArchivePlaylist | null;
   lobby_preview: BeforeEvent | null;
+  preview_replay: boolean;
 }
 const waiting = waitingPlayer(lobby);
 const openingOccurrence = Number(lobby.dataset.occurrence) || null;
-let currentOccurrence = openingOccurrence;
+let currentOccurrence = Number(lobby.dataset.playing) || openingOccurrence;
+let previewReplay = lobby.dataset.previewReplay === "yes";
 let playlist: ArchivePlaylist | null = null;
 let entrySignature = "";
 let playNextMuted: boolean | undefined;
@@ -159,7 +161,7 @@ async function checkStatus() {
     }
     if (!response.ok) return;
     const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics,
-      occurrence, playlist: archives, lobby_preview: before}: EventView = await response.json();
+      occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback}: EventView = await response.json();
     if (requested !== location.href) return;
     const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
     currentOccurrence = occurrence?.id ?? null;
@@ -170,6 +172,9 @@ async function checkStatus() {
     }
     audiencePanels.hidden = currentOccurrence !== openingOccurrence;
     showPlaylist(archives);
+    if (previewReplay && !src) closePlayer();
+    previewReplay = fallback;
+    lobby.dataset.previewReplay = fallback ? "yes" : "no";
     const current = player.querySelector("iframe");
     if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
       closePlayer();
@@ -186,7 +191,7 @@ async function checkStatus() {
       frame.allowFullscreen = true;
       captions.bind();
       player.replaceChildren(frame);
-      if (next === "Replay" && !archives) stopChecking();
+      if (next === "Replay" && !archives && !previewReplay) stopChecking();
     } else if (current && !src && next === "The stream is unavailable") {
       // A live player can coast through a delayed host poll without restarting.
       return;
@@ -217,7 +222,7 @@ lobby.addEventListener("click", (event) => {
 });
 if (!viewer && document.querySelector('[name="enrollment"]')) stopChecking();
 const initial = player.querySelector("video");
-if (!playlist && (eventStatus.textContent === "This occurrence was withdrawn" ||
+if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence was withdrawn" ||
     (!initial && eventStatus.textContent === "Replay"))) stopChecking();
 if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "",
   player.dataset.analytics || "", initial);

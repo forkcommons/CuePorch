@@ -9,7 +9,9 @@
 <body class="live-event-page">
   <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
         data-embed="{{ 'yes' if embed else 'no' }}" data-latency="{{ event.latency }}"
-        data-occurrence="{{ occurrence.id if occurrence else '' }}" data-timezone="{{ event.schedule.timezone }}">
+        data-occurrence="{{ audience_occurrence.id if audience_occurrence else '' }}"
+        data-playing="{{ occurrence.id if occurrence else '' }}" data-preview-replay="{{ 'yes' if preview_replay else 'no' }}"
+        data-timezone="{{ event.schedule.timezone }}">
     <header>
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
@@ -43,7 +45,7 @@
       <details><summary id="eventTranscriptLabel">Live transcript</summary><ol aria-label="Caption lines"></ol></details>
       <p role="status"></p>
     </section>
-    <div id="eventAudiencePanels">
+    <div id="eventAudiencePanels" {% if preview_replay %}hidden{% endif %}>
     {% if chat_endpoint %}
       <section id="audienceChat" data-endpoint="{{ chat_endpoint }}" data-embed="{{ 'yes' if embed else 'no' }}"
                aria-labelledby="chatHeading" hidden>

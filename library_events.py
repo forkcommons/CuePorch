@@ -393,7 +393,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             on_playlist = (delivery and delivery["delivery"] == "replay"
                            and event_playlist.settings(con, row["id"])["enabled"]
                            and event["schedule"]["repeat"] != "none")
-            if not viewer_enrolled(request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], on_playlist):
+            featured = None
+            if not on_playlist and delivery and delivery["delivery"] == "replay" and event_player.settings(con, row["id"])["show_latest"]:
+                featured = event_playlist.latest_released(con, row["id"])
+            carried_grant = on_playlist or (featured and featured["opens"] == opens)
+            if not viewer_enrolled(request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], carried_grant):
                 abort(404)
         now = datetime.now(timezone.utc)
         active = now < datetime.fromisoformat(slot["end"]) and (not delivery or delivery["delivery"] != "replay")
@@ -670,12 +674,48 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             phase = {"ready": "live", "replay": "replay"}.get(target["delivery"]) if target else None
             return event_analytics.summarize(con, uid, opens, phase)
 
+    def viewer_playback(event, delivery, scope, native_video, host_private):
+        address = analytics_token = None
+        status = "Scheduled"
+        try:
+            if native_video:
+                raw = media.metadata(delivery["origin"], delivery["remote"])
+                observed = event_peer.status(raw)
+                available = (observed["public"] != host_private and (observed["state"] == "live" or
+                             (observed["state"] == "replay" and delivery["delivery"] == "replay")))
+                if available:
+                    manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
+                    directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)
+                    gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
+                    replay = observed["state"] == "replay"
+                    session = files.dumps(scope + [delivery["remote"], gateway, replay])
+                    address = url_for("event_media_file", token=session, filename=filename)
+                    if event_analytics.permitted():
+                        analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex])
+                    status = "Replay" if replay else "Live"
+            else:
+                observed = event_peer.public_status(delivery["origin"], delivery["remote"])
+            if not native_video and observed["public"] and observed["state"] in ("live", "replay"):
+                address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
+                status = "Live" if observed["state"] == "live" else "Replay"
+            elif observed["state"] == "waiting_for_encoder":
+                status = "Waiting for the encoder"
+            elif observed["state"] in ("preparing_replay", "ended"):
+                status = "Preparing the replay" if event["save_replay"] else "This event has ended"
+            elif host_private and observed["state"] == "replay" and not address:
+                status = "The replay is awaiting release"
+        except (ValueError, requests.RequestException, KeyError, StopIteration):
+            status = "The stream is unavailable"
+        return address, analytics_token, status
+
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
         grant = None
         enrollment = None
         form_error = None
         archives = None
+        latest = latest_slot = None
+        latest_captioned = False
         with tx() as con:
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
@@ -722,6 +762,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if playlist_enabled and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
+            if shown and not withdrawn and artwork["show_latest"] and (not form or grant):
+                saved = event_playlist.latest_released(con, row["id"])
+                if saved and saved["opens"] != shown["id"]:
+                    latest = saved
+                    latest_slot = selected_open(event, latest["opens"])
+                    latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
             poster = url_for("event_poster", slug=slug, opens=shown["id"], digest=artwork["poster"]) if (
                 shown and not withdrawn and artwork["poster"]) else None
             next_broadcast = shown
@@ -738,56 +784,38 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         host_private = protected or event.get("cueporch_delivery", False)
         native_video = host_private or captioned or replay_captioned
         can_participate = shown and not withdrawn and (not protected or grant)
+        playing = shown
+        preview_replay = False
         status = "Scheduled"
         if withdrawn:
             status = "This occurrence was withdrawn"
         if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
-            try:
-                if native_video:
-                    raw = media.metadata(delivery["origin"], delivery["remote"])
-                    observed = event_peer.status(raw)
-                    available = (observed["public"] != host_private and (observed["state"] == "live" or
-                                 (observed["state"] == "replay" and delivery["delivery"] == "replay")))
-                    if available:
-                        manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-                        directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)
-                        gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
-                        session = files.dumps(scope + [delivery["remote"], gateway, observed["state"] == "replay"])
-                        address = url_for("event_media_file", token=session, filename=filename)
-                        if event_analytics.permitted():
-                            analytics_token = measurement.dumps(
-                                scope + [delivery["remote"], observed["state"] == "replay", uuid.uuid4().hex]
-                            )
-                        status = "Live" if observed["state"] == "live" else "Replay"
-                else:
-                    observed = event_peer.public_status(delivery["origin"], delivery["remote"])
-                if not native_video and observed["public"] and observed["state"] in ("live", "replay"):
-                    address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
-                    status = "Live" if observed["state"] == "live" else "Replay"
-                elif observed["state"] == "waiting_for_encoder":
-                    status = "Waiting for the encoder"
-                elif observed["state"] in ("preparing_replay", "ended"):
-                    status = "Preparing the replay" if event["save_replay"] else "This event has ended"
-                elif host_private and observed["state"] == "replay" and not address:
-                    status = "The replay is awaiting release"
-            except (ValueError, requests.RequestException, KeyError, StopIteration):
-                status = "The stream is unavailable"
+            address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private)
+        if not address and latest:
+            replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
+            native_replay = host_private or latest_captioned
+            replay_address, replay_measurement, replay_status = viewer_playback(event, latest, replay_scope, native_replay, host_private)
+            if replay_address and replay_status == "Replay":
+                address, analytics_token, status = replay_address, replay_measurement, replay_status
+                native_video, playing, preview_replay = native_replay, latest_slot, True
         caption_endpoint = None
         if can_participate:
             if status == "Replay" and native_video:
-                caption_endpoint = url_for("audience_replay_captions", slug=slug, opens=shown["id"])
+                caption_endpoint = url_for("audience_replay_captions", slug=slug, opens=playing["id"])
             elif captioned:
                 caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"])
         if address:
             pre_live = None
         view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
-                     captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=shown)
+                     captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=playing,
+                     preview_replay=preview_replay)
                 if json_status
-                else render_template("live_event.html", event=event, occurrence=shown,
+                else render_template("live_event.html", event=event, occurrence=playing, audience_occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
+                                     preview_replay=preview_replay,
                                      analytics_token=analytics_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
