@@ -1,0 +1,3 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><link rel="stylesheet" href="/static/cueporch.css"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{name}} · CuePorch</title>
+        <h1>{{name}}</h1><ul>{% for row in rows %}<li><a href="/watch/{{row.kind}}/{{row.slug}}">
+        {{row.description or row.slug}}</a></li>{% endfor %}</ul></html>

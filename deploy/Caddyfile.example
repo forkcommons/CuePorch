@@ -1,0 +1,8 @@
+# Replace these names with the institution's existing domains.
+# Run Caddy on the host that owns both loopback listeners.
+watch.example.org {
+    reverse_proxy 127.0.0.1:19001
+}
+video.example.org {
+    reverse_proxy 127.0.0.1:19000
+}
