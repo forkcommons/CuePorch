@@ -10,6 +10,7 @@ from browser import chromium
 from installed_library import check_folders
 from installed_trash import check_private
 from installed_cards import check_cards
+from installed_versions import check_versions, generate_replacement
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -152,6 +153,7 @@ class Museum(BaseHTTPRequestHandler):
 
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
+    replacement = generate_replacement(root / "replacement.mp4")
     src = build_server(root / "fixture")
     source = serve(src)
     museum = ThreadingHTTPServer(("127.0.0.1", 0), Museum)
@@ -296,6 +298,9 @@ with tempfile.TemporaryDirectory() as tmp:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    versions_result = check_versions(
+                        page, base, auth, copy, grant, venue, museum.embed, replacement,
+                    )
                     card_result, download_url = check_cards(
                         page, base, auth, home / "institution.sqlite",
                         next(w for w in works if w["title"] == "Station meeting"),
@@ -316,6 +321,7 @@ with tempfile.TemporaryDirectory() as tmp:
                             anonymous_denied=True,
                             library=library_result,
                             card_actions=card_result,
+                            video_versions=versions_result,
                             recently_deleted=trash_result,
                         )
                     )

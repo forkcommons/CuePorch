@@ -9,6 +9,7 @@ from demo_source import build_server
 from operator_walkthrough import walkthrough
 from installed_trash import check_hosted
 from installed_cards import check_hosted_cards
+from installed_versions import check_hosted_versions, generate_replacement
 import psutil
 
 p = argparse.ArgumentParser()
@@ -63,6 +64,9 @@ with tempfile.TemporaryDirectory() as tmp:
             transfer, first = walkthrough(base, keys, started)
             trash_result = check_hosted(base, a.origin, keys)
             card_result = check_hosted_cards(base, a.origin, keys)
+            versions_result = check_hosted_versions(
+                base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
+            )
             response = requests.post(
                 base + "/desktop/api/quit",
                 headers={"Authorization": "Bearer " + url.split("#")[1]},
@@ -82,6 +86,7 @@ with tempfile.TemporaryDirectory() as tmp:
                         repeat_preserved_job_and_video_ids=True,
                         recently_deleted=trash_result,
                         card_actions=card_result,
+                        video_versions=versions_result,
                     ),
                     indent=2,
                 )

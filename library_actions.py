@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import re
 import secrets
 import time
@@ -11,9 +10,9 @@ from pathlib import Path
 from flask import abort, request, send_file
 
 import library_thumbnail
+import library_versions
 from catalog import copy_work
 from library_trash import hidden
-from peertube_destination import PeerTube
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_title(
@@ -39,7 +38,7 @@ def title_for(con, work):
     return row[0] if row else work["title"]
 
 
-def register(app, tx, staff, read_works, root):
+def register(app, tx, staff, read_works, root, remember_work):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -47,6 +46,7 @@ def register(app, tx, staff, read_works, root):
         return work
 
     library_thumbnail.register(app, tx, staff, get_work, root)
+    library_versions.register(app, tx, staff, get_work, root, remember_work)
 
     @app.get("/api/library/work/<uid>")
     def work_info(uid):
@@ -212,7 +212,7 @@ def register(app, tx, staff, read_works, root):
         return response
 
 
-def sync_edits(tx, receipts, origin, root):
+def sync_edits(tx, receipts, origin, root, connect):
     """Synchronize editorial metadata while preserving the remote video identity."""
     with tx() as con:
         pending = con.execute(
@@ -225,7 +225,6 @@ def sync_edits(tx, receipts, origin, root):
                  AND NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=t.work)""",
             (time.time() - 15,),
         ).fetchall()
-    peer = None
     for row in pending:
         is_title = row["kind"] == "title"
         table = "library_title" if is_title else "library_thumbnail"
@@ -238,12 +237,7 @@ def sync_edits(tx, receipts, origin, root):
                 continue
             if state["work"] != row["work"] or state["provider"] != origin.rstrip("/"):
                 raise ValueError("Connect the original video host")
-            if peer is None:
-                peer = PeerTube(
-                    origin,
-                    os.environ["PEERTUBE_USERNAME"],
-                    os.environ["PEERTUBE_PASSWORD"],
-                )
+            peer = connect(origin)
             if state["account"] != peer.user["id"]:
                 raise ValueError("Connect the original publishing account")
             peer.update_metadata(

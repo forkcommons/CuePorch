@@ -15,6 +15,10 @@ import requests
 from cueporch import dump, verify
 
 
+class SourceReplacementUnavailable(ValueError):
+    pass
+
+
 class PeerTube:
     def __init__(self, origin, username, password):
         self.origin = origin.rstrip("/")
@@ -35,8 +39,9 @@ class PeerTube:
                 client_id=client["client_id"],
                 client_secret=client["client_secret"],
             ),
-        ).json()["access_token"]
-        self.session.headers["Authorization"] = "Bearer " + token
+        ).json()
+        self.expires_at = time.monotonic() + max(0, float(token["expires_in"]) - 30)
+        self.session.headers["Authorization"] = "Bearer " + token["access_token"]
         self.user = self.call("GET", "/api/v1/users/me").json()
 
     def call(self, method, path, **options):
@@ -46,6 +51,8 @@ class PeerTube:
         response = self.session.request(
             method, url, allow_redirects=False, timeout=(15, 180), **options
         )
+        if response.status_code == 401:
+            self.expires_at = 0
         if response.status_code != 308:
             response.raise_for_status()
             if response.is_redirect:
@@ -118,10 +125,8 @@ class PeerTube:
                 if replacing
                 else "/api/v1/videos/upload-resumable"
             )
-            response = self.call(
-                "POST",
-                endpoint,
-                json={"filename": name}
+            metadata = (
+                {"filename": name}
                 if replacing
                 else dict(
                     filename=name,
@@ -135,13 +140,26 @@ class PeerTube:
                     ),
                     waitTranscoding=True,
                     downloadEnabled=False,
-                ),
-                headers={
-                    "X-Upload-Content-Length": str(size),
-                    "X-Upload-Content-Type": mimetypes.guess_type(name)[0]
-                    or "application/octet-stream",
-                },
+                )
             )
+            try:
+                response = self.call(
+                    "POST",
+                    endpoint,
+                    json=metadata,
+                    headers={
+                        "X-Upload-Content-Length": str(size),
+                        "X-Upload-Content-Type": mimetypes.guess_type(name)[0]
+                        or "application/octet-stream",
+                    },
+                )
+            except requests.HTTPError as error:
+                if replacing and error.response.status_code == 403:
+                    raise SourceReplacementUnavailable(
+                        "PeerTube declined replacement. Check video_file.update.enabled "
+                        "and confirm the connected account can edit the existing video."
+                    ) from error
+                raise
             state["upload"] = response.headers["Location"]
             dump(receipt, state)
         path = state["upload"]
@@ -151,7 +169,7 @@ class PeerTube:
                     "PUT", path, headers={"Content-Range": "bytes */" + str(size)}
                 )
             except requests.HTTPError as exc:
-                if exc.response.status_code == 404 and not replacing:
+                if exc.response.status_code == 404:
                     state.pop("upload", None)
                     dump(receipt, state)
                     raise ValueError(
@@ -201,6 +219,24 @@ class PeerTube:
             raise ValueError(
                 "Destination receipt does not match work, source media or account"
             )
+        previous = next(
+            (version for version in reversed(work.get("versions_history", []))
+             if any(f["sha256"] == state["media"] and f["role"] in ("original", "playback")
+                    for f in version["files"])),
+            {},
+        )
+        if "library_version_changed" in work and "caption_languages" not in state:
+            legacy_languages = [
+                f.get("language") or "und" for f in previous.get("files", [])
+                if f["role"] == "caption"
+            ]
+            supported = self.call("GET", "/api/v1/videos/languages").json() if legacy_languages else {}
+            state["caption_languages"] = sorted({
+                language if language in supported else language.split("-")[0]
+                for language in legacy_languages
+            } & set(supported))
+            state["has_chapters"] = bool(previous.get("chapters"))
+            dump(receipt, state)
         if "video" in state and not public and state.get("visibility") == "public":
             self.call("PUT", "/api/v1/videos/" + state["video"], json={"privacy": 3})
             state["visibility"] = "private"
@@ -259,12 +295,20 @@ class PeerTube:
                     path + "/captions/" + language,
                     files={"captionfile": ("captions.vtt", stream, "text/vtt")},
                 )
-        if work.get("chapters"):
+        for language in set(state.get("caption_languages", [])) - attached:
+            try:
+                self.call("DELETE", path + "/captions/" + language)
+            except requests.HTTPError as error:
+                if error.response.status_code != 404:
+                    raise
+        state["caption_languages"] = sorted(attached)
+        if work.get("chapters") or state.get("has_chapters"):
             chapters = [
                 {"title": chapter["title"], "timecode": int(chapter["timecode"])}
-                for chapter in work["chapters"]
+                for chapter in work.get("chapters", [])
             ]
             self.call("PUT", path + "/chapters", json={"chapters": chapters})
+        state["has_chapters"] = bool(work.get("chapters"))
         deadline = time.monotonic() + int(
             os.environ.get("CUEPORCH_PROCESSING_TIMEOUT", "3600")
         )

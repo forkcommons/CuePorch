@@ -7,7 +7,7 @@ import threading
 import time
 
 from filelock import FileLock, Timeout
-from peertube_destination import PeerTube
+from peertube_destination import PeerTube, SourceReplacementUnavailable
 import library_trash
 from library_actions import sync_edits, title_for
 from library_thumbnail import selected_thumbnail
@@ -57,18 +57,37 @@ def enqueue(con, work, public, scheduled=0, kind="work"):
 def start(app, root, db, tx, action, apply_routes):
     receipts = db.parent / (db.stem + "-receipts")
     receipts.mkdir(exist_ok=True)
+    manifest_path = root / "manifest.json"
+    connection = None
+    credentials = None
+
+    def connect(origin):
+        nonlocal connection, credentials
+        current = (origin, os.environ["PEERTUBE_USERNAME"], os.environ["PEERTUBE_PASSWORD"])
+        if connection is None or credentials != current or time.monotonic() >= connection.expires_at:
+            if connection is not None:
+                connection.session.close()
+                connection = None
+            connection = PeerTube(*current)
+            credentials = current
+        return connection
 
     def run():
         # One active delivery loop per database across server processes.
+        observed = None
         with app.app_context():
             while receipts.is_dir():
                 try:
                     with FileLock(str(receipts / "worker.lock"), timeout=0):
                         origin = os.environ.get("CUEPORCH_PEERTUBE_ORIGIN")
-                        library_trash.process(tx, receipts, origin, root)
+                        library_trash.process(tx, receipts, origin, root, connect)
                         if origin:
+                            stamp = manifest_path.stat().st_mtime_ns
+                            if stamp != observed:
+                                reconcile_versions()
+                                observed = stamp
                             process(origin)
-                            sync_edits(tx, receipts, origin, root)
+                            sync_edits(tx, receipts, origin, root, connect)
                 except Timeout:
                     pass
                 except Exception:
@@ -76,6 +95,26 @@ def start(app, root, db, tx, action, apply_routes):
                         "Delivery worker could not read the local queue"
                     )
                 time.sleep(1)
+
+    def reconcile_versions():
+        """Recover hosted delivery if the service stopped after saving the new cut."""
+        works = json.loads(manifest_path.read_text(encoding="utf8"))["works"]
+        with tx() as con:
+            for work in works:
+                if "library_version_changed" not in work:
+                    continue
+                prior = con.execute(
+                    """SELECT want_public,scheduled,kind,status FROM publication_job
+                       WHERE work=? ORDER BY rowid DESC LIMIT 1""",
+                    (work["id"],),
+                ).fetchone()
+                if prior and prior["status"] != "rejected":
+                    public = (
+                        bool(prior["want_public"])
+                        and work.get("source_privacy") in ("public", "anybody")
+                        and work.get("source_embed_policy") in ("public", "anywhere")
+                    )
+                    enqueue(con, work, public, prior["scheduled"], prior["kind"])
 
     def process(origin):
         with tx() as con:
@@ -87,7 +126,7 @@ def start(app, root, db, tx, action, apply_routes):
             ).fetchall()
         if not jobs:
             return
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf8"))
         works = {w["id"]: w for w in manifest["works"]}
         for job in jobs:
             uid = job["id"]
@@ -143,11 +182,7 @@ def start(app, root, db, tx, action, apply_routes):
                     )
                 if status != "processing":
                     continue
-                peer = PeerTube(
-                    origin,
-                    os.environ["PEERTUBE_USERNAME"],
-                    os.environ["PEERTUBE_PASSWORD"],
-                )
+                peer = connect(origin)
                 video = peer.publish(
                     root,
                     dict(work, title=label),
@@ -186,7 +221,7 @@ def start(app, root, db, tx, action, apply_routes):
                 with tx() as con:
                     con.execute(
                         "UPDATE publication_job SET status='failed',error=? WHERE id=?",
-                        (type(exc).__name__, uid),
+                        (str(exc) if isinstance(exc, SourceReplacementUnavailable) else type(exc).__name__, uid),
                     )
 
     threading.Thread(target=run, name="CuePorch delivery", daemon=True).start()

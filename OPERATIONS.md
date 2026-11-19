@@ -12,6 +12,8 @@ Run the launcher as a service under the institution's process manager with an ab
 
 For a managed installation with separate public and local addresses use a service account against the actual canonical HTTPS PeerTube origin through --existing-peer. The default local listener configuration is for a workstation or staging host. Set support contact, coverage hours and on-call routing with the institution before offering staffed support.
 
+For same-link replacement on an existing PeerTube server, verify that `video_file.update.enabled` is true and that the connected publishing account can edit the hosted video. CuePorch's provisioned host enables the setting. When an existing host declines replacement, the library retains both cuts and shows the host error in the delivery status. After the host configuration is corrected, retry the delivery for that work.
+
 ## Live and replay
 
 Create a PeerTube live destination with live_destination.py. Supply PEERTUBE_USERNAME and PEERTUBE_PASSWORD privately. The command writes encoder settings to the specified private file and prints the embed. Send CivicCast's RTMP output to the corresponding address and stream key. The local sample maps 11935 to container port 1935. Remote encoders need the operator's protected ingest routing. Keep the local recording running independently.

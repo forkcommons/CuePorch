@@ -45,6 +45,7 @@ services:
       PEERTUBE_TRANSCODING_HLS_ENABLED: "true"
       PEERTUBE_LIVE_ENABLED: "true"
       PEERTUBE_LIVE_ALLOW_REPLAY: "true"
+      NODE_CONFIG: '{"video_file":{"update":{"enabled":true}}}'
     volumes:
       - media:/data
       - config:/config

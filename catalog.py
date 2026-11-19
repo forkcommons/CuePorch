@@ -1,5 +1,6 @@
 """Intake and portable catalog updates for direct creators and station recordings."""
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -9,6 +10,84 @@ from pathlib import Path
 
 from filelock import FileLock
 from cueporch import checksum, dump, import_collection, work_id
+
+
+VERSION_FIELDS = ("duration_seconds", "disposition", "chapters")
+
+
+def video_version_key(work):
+    return hashlib.sha256(json.dumps(work["files"], sort_keys=True).encode()).hexdigest()
+
+
+def version_snapshot(work):
+    return {
+        key: work[key]
+        for key in ("files", "title", "version_saved_at", *VERSION_FIELDS)
+        if key in work
+    }
+
+
+def update_video_version(root, uid, expected, replacement=None, restore_key=None):
+    """Commit an exact media version while retaining all previous screening objects."""
+    with FileLock(str(root / ".catalog.lock"), timeout=30):
+        path = root / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf8"))
+        work = next(item for item in manifest["works"] if item["id"] == uid)
+        if video_version_key(work) != expected:
+            raise ValueError("The video changed. Reload and choose the version again.")
+        if replacement is not None:
+            original, screening, duration = replacement
+            files = []
+            for role, source in (("original", original), ("playback", screening)):
+                digest = checksum(source)
+                size = source.stat().st_size
+                target = root / "objects" / digest
+                if not target.exists() or checksum(target) != digest:
+                    source.replace(target)
+                files.append({
+                    "role": role,
+                    "format": source.suffix.lower().lstrip("."),
+                    "sha256": digest,
+                    "bytes": size,
+                })
+            files.extend(f for f in work["files"] if f["role"] == "poster")
+            version = {
+                "files": files,
+                "duration_seconds": duration,
+                "disposition": "original recovered",
+                "version_saved_at": datetime.now(timezone.utc).isoformat(),
+            }
+        else:
+            version = next(
+                (v for v in reversed(work.get("versions_history", []))
+                 if video_version_key(v) == restore_key),
+                None,
+            )
+            if version is None:
+                raise ValueError("That retained video version is unavailable.")
+        if work["files"] == version["files"]:
+            return work
+        history = [
+            item for item in work.get("versions_history", [])
+            if video_version_key(item) != video_version_key(version)
+        ]
+        if any(f["role"] in ("original", "playback") for f in work["files"]):
+            history.append(version_snapshot(work))
+        for key in VERSION_FIELDS:
+            work.pop(key, None)
+            if key in version:
+                work[key] = version[key]
+        if "disposition" not in work:
+            work["disposition"] = (
+                "original recovered" if any(f["role"] == "original" for f in version["files"])
+                else "playback copy only"
+            )
+        work["files"] = version["files"]
+        work["versions_history"] = history
+        work["version_saved_at"] = version.get("version_saved_at") or datetime.now(timezone.utc).isoformat()
+        work["library_version_changed"] = datetime.now(timezone.utc).isoformat()
+        dump(path, manifest)
+        return work
 
 
 def merge_collection(source, destination):
@@ -38,15 +117,21 @@ def merge_collection(source, destination):
                 finally:
                     temporary.unlink(missing_ok=True)
             prior = works.get(work["id"])
+            if prior and "library_version_changed" in prior:
+                # A repeat source import updates source metadata without replacing
+                # the operator's selected cut or its timed attachments.
+                for key in ("files", "versions_history", "version_saved_at",
+                            "library_version_changed", *VERSION_FIELDS):
+                    work.pop(key, None)
+                    if key in prior:
+                        work[key] = prior[key]
             if prior is None:
                 work["library_added_at"] = added_at
             elif "library_added_at" in prior:
                 work["library_added_at"] = prior["library_added_at"]
             if prior and prior["files"] != work["files"]:
                 versions = prior.get("versions_history", [])
-                work["versions_history"] = versions + [
-                    {"files": prior["files"], "title": prior["title"]}
-                ]
+                work["versions_history"] = versions + [version_snapshot(prior)]
             elif prior and "versions_history" in prior:
                 work["versions_history"] = prior["versions_history"]
             works[work["id"]] = work

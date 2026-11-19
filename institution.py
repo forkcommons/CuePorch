@@ -13,7 +13,6 @@ import secrets
 import shutil
 import zipfile
 import sqlite3
-import subprocess
 import time
 import tempfile
 import uuid
@@ -371,6 +370,7 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.post("/api/submissions")
     def submit():
         from catalog import build_intake, merge_collection
+        from media_tools import prepare_screening
 
         creator = os.environ.get("CUEPORCH_CREATOR_KEY", "")
         if not creator or not hmac.compare_digest(bearer().encode(), creator.encode()):
@@ -414,39 +414,11 @@ def create_app(root, database, operator, institution, simulation=None):
                 entries.append(entry)
             master_entry = next(item for item in entries if item["role"] == "original")
             if terms == "private":
-                result = subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-nostdin",
-                        "-v",
-                        "error",
-                        "-protocol_whitelist",
-                        "file,pipe",
-                        "-i",
-                        str(folder / master_entry["path"]),
-                        "-map",
-                        "0:v:0",
-                        "-map",
-                        "0:a:0?",
-                        "-map_metadata",
-                        "-1",
-                        "-vf",
-                        "scale=w='min(1280,iw)':h=-2",
-                        "-c:v",
-                        "libx264",
-                        "-threads",
-                        "2",
-                        "-crf",
-                        "23",
-                        "-c:a",
-                        "aac",
-                        "-movflags",
-                        "+faststart",
-                        str(folder / "screening.mp4"),
-                    ],
-                    capture_output=True,
-                )
-                if result.returncode:
+                try:
+                    prepare_screening(
+                        folder / master_entry["path"], folder / "screening.mp4"
+                    )
+                except ValueError:
                     abort(422, "Unable to prepare the screening copy")
                 entries.append(
                     dict(
@@ -1070,7 +1042,10 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_folders.register(app, tx, staff, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
-    library_actions.register(app, tx, staff, read_library_works, root)
+    def remember_work(work):
+        works[work["id"]] = work
+
+    library_actions.register(app, tx, staff, read_library_works, root, remember_work)
 
     @app.get("/api/library")
     def library():
@@ -1117,12 +1092,20 @@ def create_app(root, database, operator, institution, simulation=None):
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),
                 added_at=w.get("library_added_at"),
-                modified_at=(
-                    datetime.fromtimestamp(
-                        titles[w["id"]]["changed"], timezone.utc
-                    ).isoformat()
-                    if w["id"] in titles
-                    else w.get("source_modified_time")
+                modified_at=max(
+                    filter(
+                        None,
+                        (
+                            datetime.fromtimestamp(
+                                titles[w["id"]]["changed"], timezone.utc
+                            ).isoformat()
+                            if w["id"] in titles
+                            else None,
+                            w.get("library_version_changed"),
+                            w.get("source_modified_time"),
+                        ),
+                    ),
+                    default=None,
                 ),
                 version_count=1 + len(w.get("versions_history", [])),
                 starred=w["id"] in starred,

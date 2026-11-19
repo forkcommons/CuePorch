@@ -1,12 +1,10 @@
 """Recently deleted batches with a recoverable, fail-closed access state."""
 
 import json
-import os
 import time
 import uuid
 
 from flask import abort, request
-from peertube_destination import PeerTube
 
 RECOVERY_SECONDS = 30 * 24 * 3600
 SCHEMA = """
@@ -204,7 +202,7 @@ def register(app, tx, staff, read_works):
         return "", 202
 
 
-def process(tx, receipts, origin, root):
+def process(tx, receipts, origin, root, connect):
     """Run while holding the same lock used by the hosted publication worker."""
     with tx() as con:
         pending = con.execute(
@@ -220,7 +218,6 @@ def process(tx, receipts, origin, root):
                 (uid,),
             ).fetchall()
         try:
-            peer = None
             restoring = deletion["state"] == "restoring"
             unpublished = []
             if restoring:
@@ -242,12 +239,7 @@ def process(tx, receipts, origin, root):
                     raise ValueError("Receipt work mismatch")
                 if not origin or state["provider"] != origin.rstrip("/"):
                     raise ValueError("Connect the original video host")
-                if peer is None:
-                    peer = PeerTube(
-                        origin,
-                        os.environ["PEERTUBE_USERNAME"],
-                        os.environ["PEERTUBE_PASSWORD"],
-                    )
+                peer = connect(origin)
                 if state["account"] != peer.user["id"]:
                     raise ValueError("Connect the original publishing account")
                 is_public = restoring and state.get("visibility") == "public"

@@ -12,8 +12,9 @@ from browser import chromium
 from playwright.sync_api import expect, sync_playwright
 
 
-def select_action(page, title, action):
-    menu = page.locator("details.work-menu").filter(
+def select_action(page, title, action, uid=None):
+    scope = page.locator(f'[data-work-id="{uid}"]') if uid else page
+    menu = scope.locator("details.work-menu").filter(
         has=page.get_by_label("Actions for " + title, exact=True)
     )
     menu.locator("summary").click()

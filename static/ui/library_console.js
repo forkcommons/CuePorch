@@ -175,6 +175,18 @@ function numericValue(work, order) {
     const date = field === null ? NaN : Date.parse(field);
     return Number.isFinite(date) ? date : null;
 }
+function libraryDate(value) {
+    return value && Number.isFinite(Date.parse(value))
+        ? new Date(value).toLocaleDateString()
+        : "";
+}
+function durationText(seconds) {
+    return seconds === null
+        ? ""
+        : Math.floor(seconds / 60) +
+            ":" +
+            String(Math.floor(seconds % 60)).padStart(2, "0");
+}
 function renderWorks() {
     const query = search.value.trim().toLocaleLowerCase();
     const author = creator.value.trim().toLocaleLowerCase();
@@ -209,6 +221,7 @@ function renderWorks() {
     empty.hidden = !!visible.length;
     for (const work of visible) {
         const row = items.insertRow();
+        row.dataset.workId = work.id;
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.checked = selected.has(work.id);
@@ -228,20 +241,11 @@ function renderWorks() {
         title.append(name);
         const info = document.createElement("small");
         info.className = "work-info";
-        const seconds = work.duration_seconds;
-        const duration = seconds === null
-            ? ""
-            : Math.floor(seconds / 60) +
-                ":" +
-                String(Math.floor(seconds % 60)).padStart(2, "0");
-        const formattedDate = work.added_at && Number.isFinite(Date.parse(work.added_at))
-            ? new Date(work.added_at).toLocaleDateString()
-            : "";
         info.textContent = [
             work.creator,
-            duration,
+            durationText(work.duration_seconds),
             work.version_count > 1 ? work.version_count + " retained versions" : "",
-            formattedDate,
+            libraryDate(work.added_at),
         ]
             .filter(Boolean)
             .join(" · ");
@@ -323,6 +327,7 @@ function cardMenu(work) {
         ["Rename", () => editTitle(work, false)],
         ["Create a copy", () => editTitle(work, true)],
         ["Change thumbnail", () => thumbnailDialog(work)],
+        ["Replace", () => versionsDialog(work)],
         ["Video info", () => infoDialog(work, false)],
         ["Download", () => infoDialog(work, true)],
     ];
@@ -488,6 +493,71 @@ async function thumbnailDialog(work) {
         workDialogBody.append(video, label, frameButton);
         video.src = (await mediaTicket(work, hash)).preview;
     }
+}
+async function versionsDialog(work) {
+    const endpoint = workEndpoint(work) + "/versions";
+    const versions = await (await completed(await request(endpoint))).json();
+    const current = versions[0].key;
+    openWorkDialog("Replace video");
+    const save = async (response, label) => {
+        try {
+            workDialogStatus.textContent = "Preparing the video version…";
+            await completed(await response);
+            workDialog.close();
+            await load();
+            result.textContent = label;
+        }
+        catch (error) {
+            (workDialog.open ? workDialogStatus : result).textContent = String(error);
+        }
+    };
+    const uploadLabel = document.createElement("label");
+    const upload = document.createElement("input");
+    upload.type = "file";
+    upload.accept = ".mp4,.mov,.webm,.mkv";
+    uploadLabel.textContent = "Replacement video file";
+    uploadLabel.append(upload);
+    const replace = document.createElement("button");
+    replace.textContent = "Save as new version";
+    action(replace, async () => {
+        const video = upload.files?.[0];
+        if (!video) {
+            workDialogStatus.textContent = "Choose a replacement video file.";
+            return;
+        }
+        const inputs = new FormData();
+        inputs.append("video", video);
+        inputs.append("current", current);
+        await save(fetch(endpoint, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + key.value },
+            body: inputs,
+        }), "New version saved.");
+    });
+    const heading = document.createElement("h3");
+    heading.textContent = "Version history";
+    const list = document.createElement("ol");
+    for (const [index, version] of versions.entries()) {
+        const entry = document.createElement("li");
+        const media = version.video_files[0];
+        entry.textContent = [
+            version.current ? "Current version" : "Previous version " + index,
+            libraryDate(version.saved_at),
+            durationText(version.duration_seconds),
+            media ? media.format.toUpperCase() : "Video file needed",
+        ].filter(Boolean).join(" · ");
+        if (!version.current && media) {
+            const restore = document.createElement("button");
+            restore.textContent = "Restore previous version " + index;
+            action(restore, () => save(request(endpoint + "/restore", "POST", {
+                current,
+                restore: version.key,
+            }), "Previous version restored."));
+            entry.append(" ", restore);
+        }
+        list.append(entry);
+    }
+    workDialogBody.append(uploadLabel, replace, heading, list);
 }
 async function infoDialog(work, download) {
     const info = await getWorkInfo(work);
