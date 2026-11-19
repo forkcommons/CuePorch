@@ -29,8 +29,8 @@
       </table>
     </section>
     <form id="newEventForm" hidden>
-      <h2>New event</h2>
-      <label>Reuse event settings <select id="eventPreset"><option value="">Start from scratch</option></select></label>
+      <h2 id="eventEditorHeading">New event</h2>
+      <label id="eventReuse">Reuse event settings <select id="eventPreset"><option value="">Start from scratch</option></select></label>
       <label>Event type <select name="type"><option value="live">Live broadcast</option><option value="webinar">Webinar</option><option value="team">Team event</option><option value="learning">Online learning</option><option value="custom">Custom event</option></select></label>
       <label>Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000"></textarea></label>
@@ -60,10 +60,13 @@
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
       </fieldset>
       <button type="submit">Save event</button>
+      <button type="button" id="closeEventEditor">Close editor</button>
     </form>
     <section id="eventProduction" aria-labelledby="productionHeading" hidden>
       <h2 id="productionHeading">External encoder</h2>
       <p id="productionTitle"></p>
+      <button type="button" id="editEvent">Edit event</button>
+      <button type="button" id="configureEventRegistration">Registration</button>
       <button type="button" id="prepareEncoder">Prepare encoder</button>
       <button type="button" id="readEventHealth">Refresh stream status</button>
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
@@ -77,6 +80,7 @@
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
     </section>
+    {% include 'registration_editor.html' %}
   </main>
   <script type="module" src="{{ url_for('static', filename='ui/live_events.js') }}"></script>
 </body>

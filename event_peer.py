@@ -80,6 +80,8 @@ def status(video):
     state = video["state"]["id"]
     if not video["isLive"]:
         return dict(state="replay" if state == 1 else "preparing_replay", public=public, viewers=viewers)
+    if state == 5:
+        return dict(state="ended", public=public, viewers=viewers)
     published = state == 1 and bool(video.get("streamingPlaylists"))
     return dict(state="live" if published else "waiting_for_encoder", public=public, viewers=viewers)
 

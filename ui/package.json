@@ -3,7 +3,10 @@
   "version": "0.2.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json && node build_vendor.mjs"
+  },
+  "dependencies": {
+    "hls.js": "1.6.16"
   },
   "devDependencies": {
     "typescript": "5.9.3",

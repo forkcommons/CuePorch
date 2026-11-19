@@ -16,7 +16,9 @@ For same-link replacement on an existing PeerTube server, verify that `video_fil
 
 ## Live and replay
 
-Create a PeerTube live destination with live_destination.py. Supply PEERTUBE_USERNAME and PEERTUBE_PASSWORD privately. The command writes encoder settings to the specified private file and prints the embed. Send CivicCast's RTMP output to the corresponding address and stream key. The local sample maps 11935 to container port 1935. Remote encoders need the operator's protected ingest routing. Keep the local recording running independently.
+For scheduled events, connect a live-enabled PeerTube instance and open the event's production controls. The provisioned Compose host listens on the same RTMP port inside and outside the container so the returned encoder address uses the configured port. The local default is 11935. Existing hosts must advertise a reachable ingest hostname and port. Remote encoders need operator-controlled ingest routing.
+
+For a permanent station signal, create a PeerTube live destination with live_destination.py. Supply PEERTUBE_USERNAME and PEERTUBE_PASSWORD privately. The command writes encoder settings to the specified private file and prints the embed. Send CivicCast's RTMP output to the corresponding address and stream key. Keep the local recording running independently.
 
 Set a stable channel or meeting link with PUT /api/routes/channel/CHANNEL or /api/routes/meeting/MEETING, authorized with the operator credential. Supply revision, destination, description and public_authorized. For required civic records set public_record. The destination may be a PeerTube /videos/embed/UUID or CivicCast /api/public/embed-player/channel/CHANNEL. Choose the captioned CivicCast route until the actual hosted RTMP path carries selectable, synchronized live captions. For a station package the stable replay slug is the returned work ID. Use that same slug for the meeting's live route to preserve its URL at handoff.
 

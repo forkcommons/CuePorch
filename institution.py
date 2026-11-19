@@ -1124,7 +1124,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
-    library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+    library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator)
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

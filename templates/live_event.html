@@ -7,19 +7,27 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="live-event-page">
-  <main>
+  <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}">
     <header>
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
       {% if occurrence %}<p><time datetime="{{ occurrence.start }}">{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }})</time></p>{% endif %}
       <p role="status" id="eventStatus">{{ status }}</p>
     </header>
-    {% if address %}
-      <iframe title="Event video" src="{{ address }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
-    {% else %}
-      <button type="button" id="refreshEvent">Check stream status</button>
+    {% if registration %}
+      {% include 'viewer_registration.html' %}
     {% endif %}
+    <div id="eventPlayer" data-address="{{ address or '' }}">
+      {% if address and protected %}
+        <video controls playsinline aria-label="Event video"></video>
+      {% elif address %}
+        <iframe title="Event video" src="{{ address }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+      {% elif not registration and status != "This occurrence was withdrawn" %}
+        <button type="button" id="refreshEvent">Check stream status</button>
+      {% endif %}
+    </div>
   </main>
+  {% if protected and viewer_grant %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
   <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
 </body>
 </html>

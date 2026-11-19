@@ -1,7 +1,9 @@
 """Exercise the packaged calendar, publication switch and stable viewer address."""
 
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
 import subprocess
 import time
 from urllib.parse import urljoin, urlsplit
@@ -33,6 +35,7 @@ def check_event_calendar(page, base, auth):
     expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
     visible = page.get_by_role("link", name="Open event page").get_attribute("href")
     assert visible and urlsplit(visible).path == "/events/city-and-arts-live"
+    watch = urljoin(base, urlsplit(visible).path)
     guest = requests.get(visible, timeout=10)
     assert guest.status_code == 200 and "Scheduled" in guest.text and "<iframe" not in guest.text
     assert guest.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
@@ -74,9 +77,62 @@ def check_event_calendar(page, base, auth):
         "start": "2027-03-14T02:30", "end": "2027-03-14T04:00",
     }}
     assert requests.post(portal, json=invalid, headers=auth, timeout=10).status_code == 422
+    edit_url = f"{portal}/{original['id']}"
+    page.get_by_role("button", name="Open production for City and Arts Live", exact=False).first.click()
+    page.get_by_role("button", name="Edit event", exact=True).click()
+    editor.get_by_label("Title", exact=True).fill("City and Arts Encore")
+    editor.get_by_role("button", name="Save event").click()
+    expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+    assert "City and Arts Encore" in requests.get(visible, timeout=10).text
+    old_revision = requests.put(edit_url, json=original["event"] | {"revision": original["revision"]},
+                                headers=auth, timeout=10)
+    assert old_revision.status_code == 409
+    assert requests.put(edit_url, json=original["event"], timeout=10).status_code == 403
+    planned = original["occurrences"][0]["id"]
+    guest = page.context.browser.new_page()
+    try:
+        guest.goto(f"{watch}?occurrence={planned}")
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        page.get_by_role("button", name="Cancel this occurrence").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Occurrence withdrawn.")
+        expect(guest.locator("#eventStatus")).to_have_text("This occurrence was withdrawn", timeout=12000)
+        encoder = f"{edit_url}/{planned}/encoder"
+        assert requests.post(encoder, headers=auth, timeout=10).status_code == 409
+        other = requests.get(f"{watch}?occurrence={original['occurrences'][1]['id']}", timeout=10)
+        assert other.ok and "Scheduled" in other.text
+    finally:
+        guest.context.close()
+    registration_url = f"{edit_url}/registration"
+    page.get_by_role("button", name="Registration", exact=True).click()
+    registration = page.locator("#registrationEditor")
+    registration.get_by_label("Require registration before playback").check()
+    registration.get_by_label("Form heading").fill("Reserve a seat")
+    registration.get_by_label("Save UTM campaign fields").check()
+    registration.get_by_role("button", name="Save registration").click()
+    expect(page.locator("#registrationStatus")).to_have_text("Registration saved.")
+    guest = page.context.browser.new_page()
+    registration_page = f"{watch}?occurrence={original['occurrences'][1]['id']}&utm_source=screening"
+    try:
+        guest.goto(registration_page)
+        expect(guest.locator("#eventStatus")).to_have_text("Registration required")
+        assert requests.post(registration_page, data={"email": "audience@example.invalid"}, timeout=10).status_code == 403
+        form = guest.get_by_role("form", name="Reserve a seat")
+        form.get_by_label("Email").fill("audience@example.invalid")
+        form.get_by_role("button", name="Register and watch").click()
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        expect(form).to_have_count(0)
+        export_url = registration_url + "/export"
+        assert requests.get(export_url, timeout=10).status_code == 403
+        report = requests.get(export_url, headers=auth, timeout=10)
+        assert report.ok and "audience@example.invalid" in report.text and "screening" in report.text
+    finally:
+        guest.context.close()
     return dict(calendar_ui=True, daylight_saving_recurrence=True, rejects_skipped_hour=True,
                 overlap_warning=True, automatic_publication_and_opt_in_gate=True,
-                gate_switch_releases_same_event=True, public_waiting_room=True, operator_encoder_protected=True)
+                gate_switch_releases_same_event=True, public_waiting_room=True, operator_encoder_protected=True,
+                revision_preserves_link=True, prevents_stale_edits=True,
+                cancels_only_selected_occurrence=True, updates_open_waiting_room=True,
+                event_registration_preset_editor=True, authorized_csv_and_utm=True)
 
 
 def check_live_delivery(base, origin, keys, ffmpeg, port):
@@ -127,29 +183,17 @@ def check_live_delivery(base, origin, keys, ffmpeg, port):
             assert guest.locator('iframe[title="Event video"]').count() == 0
             gate = base + "/api/policy/replay"
             requests.put(gate, json={"required": True}, headers=auth, timeout=10).raise_for_status()
-            with subprocess.Popen(
-                [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
-                 "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=550",
-                 "-t", "65", "-c:v", "libx264", "-preset", "veryfast", "-g", "48",
-                 "-sc_threshold", "0", "-c:a", "aac", "-f", "flv", f"{server}/{key}"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            ) as encoder:
-                try:
-                    wait_for_delivery(production, auth, "live", 45, encoder)
-                    hosted, live_width, _ = play_event(guest, stable, "Live")
-                    assert encoder.poll() is None, "Playback started after the live encoder ended"
-                    assert key not in guest.content()
-                    print(f"Guest decoded live video at {live_width}px", flush=True)
-                    assert encoder.wait(timeout=75) == 0, "The installed encoder stream failed"
-                finally:
-                    if encoder.poll() is None:
-                        encoder.terminate()
-                        encoder.wait(timeout=10)
+            with send_signal(ffmpeg, server, key, 65) as encoder:
+                wait_for_delivery(production, auth, "live", 45, encoder)
+                hosted, live_width, _ = play_event(guest, stable, "Live")
+                assert encoder.poll() is None, "Playback started after the live encoder ended"
+                assert key not in guest.content()
+                print(f"Guest decoded live video at {live_width}px", flush=True)
+                assert encoder.wait(timeout=75) == 0, "The installed encoder stream failed"
             uid = urlsplit(hosted).path.rsplit("/", 1)[-1]
             remote_api = f"{origin}/api/v1/videos/{uid}"
             action = f"{base}/api/actions/live-replay-{entry['id']}-{session['id']}"
-            # PeerTube 8.3.2 waits five minutes after RTMP disconnect before turning the live into a replay.
+            # PeerTube waits five minutes after RTMP disconnect before turning the live into a replay.
             replay_deadline = time.monotonic() + 420
             while time.monotonic() < replay_deadline:
                 response = requests.get(action, headers=auth, timeout=10)
@@ -228,3 +272,94 @@ def play_event(page, stable, status):
     )
     assert width >= 240, f"Expected a decoded video rendition, got {width}px"
     return address, width, duration
+
+
+@contextmanager
+def send_signal(ffmpeg, server, key, seconds):
+    with subprocess.Popen(
+        [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
+         "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=550",
+         "-t", str(seconds), "-c:v", "libx264", "-preset", "veryfast", "-g", "48",
+         "-sc_threshold", "0", "-c:a", "aac", "-f", "flv", f"{server}/{key}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ) as encoder:
+        try:
+            yield encoder
+        finally:
+            if encoder.poll() is None:
+                encoder.terminate()
+                encoder.wait(timeout=10)
+
+
+def check_registered_live(base, origin, keys, home, ffmpeg, port):
+    assert urlsplit(origin).hostname in ("localhost", "127.0.0.1")
+    now = datetime.now(timezone.utc)
+    date = lambda delta: (now + timedelta(minutes=delta)).strftime("%Y-%m-%dT%H:%M")
+    event = dict(title="Installed registered webinar", slug="installed-registered-webinar", visibility="public",
+                 type="webinar", latency="standard", save_replay=False,
+                 schedule=dict(timezone="UTC", start=date(-1), end=date(12), repeat="none"))
+    auth = {"Authorization": "Bearer " + keys["operator"]}
+    portal = base + "/api/live-events"
+    response = requests.post(portal, json=event, headers=auth, timeout=10)
+    response.raise_for_status()
+    entry = response.json()
+    (occurrence,) = entry["occurrences"]
+    uid, opens = entry["id"], occurrence["id"]
+    registration = f"{portal}/{uid}/registration"
+    status = requests.get(registration, headers=auth, timeout=10)
+    status.raise_for_status()
+    form = status.json()
+    form.update(settings=form["settings"] | {"enabled": True, "heading": "Sign up for the live webinar"})
+    update = requests.put(registration, json=form, headers=auth, timeout=10)
+    update.raise_for_status()
+    production = f"{portal}/{uid}/{opens}"
+    setup = requests.post(production + "/encoder", headers=auth, timeout=25)
+    assert setup.ok, f"Registered encoder returned HTTP {setup.status_code}"
+    encoder = setup.json()
+    endpoint = urlsplit(encoder["server"])
+    assert not encoder["public"] and endpoint.scheme == "rtmp" and endpoint.port == port
+    assert endpoint.hostname in ("localhost", "127.0.0.1") and endpoint.path == "/live"
+    with closing(sqlite3.connect(home / "institution.sqlite")) as database:
+        (hosted,) = database.execute("SELECT remote FROM live_occurrence WHERE event=? AND opens=?", (uid, opens)).fetchone()
+    source = f"{origin}/api/v1/videos/{hosted}"
+    watch = base + entry["watch"] + f"?occurrence={opens}"
+    outside = {"Accept": "application/json"}
+    with sync_playwright() as pw:
+        browser = chromium(pw)
+        try:
+            attendee, anonymous = browser.new_page(), browser.new_page()
+            attendee.goto(watch)
+            signup = attendee.get_by_role("form", name="Sign up for the live webinar")
+            signup.get_by_label("Email").fill("viewer@example.invalid")
+            signup.get_by_role("button", name="Register and watch").click()
+            expect(signup).to_have_count(0)
+            expect(attendee.locator("#eventStatus")).to_have_text("Waiting for the encoder")
+            with send_signal(ffmpeg, encoder["server"], encoder["key"], 65) as process:
+                wait_for_delivery(production, auth, "live", 45, process)
+                expect(attendee.locator("#eventStatus")).to_have_text("Live", timeout=16000)
+                video = attendee.locator("video")
+                video.evaluate("v => {v.muted = true; void v.play().catch(() => {});}")
+                attendee.wait_for_function("document.querySelector('video').videoWidth >= 240", timeout=25000)
+                width = video.evaluate("v => v.videoWidth")
+                media = urljoin(watch, attendee.locator("#eventPlayer").get_attribute("data-address"))
+                assert urlsplit(media).path.startswith("/event-media/")
+                assert requests.get(media, timeout=10).ok
+                assert requests.get(source, timeout=10).status_code in (401, 403, 404)
+                anonymous.goto(watch)
+                expect(anonymous.locator("#eventStatus")).to_have_text("Registration required")
+                assert not requests.get(watch, headers=outside, timeout=10).json()["address"]
+                assert anonymous.locator("video, iframe[title='Event video']").count() == 0
+                current = update.json()
+                current["settings"]["heading"] = "Register for the updated webinar"
+                requests.put(registration, json=current, headers=auth, timeout=10).raise_for_status()
+                assert requests.get(media, timeout=10).status_code == 404
+                expect(attendee.locator("video")).to_have_count(0, timeout=12000)
+                removed = requests.delete(production + "/delivery", headers=auth, timeout=25)
+                assert removed.status_code == 204
+                print(f"Registered guest decoded private {width}px live video", flush=True)
+            return dict(decoded_video_width=width, registration_required=True, peertube_copy_private=True,
+                        waiting_room_opens_player_automatically=True, amended_form_revokes_media=True,
+                        withdrawal_succeeded_while_live=True)
+        finally:
+            browser.close()

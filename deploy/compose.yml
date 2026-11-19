@@ -26,7 +26,7 @@ services:
         condition: service_started
     ports:
       - "127.0.0.1:${HTTP_PORT:-19000}:9000"
-      - "127.0.0.1:${RTMP_PORT:-11935}:1935"
+      - "127.0.0.1:${RTMP_PORT:-11935}:${RTMP_PORT:-11935}"
     environment:
       PEERTUBE_WEBSERVER_HOSTNAME: ${PUBLIC_HOST:-localhost}
       PEERTUBE_WEBSERVER_PORT: ${PUBLIC_PORT:-19000}
@@ -45,6 +45,7 @@ services:
       PEERTUBE_TRANSCODING_HLS_ENABLED: "true"
       PEERTUBE_LIVE_ENABLED: "true"
       PEERTUBE_LIVE_ALLOW_REPLAY: "true"
+      PEERTUBE_LIVE_RTMP_PORT: "${RTMP_PORT:-11935}"
       NODE_CONFIG: '{"video_file":{"update":{"enabled":true}}}'
     volumes:
       - media:/data

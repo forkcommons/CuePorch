@@ -13,7 +13,7 @@ from installed_versions import check_hosted_versions, generate_replacement
 from installed_migrated_privacy import check_hosted_handoff
 from installed_languages import check_hosted_languages
 from installed_interactivity import check_hosted_chapters
-from installed_events import check_live_delivery
+from installed_events import check_live_delivery, check_registered_live
 import psutil
 
 p = argparse.ArgumentParser()
@@ -24,9 +24,12 @@ p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cab
 modes = p.add_mutually_exclusive_group()
 modes.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
 modes.add_argument("--live-rtmp-port", type=int, help="Exercise event production on an isolated local RTMP listener")
+p.add_argument("--registered-event", action="store_true", help="Test an audience-registration event instead")
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
+if a.registered_event and not a.live_rtmp_port:
+    p.error("--registered-event requires --live-rtmp-port")
 
 
 def check_station_review(base, keys, package):
@@ -123,8 +126,10 @@ with tempfile.TemporaryDirectory() as tmp:
             keys = json.loads((home / "operator.json").read_text())
             evidence = {"real_peertube": True}
             if a.live_rtmp_port:
-                ffmpeg = a.launcher.resolve().parent / "service/_internal/media-tools/ffmpeg.exe"
-                evidence["event_delivery"] = check_live_delivery(base, a.origin, keys, ffmpeg, a.live_rtmp_port)
+                tool = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+                ffmpeg = a.launcher.resolve().parent / "service/_internal/media-tools" / tool
+                evidence["event_delivery"] = (check_registered_live(base, a.origin, keys, home, ffmpeg, a.live_rtmp_port)
+                                              if a.registered_event else check_live_delivery(base, a.origin, keys, ffmpeg, a.live_rtmp_port))
             elif not a.station_only:
                 transfer, first = walkthrough(base, keys, started)
                 evidence.update(

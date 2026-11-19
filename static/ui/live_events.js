@@ -1,3 +1,4 @@
+import { setupRegistration } from "./video_registration.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -17,6 +18,8 @@ const root = "/api/live-events";
 const publicBase = document.body.dataset.publicUrl || location.origin;
 let calendar;
 let active;
+let editing;
+let registrationEvent;
 let pending = false;
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function request(path, method = "GET", body) {
@@ -51,14 +54,34 @@ async function action(work, message = "") {
 function mediaPath(suffix) {
     return `${root}/${active.event.id}/${active.instance.id}/${suffix}`;
 }
+const registrationEditor = element("registrationEditor");
+const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
+    const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
+        headers: { Authorization: "Bearer " + credential.value },
+    });
+    if (!response.ok)
+        throw new Error("Could not download the registrants.");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = "cueporch-event-registrants.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
 function choose(event, instance) {
+    if (registrationEvent !== event.id) {
+        registrationEditor.hidden = true;
+        registrationEvent = undefined;
+    }
     active = { event, instance };
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
-    button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn"].includes(instance.delivery);
-    button("withdrawEvent").disabled = !calendar.host_ready || ["scheduled", "withdrawn"].includes(instance.delivery);
+    button("editEvent").disabled = !event.editable;
+    button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
+    button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
+    button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
+        (instance.delivery !== "scheduled" && !calendar.host_ready);
     element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
     const watch = element("eventWatch");
     element("eventShare").hidden = !event.watch;
@@ -110,17 +133,49 @@ identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
 if (credential.value)
     void action(load);
 button("calendarRefresh").onclick = () => void action(load);
-button("newEvent").onclick = () => {
+function openEditor(current) {
+    editing = current;
     form.reset();
-    field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    element("recurringFields").hidden = true;
+    element("eventEditorHeading").textContent = current ? "Edit event" : "New event";
+    element("eventReuse").hidden = Boolean(current);
+    field("slug").readOnly = Boolean(current);
+    const values = current?.event;
+    if (values) {
+        for (const name of ["title", "description", "type", "visibility", "latency"])
+            field(name).value = values[name];
+        field("save_replay").checked = values.save_replay;
+        const schedule = values.schedule;
+        for (const name of ["timezone", "start", "end", "repeat"])
+            field(name).value = schedule[name];
+        field("interval").value = String(schedule.interval);
+        field("count").value = schedule.count ? String(schedule.count) : "";
+        field("until").value = schedule.until || "";
+        for (const weekday of form.querySelectorAll('input[name="weekday"]')) {
+            weekday.checked = schedule.weekdays.includes(Number(weekday.value));
+        }
+        field("slug").value = current.slug;
+    }
+    else {
+        field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    }
+    recurrence();
     form.hidden = false;
     field("title").focus();
-};
-field("repeat").onchange = () => {
+}
+function recurrence() {
     element("recurringFields").hidden = field("repeat").value === "none";
     element("eventWeekdays").hidden = field("repeat").value !== "weeks";
-};
+}
+button("newEvent").onclick = () => openEditor();
+button("editEvent").onclick = () => openEditor(active?.event);
+button("configureEventRegistration").onclick = () => void action(async () => {
+    if (active) {
+        registrationEvent = active.event.id;
+        await openRegistration();
+    }
+});
+button("closeEventEditor").onclick = () => { form.hidden = true; };
+field("repeat").onchange = recurrence;
 preset.onchange = () => {
     const value = calendar.events.find((entry) => entry.id === preset.value)?.event;
     if (!value)
@@ -138,7 +193,10 @@ form.onsubmit = (event) => {
         const schedule = { timezone: field("timezone").value, start: field("start").value, end: field("end").value,
             repeat, interval: Number(field("interval").value || 1), weekdays: read.getAll("weekday").map(Number),
             until: repeat !== "none" && field("until").value || null, count: repeat !== "none" && Number(field("count").value) || null };
-        const created = await request(root, "POST", {
+        const target = editing ? root + "/" + editing.id : root;
+        const method = editing ? "PUT" : "POST";
+        const created = await request(target, method, {
+            revision: editing?.revision,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
             save_replay: field("save_replay").checked, schedule,
@@ -172,4 +230,3 @@ button("withdrawEvent").onclick = () => void action(async () => {
     await request(mediaPath("delivery"), "DELETE");
     await load();
 }, "Occurrence withdrawn.");
-export {};

@@ -5,3 +5,5 @@ dist/
 target/
 *.pyc
 *.spec
+static/vendor/hls.min.js
+static/vendor/hls-LICENSE.txt

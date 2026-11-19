@@ -7,11 +7,14 @@ import uuid
 
 from filelock import FileLock, Timeout
 from flask import abort, make_response, render_template, request, url_for
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 
+from event_media import Gateway, HLS_PREFIXES, root_path
 import event_peer
 import event_schedule
 from library_interactivity import text_field
+import library_registration
 
 
 SCHEMA = """
@@ -47,6 +50,25 @@ def occurrence(con, uid, opens):
     return con.execute("SELECT * FROM live_occurrence WHERE event=? AND opens=?", (uid, opens)).fetchone()
 
 
+def publishing_action(con, action, uid, event):
+    if event["visibility"] != "public":
+        return None
+    key = f"live-event-{uid}-{uuid.uuid4().hex}"
+    action(con, key, "publication", dict(title=event["title"], event=uid, visibility="public"))
+    return key
+
+
+def supersede_publication(con, key):
+    if key:
+        con.execute("UPDATE action SET status='rejected',decision='superseded' WHERE id=? AND status='waiting'", (key,))
+
+
+def editable(con, uid):
+    return con.execute(
+        "SELECT 1 FROM live_occurrence WHERE event=? AND delivery<>'withdrawn' LIMIT 1", (uid,)
+    ).fetchone() is None
+
+
 def lock_event(database, uid, timeout=1):
     lock_root = database.parent / "event-production"
     lock_root.mkdir(exist_ok=True)
@@ -70,6 +92,7 @@ def publish_replays(tx, database, origin, connect, action):
                     if saved["delivery"] != "ready":
                         continue
                     _, event = read(con, uid)
+                    registered = library_registration.active(con, "event", uid) is not None
                 host = connect(origin)
                 if event_peer.observe(host, remote)["state"] != "replay":
                     continue
@@ -77,7 +100,8 @@ def publish_replays(tx, database, origin, connect, action):
                     decision = action(con, f"live-replay-{uid}-{opens}", "replay",
                                       dict(title=event["title"], event=uid, occurrence=opens))
                 if decision == "eligible":
-                    host.set_public(remote, True)
+                    if not registered:
+                        host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
         except (Timeout, ValueError, requests.RequestException, KeyError):
@@ -110,7 +134,7 @@ def summary(con, row, event, first, last):
         target = occurrence(con, row["id"], upcoming["id"])
         upcoming["delivery"] = target["delivery"] if target else "scheduled"
         sessions.append(upcoming)
-    return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event,
+    return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
                 publication=visible, occurrences=sessions,
                 watch=url_for("event_page", slug=row["slug"]) if visible == "eligible" else None,
                 embed=url_for("event_embed", slug=row["slug"]) if visible == "eligible" else None)
@@ -141,7 +165,12 @@ def overlapping(entries):
     return sorted(conflicts)
 
 
-def register(app, tx, staff, action, database, public_url):
+def register(app, tx, staff, action, database, public_url, signing_key):
+    media = Gateway()
+    forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
+    guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
+    files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
+
     def locked(uid):
         if not re.fullmatch(r"[a-f0-9]{32}", uid):
             abort(404)
@@ -169,14 +198,58 @@ def register(app, tx, staff, action, database, public_url):
                 abort(422, "Choose a link name with letters, numbers and hyphens.")
             if con.execute("SELECT 1 FROM live_event WHERE slug=?", (slug,)).fetchone():
                 abort(409, "This event link name is already used.")
-            approval = None
-            if event["visibility"] == "public":
-                approval = "live-event-" + uid
-                action(con, approval, "publication", dict(title=event["title"], event=uid, visibility="public"))
+            approval = publishing_action(con, action, uid, event)
             con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, uuid.uuid4().hex,
                         json.dumps(event), approval, datetime.now(timezone.utc).isoformat()))
             row, _ = read(con, uid)
             return summary(con, row, event, first, last), 201
+
+    @app.put("/api/live-events/<uid>")
+    def revise_event(uid):
+        staff()
+        first, last = calendar_window()
+        body = request.get_json()
+        changed = edit(body)
+        try:
+            with locked(uid), tx() as con:
+                row, prior = read(con, uid)
+                if body.get("revision") != row["revision"]:
+                    abort(409, "This event changed. Open it again before saving.")
+                if changed == prior:
+                    return summary(con, row, prior, first, last)
+                if not editable(con, uid):
+                    abort(409, "Withdraw prepared occurrences before changing this event.")
+                supersede_publication(con, row["publication"])
+                approval = publishing_action(con, action, uid, changed)
+                con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
+                            (uuid.uuid4().hex, json.dumps(changed), approval, uid))
+                row, _ = read(con, uid)
+                return summary(con, row, changed, first, last)
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+
+    @app.route("/api/live-events/<uid>/registration", methods=["GET", "PUT"])
+    def event_registration(uid):
+        staff()
+        try:
+            with locked(uid), tx() as con:
+                read(con, uid)
+                if request.method == "PUT":
+                    body = request.get_json()
+                    proposed = library_registration.validation(body.get("settings") if isinstance(body, dict) else None)
+                    active = library_registration.active(con, "event", uid) is not None
+                    if proposed["enabled"] != active and not editable(con, uid):
+                        abort(409, "Set whether viewers register before preparing the encoder.")
+                return library_registration.operator_form(con, "event", uid)
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+
+    @app.get("/api/live-events/<uid>/registration/export")
+    def export_event_registration(uid):
+        staff()
+        with tx() as con:
+            read(con, uid)
+            return library_registration.export(con, "event", uid)
 
     def selected_open(event, opens):
         try:
@@ -203,12 +276,14 @@ def register(app, tx, staff, action, database, public_url):
                     if visible in ("waiting", "rejected"):
                         abort(409, "This event's publication is waiting for approval or was declined.")
                     saved = occurrence(con, uid, opens)
+                    registered = library_registration.active(con, "event", uid) is not None
                     state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
                     if state in ("withdrawing", "withdrawn"):
                         abort(409, "This occurrence is being withdrawn or has been withdrawn.")
                     if state == "replay":
                         abort(409, "This occurrence already has a finished recording.")
                 with event_peer.connected_host(expected) as host:
+                    broadcast = visible == "eligible" and not registered
                     if saved:
                         remote = saved["remote"]
                     else:
@@ -217,11 +292,11 @@ def register(app, tx, staff, action, database, public_url):
                             con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)",
                                         (uid, opens, host.origin, remote, "staged"))
                     if state != "ready":
-                        event_peer.release_remote(host, remote, event, visible == "eligible")
+                        event_peer.release_remote(host, remote, event, broadcast)
                         with tx() as con:
                             con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
                                         (uid, opens))
-                    return dict(event_peer.encoder(host, remote), public=visible == "eligible")
+                    return dict(event_peer.encoder(host, remote), public=broadcast)
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except (ValueError, requests.RequestException, KeyError):
@@ -251,7 +326,10 @@ def register(app, tx, staff, action, database, public_url):
                     _, event = read(con, uid)
                     selected_open(event, opens)
                     target = occurrence(con, uid, opens)
-                    if target is None or target["delivery"] == "withdrawn":
+                    if target is None:
+                        con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,'withdrawn')", (uid, opens, "", ""))
+                        return "", 204
+                    if target["delivery"] == "withdrawn":
                         return "", 204
                     con.execute("UPDATE live_occurrence SET delivery='withdrawing' WHERE event=? AND opens=?",
                                 (uid, opens))
@@ -267,13 +345,20 @@ def register(app, tx, staff, action, database, public_url):
             abort(502, "The CuePorch player is closed. Retry to withdraw the copy from the video host.")
 
     def viewer(slug, embed):
+        json_status = request.accept_mimetypes.best == "application/json"
+        grant = None
+        enrollment = None
+        form_error = None
         with tx() as con:
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
                 abort(404)
             now = datetime.now(timezone.utc)
             upcoming = list(event_schedule.occurrences(event["schedule"], now - timedelta(days=1), now + timedelta(days=366)))
-            if opens := request.args.get("occurrence", type=int):
+            if "occurrence" in request.args:
+                opens = request.args.get("occurrence", type=int)
+                if opens is None:
+                    abort(404)
                 shown = selected_open(event, opens)
             else:
                 shown = next((value for value in upcoming if datetime.fromisoformat(value["end"]) > now), None)
@@ -285,31 +370,98 @@ def register(app, tx, staff, action, database, public_url):
                     if saved:
                         shown = selected_open(event, saved["opens"])
             delivery = occurrence(con, row["id"], shown["id"]) if shown else None
+            withdrawn = delivery and delivery["delivery"] in ("withdrawing", "withdrawn")
+            form = library_registration.active(con, "event", row["id"]) if shown and not withdrawn else None
+            if form:
+                scope = [row["id"], row["revision"], shown["id"], form["revision"], embed]
+                if request.method == "POST":
+                    if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
+                        abort(403, "Open the registration form again.")
+                    form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
+                    if not form_error:
+                        grant = guests.dumps(scope)
+                elif token := request.headers.get("X-CuePorch-Event-Viewer"):
+                    if valid_ticket(guests, token, scope, 12 * 3600):
+                        grant = token
+                if not grant and not json_status:
+                    enrollment = forms.dumps(scope)
         address = None
+        protected = bool(form)
         status = "Scheduled"
-        if delivery and delivery["delivery"] in ("withdrawing", "withdrawn"):
+        if withdrawn:
             status = "This occurrence was withdrawn"
-        if delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
+        if protected and not grant:
+            status = "Registration required"
+        elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
             try:
-                observed = event_peer.public_status(delivery["origin"], delivery["remote"])
-                if observed["public"] and observed["state"] in ("live", "replay"):
+                if protected:
+                    raw = media.metadata(delivery["origin"], delivery["remote"])
+                    observed = event_peer.status(raw)
+                    available = (not observed["public"] and (observed["state"] == "live" or
+                                 (observed["state"] == "replay" and delivery["delivery"] == "replay")))
+                    if available:
+                        playlist = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
+                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"])
+                        gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
+                        session = files.dumps(scope + [delivery["remote"], gateway])
+                        address = url_for("event_media_file", token=session, filename=filename)
+                        status = "Live" if observed["state"] == "live" else "Replay"
+                else:
+                    observed = event_peer.public_status(delivery["origin"], delivery["remote"])
+                if not protected and observed["public"] and observed["state"] in ("live", "replay"):
                     address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
                     status = "Live" if observed["state"] == "live" else "Replay"
                 elif observed["state"] == "waiting_for_encoder":
                     status = "Waiting for the encoder"
-                elif observed["state"] == "preparing_replay":
-                    status = "Preparing the replay"
-            except (ValueError, requests.RequestException, KeyError):
+                elif observed["state"] in ("preparing_replay", "ended"):
+                    status = "Preparing the replay" if event["save_replay"] else "This event has ended"
+                elif protected and observed["state"] == "replay" and not address:
+                    status = "The replay is awaiting release"
+            except (ValueError, requests.RequestException, KeyError, StopIteration):
                 status = "The stream is unavailable"
-        response = make_response(render_template("live_event.html", event=event, occurrence=shown,
-                                                address=address, status=status, embed=embed))
+        view = (dict(status=status, address=address, protected=protected)
+                if json_status
+                else render_template("live_event.html", event=event, occurrence=shown,
+                                     address=address, status=status, embed=embed, protected=protected,
+                                     viewer_grant=grant, registration=form if enrollment else None,
+                                     enrollment=enrollment, registration_error=form_error))
+        response = make_response(view, 422 if form_error else 200)
+        response.headers["Vary"] = "Accept"
         response.headers["Content-Security-Policy"] = "frame-ancestors " + ("*" if embed else "'none'")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
-    @app.get("/events/<slug>")
+    @app.route("/events/<slug>", methods=["GET", "POST"])
     def event_page(slug):
         return viewer(slug, False)
 
-    @app.get("/events/<slug>/embed")
+    @app.route("/events/<slug>/embed", methods=["GET", "POST"])
     def event_embed(slug):
         return viewer(slug, True)
+
+    @app.get("/event-media/<token>/<filename>")
+    def event_media_file(token, filename):
+        try:
+            uid, revision, opens, form_revision, _, remote, gateway = files.loads(token, max_age=12 * 3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        with tx() as con:
+            row, event = read(con, uid)
+            delivery = occurrence(con, uid, opens)
+            form = library_registration.active(con, "event", uid)
+            if (row["revision"] != revision or publication(con, row, event) != "eligible" or
+                    not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
+                    not form or form["revision"] != form_revision):
+                abort(404)
+        try:
+            return media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
+        except (ValueError, requests.RequestException):
+            abort(404)
+
+
+def valid_ticket(signer, token, scope, age):
+    try:
+        return signer.loads(token, max_age=age) == scope
+    except BadSignature:
+        return False
