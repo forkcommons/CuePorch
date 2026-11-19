@@ -24,6 +24,7 @@ import event_replay_captions
 import event_schedule
 import event_scenes
 import event_simulcast
+import event_slide_decks
 import event_speakers
 from catalog import video_version_key
 from library_actions import title_for
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
-       + event_playlist.SCHEMA)
+       + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -399,6 +400,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
     event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
+    event_slide_decks.register(app, tx, staff, database, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access)
     event_captions.register(app, tx, staff, operator_chat, audience_chat)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)

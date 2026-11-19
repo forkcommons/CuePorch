@@ -4,12 +4,16 @@ type Layout = Composition["layout"] | "title";
 interface Scene {
   id: string; title: string; subtitle: string; layout: Layout;
   background: Composition["background"]; color: string; headline: string; credit: string;
-  image: string | null; clip: [string, string] | null;
+  image: string | null; clip: [string, string] | null; presentation?: string | null;
 }
 interface Brand {primary: string; text: string; logo: string | null;}
+interface Presentation {id: string; title: string; pages: number; format: "pdf" | "pptx";}
 interface Deck {revision: string | null; brand: Brand; scenes: Scene[]; templates: Partial<Scene>[];
-  images: {id: string; title: string}[]; videos: {work: string; cut: string; title: string}[];}
-interface SceneFrame {scene: Scene; brand: Brand; image?: HTMLImageElement; logo?: HTMLImageElement; video?: HTMLVideoElement;}
+  images: {id: string; title: string}[]; videos: {work: string; cut: string; title: string}[]; presentations: Presentation[];}
+interface ShownSlide {presentation: Presentation; page: number; image: HTMLImageElement;}
+interface SceneFrame {
+  scene: Scene; brand: Brand; image?: HTMLImageElement; logo?: HTMLImageElement; video?: HTMLVideoElement; slide?: ShownSlide;
+}
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const button = (id: string) => element<HTMLButtonElement>(id);
@@ -24,17 +28,17 @@ function placeImage(context: CanvasRenderingContext2D, image: HTMLImageElement, 
 
 function paint(context: CanvasRenderingContext2D, frame: SceneFrame, camera: HTMLVideoElement | null,
   screen: HTMLVideoElement | null, lowerThird: boolean) {
-  const {scene, brand, image, logo, video} = frame;
+  const {scene, brand, image, logo, video, slide} = frame;
   const {width, height} = context.canvas;
   const isTitle = scene.layout === "title";
   const layout = scene.layout === "title" ? "screen" : scene.layout;
   drawRecording(context, {layout, color: scene.color, background: scene.background}, isTitle ? null : camera,
-    video || (isTitle ? null : screen));
+    video || slide?.image || (isTitle ? null : screen));
   context.save();
   context.fillStyle = brand.text;
   context.textBaseline = "middle";
-  if (!video && image && isTitle) placeImage(context, image, 0, 0, width, height);
-  else if (!video && isTitle) {
+  if (!video && !slide && image && isTitle) placeImage(context, image, 0, 0, width, height);
+  else if (!video && !slide && isTitle) {
     context.textAlign = "center";
     context.font = `600 ${Math.max(14, height * .09)}px system-ui`;
     context.fillText(scene.title, width / 2, height * .44, width * .90);
@@ -60,6 +64,8 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   const panel = element<HTMLDetailsElement>("studioScenes");
   const form = element<HTMLFormElement>("studioSceneForm");
   const brandForm = element<HTMLFormElement>("studioBrandForm");
+  const uploadForm = element<HTMLFormElement>("studioSlideUpload");
+  const presentationChoice = field<HTMLSelectElement>(form, "presentation");
   const selectedTemplate = element<HTMLSelectElement>("studioTemplate");
   const report = element("studioSceneStatus");
   const preview = element<HTMLCanvasElement>("studioPreview").getContext("2d", {alpha: false})!;
@@ -67,6 +73,7 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   let deck: Deck | undefined;
   let selected: string | undefined;
   let current: SceneFrame | undefined;
+  let previewSlide: ShownSlide | undefined;
   let lowerThird = false;
   let working = false;
 
@@ -85,13 +92,20 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   function readForm(): Scene {
     const all = Object.fromEntries(new FormData(form));
     const clip = deck?.videos.find((video) => JSON.stringify([video.work, video.cut]) === all.clip);
-    return {...all, id: selected, image: all.image || null, clip: clip ? [clip.work, clip.cut] : null} as unknown as Scene;
+    return {...all, id: selected, image: all.image || null, clip: clip ? [clip.work, clip.cut] : null,
+      presentation: all.presentation || null} as unknown as Scene;
+  }
+
+  function choosePresentations(items: Presentation[]) {
+    presentationChoice.replaceChildren(new Option("None", ""),
+      ...items.map((item) => new Option(`${item.title} (${item.format.toUpperCase()}, ${item.pages} slides)`, item.id)));
   }
 
   function showDeck(value: Deck) {
     deck = value;
     button("addStudioScene").disabled = false;
     button("saveStudioBrand").disabled = false;
+    button("importStudioSlides").disabled = false;
     selectedTemplate.replaceChildren(...value.templates.map((item, index) => new Option(item.title, String(index))));
     for (const [target, key] of [[form, "image"], [brandForm, "logo"]] as const) {
       field<HTMLSelectElement>(target, key).replaceChildren(new Option("None", ""),
@@ -99,6 +113,7 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     }
     field<HTMLSelectElement>(form, "clip").replaceChildren(new Option("None", ""),
       ...value.videos.map((video) => new Option(video.title, JSON.stringify([video.work, video.cut]))));
+    choosePresentations(value.presentations);
     for (const [key, setting] of Object.entries(value.brand)) field(brandForm, key).value = setting || "";
     const list = element("studioSceneList");
     list.replaceChildren();
@@ -129,28 +144,52 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     const editing = value.scenes.find(scene => scene.id === selected);
     form.hidden = !editing;
     if (editing) {
+      presentationChoice.value = "";
       for (const [key, setting] of Object.entries(editing)) {
         if (key === "clip") field(form, key).value = setting ? JSON.stringify(setting) : "";
         else if (key !== "id") field(form, key).value = typeof setting === "string" ? setting : "";
       }
       void asset(editing.image).catch(() => {});
+      void loadSlidePreview();
     }
     void asset(value.brand.logo).catch(() => {});
+  }
+
+  async function readImage(address: string) {
+    const response = await fetch(address, {headers: {Authorization: "Bearer " + credential()}});
+    if (!response.ok) throw new Error("A selected image or slide is unavailable.");
+    const url = URL.createObjectURL(await response.blob());
+    const image = new Image();
+    image.src = url;
+    try { await image.decode(); } catch { URL.revokeObjectURL(url); throw new Error("A selected image could not be decoded."); }
+    return {image, url};
   }
 
   async function asset(uid: string | null) {
     if (!uid) return undefined;
     const current = previews.get(uid);
     if (current) return current.image;
-    const response = await fetch(`${path}/image/${encodeURIComponent(uid)}`, {headers: {Authorization: "Bearer " + credential()}});
-    if (!response.ok) throw new Error("A selected library image is unavailable.");
-    const url = URL.createObjectURL(await response.blob());
-    const image = new Image();
-    image.src = url;
-    try { await image.decode(); } catch { URL.revokeObjectURL(url); throw new Error("A selected graphic could not be decoded."); }
+    const {image, url} = await readImage(`${path}/image/${encodeURIComponent(uid)}`);
     if (previews.has(uid)) URL.revokeObjectURL(url);
     else previews.set(uid, {image, url});
     return previews.get(uid)!.image;
+  }
+
+  async function loadSlide(presentation: Presentation, page: number): Promise<ShownSlide> {
+    const {image, url} = await readImage(`${path}/slides/${encodeURIComponent(presentation.id)}/${page}`);
+    URL.revokeObjectURL(url);
+    return {presentation, page, image};
+  }
+
+  async function loadSlidePreview() {
+    const presentation = deck?.presentations.find((item) => item.id === presentationChoice.value);
+    if (!presentation) { previewSlide = undefined; return; }
+    try {
+      const result = await loadSlide(presentation, 0);
+      if (presentationChoice.value === presentation.id) previewSlide = result;
+    } catch (error) {
+      if (presentationChoice.value === presentation.id) report.textContent = String(error);
+    }
   }
 
   async function loadClip(clip: Scene["clip"]) {
@@ -203,6 +242,13 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     button("clearStudioScene").disabled = !current;
     button("toggleStudioClip").hidden = button("restartStudioClip").hidden = !current?.video;
     button("toggleStudioClip").textContent = current?.video?.paused ? "Play clip" : "Pause clip";
+    const slide = current?.slide;
+    element("studioSlideControls").hidden = !slide;
+    if (slide) {
+      button("previousStudioSlide").disabled = slide.page === 0;
+      button("nextStudioSlide").disabled = slide.page + 1 >= slide.presentation.pages;
+      element("studioSlideNumber").textContent = `Slide ${slide.page + 1} of ${slide.presentation.pages}`;
+    }
     changed();
   }
 
@@ -219,6 +265,27 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
       const brand = {primary: field(brandForm, "primary").value, text: field(brandForm, "text").value,
         logo: field(brandForm, "logo").value || null};
       await save(deck!.scenes, brand);
+    });
+  };
+  uploadForm.onsubmit = (event) => {
+    event.preventDefault();
+    run(async () => {
+      report.textContent = "Preparing the presentation…";
+      const response = await fetch(`${path}/slides`, {
+        method: "POST", headers: {Authorization: "Bearer " + credential()}, body: new FormData(uploadForm),
+      });
+      if (!response.ok) {
+        const detail = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p")?.textContent;
+        throw new Error(detail || "The presentation could not be imported.");
+      }
+      const item = await response.json() as Presentation;
+      const chosen = presentationChoice.value;
+      deck!.presentations.push(item);
+      deck!.presentations.sort((left, right) => left.title.localeCompare(right.title));
+      choosePresentations(deck!.presentations);
+      presentationChoice.value = chosen;
+      uploadForm.reset();
+      report.textContent = `Imported ${item.title}. Choose it under Slide presentation.`;
     });
   };
   button("addStudioScene").onclick = () => run(async () => {
@@ -243,9 +310,13 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     const scene = deck?.scenes.find(scene => scene.id === selected);
     if (!scene || !deck) return;
     const brand = deck.brand;
-    const [image, logo, video] = await Promise.all([asset(scene.image), asset(brand.logo), loadClip(scene.clip)]);
+    const presentation = deck.presentations.find((item) => item.id === scene.presentation);
+    const [image, logo, video, slide] = await Promise.all([
+      asset(scene.image), asset(brand.logo), loadClip(scene.clip),
+      presentation ? loadSlide(presentation, 0) : undefined,
+    ]);
     releaseClip();
-    current = {scene, brand, image, logo, video};
+    current = {scene, brand, image, logo, video, slide};
     if (video) {
       useAudio(video);
       video.onended = controls;
@@ -273,18 +344,40 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     await video.play();
     controls();
   });
+  function turnSlide(delta: number) {
+    run(async () => {
+      const frame = current;
+      if (!frame?.slide) return;
+      const {presentation, page} = frame.slide;
+      const next = page + delta;
+      if (next < 0 || next >= presentation.pages) return;
+      frame.slide = await loadSlide(presentation, next);
+      controls();
+    });
+  }
+  button("previousStudioSlide").onclick = () => turnSlide(-1);
+  button("nextStudioSlide").onclick = () => turnSlide(1);
+  presentationChoice.onchange = () => {
+    if (presentationChoice.value) field(form, "clip").value = "";
+    void loadSlidePreview();
+  };
+  field(form, "clip").onchange = () => {
+    if (field(form, "clip").value) presentationChoice.value = "";
+    void loadSlidePreview();
+  };
   field(form, "image").onchange = () => void asset(field(form, "image").value || null).catch(() => {});
 
   return {
     async load() { showDeck(await request()); },
-    ready() { return Boolean(current?.video || current?.scene.layout === "title"); },
+    ready() { return Boolean(current?.video || current?.slide || current?.scene.layout === "title"); },
     stage() { return {id: current?.scene.id ?? "", brand: current?.brand ?? deck?.brand}; },
     draw(context: CanvasRenderingContext2D, camera: HTMLVideoElement | null, screen: HTMLVideoElement | null,
       engagement = false) {
       if (deck && panel.open && !form.hidden) {
         const scene = readForm();
+        const slide = previewSlide?.presentation.id === scene.presentation ? previewSlide : undefined;
         paint(preview, {scene, brand: deck.brand, image: previews.get(scene.image || "")?.image,
-          logo: previews.get(deck.brand.logo || "")?.image}, camera, screen, true);
+          logo: previews.get(deck.brand.logo || "")?.image, slide}, camera, screen, true);
       }
       if (current) paint(context, current, camera, screen, lowerThird && !engagement);
       return Boolean(current);

@@ -6,3 +6,5 @@ cryptography==50.0.2
 http-ece==1.2.1
 py-vapid==1.9.6
 tzdata==2026.6
+pypdfium2==5.15.2
+Pillow==13.0.0

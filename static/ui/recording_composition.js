@@ -1,9 +1,13 @@
 function fit(context, source, left, top, width, height) {
-    if (source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !source.videoWidth)
+    if (source instanceof HTMLVideoElement && source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)
         return;
-    const scale = Math.min(width / source.videoWidth, height / source.videoHeight);
-    const w = scale * source.videoWidth;
-    const h = scale * source.videoHeight;
+    const [sourceWidth, sourceHeight] = source instanceof HTMLVideoElement
+        ? [source.videoWidth, source.videoHeight] : [source.naturalWidth, source.naturalHeight];
+    if (!sourceWidth || !sourceHeight)
+        return;
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const w = scale * sourceWidth;
+    const h = scale * sourceHeight;
     context.drawImage(source, left + (width - w) / 2, top + (height - h) / 2, w, h);
 }
 export function drawRecording(context, options, camera, screen) {

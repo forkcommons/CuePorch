@@ -21,6 +21,7 @@ from installed_program_graphics import check_program_graphics
 from installed_replay_captions import check_replay_captions
 from installed_simulcast import check_simulcast, tls_certificate
 from installed_speakers import check_speaker_delivery
+from installed_studio_slides import check_studio_slides
 import psutil
 
 p = argparse.ArgumentParser()
@@ -39,6 +40,7 @@ live_modes.add_argument("--scenes-event", action="store_true", help="Verify live
 live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify live DVR and actual browser relay diagnostics")
 live_modes.add_argument("--speakers-event", action="store_true", help="Verify browser guests and private speaker chat")
 live_modes.add_argument("--program-graphics", action="store_true", help="Verify audience graphics in real hosted video")
+live_modes.add_argument("--studio-slides", action="store_true", help="Verify PDF and PowerPoint slides in real hosted video")
 live_modes.add_argument("--captions-event", action="store_true", help="Verify live captions from real encoder audio")
 live_modes.add_argument("--replay-captions", action="store_true", help="Verify local captions on a hosted recording")
 live_modes.add_argument("--library-replay", action="store_true", help="Verify a private Library copy of the hosted replay")
@@ -50,7 +52,7 @@ live_modes.add_argument("--program-event", action="store_true", help="Test an un
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
-if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or
+if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.simulcast_event or
         a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
@@ -167,6 +169,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_speaker_delivery(base, keys, ffmpeg)
                 elif a.program_graphics:
                     evidence["event_delivery"] = check_program_graphics(base, keys)
+                elif a.studio_slides:
+                    evidence["event_delivery"] = check_studio_slides(base, keys)
                 elif a.replay_captions:
                     evidence["event_delivery"] = check_replay_captions(base, keys, ffmpeg, a.caption_speech.resolve())
                 elif a.library_replay:

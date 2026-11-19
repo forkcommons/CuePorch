@@ -7,6 +7,7 @@ import uuid
 from flask import abort, request, send_file
 
 from catalog import video_version_key
+from event_slide_decks import decks
 from library_actions import title_for
 from library_interactivity import text_field
 from library_privacy import blocked
@@ -69,7 +70,7 @@ def picture(value, choices):
     return value
 
 
-def settings(body, choices, playable):
+def settings(body, choices, playable, presentations):
     if not isinstance(body, dict) or not isinstance(body.get("brand"), dict):
         abort(422, "Enter studio scene settings.")
     brand = body["brand"]
@@ -91,12 +92,17 @@ def settings(body, choices, playable):
         if clip is not None and (not isinstance(clip, list) or len(clip) != 2 or
                                  any(not isinstance(value, str) for value in clip) or tuple(clip) not in playable):
             abort(422, "Choose an available retained video.")
+        presentation = scene.get("presentation")
+        if presentation is not None and (not isinstance(presentation, str) or presentation not in presentations):
+            abort(422, "Choose a presentation added to this event.")
+        if presentation and clip:
+            abort(422, "Choose a scene video or presentation as the primary source.")
         scenes.append(dict(id=identifier, layout=layout, background=background, color=color(scene.get("color")),
                            title=text_field(scene.get("title"), "a scene title", 72, True),
                            subtitle=text_field(scene.get("subtitle", ""), "a title subtitle", 120),
                            headline=text_field(scene.get("headline", ""), "lower-third primary text", 72),
                            credit=text_field(scene.get("credit", ""), "lower-third secondary text", 90),
-                           image=picture(scene.get("image"), choices), clip=clip))
+                           image=picture(scene.get("image"), choices), clip=clip, presentation=presentation))
     return dict(brand=brand, scenes=scenes)
 
 
@@ -109,6 +115,7 @@ def register(app, tx, staff, root, read_works, occurrence_access):
             row = con.execute("SELECT * FROM live_scene_deck WHERE event=?", (uid,)).fetchone()
             works = read_works()
             choices = images(con, works)
+            presentations = decks(con, uid)
             revision = row["revision"] if row else None
             contents = json.loads(row["settings"]) if row else dict(brand=dict(primary="#203235", text="#ffffff", logo=None), scenes=[])
             body = request.get_json() if request.method == "PUT" else None
@@ -124,11 +131,11 @@ def register(app, tx, staff, root, read_works, occurrence_access):
             if request.method == "PUT":
                 if not isinstance(body, dict) or body.get("revision") != revision:
                     abort(409, "The studio scenes changed. Load them again before saving.")
-                changed = settings(body, choices, playable)
+                changed = settings(body, choices, playable, presentations)
                 if changed != contents:
                     contents, revision = changed, uuid.uuid4().hex
                     con.execute("INSERT OR REPLACE INTO live_scene_deck VALUES(?,?,?)", (uid, revision, json.dumps(contents)))
-            return dict(contents, revision=revision, templates=TEMPLATES,
+            return dict(contents, revision=revision, templates=TEMPLATES, presentations=list(presentations.values()),
                         images=sorted((dict(id=key, title=image["title"]) for key, image in choices.items()),
                                       key=lambda image: image["title"].casefold()),
                         videos=sorted((dict(work=key[0], cut=key[1], title=title) for key, title in playable.items()),

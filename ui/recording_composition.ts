@@ -6,20 +6,25 @@ export interface Composition {
   background: "solid" | "gradient";
 }
 
+type VisualSource = HTMLVideoElement | HTMLImageElement;
+
 function fit(
-  context: CanvasRenderingContext2D, source: HTMLVideoElement,
+  context: CanvasRenderingContext2D, source: VisualSource,
   left: number, top: number, width: number, height: number,
 ) {
-  if (source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !source.videoWidth) return;
-  const scale = Math.min(width / source.videoWidth, height / source.videoHeight);
-  const w = scale * source.videoWidth;
-  const h = scale * source.videoHeight;
+  if (source instanceof HTMLVideoElement && source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+  const [sourceWidth, sourceHeight] = source instanceof HTMLVideoElement
+    ? [source.videoWidth, source.videoHeight] : [source.naturalWidth, source.naturalHeight];
+  if (!sourceWidth || !sourceHeight) return;
+  const scale = Math.min(width / sourceWidth, height / sourceHeight);
+  const w = scale * sourceWidth;
+  const h = scale * sourceHeight;
   context.drawImage(source, left + (width - w) / 2, top + (height - h) / 2, w, h);
 }
 
 export function drawRecording(
   context: CanvasRenderingContext2D, options: Composition,
-  camera: HTMLVideoElement | null, screen: HTMLVideoElement | null,
+  camera: HTMLVideoElement | null, screen: VisualSource | null,
 ) {
   const {width, height} = context.canvas;
   if (options.background === "gradient") {

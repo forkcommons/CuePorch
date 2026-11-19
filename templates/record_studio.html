@@ -56,6 +56,10 @@
           <summary>Scenes and graphics</summary>
           <label>Scene template <select id="studioTemplate"></select></label>
           <button type="button" id="addStudioScene" disabled>Add scene</button>
+          <form id="studioSlideUpload">
+            <label>Presentation file <input name="deck" type="file" accept=".pdf,.pptx" required></label>
+            <button type="submit" id="importStudioSlides" disabled>Import slides</button>
+          </form>
           <ol id="studioSceneList"></ol>
           <form id="studioSceneForm" hidden>
             <label>Scene name <input name="title" maxlength="72" required></label>
@@ -67,6 +71,7 @@
             <label>Lower-third secondary text <input name="credit" maxlength="90"></label>
             <label>Scene image <select name="image"></select></label>
             <label>Scene video <select name="clip"></select></label>
+            <label>Slide presentation <select name="presentation"></select></label>
             <canvas id="studioPreview" width="384" height="216" aria-label="Selected scene preview"></canvas>
             <button type="submit">Save scene</button>
             <button type="button" id="takeStudioScene">Take scene</button>
@@ -82,6 +87,11 @@
           <button type="button" id="hideStudioGraphic" disabled>Show lower third</button>
           <button type="button" id="toggleStudioClip" hidden>Pause clip</button>
           <button type="button" id="restartStudioClip" hidden>Restart clip</button>
+          <div id="studioSlideControls" hidden>
+            <button type="button" id="previousStudioSlide">Previous slide</button>
+            <button type="button" id="nextStudioSlide">Next slide</button>
+            <p id="studioSlideNumber" role="status"></p>
+          </div>
           <button type="button" id="clearStudioScene" disabled>Return to camera and screen</button>
           <p id="studioSceneStatus" role="status"></p>
         </details>

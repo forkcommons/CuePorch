@@ -11,3 +11,5 @@ CuePorch reads the public Vimeo API. The simulated source used in acceptance is 
 Review device notifications use the unmodified [http-ece 1.2.1 source release](https://pypi.org/project/http-ece/1.2.1/), [py-vapid 1.9.6 source release](https://pypi.org/project/py-vapid/1.9.6/), and [cryptography 50.0.2 source release](https://pypi.org/project/cryptography/50.0.2/). Py-vapid is available under the Mozilla Public License 2.0, http-ece under the MIT License, and cryptography under the Apache 2.0 and BSD licenses.
 
 Registered live events use the unmodified browser build of [HLS.js 1.6.16](https://github.com/video-dev/hls.js/tree/v1.6.16), distributed under the Apache License 2.0. Its license is copied into the packaged static files.
+
+Live Studio slide rendering uses [pypdfium2 5.15.2](https://pypi.org/project/pypdfium2/5.15.2/), its upstream PDFium binary, and [Pillow 13.0.0](https://pypi.org/project/Pillow/13.0.0/). The packages distribute their original license files. PowerPoint import uses the operator's local LibreOffice Impress executable.
