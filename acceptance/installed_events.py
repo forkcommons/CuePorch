@@ -3,10 +3,11 @@
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import socket
 import sqlite3
 import subprocess
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 import requests
@@ -276,12 +277,13 @@ def play_event(page, stable, status, navigate=True):
 
 
 @contextmanager
-def send_signal(ffmpeg, server, key, seconds):
+def send_signal(ffmpeg, server, key, seconds, muxer="flv"):
+    address = f"{server}/{key}" if key else server
     with subprocess.Popen(
         [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
          "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=550",
          "-t", str(seconds), "-c:v", "libx264", "-preset", "veryfast", "-g", "48",
-         "-sc_threshold", "0", "-c:a", "aac", "-f", "flv", f"{server}/{key}"],
+         "-sc_threshold", "0", "-c:a", "aac", "-f", muxer, address],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ) as encoder:
@@ -421,5 +423,64 @@ def check_browser_delivery(base, keys):
             assert requests.get(f"{base}/watch/work/{archive}", timeout=10).status_code == 404
             return dict(browser_camera_and_mic=True, studio_ingest_requires_operator=True, guest_live_width=width,
                         waiting_room_transitions_to_live=True, saved_private_local_archive=True, local_archive_has_audio=True)
+        finally:
+            browser.close()
+
+
+def check_srt_delivery(base, keys, ffmpeg):
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
+    event = dict(title="Installed SRT broadcast", slug="installed-srt-broadcast", visibility="public",
+                 type="live", latency="standard", save_replay=False,
+                 schedule=dict(timezone="UTC", start=start, end=end, repeat="none"))
+    auth = {"Authorization": "Bearer " + keys["operator"]}
+    response = requests.post(base + "/api/live-events", json=event, headers=auth, timeout=10)
+    response.raise_for_status()
+    entry = response.json()
+    (slot,) = entry["occurrences"]
+    production = f"{base}/api/live-events/{entry['id']}/{slot['id']}"
+    endpoint = production + "/srt"
+    watch = base + entry["watch"] + f"?occurrence={slot['id']}"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as bind:
+        bind.bind(("127.0.0.1", 0))
+        port = bind.getsockname()[1]
+    details = {"interface": "127.0.0.1", "port": port}
+    assert requests.post(endpoint, json=details, timeout=10).status_code == 403
+    assert requests.post(endpoint, json=details | {"interface": "0.0.0.0"}, headers=auth, timeout=10).status_code == 422
+    with sync_playwright() as pw:
+        browser = chromium(pw)
+        try:
+            operator = browser.new_page()
+            operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(keys['operator'])})")
+            operator.goto(base + "/operator/live-events")
+            operator.get_by_role("button", name="Open production for Installed SRT broadcast", exact=False).click()
+            operator.get_by_text("SRT encoder", exact=True).click()
+            operator.get_by_label("UDP port").fill(str(port))
+            with operator.expect_response(lambda value: value.url == endpoint, timeout=30000) as prepared:
+                operator.get_by_role("button", name="Start SRT listener").click()
+            assert prepared.value.ok, f"SRT listener returned HTTP {prepared.value.status}"
+            expect(operator.locator("#srtSettings")).to_be_visible()
+            link = operator.get_by_label("SRT endpoint").input_value()
+            secret = operator.get_by_label("SRT passphrase").input_value()
+            assert link == f"srt://127.0.0.1:{port}" and len(secret) >= 20
+            repeated = requests.post(endpoint, json=details, headers=auth, timeout=12)
+            assert repeated.ok and repeated.json()["passphrase"] == secret
+            invalid = link + "?mode=caller&conntimeo=1000"
+            with send_signal(ffmpeg, invalid, None, 2, "mpegts") as rejected:
+                assert rejected.wait(timeout=8) != 0, "Unencrypted sender reached the protected SRT listener"
+            caller = link + "?" + urlencode(dict(mode="caller", pbkeylen=16, passphrase=secret, pkt_size=1316))
+            guest = browser.new_page()
+            guest.goto(watch)
+            assert secret not in guest.content()
+            with send_signal(ffmpeg, caller, None, 60, "mpegts") as sender:
+                wait_for_delivery(production, auth, "live", 45, sender)
+                _, width, _ = play_event(guest, watch, "Live")
+                assert width >= 240 and sender.poll() is None
+                operator.get_by_role("button", name="Stop SRT listener").click()
+                expect(operator.locator("#eventsStatus")).to_have_text("SRT listener stopped.")
+                expect(operator.locator("#srtSettings")).not_to_be_visible()
+            return dict(srt_listener_operator_only=True, supplied_endpoint_works=True, encrypted_sender_played_width=width,
+                        unencrypted_sender_rejected=True, retry_preserved_passphrase=True, listener_stopped=True)
         finally:
             browser.close()

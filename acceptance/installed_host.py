@@ -13,7 +13,7 @@ from installed_versions import check_hosted_versions, generate_replacement
 from installed_migrated_privacy import check_hosted_handoff
 from installed_languages import check_hosted_languages
 from installed_interactivity import check_hosted_chapters
-from installed_events import check_browser_delivery, check_live_delivery, check_registered_live
+from installed_events import check_browser_delivery, check_live_delivery, check_registered_live, check_srt_delivery
 import psutil
 
 p = argparse.ArgumentParser()
@@ -27,10 +27,11 @@ modes.add_argument("--live-rtmp-port", type=int, help="Exercise event production
 live_modes = p.add_mutually_exclusive_group()
 live_modes.add_argument("--registered-event", action="store_true", help="Test an audience-registration event instead")
 live_modes.add_argument("--browser-event", action="store_true", help="Test browser capture through the installed Live Studio")
+live_modes.add_argument("--srt-event", action="store_true", help="Test encrypted SRT through the installed production controls")
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
-if (a.registered_event or a.browser_event) and not a.live_rtmp_port:
+if (a.registered_event or a.browser_event or a.srt_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
 
 
@@ -132,6 +133,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 ffmpeg = a.launcher.resolve().parent / "service/_internal/media-tools" / tool
                 if a.browser_event:
                     evidence["event_delivery"] = check_browser_delivery(base, keys)
+                elif a.srt_event:
+                    evidence["event_delivery"] = check_srt_delivery(base, keys, ffmpeg)
                 elif a.registered_event:
                     evidence["event_delivery"] = check_registered_live(base, a.origin, keys, home, ffmpeg, a.live_rtmp_port)
                 else:

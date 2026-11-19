@@ -11,7 +11,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 
 from event_media import Gateway, HLS_PREFIXES, root_path
-from event_capture import BusyError, CHUNK_BYTES, Studio
+from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
 import event_schedule
 from library_interactivity import text_field
@@ -345,6 +345,30 @@ def register(app, tx, staff, action, database, public_url, signing_key):
         if room:
             room.stop.set()
         return "", 204
+
+    @app.route("/api/live-events/<uid>/<int:opens>/srt", methods=["POST", "DELETE"])
+    def event_srt(uid, opens):
+        staff()
+        if request.method == "DELETE":
+            studio.close_srt(uid, opens)
+            return "", 204
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(422, "Choose a receiving interface and port.")
+        try:
+            endpoint = srt_endpoint(body.get("interface"), body.get("port"))
+        except ValueError as error:
+            abort(422, str(error))
+        prior = studio.srt_credentials(uid, opens, endpoint)
+        if prior:
+            return prior
+        connection = provision_event(uid, opens, browser=True)
+        try:
+            return studio.srt(uid, opens, connection, endpoint)
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the SRT listener.")
 
     @app.get("/api/live-events/<uid>/<int:opens>/health")
     def event_health(uid, opens):

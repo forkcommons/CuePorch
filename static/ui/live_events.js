@@ -76,9 +76,12 @@ function choose(event, instance) {
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
+    element("srtSettings").hidden = true;
+    input("srtPassphrase").value = "";
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
+    button("prepareSrt").disabled = button("prepareEncoder").disabled;
     button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
         (instance.delivery !== "scheduled" && !calendar.host_ready);
@@ -222,6 +225,23 @@ button("prepareEncoder").onclick = () => void action(async () => {
 button("copyEncoderKey").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(key.value);
 }, "Stream key copied.");
+button("prepareSrt").onclick = () => void action(async () => {
+    const result = await request(mediaPath("srt"), "POST", {
+        interface: input("srtInterface").value, port: Number(input("srtPort").value),
+    });
+    input("srtServer").value = result.server;
+    input("srtPassphrase").value = result.passphrase;
+    element("srtSettings").hidden = false;
+    button("withdrawEvent").disabled = false;
+}, "SRT listener is ready for the encoder.");
+button("stopSrt").onclick = () => void action(async () => {
+    await request(mediaPath("srt"), "DELETE");
+    element("srtSettings").hidden = true;
+    input("srtPassphrase").value = "";
+}, "SRT listener stopped.");
+button("copySrtPassphrase").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(input("srtPassphrase").value);
+}, "SRT passphrase copied.");
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
     health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");
