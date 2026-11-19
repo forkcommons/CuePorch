@@ -11,7 +11,7 @@ from installed_library import check_folders
 from installed_trash import check_private
 from installed_cards import check_cards
 from installed_versions import check_versions, generate_replacement
-from installed_review_links import check_review_links
+from installed_review_links import check_review_defaults, check_review_links
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -303,6 +303,9 @@ with tempfile.TemporaryDirectory() as tmp:
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
                     review_result = check_review_links(page, base, auth, copy)
+                    review_result.update(check_review_defaults(
+                        page, base, auth, copy, keys["creator"], replacement,
+                    ))
                     card_result, download_url = check_cards(
                         page, base, auth, home / "institution.sqlite",
                         next(w for w in works if w["title"] == "Station meeting"),

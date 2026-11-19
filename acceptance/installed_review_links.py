@@ -1,6 +1,7 @@
 """A separate, account-free visitor opens a protected review from a package install."""
 
 import time
+from base64 import b64decode
 
 import requests
 from installed_cards import select_action
@@ -185,4 +186,97 @@ def check_review_links(page, base, auth, work):
         "comment_timecode_replies_search_and_status": True,
         "version_specific_feedback": True,
         "staff_csv_and_resolution": True,
+    }
+
+
+def check_review_defaults(page, base, auth, work, creator, clip):
+    assert requests.get(base + "/api/review-defaults", timeout=10).status_code == 403
+    select_action(page, work["title"], "Review link", work["work"])
+    dialog = page.locator("#workDialog")
+    canvas = page.evaluate("""() => {
+        const logo = document.createElement("canvas");
+        logo.width = 40;
+        logo.height = 20;
+        const brush = logo.getContext("2d");
+        brush.fillStyle = "#134e57";
+        brush.fillRect(0,0,40,20);
+        return logo.toDataURL().split(",")[1];
+    }""")
+    dialog.get_by_label("Review logo").set_input_files(
+        {
+            "name": "station-logo.png",
+            "mimeType": "image/png",
+            "buffer": b64decode(canvas),
+        }
+    )
+    dialog.get_by_label("Dark mode").check()
+    dialog.get_by_label("Show other videos after playback").check()
+    dialog.get_by_label("Automatically create review links for new uploads").check()
+    dialog.get_by_role("button", name="Save as default settings").click()
+    expect(dialog.get_by_role("status")).to_have_text("Default review settings saved.")
+    expect(dialog.get_by_label("Dark mode")).to_be_checked()
+    expect(dialog.get_by_label("Remove saved logo")).to_be_visible()
+    defaults = requests.get(
+        base + "/api/review-defaults", headers=auth, timeout=10
+    ).json()
+    assert defaults["dark"] and defaults["auto_create"] and defaults["logo"]
+    dialog.get_by_role("button", name="Close", exact=True).click()
+
+    route = requests.put(
+        base + "/api/routes/work/public-program",
+        headers=auth,
+        json={
+            "revision": "1",
+            "public_authorized": True,
+            "description": "Another public program",
+            "destination": "https://video.example.invalid/videos/embed/public-program",
+        },
+        timeout=10,
+    )
+    route.raise_for_status()
+    with clip.open("rb") as source:
+        upload = requests.post(
+            base + "/api/submissions",
+            headers={"Authorization": "Bearer " + creator},
+            data={"title": "New artwork rehearsal", "terms": "private"},
+            files={"master": (clip.name, source, "video/mp4")},
+            timeout=25,
+        )
+    upload.raise_for_status()
+    new_work = upload.json()["work"]
+    links = requests.get(
+        base + "/api/library/work/" + new_work + "/review-links",
+        headers=auth,
+        timeout=10,
+    )
+    links.raise_for_status()
+    (link,) = links.json()
+    assert (
+        link["dark"] and link["show_other_videos"] and link["logo"] == defaults["logo"]
+    )
+    context = page.context.browser.new_context()
+    try:
+        visitor = context.new_page()
+        visitor.goto(base + link["path"])
+        expect(visitor.locator("body")).to_have_class("review-dark")
+        image_width = visitor.get_by_role("img", name="Review logo").evaluate(
+            "async img=>{await img.decode();return img.naturalWidth}"
+        )
+        assert image_width == 40
+        recommendation = visitor.get_by_role("link", name="Another public program")
+        expect(recommendation).to_be_hidden()
+        video = visitor.locator("video")
+        assert (
+            video.evaluate(
+                "async v=>{v.muted=true;await v.play();v.currentTime=v.duration-0.15;return v.videoWidth;}"
+            )
+            == 256
+        )
+        expect(recommendation).to_be_visible()
+    finally:
+        context.close()
+    return {
+        "saved_defaults_used_on_private_upload": True,
+        "review_dark_mode_and_local_logo_rendered": True,
+        "authorized_suggestion_appears_after_playback": True,
     }

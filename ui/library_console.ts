@@ -65,7 +65,15 @@ interface ReviewLink {
   allow_comment: boolean;
   allow_status: boolean;
   allow_resolved: boolean;
+  dark: boolean;
+  show_other_videos: boolean;
+  logo: string | null;
 }
+
+type ReviewDefaults = Omit<ReviewLink, "id" | "name" | "path" | "expires" | "enabled"> & {
+  lifetime_seconds: number;
+  auto_create: boolean;
+};
 
 interface ReviewComment {
   id: string;
@@ -552,9 +560,12 @@ async function mediaTicket(work: Work, sha256: string) {
 
 async function reviewLinksDialog(work: Work) {
   const endpoint = workEndpoint(work) + "/review-links";
-  const links: ReviewLink[] = await (
-    await completed(await request(endpoint))
-  ).json();
+  const [linkResponse, defaultResponse] = await Promise.all([
+    request(endpoint).then(completed),
+    request("/api/review-defaults").then(completed),
+  ]);
+  const links: ReviewLink[] = await linkResponse.json();
+  const defaults: ReviewDefaults = await defaultResponse.json();
   openWorkDialog("Review links");
   const editor = document.createElement("form");
   const fields = {
@@ -567,48 +578,84 @@ async function reviewLinksDialog(work: Work) {
     allowComment: reviewField("Allow comments", "checkbox"),
     allowStatus: reviewField("Allow status changes", "checkbox"),
     allowResolved: reviewField("Allow resolved comments", "checkbox"),
+    dark: reviewField("Dark mode", "checkbox"),
+    showOthers: reviewField("Show other videos after playback", "checkbox"),
+    logo: reviewField("Review logo", "file"),
+    removeLogo: reviewField("Remove saved logo", "checkbox"),
+    autoCreate: reviewField("Automatically create review links for new uploads", "checkbox"),
   };
   fields.name.input.required = true;
   fields.name.input.maxLength = 128;
   fields.expires.input.required = true;
   fields.password.input.maxLength = 256;
   fields.password.input.autocomplete = "new-password";
+  fields.logo.input.accept = "image/png,image/jpeg,image/webp";
+  fields.autoCreate.input.checked = defaults.auto_create;
   const save = document.createElement("button");
+  const saveDefaults = document.createElement("button");
+  saveDefaults.type = "button";
+  saveDefaults.textContent = "Save as default settings";
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.textContent = "New review link";
+  let logo: string | null = null;
+  const currentChoices = async () => {
+    const newLogo = fields.logo.input.files?.[0];
+    let reviewLogo = fields.removeLogo.input.checked ? null : logo;
+    if (newLogo) {
+      const form = new FormData();
+      form.append("logo", newLogo);
+      const response = await completed(await fetch("/api/review-logos", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + key.value },
+        body: form,
+      }));
+      reviewLogo = (await response.json()).logo;
+    }
+    const password = fields.password.input.value;
+    return {
+      name: fields.name.input.value,
+      expires: new Date(fields.expires.input.value).getTime() / 1000,
+      allow_download: fields.allowDownload.input.checked,
+      allow_versions: fields.allowVersions.input.checked,
+      allow_comment: fields.allowComment.input.checked,
+      allow_status: fields.allowStatus.input.checked,
+      allow_resolved: fields.allowResolved.input.checked,
+      dark: fields.dark.input.checked,
+      show_other_videos: fields.showOthers.input.checked,
+      logo: reviewLogo,
+      ...(password || fields.removePassword.input.checked
+        ? { password: fields.removePassword.input.checked ? "" : password }
+        : {}),
+    };
+  };
   function populate(link?: ReviewLink) {
-    const due = new Date(link ? link.expires * 1000 : Date.now() + 30 * 86400000);
+    const settings = link || defaults;
+    const due = new Date(link ? link.expires * 1000 : Date.now() + defaults.lifetime_seconds * 1000);
     const localDate = new Date(due.getTime() - due.getTimezoneOffset() * 60000);
     fields.name.input.value = link?.name || "";
     fields.expires.input.value = localDate.toISOString().slice(0, 16);
     fields.password.input.value = "";
-    fields.removePassword.label.hidden = !link?.password;
+    fields.removePassword.label.hidden = !settings.password;
     fields.removePassword.input.checked = false;
-    fields.allowDownload.input.checked = !!link?.allow_download;
-    fields.allowVersions.input.checked = !!link?.allow_versions;
-    fields.allowComment.input.checked = link?.allow_comment ?? true;
-    fields.allowStatus.input.checked = !!link?.allow_status;
-    fields.allowResolved.input.checked = !!link?.allow_resolved;
+    fields.allowDownload.input.checked = settings.allow_download;
+    fields.allowVersions.input.checked = settings.allow_versions;
+    fields.allowComment.input.checked = settings.allow_comment;
+    fields.allowStatus.input.checked = settings.allow_status;
+    fields.allowResolved.input.checked = settings.allow_resolved;
+    fields.dark.input.checked = settings.dark;
+    fields.showOthers.input.checked = settings.show_other_videos;
+    logo = settings.logo;
+    fields.logo.input.value = "";
+    fields.removeLogo.label.hidden = !logo;
+    fields.removeLogo.input.checked = false;
     save.textContent = link ? "Save review settings" : "Create review link";
     cancel.hidden = !link;
     editor.onsubmit = async (event) => {
       event.preventDefault();
       save.disabled = true;
       try {
-        const password = fields.password.input.value;
-        const body = {
-          name: fields.name.input.value,
-          expires: new Date(fields.expires.input.value).getTime() / 1000,
-          allow_download: fields.allowDownload.input.checked,
-          allow_versions: fields.allowVersions.input.checked,
-          allow_comment: fields.allowComment.input.checked,
-          allow_status: fields.allowStatus.input.checked,
-          allow_resolved: fields.allowResolved.input.checked,
-          ...(password || fields.removePassword.input.checked
-            ? { password: fields.removePassword.input.checked ? "" : password }
-            : {}),
-        };
+        const body = await currentChoices();
         await completed(await request(
           link ? endpoint + "/" + link.id : endpoint,
           link ? "PUT" : "POST",
@@ -624,8 +671,22 @@ async function reviewLinksDialog(work: Work) {
     };
   }
   const reopen = () => reviewLinksDialog(work);
+  action(saveDefaults, async () => {
+    try {
+      const choices = await currentChoices();
+      await completed(await request("/api/review-defaults", "PUT", {
+        ...choices,
+        lifetime_seconds: choices.expires - Date.now() / 1000,
+        auto_create: fields.autoCreate.input.checked,
+      }));
+      await reopen();
+      workDialogStatus.textContent = "Default review settings saved.";
+    } catch (error) {
+      workDialogStatus.textContent = String(error);
+    }
+  });
   cancel.onclick = () => populate();
-  editor.append(...Object.values(fields).map(({ label }) => label), save, cancel);
+  editor.append(...Object.values(fields).map(({ label }) => label), save, saveDefaults, cancel);
   populate();
 
   const list = document.createElement("ul");

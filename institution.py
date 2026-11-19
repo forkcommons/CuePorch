@@ -40,6 +40,7 @@ import library_thumbnail
 import library_trash
 import library_worker
 import review_links
+from review_settings import new_upload as create_upload_review
 
 STEPS = (
     "intake",
@@ -358,8 +359,11 @@ def create_app(root, database, operator, institution, simulation=None):
                 staged, work = unpack(package, folder, institution, public == "true")
             except (KeyError, ValueError, zipfile.BadZipFile):
                 abort(422, "Invalid package or checksum")
+            new_work = work["id"] not in works
             works.update(merge_collection(staged, root))
             with tx() as con:
+                if new_work:
+                    create_upload_review(con, works[work["id"]])
                 job = library_worker.enqueue(
                     con, works[work["id"]], public == "true", kind=kind
                 )
@@ -495,6 +499,8 @@ def create_app(root, database, operator, institution, simulation=None):
             updated = merge_collection(staged, root)
             works.update(updated)
         with tx() as con:
+            for work in submitted:
+                create_upload_review(con, work)
             status = "received"
             job = (
                 library_worker.enqueue(con, incoming, terms == "public", scheduled)

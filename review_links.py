@@ -6,10 +6,11 @@ import os
 import secrets
 import time
 
-from flask import abort, render_template, request, send_file
+from flask import Response, abort, render_template, request, send_file
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import review_feedback
+import review_settings
 from catalog import video_version_key
 
 SCHEMA = (
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS review_unlock_limit(
  link TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
 """
     + review_feedback.SCHEMA
+    + review_settings.SCHEMA
 )
 
 REVIEW_LIFETIME = 30 * 86400
@@ -63,6 +65,7 @@ def register(app, tx, staff, get_work, title_for, root):
                 "path": "/review/" + row["id"],
             }
             | review_feedback.settings(con, row["id"])
+            | review_settings.appearance(con, row["id"])
         )
 
     def link_fields(body):
@@ -106,26 +109,26 @@ def register(app, tx, staff, get_work, title_for, root):
         staff()
         request.max_content_length = 16384
         body = request.get_json()
-        name, expires, password = link_fields(body)
+        if not isinstance(body, dict):
+            abort(400)
         uid = secrets.token_urlsafe(32)
         with tx() as con:
             get_work(con, work)
-            con.execute(
-                """INSERT INTO review_link
-                   (id,work,name,expires,password_hash,allow_download,allow_versions,created)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (
-                    uid,
-                    work,
-                    name,
-                    expires,
-                    generate_password_hash(password) if password else None,
-                    body.get("allow_download", False),
-                    body.get("allow_versions", False),
-                    time.time(),
-                ),
+            defaults, default_hash = review_settings.read_defaults(con)
+            choices = (
+                defaults
+                | {"expires": time.time() + defaults["lifetime_seconds"]}
+                | body
             )
-            review_feedback.save_settings(con, uid, body)
+            name, expires, password = link_fields(choices)
+            password_hash = (
+                (generate_password_hash(password) if password else None)
+                if "password" in body
+                else default_hash
+            )
+            review_settings.insert_link(
+                con, uid, work, name, expires, password_hash, choices
+            )
             return project(con, locate(con, work, uid)), 201
 
     @app.put("/api/library/work/<work>/review-links/<uid>")
@@ -146,6 +149,7 @@ def register(app, tx, staff, get_work, title_for, root):
                 review_feedback.save_settings(
                     con, uid, review_feedback.settings(con, uid) | body
                 )
+                review_settings.write_appearance(con, uid, body)
                 password_hash = (
                     (generate_password_hash(password) if password else None)
                     if "password" in body
@@ -191,6 +195,9 @@ def register(app, tx, staff, get_work, title_for, root):
             review_feedback.save_settings(
                 con, new_id, review_feedback.settings(con, uid)
             )
+            review_settings.write_appearance(
+                con, new_id, review_settings.appearance(con, uid)
+            )
             return project(con, locate(con, work, new_id)), 201
 
     @app.delete("/api/library/work/<work>/review-links/<uid>")
@@ -202,6 +209,7 @@ def register(app, tx, staff, get_work, title_for, root):
             con.execute("DELETE FROM review_session WHERE link=?", (uid,))
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
             con.execute("DELETE FROM review_feedback_permission WHERE link=?", (uid,))
+            con.execute("DELETE FROM review_appearance WHERE link=?", (uid,))
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 
@@ -286,6 +294,7 @@ def register(app, tx, staff, get_work, title_for, root):
     review_feedback.register(
         app, tx, scoped_feedback_access, operator_feedback_access, confidential
     )
+    review_settings.register(app, tx, staff)
 
     @app.get("/review/<uid>")
     def review_page(uid):
@@ -297,6 +306,17 @@ def register(app, tx, staff, get_work, title_for, root):
                 )
             versions = playable_versions(work, row)
             title = title_for(con, work)
+            appearance = review_settings.appearance(con, uid)
+            recommendations = (
+                con.execute(
+                    """SELECT kind,slug,description FROM route r WHERE kind='work' AND slug<>?
+                   AND NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=r.slug)
+                   ORDER BY description,slug LIMIT 3""",
+                    (row["work"],),
+                ).fetchall()
+                if appearance["show_other_videos"]
+                else []
+            )
         selected = request.args.get("version") or next(iter(versions), None)
         if selected is not None and selected not in versions:
             abort(404)
@@ -317,8 +337,24 @@ def register(app, tx, staff, get_work, title_for, root):
                 versions=versions,
                 allow_download=row["allow_download"],
                 tracks=tracks,
+                appearance=appearance,
+                recommendations=recommendations,
             )
         )
+
+    @app.get("/review/<uid>/logo")
+    def review_logo(uid):
+        with tx() as con:
+            row, _ = active(con, uid)
+            if not authorized(con, row):
+                abort(403)
+            digest = review_settings.appearance(con, uid)["logo"]
+            logo = con.execute(
+                "SELECT mime,content FROM review_logo WHERE digest=?", (digest,)
+            ).fetchone()
+            if logo is None:
+                abort(404)
+        return confidential(Response(logo["content"], mimetype=logo["mime"]))
 
     @app.get("/review/<uid>/media/<version>")
     @app.get("/review/<uid>/caption/<version>/<int:track>")

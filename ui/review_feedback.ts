@@ -20,6 +20,9 @@ interface Feedback {
 
 const endpoint = document.querySelector<HTMLElement>("#reviewFeedback")!.dataset.feedback!;
 const player = document.querySelector<HTMLVideoElement>("video")!;
+const recommendations = document.querySelector<HTMLElement>("#reviewRecommendations");
+player.addEventListener("ended", () => { if (recommendations) recommendations.hidden = false; });
+player.addEventListener("play", () => { if (recommendations) recommendations.hidden = true; });
 const comments = document.querySelector<HTMLOListElement>("#reviewComments")!;
 const editor = document.querySelector<HTMLFormElement>("#writeFeedback")!;
 const author = editor.elements.namedItem("author") as HTMLInputElement;

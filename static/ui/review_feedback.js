@@ -1,5 +1,10 @@
 const endpoint = document.querySelector("#reviewFeedback").dataset.feedback;
 const player = document.querySelector("video");
+const recommendations = document.querySelector("#reviewRecommendations");
+player.addEventListener("ended", () => { if (recommendations)
+    recommendations.hidden = false; });
+player.addEventListener("play", () => { if (recommendations)
+    recommendations.hidden = true; });
 const comments = document.querySelector("#reviewComments");
 const editor = document.querySelector("#writeFeedback");
 const author = editor.elements.namedItem("author");
