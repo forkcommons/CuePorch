@@ -252,8 +252,9 @@ def wait_for_delivery(url, auth, expected, seconds, encoder):
     raise AssertionError(f"Did not observe {expected}; last state was {observed}")
 
 
-def play_event(page, stable, status):
-    page.goto(stable)
+def play_event(page, stable, status, navigate=True):
+    if navigate:
+        page.goto(stable)
     expect(page.locator("#eventStatus")).to_have_text(status)
     selector = 'iframe[title="Event video"]'
     address = urljoin(stable, page.locator(selector).get_attribute("src"))
@@ -361,5 +362,64 @@ def check_registered_live(base, origin, keys, home, ffmpeg, port):
             return dict(decoded_video_width=width, registration_required=True, peertube_copy_private=True,
                         waiting_room_opens_player_automatically=True, amended_form_revokes_media=True,
                         withdrawal_succeeded_while_live=True)
+        finally:
+            browser.close()
+
+
+def check_browser_delivery(base, keys):
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
+    event = dict(title="Installed browser broadcast", slug="installed-browser-broadcast", visibility="public",
+                 type="live", latency="standard", save_replay=False,
+                 schedule=dict(timezone="UTC", start=start, end=end, repeat="none"))
+    auth = {"Authorization": "Bearer " + keys["operator"]}
+    response = requests.post(base + "/api/live-events", json=event, headers=auth, timeout=10)
+    response.raise_for_status()
+    entry = response.json()
+    (slot,) = entry["occurrences"]
+    studio = f"{base}/api/live-events/{entry['id']}/{slot['id']}/browser"
+    assert requests.post(studio, timeout=10).status_code == 403
+    watch = base + entry["watch"] + f"?occurrence={slot['id']}"
+    with sync_playwright() as pw:
+        browser = chromium(pw, ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
+        try:
+            operator_context = browser.new_context(permissions=["camera", "microphone"])
+            operator = operator_context.new_page()
+            operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(keys['operator'])})")
+            operator.goto(base + "/operator/live-events")
+            operator.get_by_role("button", name="Open production for Installed browser broadcast", exact=False).click()
+            operator.get_by_role("link", name="Open browser studio").click()
+            expect(operator.get_by_role("heading", name="Live Studio")).to_be_visible()
+            mode = operator.get_by_role("combobox", name="Production mode")
+            mode.select_option("record")
+            expect(operator.get_by_role("button", name="Start recording")).to_be_visible()
+            mode.select_option("broadcast")
+            operator.get_by_role("button", name="Connect camera and microphone").click()
+            expect(operator.locator("#recordStatus")).to_have_text("Recording devices connected.")
+            guest = browser.new_page()
+            guest.goto(watch)
+            expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+            with operator.expect_response(lambda result: result.url == studio and result.request.method == "POST",
+                                          timeout=45000) as opened:
+                operator.get_by_role("button", name="Go live").click()
+            assert opened.value.status == 201, f"Live Studio returned HTTP {opened.value.status}"
+            expect(operator.locator("#recordStatus")).to_contain_text("Sending the live broadcast")
+            expect(guest.locator("#eventStatus")).to_have_text("Live", timeout=65000)
+            _, width, _ = play_event(guest, watch, "Live", navigate=False)
+            assert width >= 320
+            operator.get_by_role("button", name="Stop", exact=True).click()
+            expect(operator.locator("#recordStatus")).to_contain_text("Recording ready.", timeout=20000)
+            expect(operator.get_by_label("Finished recording")).to_be_visible()
+            operator.get_by_label("Recording title").fill("Browser live program archive")
+            operator.get_by_role("button", name="Save recording", exact=True).click()
+            expect(operator.locator("#recordStatus")).to_have_text("Recording saved to the library.", timeout=40000)
+            archive = operator.get_by_role("link", name="Open saved video").get_attribute("href").rsplit("/", 1)[-1]
+            metadata = requests.get(f"{base}/api/library/work/{archive}/details", headers=auth, timeout=10)
+            metadata.raise_for_status()
+            assert metadata.json()["media"]["audio"]
+            assert requests.get(f"{base}/watch/work/{archive}", timeout=10).status_code == 404
+            return dict(browser_camera_and_mic=True, studio_ingest_requires_operator=True, guest_live_width=width,
+                        waiting_room_transitions_to_live=True, saved_private_local_archive=True, local_archive_has_audio=True)
         finally:
             browser.close()

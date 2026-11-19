@@ -84,6 +84,8 @@ function choose(event, instance) {
         (instance.delivery !== "scheduled" && !calendar.host_ready);
     element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
     const watch = element("eventWatch");
+    const studio = element("eventStudio");
+    studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
     element("eventShare").hidden = !event.watch;
     element("eventEmbedField").hidden = !event.embed;
     if (event.watch)

@@ -1,6 +1,7 @@
 import {drawRecording, mediaPreview, recordingMime, recordingSize, type Composition} from "./recording_composition.js";
 import {openRecordingStorage, type RecordingDraft} from "./recording_draft.js";
 import {uploadLibraryFile} from "./library_upload.js";
+import {BrowserBroadcast} from "./event_broadcast.js";
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => element<HTMLInputElement>(id);
@@ -20,6 +21,8 @@ const prompter = element("recordPrompter");
 const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
+const broadcastEndpoint = document.body.dataset.eventBroadcast || "";
+const mode = document.querySelector<HTMLSelectElement>("#browserProductionMode");
 
 interface Folder { id: string; parent: string | null; name: string }
 interface Source { stream: MediaStream; preview: HTMLVideoElement | null }
@@ -35,6 +38,8 @@ interface Session {
   store: boolean;
   persistence: Promise<void>;
   storageError: boolean;
+  broadcast: BrowserBroadcast | null;
+  broadcastIssue: boolean;
 }
 interface Take { draft: RecordingDraft; data: Blob; url: string }
 
@@ -70,7 +75,11 @@ function closeSource(source: Source | null) {
 function updateControls() {
   const running = Boolean(active);
   button("beginRecord").disabled = busy || running || !(hasSource(screen) || hasSource(camera));
-  button("pauseRecord").hidden = button("endRecord").hidden = !running;
+  const live = mode?.value === "broadcast";
+  button("beginRecord").textContent = live ? "Go live" : "Start recording";
+  button("pauseRecord").hidden = !running || Boolean(active?.broadcast);
+  button("endRecord").hidden = !running;
+  if (mode) mode.disabled = running || busy;
   button("pauseRecord").disabled = button("endRecord").disabled = busy;
   button("pauseRecord").textContent = active?.recorder.state === "paused" ? "Resume" : "Pause";
   element<HTMLFieldSetElement>("recordFormat").disabled = running || busy;
@@ -216,6 +225,8 @@ function connect(action: () => Promise<void>) {
 button("enableDevices").onclick = () => connect(connectDevices);
 button("enableScreen").onclick = () => connect(shareScreen);
 button("releaseScreen").onclick = closeScreen;
+if (mode) mode.onchange = updateControls;
+updateControls();
 select("recordQuality").onchange = select("recordRatio").onchange = resize;
 script.oninput = () => { prompter.textContent = script.value; updateControls(); };
 input("recordFont").oninput = () => { prompter.style.fontSize = input("recordFont").value + "px"; };
@@ -265,6 +276,7 @@ async function start() {
   element("savedRecording").hidden = true;
   updateControls();
   let stream: MediaStream | null = null;
+  let broadcast: BrowserBroadcast | null = null;
   try {
     if (typeof MediaRecorder === "undefined" || !canvas.captureStream) {
       throw new Error("Use a browser with MediaRecorder and canvas capture to record here.");
@@ -276,6 +288,9 @@ async function start() {
       if (track) stream.addTrack(track.clone());
     }
     const mime = recordingMime();
+    if (mode?.value === "broadcast" && !mime?.startsWith("video/webm")) {
+      throw new Error("Choose a browser with WebM recording support for live production.");
+    }
     const recorder = new MediaRecorder(stream, mime ? {mimeType: mime} : undefined);
     const draft = {id: crypto.randomUUID(), mime: recorder.mimeType, created: Date.now(),
       title: title.value.trim() || "Recording", folder: folder.value};
@@ -285,10 +300,19 @@ async function start() {
     }
     const session: Session = {recorder, output: stream, draft, started: performance.now(),
       paused: 0, pausedTotal: 0, parts: [], sequence: 0,
-      store: persisted, persistence: Promise.resolve(), storageError: false};
+      store: persisted, persistence: Promise.resolve(), storageError: false,
+      broadcast: null, broadcastIssue: false};
+    if (broadcastEndpoint && mode?.value === "broadcast") {
+      broadcast = await BrowserBroadcast.open(broadcastEndpoint, key.value, () => {
+        session.broadcastIssue = true;
+        status.textContent = "Broadcast stopped. The local recording continues.";
+      });
+      session.broadcast = broadcast;
+    }
     recorder.ondataavailable = ({data}) => {
       if (!data.size) return;
       const sequence = session.sequence++;
+      session.broadcast?.add(data.type ? data : new Blob([data], {type: "video/webm"}));
       session.persistence = session.persistence.then(async () => {
         if (session.store && !session.storageError) {
           try { await storage!.append(draft, sequence, data); return; }
@@ -305,10 +329,12 @@ async function start() {
     film.removeAttribute("src");
     film.load();
     scrollTop = prompter.scrollTop = 0;
-    recorder.start(1000);
+    recorder.start(broadcast ? 500 : 1000);
     active = session;
-    status.textContent = persisted ? "Recording." : "Recording. Save this take before leaving Studio.";
+    status.textContent = broadcast ? "Sending the live broadcast and keeping a local recording."
+      : persisted ? "Recording." : "Recording. Save this take before leaving Studio.";
   } catch (error) {
+    void broadcast?.close();
     stream?.getTracks().forEach(track => track.stop());
     throw error;
   } finally {
@@ -332,12 +358,14 @@ async function finish(session: Session) {
   closeSource(camera);
   camera = null;
   closeScreen();
+  void session.broadcast?.finish();
   try {
     await session.persistence;
     const initial = session.store ? await storage!.load(session.draft) : null;
     const data = new Blob([...(initial ? [initial] : []), ...session.parts], {type: session.draft.mime});
     openTake(session.draft, data);
-    status.textContent = session.storageError ? "Browser storage filled. Save this recording before leaving Studio."
+    status.textContent = session.broadcastIssue ? "Broadcast interrupted. The local recording is ready."
+      : session.storageError ? "Browser storage filled. Save this recording before leaving Studio."
       : "Recording ready. Play it, download it or save it to the library.";
     await showDrafts();
   } finally {
@@ -452,6 +480,7 @@ window.addEventListener("pagehide", () => {
   closeSource(screen);
   pictureStream?.getTracks().forEach(track => track.stop());
   active?.output.getTracks().forEach(track => track.stop());
+  void active?.broadcast?.close();
   if (take) URL.revokeObjectURL(take.url);
   void audio?.close();
 });

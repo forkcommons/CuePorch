@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="/static/cueporch.css">
-  <title>Record Studio · CuePorch</title>
+  <title>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }} · CuePorch</title>
 </head>
-<body>
-  <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
-  <h1>Record Studio</h1>
+<body data-event-broadcast="{{ broadcast_endpoint or '' }}">
+  <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
+  <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
     <label>Operator credential <input id="recordKey" type="password" autocomplete="current-password" required></label>
     <button type="submit">Open Studio</button>
@@ -19,6 +19,11 @@
       <section aria-label="Recording preview">
         <canvas id="recordCanvas" width="1280" height="720" aria-label="Live recording preview"></canvas>
         <video id="takePreview" controls playsinline hidden aria-label="Finished recording"></video>
+        {% if broadcast_endpoint %}
+        <label>Production mode <select id="browserProductionMode">
+          <option value="broadcast">Broadcast from this browser</option><option value="record">Recording only</option>
+        </select></label>
+        {% endif %}
         <div class="video-work-actions">
           <button type="button" id="beginRecord" disabled>Start recording</button>
           <button type="button" id="pauseRecord" hidden>Pause</button>

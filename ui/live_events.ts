@@ -106,6 +106,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
     (instance.delivery !== "scheduled" && !calendar.host_ready);
   element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
   const watch = element<HTMLAnchorElement>("eventWatch");
+  const studio = element<HTMLAnchorElement>("eventStudio");
+  studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
   element("eventShare").hidden = !event.watch;
   element("eventEmbedField").hidden = !event.embed;
   if (event.watch) watch.href = new URL(event.watch + "?occurrence=" + instance.id, publicBase).href;

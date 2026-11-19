@@ -11,6 +11,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 
 from event_media import Gateway, HLS_PREFIXES, root_path
+from event_capture import BusyError, CHUNK_BYTES, Studio
 import event_peer
 import event_schedule
 from library_interactivity import text_field
@@ -167,6 +168,8 @@ def overlapping(entries):
 
 def register(app, tx, staff, action, database, public_url, signing_key):
     media = Gateway()
+    studio = Studio(database)
+    app.extensions["stop_event_capture"] = studio.close
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
@@ -179,6 +182,10 @@ def register(app, tx, staff, action, database, public_url, signing_key):
     @app.get("/operator/live-events")
     def live_event_dashboard():
         return render_template("live_events.html", public_url=public_url)
+
+    @app.get("/operator/live-events/<uid>/<int:opens>/studio")
+    def event_studio_page(uid, opens):
+        return render_template("record_studio.html", broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens))
 
     @app.route("/api/live-events", methods=["GET", "POST"])
     def list_events():
@@ -263,7 +270,7 @@ def register(app, tx, staff, action, database, public_url, signing_key):
         return candidate
 
     @app.post("/api/live-events/<uid>/<int:opens>/encoder")
-    def provision_event(uid, opens):
+    def provision_event(uid, opens, browser=False):
         staff()
         try:
             with locked(uid):
@@ -296,11 +303,48 @@ def register(app, tx, staff, action, database, public_url, signing_key):
                         with tx() as con:
                             con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
                                         (uid, opens))
+                    if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
+                        abort(409, "This event already has a live or finished signal.")
                     return dict(event_peer.encoder(host, remote), public=broadcast)
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "Could not prepare the event on the connected video host.")
+
+    @app.post("/api/live-events/<uid>/<int:opens>/browser")
+    def start_event_capture(uid, opens):
+        connection = provision_event(uid, opens, browser=True)
+        try:
+            return dict(token=studio.start(uid, opens, connection)), 201
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the browser's encoder.")
+
+    @app.put("/api/live-events/<uid>/<int:opens>/browser/<token>/<int:sequence>")
+    def receive_event_capture(uid, opens, token, sequence):
+        staff()
+        room = studio.get(uid, opens, token)
+        if not room:
+            abort(404)
+        request.max_content_length = CHUNK_BYTES
+        if request.mimetype != "video/webm":
+            abort(415, "The browser encoder needs WebM media.")
+        try:
+            room.add(sequence, request.get_data(cache=False))
+        except BusyError:
+            abort(429, "The video host is catching up.")
+        except ValueError as error:
+            abort(409, str(error))
+        return "", 204
+
+    @app.delete("/api/live-events/<uid>/<int:opens>/browser/<token>")
+    def finish_event_capture(uid, opens, token):
+        staff()
+        room = studio.get(uid, opens, token)
+        if room:
+            room.stop.set()
+        return "", 204
 
     @app.get("/api/live-events/<uid>/<int:opens>/health")
     def event_health(uid, opens):
@@ -333,6 +377,7 @@ def register(app, tx, staff, action, database, public_url, signing_key):
                         return "", 204
                     con.execute("UPDATE live_occurrence SET delivery='withdrawing' WHERE event=? AND opens=?",
                                 (uid, opens))
+                studio.withdraw(uid, opens)
                 with event_peer.connected_host(target["origin"]) as host:
                     host.set_public(target["remote"], False)
                 with tx() as con:
