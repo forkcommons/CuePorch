@@ -246,7 +246,7 @@ def operator_sharing(con, work, permits):
 
 
 def editable(work):
-    return work["provider"] == "cueporch-upload" and playback(work) is not None
+    return work["provider"] in ("cueporch-upload", "cueporch-live-recording") and playback(work) is not None
 
 
 def actor_defaults(con, actor):
@@ -323,7 +323,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if len(works) != len(members) or any(hidden(con, "work", uid) for uid in members):
                 abort(404, "A selected work no longer exists.")
             if any(not editable(work) for work in works) or any(protected_route(con, uid) for uid in members):
-                abort(409, "Select library uploads that can use these privacy settings.")
+                abort(409, "Select Library videos that can use these privacy settings.")
             for work in works:
                 apply_settings(con, action, work, settings, password_hash)
             apply_pending(con)
@@ -339,7 +339,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if not work or hidden(con, "work", uid):
                 abort(404)
             if not editable(work):
-                abort(409, "This control currently applies to videos uploaded directly to the library.")
+                abort(409, "Choose a Library upload or a retained broadcast recording.")
             if protected_route(con, uid):
                 abort(409, "This institution has designated the video as a public record.")
             row = get_privacy(con, uid)

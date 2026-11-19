@@ -8,6 +8,8 @@ import re
 import struct
 import subprocess
 import time
+from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import expect, sync_playwright
 import requests
@@ -28,11 +30,15 @@ def check_library_recording(base, keys, home, ffmpeg):
     assert api("GET", "/api/policy")["replay"] is False
     api("PUT", policy, json={"required": True})
     now = datetime.now(timezone.utc)
+    opened = now - timedelta(minutes=1)
+    zone = ZoneInfo("Pacific/Kiritimati" if opened.hour >= 10 else "Pacific/Honolulu")
+    local_start = opened.astimezone(zone)
+    local_end = (now + timedelta(minutes=15)).astimezone(zone)
+    assert local_start.date() != opened.date()
     title = "Library recording rehearsal"
     event = dict(title=title, slug="library-recording", visibility="public", type="live", latency="standard",
-                 save_replay=True, schedule=dict(timezone="UTC", repeat="none",
-                     start=(now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
-                     end=(now + timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M")))
+                 save_replay=True, schedule=dict(timezone=zone.key, repeat="none",
+                     start=local_start.strftime("%Y-%m-%dT%H:%M"), end=local_end.strftime("%Y-%m-%dT%H:%M")))
     saved = api("POST", "/api/live-events", json=event)
     assert saved["event"]["archive_replay"] is True
     (slot,) = saved["occurrences"]
@@ -74,6 +80,7 @@ def check_library_recording(base, keys, home, ffmpeg):
             uid = result["work"]
             assert uid and api("POST", recording) == result
             info = api("GET", f"/api/library/work/{uid}")
+            assert info["title"] == f"{title} · {local_start.date().isoformat()}"
             assert info["source_privacy"] == "private" and info["watch"] is None and info["embed"] is None
             assert 33 <= info["duration_seconds"] <= 48, info["duration_seconds"]
             assert requests.get(base + "/watch/work/" + uid, timeout=10).status_code == 404
@@ -103,10 +110,19 @@ def check_library_recording(base, keys, home, ffmpeg):
                 "-map", "0:a:0", "-t", "1", "-ac", "1", "-ar", "8000", "-f", "s16le", "-",
             ], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             samples = [sample / 32768 for (sample,) in struct.iter_unpack("<h", raw)]
-            amplitude = 2 * abs(sum(value * math.cos(i * math.tau * 550 / 8000)
-                                    for i, value in enumerate(samples))) / len(samples)
+            in_phase = sum(value * math.cos(i * math.tau * 550 / 8000) for i, value in enumerate(samples))
+            quadrature = sum(value * math.sin(i * math.tau * 550 / 8000) for i, value in enumerate(samples))
+            amplitude = 2 * math.hypot(in_phase, quadrature) / len(samples)
             assert len(samples) == 8000 and amplitude > .025, amplitude
-            api("DELETE", production + "/delivery")
+            deadline = time.monotonic() + 15
+            while True:
+                response = requests.delete(base + production + "/delivery", headers=auth, timeout=30)
+                if (response.status_code != 409 or "Another operation is preparing this event." not in response.text
+                        or time.monotonic() >= deadline):
+                    response.raise_for_status()
+                    assert response.status_code == 204
+                    break
+                time.sleep(.5)
             assert requests.get(live, timeout=10).status_code == 404
             assert api("GET", recording) == api("POST", recording) == result
             operator.reload()
@@ -114,10 +130,43 @@ def check_library_recording(base, keys, home, ffmpeg):
             assert player.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == width
             manifest = json.loads((home / "collection" / "manifest.json").read_text(encoding="utf8"))
             assert sum(work["id"] == uid for work in manifest["works"]) == 1
+            expect(operator.get_by_role("link", name="Video privacy and embed rules")).to_be_visible()
+
+            publication = "/api/policy/publication"
+            privacy = f"/api/library/work/{uid}/privacy"
+            assert api("GET", "/api/policy")["publication"] is False
+            default = api("GET", privacy)
+            assert default["visibility"] == "private" and default["watch"] is None
+            api("PUT", publication, json={"required": True})
+            pending = api("PUT", privacy, json={"visibility": "unlisted", "embed": "disabled", "download": False})
+            assert pending["visibility"] == "private" and pending["pending"]["visibility"] == "unlisted"
+            assert pending["watch"] is None and requests.get(base + "/watch/work/" + uid, timeout=10).status_code == 404
+            api("PUT", publication, json={"required": False})
+            deadline = time.monotonic() + 35
+            while time.monotonic() < deadline:
+                released = api("GET", privacy)
+                if released["visibility"] == "unlisted" and released["watch"]:
+                    break
+                time.sleep(.5)
+            else:
+                raise AssertionError("The archive's independent share did not release.")
+            archive_watch = urljoin(base, released["watch"])
+            audience.goto(archive_watch)
+            public_player = audience.locator("video")
+            assert public_player.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == width
+            archive_media = urljoin(base, public_player.get_attribute("src"))
+            assert requests.get(archive_media, timeout=10, headers={"Range": "bytes=0-511"}).status_code == 206
+            expect(audience.locator("video")).to_be_visible()
+            assert requests.get(live, timeout=10).status_code == 404
+            api("PUT", privacy, json={"visibility": "private", "embed": "disabled", "download": False})
+            assert requests.get(archive_watch, timeout=10).status_code == 404
+            assert requests.get(archive_media, timeout=10).status_code == 404
             return dict(width=width, duration_seconds=round(info["duration_seconds"], 2),
                         decoded_550_hz_audio_amplitude=round(amplitude, 5), saved_by_default=True,
                         audience_replay_approval_held=True, private_ticket_preview=True,
                         retained_after_withdrawal=True, idempotent_library_entry=True,
+                        recording_title_uses_scheduled_time_zone=True, optional_publication_approval=True,
+                        independent_unlisted_archive_decoded=True, revoking_archive_denies_issued_media=True,
                         stored_playback_sha256=asset["sha256"])
         finally:
             browser.close()

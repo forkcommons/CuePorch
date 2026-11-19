@@ -1,6 +1,6 @@
 """Retain finished event playback as private, portable Library media."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 from pathlib import Path
 import shutil
@@ -8,6 +8,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import time
+from zoneinfo import ZoneInfo
 
 from filelock import FileLock, Timeout
 from flask import abort, request
@@ -129,7 +130,8 @@ class Recordings:
                 if self.stopping.is_set():
                     return
                 event = json.loads(selected["settings"])
-                date = datetime.fromtimestamp(selected["opens"], timezone.utc).date().isoformat()
+                zone = ZoneInfo(event["schedule"]["timezone"])
+                date = datetime.fromtimestamp(selected["opens"], zone).date().isoformat()
                 collection = build_intake(folder, self.institution, identity, event["title"][:105] + " · " + date,
                     [dict(role="playback", path="recording.mp4", format="mp4")],
                     dict(asset_type="video", description=event["description"], duration_seconds=duration,
