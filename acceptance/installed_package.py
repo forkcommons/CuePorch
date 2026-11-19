@@ -22,6 +22,8 @@ from installed_appearance import check_appearance
 from installed_languages import check_languages
 from installed_caption_generation import check_caption_generation, speech_video
 from installed_interactivity import check_chapters
+from installed_presentation import check_presentation
+from installed_ratings import check_ratings
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -347,6 +349,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         page, browser, base, auth, source, museum, venue, replacement,
                         next(work["id"] for work in works if work["title"] == "Station meeting"),
                     )
+                    presentation = check_presentation(page, browser, base, auth, museum, venue, replacement)
+                    ratings = check_ratings(page, browser, base, auth, replacement)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -375,6 +379,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             migrated_privacy=migrated_privacy,
                             video_details=details, workspace=workspace, embed_builder=embed_builder, appearance=appearance,
                             languages=languages, generated_captions=generated, chapters=chapters,
+                            presentation=presentation, ratings=ratings,
                         )
                     )
                 quit_response = requests.post(

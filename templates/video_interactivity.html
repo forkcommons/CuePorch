@@ -24,6 +24,63 @@
         <button type="submit">Save chapters</button>
       </div>
     </form>
+    <form id="presentationEditor">
+      <fieldset>
+        <legend>Timed cards</legend>
+        <ol id="cardRows"></ol>
+        <button type="button" id="addTimedCard">Add card</button>
+      </fieldset>
+      <fieldset id="ending">
+        <legend>End screen</legend>
+        <label>After playback <select name="mode">
+          <option value="default">Use the player default</option>
+          <option value="more">More videos</option>
+          <option value="action">Call to action</option>
+          <option value="share">Share link</option>
+          <option value="image">Custom image</option>
+          <option value="loop">Loop</option>
+          <option value="thumbnail">Thumbnail</option>
+          <option value="empty">Empty</option>
+          <option value="message">Custom message</option>
+        </select></label>
+        <label data-mode="action message">End title <input name="title" maxlength="80"></label>
+        <label data-mode="action message">End message <textarea name="text" maxlength="300" rows="2"></textarea></label>
+        <label data-mode="action">Button label <input name="label" maxlength="60"></label>
+        <label data-mode="action image">End link <input type="url" name="link" maxlength="2048"></label>
+        <div data-mode="more">
+          <fieldset>
+            <legend>Choose up to three public videos</legend>
+            <div id="endVideos"></div>
+          </fieldset>
+        </div>
+        <div data-mode="more action share image message" class="interactivity-image">
+          <label>End image <input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
+          <span data-image-state></span>
+          <button type="button" data-remove-image>Remove end image</button>
+        </div>
+      </fieldset>
+      <button type="submit" id="savePresentation">Save cards and end screen</button>
+      <p id="presentationStatus" role="status"></p>
+    </form>
+    <form id="ratingEditor" hidden>
+      <h2>Video rating</h2>
+      <label>Rating type <select name="mode">
+        <option value="none">Off</option>
+        <option value="thumbs">Thumbs up or down</option>
+        <option value="stars">One to five stars</option>
+      </select></label>
+      <div data-rating-settings hidden>
+        <label>Rating prompt <input name="prompt" maxlength="42"></label>
+        <label>Show rating at <input name="start" inputmode="numeric" placeholder="00:00:00"></label>
+      </div>
+      <button type="submit">Save rating</button>
+      <section aria-labelledby="ratingReport">
+        <h3 id="ratingReport">Video Rating report</h3>
+        <ul id="ratingCounts"></ul>
+        <button type="button" id="ratingExport">Download rating CSV</button>
+      </section>
+      <p id="ratingStatus" role="status"></p>
+    </form>
   </main>
   <template id="chapterRow">
     <li>
@@ -31,6 +88,20 @@
       <label>Start time <input name="timecode" inputmode="numeric" placeholder="00:00:00" required></label>
       <button type="button" data-chapter-action="preview">Preview time</button>
       <button type="button" data-chapter-action="remove">Remove chapter</button>
+    </li>
+  </template>
+  <template id="cardRow">
+    <li>
+      <label>Start time <input name="start" inputmode="numeric" placeholder="00:00:00" required></label>
+      <label>Card title <input name="title" maxlength="80" required></label>
+      <label>Card description <textarea name="text" maxlength="300" rows="2"></textarea></label>
+      <label>Card link <input type="url" name="link" maxlength="2048"></label>
+      <div class="interactivity-image">
+        <label>Card image <input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
+        <span data-image-state></span>
+        <button type="button" data-remove-image>Remove card image</button>
+      </div>
+      <button type="button" data-remove-card>Remove card</button>
     </li>
   </template>
   <script type="module" src="/static/ui/video_interactivity.js"></script>

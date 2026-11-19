@@ -1,13 +1,22 @@
-"""Timed chapter editing for retained video cuts."""
+"""Chapter and viewer interactivity settings for retained video cuts."""
 
 import hashlib
 import json
+from urllib.parse import urlsplit
 
 from filelock import FileLock
 from flask import abort, request
 
 from catalog import cut_chapters, video_version_key
 from cueporch import dump
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS video_presentation(
+ work TEXT NOT NULL,version TEXT NOT NULL,settings TEXT NOT NULL,PRIMARY KEY(work,version));
+"""
+END_MODES = ("default", "more", "action", "share", "image", "loop", "thumbnail", "empty", "message")
+CARD_SECONDS = 6
 
 
 def readable_chapters(work):
@@ -46,7 +55,162 @@ def validate_chapters(values, duration):
     return sorted(chapters, key=lambda item: item["timecode"])
 
 
-def register(app, tx, staff, get_work, title_for, root, remember_work):
+def text_field(value, label, limit, required=False):
+    if not isinstance(value, str) or len(value.strip()) > limit or (required and not value.strip()):
+        abort(422, f"Enter {label} of up to {limit} characters.")
+    return value.strip()
+
+
+def web_link(value):
+    value = text_field(value, "a link", 2048)
+    if not value:
+        return ""
+    try:
+        url = urlsplit(value)
+        if (url.scheme in ("https", "http") and url.hostname and url.username is None
+                and not any(char.isspace() or char == "\\" for char in value)):
+            return value
+    except ValueError:
+        pass
+    abort(422, "Enter an HTTP or HTTPS link.")
+
+
+def image_id(con, value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not con.execute(
+        "SELECT 1 FROM review_logo WHERE digest=?", (value,)
+    ).fetchone():
+        abort(422, "Choose an uploaded image.")
+    return value
+
+
+def presentation(con, work):
+    row = con.execute("SELECT settings FROM video_presentation WHERE work=? AND version=?",
+                      (work["id"], video_version_key(work))).fetchone()
+    return json.loads(row[0]) if row else dict(cards=[], ending={"mode": "default"})
+
+
+def public_videos(con, read_works, title_for, eligible, except_id):
+    hosted = {
+        row[0] for row in con.execute(
+            """SELECT slug FROM route r WHERE kind='work'
+               AND NOT EXISTS (SELECT 1 FROM library_peer_handoff h WHERE h.work=r.slug)"""
+        )
+    }
+    private = {
+        row[0] for row in con.execute(
+            """SELECT item FROM library_deleted_item WHERE kind='work'
+               UNION SELECT work FROM library_privacy_change
+               UNION SELECT work FROM case_hold WHERE active=1
+               UNION SELECT work FROM library_peer_handoff WHERE state='pending'"""
+        )
+    }
+    settings = dict(con.execute("SELECT work,settings FROM library_privacy"))
+    entries = []
+    for item in read_works():
+        uid = item["id"]
+        if uid == except_id or uid in private or item.get("asset_type", "video") != "video":
+            continue
+        access = json.loads(settings[uid]) if uid in settings else None
+        if ((access is not None and access["visibility"] == "public" and eligible(item, access))
+                or (access is None and uid in hosted)):
+            entries.append(dict(id=uid, title=title_for(con, item)))
+    return sorted(entries, key=lambda item: (item["title"].casefold(), item["id"]))
+
+
+def presentation_settings(con, work, body, videos):
+    if not isinstance(body, dict) or not isinstance(body.get("ending"), dict):
+        abort(400, "Enter the card and end screen settings.")
+    cards = body.get("cards")
+    if not isinstance(cards, list) or len(cards) > 100:
+        abort(422, "A video can have up to 100 cards.")
+    duration = work.get("duration_seconds")
+    windows = []
+    for card in cards:
+        start = card.get("start") if isinstance(card, dict) else None
+        if type(start) is not int or not 0 <= start < 1_000_000_000 or (duration and start >= duration):
+            abort(422, "Choose a card start time within the video.")
+        if any(abs(start - other["start"]) < CARD_SECONDS for other in windows):
+            abort(422, "Space cards at least six seconds apart.")
+        windows.append(dict(start=start, title=text_field(card.get("title"), "a card title", 80, True),
+                            text=text_field(card.get("text", ""), "a card description", 300),
+                            link=web_link(card.get("link", "")), image=image_id(con, card.get("image"))))
+    ending = body["ending"]
+    mode = ending.get("mode")
+    if mode not in END_MODES:
+        abort(422, "Choose an available end screen.")
+    result = {"mode": mode}
+    if mode == "more":
+        choices = ending.get("videos")
+        public = {item["id"] for item in videos}
+        if (not isinstance(choices, list) or not 1 <= len(choices) <= 3
+                or any(not isinstance(uid, str) or uid not in public for uid in choices)
+                or len(set(choices)) != len(choices)):
+            abort(422, "Choose one to three distinct public videos.")
+        result["videos"] = choices
+    if mode in ("more", "action", "share", "image", "message"):
+        result["image"] = image_id(con, ending.get("image"))
+    if mode == "image" and not result["image"]:
+        abort(422, "Choose an image for the end screen.")
+    if mode in ("action", "image"):
+        result["link"] = web_link(ending.get("link", ""))
+    if mode == "action":
+        if not result["link"]:
+            abort(422, "Enter a link for the call to action.")
+        result["label"] = text_field(ending.get("label"), "a button label", 60, True)
+    if mode in ("action", "message"):
+        result["title"] = text_field(ending.get("title", ""), "an end screen title", 80)
+        result["text"] = text_field(ending.get("text", ""), "an end screen message", 300, mode == "message")
+    return dict(cards=sorted(windows, key=lambda card: card["start"]), ending=result)
+
+
+def for_viewer(con, work, public_options):
+    values = presentation(con, work)
+    for card in values["cards"]:
+        card["end"] = card["start"] + CARD_SECONDS
+    ending = values["ending"]
+    if ending["mode"] == "more":
+        public = {item["id"]: item for item in public_options()}
+        ending["videos"] = [public[uid] for uid in ending["videos"] if uid in public]
+        if not ending["videos"]:
+            ending["mode"] = "empty"
+    return values
+
+
+def artwork(con, work, digest):
+    values = presentation(con, work)
+    used = {card["image"] for card in values["cards"]}
+    used.add(values["ending"].get("image"))
+    if digest not in used:
+        return None
+    return con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
+
+
+def register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits):
+    @app.route("/api/library/work/<uid>/presentation", methods=["GET", "PUT"])
+    def video_presentation(uid):
+        staff()
+        with tx() as con:
+            work = get_work(con, uid)
+            if work.get("asset_type", "video") != "video":
+                abort(404)
+            videos = public_videos(con, read_works, title_for, permits, uid)
+            current = presentation(con, work)
+            version = video_version_key(work)
+            if request.method == "PUT":
+                request.max_content_length = 3 * 1024**2
+                body = request.get_json()
+                if not isinstance(body, dict):
+                    abort(400, "Enter the interactivity settings.")
+                if body.get("version") != version or body.get("previous") != current:
+                    abort(409, "This video or its interactivity changed. Reopen the editor.")
+                current = presentation_settings(con, work, body, videos)
+                con.execute("""INSERT INTO video_presentation VALUES(?,?,?)
+                            ON CONFLICT(work,version) DO UPDATE SET settings=excluded.settings""",
+                            (uid, version, json.dumps(current)))
+            return dict(version=version, settings=current, public_videos=videos)
+
     @app.route("/api/library/work/<uid>/chapters", methods=["GET", "PUT"])
     def video_chapters(uid):
         staff()

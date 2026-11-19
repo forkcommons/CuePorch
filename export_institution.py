@@ -57,6 +57,8 @@ def export(collection, database, target):
                 "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
+                "video_presentation",
+                "video_rating_widget",
             ):
                 if db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -65,10 +67,34 @@ def export(collection, database, target):
                     tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
+            if "video_rating_widget" in record:
+                record["video_rating_summary"] = [dict(row) for row in db.execute(
+                    """SELECT work,version,mode,score,count(*) AS responses FROM video_rating
+                       GROUP BY work,version,mode,score ORDER BY work,version,mode,score"""
+                )]
             for row in record.get("library_thumbnail", []):
                 digest = row["object"]
                 if checksum(root / "collection" / "objects" / digest) != digest:
                     raise ValueError("Thumbnail verification failed for " + row["work"])
+            images = {}
+            for row in record.get("video_presentation", []):
+                values = json.loads(row["settings"])
+                row["settings"] = values
+                ids = {card["image"] for card in values["cards"]}
+                ids.add(values["ending"].get("image"))
+                for digest in ids - {None} - images.keys():
+                    item = db.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
+                    if item is None:
+                        raise ValueError("Missing interactivity artwork for " + row["work"])
+                    folder = root / "interactivity-artwork"
+                    folder.mkdir(exist_ok=True)
+                    file = folder / digest
+                    file.write_bytes(item["content"])
+                    if checksum(file) != digest:
+                        raise ValueError("Interactivity artwork verification failed for " + row["work"])
+                    images[digest] = {"path": file.relative_to(root).as_posix(), "mime": item["mime"]}
+            if images:
+                record["interactivity_artwork"] = images
         dump(root / "rights-and-routes.json", record)
         dump(
             root / "SHA256.json",

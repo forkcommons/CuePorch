@@ -42,6 +42,8 @@ import library_embed
 import library_folder_privacy
 import library_folders
 import library_languages
+import library_interactivity
+import library_ratings
 import library_peer_handoff
 import library_privacy
 import library_share
@@ -111,6 +113,8 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_appearance.SCHEMA
         + library_caption_jobs.SCHEMA
         + library_details.SCHEMA
+        + library_interactivity.SCHEMA
+        + library_ratings.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
     )
@@ -960,7 +964,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return render_template("catalog.html", name=institution, rows=routes)
 
     @app.route("/watch/<kind>/<slug>", methods=["GET", "POST"])
-    @app.route("/embed/<kind>/<slug>", methods=["GET", "POST"])
+    @app.route("/embed/<kind>/<slug>", methods=["GET", "POST"], endpoint="embed_watch")
     def watch(kind, slug):
         embed = request.path.startswith("/embed/")
         if kind == "work":

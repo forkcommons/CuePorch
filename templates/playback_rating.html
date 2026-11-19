@@ -1,0 +1,16 @@
+<form class="video-rating" data-rate="{{ url_for('viewer_rating', session=rating.session) }}"
+      data-start="{{ rating.start }}" aria-labelledby="ratingPrompt" hidden>
+  <span id="ratingPrompt">{{ rating.prompt }}</span>
+  <div role="group" aria-labelledby="ratingPrompt">
+    {% if rating.mode == 'thumbs' %}
+    <button type="submit" value="0">Thumbs down</button>
+    <button type="submit" value="1">Thumbs up</button>
+    {% else %}
+    {% for score in range(1, 6) %}
+    <button type="submit" value="{{ score }}" aria-label="{{ score }} {{ 'star' if score == 1 else 'stars' }}">{{ score }} ★</button>
+    {% endfor %}
+    {% endif %}
+  </div>
+  <span data-rating-message aria-live="polite"></span>
+</form>
+<script type="module" src="/static/ui/playback_rating.js"></script>

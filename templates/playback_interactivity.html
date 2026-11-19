@@ -1,0 +1,41 @@
+{% for card in presentation.cards %}
+<aside class="video-timed-card" data-start="{{ card.start }}" data-end="{{ card.end }}" hidden aria-label="{{ card.title }}">
+  {% if card.image %}<img src="{{ url_for('shared_artwork', token=token, digest=card.image) }}" alt="" loading="lazy">{% endif %}
+  <p><strong>{{ card.title }}</strong></p>
+  {% if card.text %}<p>{{ card.text }}</p>{% endif %}
+  {% if card.link %}<a href="{{ card.link }}" target="_blank" rel="noopener noreferrer">Open link</a>{% endif %}
+  <button type="button" data-dismiss aria-label="Dismiss card">×</button>
+</aside>
+{% endfor %}
+{% set ending = presentation.ending %}
+{% if ending.mode not in ('default', 'loop') %}
+<section class="video-end-screen" data-ending="{{ ending.mode }}" aria-label="End screen" hidden>
+  {% if ending.mode != 'image' and ending.image %}
+    <img class="end-background" src="{{ url_for('shared_artwork', token=token, digest=ending.image) }}" alt="" loading="lazy">
+  {% endif %}
+  {% if ending.title %}<p><strong>{{ ending.title }}</strong></p>{% endif %}
+  {% if ending.text %}<p>{{ ending.text }}</p>{% endif %}
+  {% if ending.mode == 'action' %}
+    <a href="{{ ending.link }}" target="_blank" rel="noopener noreferrer">{{ ending.label }}</a>
+  {% elif ending.mode == 'image' %}
+    {% if ending.link %}<a href="{{ ending.link }}" target="_blank" rel="noopener noreferrer" aria-label="Open end screen link">{% endif %}
+    <img class="end-image" src="{{ url_for('shared_artwork', token=token, digest=ending.image) }}" alt="End screen image" loading="lazy">
+    {% if ending.link %}</a>{% endif %}
+  {% elif ending.mode == 'more' %}
+    <ul aria-label="More videos">
+      {% for entry in ending.videos %}
+      <li><a href="{{ url_for('watch', kind='work', slug=entry.id) }}" target="_blank" rel="noopener">{{ entry.title }}</a></li>
+      {% endfor %}
+    </ul>
+  {% elif ending.mode == 'share' %}
+    {% if share %}
+      <label class="share-video-address">Video link <input type="url" data-share="{{ share }}" readonly></label>
+      <button type="button" data-copy-share>Copy link</button>
+      <a data-email-share>Email link</a>
+    {% endif %}
+  {% endif %}
+  {% if ending.mode != 'empty' or not appearance %}
+    <button type="button" data-replay>Replay</button>
+  {% endif %}
+</section>
+{% endif %}

@@ -28,6 +28,15 @@ def selected_thumbnail(con, work):
     return poster["sha256"] if poster else None
 
 
+def thumbnail_type(path):
+    with path.open("rb") as stream:
+        header = stream.read(16)
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    kinds = {"png": b"\x89PNG", "jpeg": b"\xff\xd8"}
+    return next(("image/" + kind for kind, prefix in kinds.items() if header.startswith(prefix)), None)
+
+
 def register(app, tx, staff, get_work, root):
     @app.get("/api/library/work/<uid>/thumbnail")
     def show_thumbnail(uid):
@@ -40,17 +49,10 @@ def register(app, tx, staff, get_work, root):
         path = root / "objects" / digest
         if not path.is_file():
             abort(404)
-        with path.open("rb") as stream:
-            header = stream.read(16)
-        kinds = {"png": b"\x89PNG", "jpeg": b"\xff\xd8"}
-        kind = next(
-            (kind for kind, prefix in kinds.items() if header.startswith(prefix)), None
-        )
-        if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
-            kind = "webp"
-        if not kind:
+        media_type = thumbnail_type(path)
+        if not media_type:
             abort(415, "The stored thumbnail uses an unsupported format.")
-        response = send_file(path, mimetype="image/" + kind)
+        response = send_file(path, mimetype=media_type)
         response.cache_control.no_store = True
         response.cache_control.private = True
         return response

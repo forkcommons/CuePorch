@@ -1,3 +1,5 @@
+import { setupPresentation } from "./video_presentation.js";
+import { setupRatings } from "./video_ratings.js";
 const identity = document.querySelector("#identify");
 const key = document.querySelector("#chapterKey");
 const status = document.querySelector("#chapterStatus");
@@ -22,6 +24,19 @@ async function call(suffix, method = "GET", body) {
     }
     return response.json();
 }
+async function addPicture(file) {
+    const body = new FormData();
+    body.set("logo", file);
+    const response = await fetch("/api/review-logos", {
+        method: "POST", body, headers: { Authorization: "Bearer " + key.value },
+    });
+    if (!response.ok) {
+        const message = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p");
+        throw new Error(message?.textContent || `Image upload failed (${response.status})`);
+    }
+    const result = await response.json();
+    return result.logo;
+}
 function timestamp(value) {
     const match = /^(?:(\d{1,6}):)?([0-5]?\d):([0-5]\d)$/.exec(value.trim());
     if (!match)
@@ -32,6 +47,18 @@ function displayTime(seconds) {
     return [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60]
         .map((value) => String(value).padStart(2, "0")).join(":");
 }
+const showPresentation = setupPresentation(call, addPicture, timestamp, displayTime, preview);
+const showRatings = setupRatings(call, timestamp, displayTime, async () => {
+    const response = await fetch(endpoint + "/rating/export", { headers: { Authorization: "Bearer " + key.value } });
+    if (!response.ok)
+        throw new Error("The rating report could not be exported.");
+    const uri = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = uri;
+    link.download = "cueporch-video-rating.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(uri), 1000);
+});
 function appendChapter(chapter) {
     const row = rowTemplate.content.firstElementChild.cloneNode(true);
     const name = row.querySelector("[name=title]");
@@ -78,6 +105,7 @@ async function show() {
         identity.hidden = true;
         editor.hidden = false;
         status.textContent = "";
+        await Promise.all([showPresentation(), showRatings()]);
     }
     catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);
@@ -101,4 +129,3 @@ form.onsubmit = async (event) => {
         status.textContent = error instanceof Error ? error.message : String(error);
     }
 };
-export {};

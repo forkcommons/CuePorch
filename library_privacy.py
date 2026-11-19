@@ -1,6 +1,7 @@
 """Policy and scoped video sharing for the CuePorch library."""
 
 import hashlib
+from io import BytesIO
 import hmac
 import ipaddress
 import json
@@ -18,7 +19,10 @@ import library_share
 import library_embed
 import library_appearance
 from library_languages import tracks_for
-from library_interactivity import readable_chapters
+import library_interactivity
+import library_ratings
+from catalog import video_version_key
+from library_thumbnail import selected_thumbnail, thumbnail_type
 from library_trash import hidden
 
 SCHEMA = """
@@ -266,6 +270,7 @@ def apply_settings(con, action, work, settings, password_hash):
 def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
+    rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
@@ -406,9 +411,21 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if not locked else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
             options = library_embed.options(request.args if embed else {}, appearance)
-            chapters = readable_chapters(work) if not locked and (
+            chapters = library_interactivity.readable_chapters(work) if not locked and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
             ) else []
+            presentation = library_interactivity.for_viewer(
+                con, work, lambda: library_interactivity.public_videos(con, read_works, title_for, permits, uid)
+            ) if not locked else None
+            poster = bool(presentation and presentation["ending"]["mode"] == "thumbnail"
+                          and selected_thumbnail(con, work))
+            if presentation and presentation["ending"]["mode"] == "loop":
+                options["loop"] = True
+            rating = library_ratings.available(con, work) if not locked else None
+            if rating:
+                rating["session"] = rating_serializer.dumps(
+                    [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
+                )
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
             duration = work.get("duration_seconds")
@@ -419,39 +436,71 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             token=token, tracks=tracks_for(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
-                            options=options, appearance=appearance, logo=logo, chapters=chapters),
+                            options=options, appearance=appearance, logo=logo, chapters=chapters,
+                            presentation=presentation, poster=poster, rating=rating,
+                            share=share_paths(uid, row)["watch"]),
             401 if locked and request.method == "POST" else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        if rating:
+            response.cache_control.private = True
+            response.cache_control.no_store = True
         return response
 
     @app.route("/v/<slug>", methods=["GET", "POST"])
     def custom_watch(slug):
         return watch(None, False, False, alias_slug=slug)
 
-    @app.get("/shared-video/<token>")
-    @app.get("/shared-video/<token>/caption/<int:track>")
-    def shared_video(token, track=None):
+    def authorized_playback(con, token):
         try:
             uid, revision, digest, *alias = serializer.loads(token, max_age=4 * 3600)
         except (BadSignature, ValueError):
             abort(404)
+        row = get_privacy(con, uid)
+        if not row or row["revision"] != revision or blocked(con, uid):
+            abort(404)
+        if alias and not library_share.current(con, uid, alias[0]):
+            abort(404)
+        work = find_work(uid)
+        video = playback(work) if work else None
+        settings = json.loads(row["settings"])
+        if video is None or video["sha256"] != digest or not permits(work, settings):
+            abort(404)
+        return work, video, settings
+
+    @app.get("/shared-video/<token>")
+    @app.get("/shared-video/<token>/caption/<int:track>")
+    def shared_video(token, track=None, poster=False, artwork=None):
         with tx() as con:
-            row = get_privacy(con, uid)
-            if not row or row["revision"] != revision or blocked(con, uid):
-                abort(404)
-            if alias and not library_share.current(con, uid, alias[0]):
-                abort(404)
-            work = find_work(uid)
-            video = playback(work) if work else None
-            settings = json.loads(row["settings"])
-            if video is None or video["sha256"] != digest or not permits(work, settings):
-                abort(404)
+            work, video, settings = authorized_playback(con, token)
             download = request.args.get("download") == "1"
-            if download and (track is not None or not settings["download"]):
+            if download and (poster or artwork or track is not None or not settings["download"]):
                 abort(403)
+            image = library_interactivity.artwork(con, work, artwork) if artwork else None
+            if artwork and image is None:
+                abort(404)
+            if poster:
+                thumbnail = selected_thumbnail(con, work)
+                if not thumbnail:
+                    abort(404)
+        if image:
+            response = send_file(BytesIO(image["content"]), mimetype=image["mime"])
+            response.cache_control.no_store = True
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+        if poster:
+            path = root / "objects" / thumbnail
+            if not path.is_file():
+                abort(404)
+            kind = thumbnail_type(path)
+            if not kind:
+                abort(415)
+            response = send_file(path, mimetype=kind)
+            response.cache_control.no_store = True
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
         if track is not None:
             tracks = tracks_for(work)
             if not 0 <= track < len(tracks):
@@ -464,5 +513,28 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             abort(404)
         return send_file(path, mimetype=media_type, conditional=True,
                          as_attachment=download, download_name="video.mp4" if download else None)
+
+    @app.get("/shared-video/<token>/poster")
+    def shared_poster(token):
+        return shared_video(token, poster=True)
+
+    @app.get("/shared-video/<token>/artwork/<digest>")
+    def shared_artwork(token, digest):
+        return shared_video(token, artwork=digest)
+
+    @app.post("/viewer-rating/<session>")
+    def viewer_rating(session):
+        try:
+            token, version, mode, nonce = rating_serializer.loads(session, max_age=4 * 3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400, "Choose a rating.")
+        with tx() as con:
+            work, _, _ = authorized_playback(con, token)
+            if video_version_key(work) != version:
+                abort(404)
+            return library_ratings.rate(con, work, nonce, mode, body.get("score"))
 
     return watch
