@@ -44,6 +44,11 @@ main { max-width: 65rem; }
 .appearance-preview[data-ambient="yes"] .appearance-preview-media { box-shadow: 0 .2rem 1.4rem var(--viewer-accent); }
 .appearance-preview[data-crop="yes"] video { object-fit: cover; aspect-ratio: 16 / 9; }
 #appearanceEditor [hidden] { display: none; }
+#languagesEditor [hidden] { display: none; }
+#languagePreview { max-height: 28rem; }
+#cueRows { padding-inline-start: 1.5rem; }
+#cueRows li { margin-block: .7rem; border-block-end: 1px solid #becac7; padding: .45rem; }
+#cueRows textarea { display: block; width: min(100%, 40rem); }
 .palette { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .65rem; }
 .palette input { padding: .15rem; }
 @media (max-width: 48rem) {

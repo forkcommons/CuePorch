@@ -11,6 +11,7 @@ from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import review_feedback
+from library_languages import tracks_for
 import review_notifications
 import review_push
 import review_settings
@@ -428,11 +429,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         renditions = []
         if selected:
             version, _ = versions[selected]
-            tracks = [
-                f
-                for f in version["files"]
-                if f["role"] == "caption" and f["format"] == "vtt"
-            ]
+            tracks = tracks_for(work, version, selected)
             for role, file in video_choices(version).items():
                 properties = video_properties(root / "objects" / file["sha256"])
                 renditions.append(
@@ -503,11 +500,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 if video is None:
                     abort(404)
         if track is not None:
-            captions = [
-                f
-                for f in cut["files"]
-                if f["role"] == "caption" and f["format"] == "vtt"
-            ]
+            captions = tracks_for(work, cut, version)
             if track >= len(captions):
                 abort(404)
             item = captions[track]

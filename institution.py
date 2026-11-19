@@ -40,6 +40,7 @@ import library_details
 import library_embed
 import library_folder_privacy
 import library_folders
+import library_languages
 import library_peer_handoff
 import library_privacy
 import library_share
@@ -785,11 +786,7 @@ def create_app(root, database, operator, institution, simulation=None):
         )
         if selected is None:
             abort(403)
-        tracks = [
-            f
-            for f in selected["files"]
-            if f["role"] == "caption" and f["format"] == "vtt"
-        ]
+        tracks = library_languages.tracks_for(works[grant["work"]], selected)
         if request.path.endswith("/status") or track_index is not None:
             ref = urlsplit(request.referrer or "")
             if ref.path != "/screen/" + token or ref.netloc != request.host:
@@ -1269,6 +1266,10 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/videos/<uuid:work>/appearance")
     def operator_appearance(work):
         return render_template("video_appearance.html", work=str(work))
+
+    @app.get("/operator/videos/<uuid:work>/languages")
+    def operator_languages(work):
+        return render_template("video_languages.html", work=str(work))
 
     @app.get("/player.js")
     def player_sdk():

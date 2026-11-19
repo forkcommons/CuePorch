@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Video languages · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  <h1 id="languagesTitle">Video languages</h1>
+  <form id="identify">
+    <label>Operator credential <input id="languageKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open video languages</button>
+  </form>
+  <p id="languagesStatus" role="status"></p>
+  <main id="languagesEditor" hidden>
+    <form id="sourceLanguage">
+      <label>Original language <input name="language" required placeholder="en" maxlength="40"></label>
+      <button type="submit">Set original language</button>
+    </form>
+    <form id="uploadSubtitle">
+      <label>Subtitle language <input name="language" required placeholder="es" maxlength="40"></label>
+      <label>Subtitle file <input name="track" type="file" accept=".vtt,.srt" required></label>
+      <button type="submit">Upload subtitles</button>
+    </form>
+    <section aria-labelledby="availableTracks">
+      <h2 id="availableTracks">Subtitle tracks</h2>
+      <ul id="subtitleTracks"></ul>
+    </section>
+    <section id="subtitleEditor" aria-labelledby="selectedTrack" hidden>
+      <h2 id="selectedTrack">Edit subtitles</h2>
+      <video id="languagePreview" controls playsinline preload="metadata" aria-label="Video preview" hidden></video>
+      <label>Search transcript <input id="transcriptSearch" type="search"></label>
+      <p id="transcriptCount" aria-live="polite"></p>
+      <ol id="cueRows"></ol>
+      <div class="library-tools">
+        <button type="button" id="previousCues" disabled>Previous cues</button>
+        <button type="button" id="nextCues" disabled>Next cues</button>
+        <button type="button" id="addCue">Add cue</button>
+        <button type="button" id="saveCues">Save subtitles</button>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/video_languages.js"></script>
+</body>
+</html>

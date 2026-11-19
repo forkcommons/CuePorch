@@ -10,6 +10,7 @@ from filelock import FileLock, Timeout
 from peertube_destination import PeerTube, SourceReplacementUnavailable
 import library_trash
 import library_peer_handoff
+from library_languages import tracks_for
 from library_actions import sync_edits, title_for
 from library_privacy import manages_sharing
 from library_thumbnail import selected_thumbnail
@@ -108,7 +109,7 @@ def start(app, root, db, tx, action, apply_routes):
         works = json.loads(manifest_path.read_text(encoding="utf8"))["works"]
         with tx() as con:
             for work in works:
-                if "library_version_changed" not in work:
+                if "library_version_changed" not in work and "language_edits" not in work:
                     continue
                 prior = con.execute(
                     """SELECT want_public,scheduled,kind,status FROM publication_job
@@ -151,7 +152,7 @@ def start(app, root, db, tx, action, apply_routes):
                         )
                     continue
                 steps = ["intake"]
-                if any(f["role"] == "caption" for f in work["files"]):
+                if tracks_for(work, vtt_only=False):
                     steps.append("caption")
                 steps += ["publication"]
                 if job["kind"] == "meeting":

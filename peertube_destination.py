@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 
 from cueporch import dump, verify
+from library_languages import tracks_for
 
 
 class SourceReplacementUnavailable(ValueError):
@@ -270,7 +271,7 @@ class PeerTube:
         self.update_metadata(
             state["video"], metadata, root / "objects" / thumbnail if thumbnail else None
         )
-        captions = [f for f in work["files"] if f["role"] == "caption"]
+        captions = tracks_for(work, vtt_only=False)
         supported = (
             self.call("GET", "/api/v1/videos/languages").json() if captions else {}
         )

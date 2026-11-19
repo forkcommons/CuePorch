@@ -1,0 +1,238 @@
+export {};
+
+interface Track { language: string; provenance: string | null; bytes: number; }
+interface Languages { title: string; version: string; original_language: string; tracks: Track[]; }
+interface Cue { start: number; end: number; text: string; settings: string; }
+interface TrackData { version: string; revision: string; cues: Cue[]; }
+interface DraftCue { start: string; end: string; text: string; settings: string; }
+
+const identify = document.querySelector<HTMLFormElement>("#identify")!;
+const credential = document.querySelector<HTMLInputElement>("#languageKey")!;
+const status = document.querySelector<HTMLElement>("#languagesStatus")!;
+const title = document.querySelector<HTMLElement>("#languagesTitle")!;
+const pane = document.querySelector<HTMLElement>("#languagesEditor")!;
+const original = document.querySelector<HTMLFormElement>("#sourceLanguage")!;
+const upload = document.querySelector<HTMLFormElement>("#uploadSubtitle")!;
+const tracks = document.querySelector<HTMLUListElement>("#subtitleTracks")!;
+const editor = document.querySelector<HTMLElement>("#subtitleEditor")!;
+const editingTitle = document.querySelector<HTMLElement>("#selectedTrack")!;
+const cues = document.querySelector<HTMLOListElement>("#cueRows")!;
+const count = document.querySelector<HTMLElement>("#transcriptCount")!;
+const search = document.querySelector<HTMLInputElement>("#transcriptSearch")!;
+const preview = document.querySelector<HTMLVideoElement>("#languagePreview")!;
+const previous = document.querySelector<HTMLButtonElement>("#previousCues")!;
+const next = document.querySelector<HTMLButtonElement>("#nextCues")!;
+const save = document.querySelector<HTMLButtonElement>("#saveCues")!;
+const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+const languages = endpoint + "/languages";
+const perPage = 30;
+let state: Languages;
+let selected: string | null = null;
+let draft: DraftCue[] = [];
+let track: TrackData;
+let page = 0;
+
+credential.value = sessionStorage.getItem("cueporchOperator") || "";
+
+async function request(path: string, method = "GET", body?: object | FormData) {
+  const headers: Record<string, string> = {Authorization: "Bearer " + credential.value};
+  if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
+  const response = await fetch(path, {
+    method, headers, body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    const error = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p");
+    throw new Error(error?.textContent || `Request failed (${response.status})`);
+  }
+  return response;
+}
+
+async function json<T>(path: string, method = "GET", body?: object | FormData): Promise<T> {
+  return (await request(path, method, body)).json();
+}
+
+function button(label: string) {
+  const control = document.createElement("button");
+  control.type = "button";
+  control.textContent = label;
+  return control;
+}
+
+async function action(callback: () => Promise<void>, done = "") {
+  status.textContent = "";
+  try {
+    await callback();
+    status.textContent = done;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function present(updated: Languages) {
+  state = updated;
+  title.textContent = "Languages for " + state.title;
+  (original.elements.namedItem("language") as HTMLInputElement).value = state.original_language;
+  tracks.replaceChildren();
+  if (!state.tracks.length) {
+    const blank = document.createElement("li");
+    blank.textContent = "No subtitles have been added.";
+    tracks.append(blank);
+  }
+  for (const entry of state.tracks) {
+    const path = languages + "/" + encodeURIComponent(entry.language);
+    const row = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = entry.language;
+    const edit = button("Edit " + entry.language);
+    const download = button("Download " + entry.language);
+    const remove = button("Remove " + entry.language);
+    edit.onclick = () => void action(() => openTrack(entry.language));
+    download.onclick = () => void action(async () => {
+      const blob = await (await request(path + "?download=1")).blob();
+      const uri = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = uri;
+      link.download = entry.language + ".vtt";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(uri), 1000);
+    });
+    remove.onclick = () => void action(async () => {
+      const latest = await json<TrackData>(path);
+      present(await json<Languages>(path, "DELETE", {version: latest.version, revision: latest.revision}));
+      if (selected === entry.language) {
+        selected = null;
+        editor.hidden = true;
+      }
+    }, "Subtitle track removed.");
+    row.append(name);
+    if (entry.provenance) row.append(" · " + entry.provenance);
+    row.append(" ", edit, download, remove);
+    tracks.append(row);
+  }
+}
+
+function formatted(ms: number) {
+  const fraction = String(ms % 1000).padStart(3, "0");
+  const seconds = Math.floor(ms / 1000);
+  const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+  return parts.map((value) => String(value).padStart(2, "0")).join(":") + "." + fraction;
+}
+
+function timestamp(text: string) {
+  const value = /^(?:(\d{1,3}):)?([0-5]\d):([0-5]\d)[.,](\d{3})$/.exec(text);
+  if (!value) throw new Error("Use timestamps such as 00:00:01.500.");
+  const [, hours, minutes, seconds, millis] = value;
+  return 1000 * (3600 * Number(hours || 0) + 60 * Number(minutes) + Number(seconds)) + Number(millis);
+}
+
+function renderDraft() {
+  const query = search.value.trim().toLocaleLowerCase();
+  const matches = draft.map((cue, index) => ({cue, index})).filter(({cue}) => !query
+    || [cue.start, cue.end, cue.text].some((value) => value.toLocaleLowerCase().includes(query)));
+  const lastPage = Math.max(0, Math.ceil(matches.length / perPage) - 1);
+  page = Math.min(page, lastPage);
+  const results = matches.slice(page * perPage, (page + 1) * perPage);
+  count.textContent = matches.length === 0 ? "No matching cues."
+    : `Showing ${page * perPage + 1}–${page * perPage + results.length} of ${matches.length} cues.`;
+  previous.disabled = page === 0;
+  next.disabled = page === lastPage;
+  cues.replaceChildren();
+  for (const {cue, index} of results) {
+    const line = document.createElement("li");
+    line.value = index + 1;
+    for (const [part, word] of [["start", "Start"], ["end", "End"]] as const) {
+      const label = document.createElement("label");
+      label.textContent = word;
+      const control = document.createElement("input");
+      control.value = cue[part];
+      control.oninput = () => { cue[part] = control.value; };
+      label.append(control);
+      line.append(label);
+    }
+    const label = document.createElement("label");
+    label.textContent = "Cue text";
+    const text = document.createElement("textarea");
+    text.value = cue.text;
+    text.maxLength = 4000;
+    text.rows = 2;
+    text.oninput = () => { cue.text = text.value; };
+    label.append(text);
+    line.append(label);
+    if (!preview.hidden) {
+      const jump = button("Jump to cue");
+      jump.onclick = () => void action(async () => {
+        preview.currentTime = timestamp(cue.start) / 1000;
+      });
+      line.append(jump);
+    }
+    const remove = button("Remove cue");
+    remove.onclick = () => { draft.splice(index, 1); renderDraft(); };
+    line.append(remove);
+    cues.append(line);
+  }
+}
+
+async function openTrack(language: string) {
+  const current = await json<TrackData>(languages + "/" + encodeURIComponent(language));
+  selected = language;
+  track = current;
+  draft = track.cues.map(({start, end, ...fields}) => ({...fields, start: formatted(start), end: formatted(end)}));
+  page = 0;
+  search.value = "";
+  editingTitle.textContent = "Edit " + language + " subtitles";
+  editor.hidden = false;
+  renderDraft();
+}
+
+async function load() {
+  present(await json<Languages>(languages));
+  sessionStorage.setItem("cueporchOperator", credential.value);
+  identify.hidden = true;
+  pane.hidden = false;
+  const info = await json<{preview: string | null}>(endpoint);
+  if (info.preview) {
+    const ticket = await json<{preview: string}>(endpoint + "/ticket", "POST", {sha256: info.preview});
+    preview.src = ticket.preview;
+    preview.hidden = false;
+  }
+}
+
+identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
+original.onsubmit = (event) => {
+  event.preventDefault();
+  void action(async () => {
+    const language = new FormData(original).get("language");
+    present(await json<Languages>(languages, "PUT", {language, version: state.version}));
+  }, "Original language saved.");
+};
+upload.onsubmit = (event) => {
+  event.preventDefault();
+  void action(async () => {
+    const body = new FormData(upload);
+    body.append("version", state.version);
+    present(await json<Languages>(languages, "POST", body));
+    upload.reset();
+    await openTrack(String(body.get("language")).toLowerCase());
+  }, "Subtitles uploaded.");
+};
+search.oninput = () => { page = 0; renderDraft(); };
+previous.onclick = () => { --page; renderDraft(); };
+next.onclick = () => { ++page; renderDraft(); };
+document.querySelector<HTMLButtonElement>("#addCue")!.onclick = () => {
+  const start = Math.floor((preview.hidden ? 0 : preview.currentTime) * 1000);
+  draft.push({start: formatted(start), end: formatted(start + 1000), text: "", settings: ""});
+  search.value = "";
+  page = Math.floor((draft.length - 1) / perPage);
+  renderDraft();
+  cues.lastElementChild?.querySelector("textarea")?.focus();
+};
+save.onclick = () => void action(async () => {
+  if (!selected) return;
+  const payload = {
+    version: track.version, revision: track.revision,
+    cues: draft.map(({start, end, ...fields}) => ({...fields, start: timestamp(start), end: timestamp(end)})),
+  };
+  present(await json<Languages>(languages + "/" + encodeURIComponent(selected), "PUT", payload));
+  await openTrack(selected);
+}, "Subtitles saved.");
+if (credential.value) void action(load);

@@ -11,6 +11,7 @@ from flask import abort, request, send_file
 
 import library_details
 import library_appearance
+import library_languages
 import library_thumbnail
 import library_versions
 import library_privacy
@@ -79,6 +80,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_appearance.register(app, tx, staff, get_work, read_works, title_for)
     library_details.register(app, tx, staff, root, get_work, title_for, save_title)
+    library_languages.register(app, tx, staff, get_work, root, remember_work, title_for)
     library_share.register(
         app, tx, staff, get_work,
         lambda con, work: library_privacy.operator_sharing(con, work, permits),

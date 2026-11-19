@@ -129,6 +129,8 @@ def merge_collection(source, destination):
                 work["library_added_at"] = added_at
             elif "library_added_at" in prior:
                 work["library_added_at"] = prior["library_added_at"]
+            if prior and "language_edits" in prior:
+                work["language_edits"] = prior["language_edits"]
             if prior and prior["files"] != work["files"]:
                 versions = prior.get("versions_history", [])
                 work["versions_history"] = versions + [version_snapshot(prior)]
@@ -172,6 +174,9 @@ def copy_work(collection, uid, title):
             source_embed_policy="private",
             library_added_at=datetime.now(timezone.utc).isoformat(),
         )
+        key = video_version_key(source)
+        if key in source.get("language_edits", {}):
+            copy["language_edits"] = {key: source["language_edits"][key]}
         manifest["works"].append(copy)
         dump(path, manifest)
         return identity

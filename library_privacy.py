@@ -17,6 +17,7 @@ import library_peer_handoff
 import library_share
 import library_embed
 import library_appearance
+from library_languages import tracks_for
 from library_trash import hidden
 
 SCHEMA = """
@@ -47,10 +48,6 @@ def playback(work):
         ),
         None,
     )
-
-
-def captions(work):
-    return [f for f in work["files"] if f["role"] == "caption" and f["format"] == "vtt"]
 
 
 def normalize_domain(value):
@@ -415,7 +412,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 start = 0
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
-                            token=token, tracks=captions(work), download=settings["download"],
+                            token=token, tracks=tracks_for(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
                             options=options, appearance=appearance, logo=logo),
@@ -452,7 +449,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if download and (track is not None or not settings["download"]):
                 abort(403)
         if track is not None:
-            tracks = captions(work)
+            tracks = tracks_for(work)
             if not 0 <= track < len(tracks):
                 abort(404)
             item, media_type = tracks[track], "text/vtt"

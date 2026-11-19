@@ -13,11 +13,19 @@ def walkthrough(site, keys, started):
         page = b.new_page()
         page.goto(site + "/operator")
         page.get_by_role("link", name="Move from Vimeo").click()
+        page.wait_for_function("typeof document.querySelector('#inventory')?.onclick === 'function'")
         page.locator("#key").fill(keys["operator"])
-        page.get_by_role("button", name="Preview transfer").click()
+        with page.expect_response(
+            lambda event: event.url == site + "/api/migration" and event.request.method == "POST",
+            timeout=15000,
+        ) as submitted:
+            page.get_by_role("button", name="Preview transfer").click()
+        assert submitted.value.ok, f"Inventory request returned HTTP {submitted.value.status}"
         page.wait_for_function(
-            "document.getElementById('status').textContent.startsWith('inventoried')"
+            "/^(inventoried|failed)/.test(document.getElementById('status').textContent)"
         )
+        status = page.locator("#status").inner_text()
+        assert status.startswith("inventoried"), status
         assert page.locator("#rows tr").count() == 3
         start_transfer = time.monotonic()
         page.get_by_role("button", name="Transfer privately").click()
@@ -38,6 +46,7 @@ def walkthrough(site, keys, started):
         else:
             raise RuntimeError("Private delivery timed out")
         page.goto(site + "/operator/library")
+        page.wait_for_function("typeof document.querySelector('#load')?.onclick === 'function'")
         page.locator("#key").fill(keys["operator"])
         page.get_by_role("button", name="Load library").click()
         page.wait_for_function("document.querySelectorAll('#items tr').length===3")

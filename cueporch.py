@@ -135,6 +135,13 @@ def verify(root):
         files = list(work["files"])
         for prior in work.get("versions_history", []):
             files.extend(prior["files"])
+        for version, edit in work.get("language_edits", {}).items():
+            if not re.fullmatch("[0-9a-f]{64}", version):
+                raise ValueError("Invalid subtitle version")
+            for entry in edit.get("tracks", []):
+                if entry["role"] != "caption":
+                    raise ValueError("Invalid subtitle attachment")
+                files.append(entry)
         for item in files:
             digest = item["sha256"]
             if not re.fullmatch("[0-9a-f]{64}", digest):
