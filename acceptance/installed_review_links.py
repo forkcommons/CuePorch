@@ -29,6 +29,16 @@ def check_review_links(page, base, auth, work):
     record = records.json()[0]
     assert abs(record["expires"] - time.time() - (30 * 86400)) < 120
     assert record["password"] and "password_hash" not in record
+    preview_api = endpoint + "/" + record["id"] + "/preview"
+    assert requests.post(preview_api, timeout=10).status_code == 403
+    with page.context.expect_page() as preview:
+        dialog.get_by_role("button", name="Preview as reviewer", exact=True).click()
+    operator_view = preview.value
+    expect(
+        operator_view.get_by_text("You are previewing the recipient’s review page.")
+    ).to_be_visible()
+    expect(operator_view.get_by_label("Review password")).to_have_count(0)
+    operator_view.close()
     recent = requests.get(
         base + "/api/library/work/" + work_id + "/versions", headers=auth, timeout=10
     ).json()
@@ -73,6 +83,17 @@ def check_review_links(page, base, auth, work):
             "async v=>{v.muted=true;await v.play();return v.videoWidth}"
         )
         assert initial == 320
+        expect(
+            visitor.get_by_text("You are previewing the recipient’s review page.")
+        ).to_have_count(0)
+        visitor.get_by_label("Playback speed").select_option("1.5")
+        visitor.get_by_label("Loop", exact=True).check()
+        assert player.evaluate("v => [v.playbackRate, v.loop]") == [1.5, True]
+        player.evaluate("v => {v.pause(); v.currentTime = 1;}")
+        visitor.get_by_role("button", name="Next frame", exact=True).click()
+        assert abs(player.evaluate("v => v.currentTime") - (25 / 24)) < 0.008
+        visitor.get_by_role("button", name="Previous frame", exact=True).click()
+        assert abs(player.evaluate("v => v.currentTime") - 1) < 0.008
         player.evaluate("v => {v.pause(); v.currentTime = 1.25;}")
         visitor.get_by_role("button", name="Use current time", exact=True).click()
         visitor.get_by_label("Name", exact=True).fill("A reviewer")
@@ -100,6 +121,16 @@ def check_review_links(page, base, auth, work):
             "async v=>{v.muted=true;await v.play();return v.videoWidth}"
         )
         assert previous == 256
+        player.evaluate("v => {v.pause(); v.currentTime = 0.75;}")
+        choices = visitor.locator("#reviewQuality")
+        options = choices.get_by_role("option").all_text_contents()
+        assert len(options) == 2, f"Expected both archived renditions, got {options!r}"
+        original = choices.locator('option[value$="rendition=original"]')
+        expect(original).to_have_text("Original · 256 × 144")
+        choices.select_option(value=original.get_attribute("value"))
+        expect(choices).to_be_enabled()
+        assert player.evaluate("v => v.currentSrc").endswith("rendition=original")
+        assert abs(player.evaluate("v => v.currentTime") - 0.75) < 0.1
         expect(visitor.get_by_text("No comments yet.", exact=True)).to_be_visible()
     finally:
         context.close()
@@ -186,6 +217,7 @@ def check_review_links(page, base, auth, work):
         "comment_timecode_replies_search_and_status": True,
         "version_specific_feedback": True,
         "staff_csv_and_resolution": True,
+        "operator_recipient_preview_and_player_controls": True,
     }
 
 

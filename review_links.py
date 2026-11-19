@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import review_feedback
 import review_settings
 from catalog import video_version_key
+from media_tools import video_properties
 
 SCHEMA = (
     """
@@ -21,6 +22,8 @@ CREATE TABLE IF NOT EXISTS review_link(
  allow_download INTEGER NOT NULL DEFAULT 0, allow_versions INTEGER NOT NULL DEFAULT 0,
  created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS review_session(
+ digest TEXT PRIMARY KEY, link TEXT NOT NULL, expires REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS review_preview(
  digest TEXT PRIMARY KEY, link TEXT NOT NULL, expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS review_unlock_limit(
  link TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
@@ -174,6 +177,7 @@ def register(app, tx, staff, get_work, title_for, root):
                 )
             if not enabled or "password" in body:
                 con.execute("DELETE FROM review_session WHERE link=?", (uid,))
+                con.execute("DELETE FROM review_preview WHERE link=?", (uid,))
             return project(con, locate(con, work, uid))
 
     @app.post("/api/library/work/<work>/review-links/<uid>/copy")
@@ -207,6 +211,7 @@ def register(app, tx, staff, get_work, title_for, root):
             get_work(con, work)
             locate(con, work, uid)
             con.execute("DELETE FROM review_session WHERE link=?", (uid,))
+            con.execute("DELETE FROM review_preview WHERE link=?", (uid,))
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
             con.execute("DELETE FROM review_feedback_permission WHERE link=?", (uid,))
             con.execute("DELETE FROM review_appearance WHERE link=?", (uid,))
@@ -226,7 +231,19 @@ def register(app, tx, staff, get_work, title_for, root):
             abort(404)
         return row, get_work(con, row["work"])
 
+    def preview_session(con, uid):
+        token = request.cookies.get("cueporch_review_preview", "")
+        return bool(
+            token
+            and con.execute(
+                "SELECT 1 FROM review_preview WHERE digest=? AND link=? AND expires>?",
+                (session_digest(token), uid, time.time()),
+            ).fetchone()
+        )
+
     def authorized(con, row):
+        if preview_session(con, row["id"]):
+            return True
         if not row["password_hash"]:
             return True
         encrypted = request.cookies.get("cueporch_review", "")
@@ -247,25 +264,64 @@ def register(app, tx, staff, get_work, title_for, root):
         page.cache_control.private = True
         return page
 
+    def set_review_cookie(response, name, token, uid, seconds):
+        response.set_cookie(
+            name,
+            token,
+            max_age=int(seconds),
+            secure=request.is_secure
+            or os.environ.get("CUEPORCH_PUBLIC_URL", "").startswith("https://"),
+            httponly=True,
+            samesite="Lax",
+            path="/review/" + uid,
+        )
+        return response
+
+    @app.post("/api/library/work/<work>/review-links/<uid>/preview")
+    def prepare_review_preview(work, uid):
+        staff()
+        now = time.time()
+        token = secrets.token_urlsafe(32)
+        with tx() as con:
+            locate(con, work, uid)
+            row, _ = active(con, uid)
+            expires = min(row["expires"], now + 600)
+            con.execute("DELETE FROM review_preview WHERE expires<=?", (now,))
+            con.execute(
+                "INSERT INTO review_preview VALUES(?,?,?)",
+                (session_digest(token), uid, expires),
+            )
+        return set_review_cookie(
+            confidential({"path": "/review/" + uid}),
+            "cueporch_review_preview",
+            token,
+            uid,
+            expires - now,
+        )
+
     def playable_versions(work, row):
         current = [work]
         if row["allow_versions"]:
             current.extend(reversed(work.get("versions_history", [])))
         playable = {}
         for version in current:
-            files = version["files"]
-            media = next(
-                (
-                    f
-                    for role in ("playback", "original")
-                    for f in files
-                    if f["role"] == role and f["format"] == "mp4"
-                ),
-                None,
-            )
+            media = next(iter(video_choices(version).values()), None)
             if media is not None:
                 playable.setdefault(video_version_key(version), (version, media))
         return playable
+
+    def video_choices(cut):
+        choices = {}
+        seen = set()
+        for role in ("playback", "original"):
+            file = next(
+                (f for f in cut["files"] if f["role"] == role and f["format"] == "mp4"),
+                None,
+            )
+            if file is not None and file["sha256"] not in seen:
+                seen.add(file["sha256"])
+                choices[role] = file
+        return choices
 
     def operator_feedback_access(con, uid, version):
         staff()
@@ -306,6 +362,7 @@ def register(app, tx, staff, get_work, title_for, root):
                 )
             versions = playable_versions(work, row)
             title = title_for(con, work)
+            is_preview = preview_session(con, uid)
             appearance = review_settings.appearance(con, uid)
             recommendations = (
                 con.execute(
@@ -321,13 +378,23 @@ def register(app, tx, staff, get_work, title_for, root):
         if selected is not None and selected not in versions:
             abort(404)
         tracks = []
+        renditions = []
         if selected:
-            version, media = versions[selected]
+            version, _ = versions[selected]
             tracks = [
                 f
                 for f in version["files"]
                 if f["role"] == "caption" and f["format"] == "vtt"
             ]
+            for role, file in video_choices(version).items():
+                properties = video_properties(root / "objects" / file["sha256"])
+                renditions.append(
+                    {
+                        "role": role,
+                        "label": "Original" if role == "original" else "Screening copy",
+                        **properties,
+                    }
+                )
         return confidential(
             render_template(
                 "review.html",
@@ -339,6 +406,8 @@ def register(app, tx, staff, get_work, title_for, root):
                 tracks=tracks,
                 appearance=appearance,
                 recommendations=recommendations,
+                operator_preview=is_preview,
+                renditions=renditions,
             )
         )
 
@@ -370,6 +439,11 @@ def register(app, tx, staff, get_work, title_for, root):
             download = request.args.get("download") == "1"
             if download and (not row["allow_download"] or track is not None):
                 abort(403)
+            rendition = request.args.get("rendition")
+            if rendition and track is None:
+                video = video_choices(cut).get(rendition)
+                if video is None:
+                    abort(404)
         if track is not None:
             captions = [
                 f
@@ -438,15 +512,10 @@ def register(app, tx, staff, get_work, title_for, root):
                 (session_digest(token), uid, expires),
             )
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
-        response = confidential(("", 303, {"Location": "/review/" + uid}))
-        response.set_cookie(
+        return set_review_cookie(
+            confidential(("", 303, {"Location": "/review/" + uid})),
             "cueporch_review",
             token,
-            max_age=int(expires - now),
-            secure=request.is_secure
-            or os.environ.get("CUEPORCH_PUBLIC_URL", "").startswith("https://"),
-            httponly=True,
-            samesite="Lax",
-            path="/review/" + uid,
+            uid,
+            expires - now,
         )
-        return response

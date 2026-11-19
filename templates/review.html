@@ -10,6 +10,7 @@
   <main class="review-page">
     {% if appearance and appearance.logo %}<img class="review-logo" src="{{ url_for('review_logo', uid=uid) }}" alt="Review logo">{% endif %}
     <h1>{{ title or "Video review" }}</h1>
+    {% if operator_preview %}<p class="review-preview-notice">You are previewing the recipient’s review page.</p>{% endif %}
     {% if locked %}
     <form action="{{ url_for('unlock', uid=uid) }}" method="post">
       <label>Review password <input type="password" name="password" required maxlength="256" autocomplete="current-password"></label>
@@ -29,11 +30,28 @@
       <button>View version</button>
     </form>
     {% endif %}
-    <video controls preload="metadata" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
+    <video controls preload="metadata" data-frame-rate="{{ renditions[0].fps or '' }}" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
       {% for item in tracks %}
       <track kind="captions" srclang="{{ item.language }}" label="{{ item.language }}" src="{{ url_for('review_media', uid=uid, version=selected, track=loop.index0) }}">
       {% endfor %}
     </video>
+    <div id="reviewPlayerControls">
+      <button type="button" id="previousFrame" {% if not renditions[0].fps %}hidden{% endif %}>Previous frame</button>
+      <button type="button" id="nextFrame" {% if not renditions[0].fps %}hidden{% endif %}>Next frame</button>
+      <label><input type="checkbox" id="reviewLoop"> Loop</label>
+      <label>Playback speed
+        <select id="reviewSpeed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+      </label>
+      {% if renditions|length > 1 %}
+      <label>Playback quality
+        <select id="reviewQuality">
+          {% for item in renditions %}
+          <option value="{{ url_for('review_media', uid=uid, version=selected, rendition=item.role) }}" data-rate="{{ item.fps or '' }}">{{ item.label }}{% if item.width and item.height %} · {{ item.width }} × {{ item.height }}{% endif %}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+    </div>
     {% if allow_download %}<a href="{{ url_for('review_media', uid=uid, version=selected, download=1) }}">Download this version</a>{% endif %}
     {% if recommendations %}
     <aside id="reviewRecommendations" hidden>

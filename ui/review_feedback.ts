@@ -20,6 +20,48 @@ interface Feedback {
 
 const endpoint = document.querySelector<HTMLElement>("#reviewFeedback")!.dataset.feedback!;
 const player = document.querySelector<HTMLVideoElement>("video")!;
+const loop = document.querySelector<HTMLInputElement>("#reviewLoop")!;
+const speed = document.querySelector<HTMLSelectElement>("#reviewSpeed")!;
+const previousFrame = document.querySelector<HTMLButtonElement>("#previousFrame")!;
+const nextFrame = document.querySelector<HTMLButtonElement>("#nextFrame")!;
+let frameRate = Number(player.dataset.frameRate);
+const step = (direction: number) => {
+  if (!(frameRate > 0) || !Number.isFinite(player.duration)) return;
+  player.pause();
+  const next = Math.round(player.currentTime * frameRate) + direction;
+  player.currentTime = Math.max(0, Math.min(next / frameRate, player.duration));
+};
+previousFrame.onclick = () => step(-1);
+nextFrame.onclick = () => step(1);
+loop.onchange = () => { player.loop = loop.checked; };
+speed.onchange = () => { player.playbackRate = Number(speed.value); };
+const quality = document.querySelector<HTMLSelectElement>("#reviewQuality");
+if (quality) {
+  quality.onchange = () => {
+    const position = player.currentTime;
+    const wasPlaying = !player.paused;
+    const captionModes = Array.from(player.textTracks, (track) => track.mode);
+    frameRate = Number(quality.selectedOptions[0].dataset.rate);
+    previousFrame.hidden = nextFrame.hidden = !(frameRate > 0);
+    quality.disabled = true;
+    const listeners = new AbortController();
+    player.addEventListener("loadedmetadata", () => {
+      listeners.abort();
+      player.currentTime = Math.min(position, player.duration);
+      player.playbackRate = Number(speed.value);
+      for (let index = 0; index < player.textTracks.length; index++) {
+        player.textTracks[index].mode = captionModes[index] || "disabled";
+      }
+      quality.disabled = false;
+      if (wasPlaying) player.play().catch(() => {});
+    }, { signal: listeners.signal });
+    player.addEventListener("error", () => {
+      listeners.abort();
+      quality.disabled = false;
+    }, { signal: listeners.signal });
+    player.src = quality.value;
+  };
+}
 const recommendations = document.querySelector<HTMLElement>("#reviewRecommendations");
 player.addEventListener("ended", () => { if (recommendations) recommendations.hidden = false; });
 player.addEventListener("play", () => { if (recommendations) recommendations.hidden = true; });

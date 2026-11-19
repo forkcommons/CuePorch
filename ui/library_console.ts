@@ -717,6 +717,22 @@ async function reviewLinksDialog(work: Work) {
     };
     const buttons: [string, () => Promise<void>][] = [
       ["Copy review link", () => copyText(field)],
+      ["Preview as reviewer", async () => {
+        const preview = window.open("about:blank", "_blank");
+        if (!preview) {
+          workDialogStatus.textContent = "Allow a new tab to open the preview.";
+          return;
+        }
+        try {
+          preview.opener = null;
+          const response = await completed(await request(endpoint + "/" + link.id + "/preview", "POST"));
+          const receipt: { path: string } = await response.json();
+          preview.location.replace(new URL(receipt.path, location.origin));
+        } catch (error) {
+          preview.close();
+          workDialogStatus.textContent = String(error);
+        }
+      }],
       ["Manage", async () => { populate(link); fields.name.input.focus(); }],
       ["Comments", () => manageReviewFeedback(work, link, reopen)],
       [link.enabled ? "Disable" : "Enable", () => update("", "PUT", { enabled: !link.enabled })],
