@@ -3,6 +3,7 @@ import { messageAction, renderChat } from "./event_chat.js";
 import { setupProducerEngagement } from "./event_engagement.js";
 import { relaySummary } from "./event_health.js";
 import { waitingPlayer } from "./event_waiting.js";
+import { playerColors, playerSwitches } from "./event_controls.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -40,6 +41,8 @@ const eventPlayerPanel = element("eventPlayerSettings");
 const eventPlayerForm = element("eventPlayerForm");
 const eventPlayerStatus = element("eventPlayerStatus");
 const playerOption = (name) => eventPlayerForm.elements.namedItem(name);
+const appearanceFields = element("eventAppearanceOptions");
+const playPosition = eventPlayerForm.elements.namedItem("play_position");
 const previewWaiting = waitingPlayer(eventPlayerPanel);
 let playerOptions;
 let selectedPosterUrl = "";
@@ -198,6 +201,7 @@ function clearPlayerOptions() {
     removePoster = false;
     releasePosterPreview();
     eventPlayerForm.reset();
+    appearanceFields.disabled = true;
     eventPlayerStatus.textContent = "";
     button("saveEventPlayer").disabled = true;
     button("removeEventPoster").disabled = true;
@@ -224,6 +228,12 @@ function showPlayerOptions(options) {
     playerOption("show_schedule").checked = options.show_schedule;
     playerOption("show_recurring").checked = options.show_recurring;
     playerOption("show_latest").checked = options.show_latest;
+    for (const key of playerSwitches)
+        playerOption(key).checked = options[key];
+    for (const key of playerColors)
+        playerOption(key).value = options[key];
+    playPosition.value = options.play_position;
+    appearanceFields.disabled = !options.customize;
     playerOption("show_recurring").disabled = !options.recurring;
     button("saveEventPlayer").disabled = false;
     paintWaitingPreview();
@@ -234,6 +244,8 @@ eventPlayerPanel.ontoggle = () => {
     }
 };
 eventPlayerForm.oninput = (event) => {
+    if (event.target === playerOption("customize"))
+        appearanceFields.disabled = !playerOption("customize").checked;
     if (event.target === playerOption("poster")) {
         releasePosterPreview();
         const file = playerOption("poster").files?.[0];
@@ -263,6 +275,9 @@ eventPlayerForm.onsubmit = (event) => {
         showPlayerOptions(await request(`${root}/${active.event.id}/player`, "PUT", {
             poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
             show_latest: playerOption("show_latest").checked,
+            ...Object.fromEntries(playerSwitches.map(key => [key, playerOption(key).checked])),
+            ...Object.fromEntries(playerColors.map(key => [key, playerOption(key).value])),
+            play_position: playPosition.value,
         }));
         eventPlayerStatus.textContent = "Event player saved.";
     });

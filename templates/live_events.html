@@ -127,6 +127,19 @@
           <label><input type="checkbox" name="show_latest"> Show the latest released replay before going live</label>
           <label>Event poster <input name="poster" type="file" accept="image/jpeg,image/png,image/webp"></label>
           <button type="button" id="removeEventPoster">Remove poster</button>
+          <label><input type="checkbox" name="customize"> Customize viewer controls</label>
+          <fieldset id="eventAppearanceOptions" disabled>
+            <legend>Viewer controls and colors</legend>
+            <label>Play button <select name="play_position"><option value="bottom">Bottom</option><option value="center">Center</option><option value="auto">Center until playback starts</option></select></label>
+            <label><input type="checkbox" name="progress"> Show playback progress</label>
+            <label><input type="checkbox" name="volume"> Show volume</label>
+            <label><input type="checkbox" name="pip"> Allow picture in picture</label>
+            <label><input type="checkbox" name="fullscreen"> Allow fullscreen</label>
+            <label><input type="checkbox" name="show_title"> Show event title</label>
+            <label>Primary color <input name="primary" type="color"></label>
+            <label>Accent color <input name="accent" type="color"></label>
+            <label>Icon color <input name="icon" type="color"></label>
+          </fieldset>
           <button type="submit" id="saveEventPlayer" disabled>Save event player</button>
         </form>
         <p id="eventPlayerStatus" role="status"></p>

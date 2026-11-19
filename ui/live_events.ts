@@ -3,6 +3,7 @@ import {ChatState, messageAction, renderChat} from "./event_chat.js";
 import {setupProducerEngagement} from "./event_engagement.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
 import {waitingPlayer} from "./event_waiting.js";
+import {playerColors, playerSwitches, type EventAppearance} from "./event_controls.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -32,7 +33,7 @@ interface ProductionCaptions {enabled: boolean; language: string; status: string
 interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
 interface LibraryRecording {state: string; work: string | null; error: string | null;}
 interface PlaylistOptions {enabled: boolean; autoplay_next: boolean; loop: boolean;}
-interface EventPlayerOptions {
+interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   show_schedule: boolean; show_recurring: boolean; show_latest: boolean;
   poster: string | null; image: string | null; recurring: string;
 }
@@ -83,6 +84,8 @@ const eventPlayerPanel = element<HTMLDetailsElement>("eventPlayerSettings");
 const eventPlayerForm = element<HTMLFormElement>("eventPlayerForm");
 const eventPlayerStatus = element("eventPlayerStatus");
 const playerOption = (name: string) => eventPlayerForm.elements.namedItem(name) as HTMLInputElement;
+const appearanceFields = element<HTMLFieldSetElement>("eventAppearanceOptions");
+const playPosition = eventPlayerForm.elements.namedItem("play_position") as HTMLSelectElement;
 const previewWaiting = waitingPlayer(eventPlayerPanel);
 let playerOptions: EventPlayerOptions | undefined;
 let selectedPosterUrl = "";
@@ -248,6 +251,7 @@ function clearPlayerOptions() {
   removePoster = false;
   releasePosterPreview();
   eventPlayerForm.reset();
+  appearanceFields.disabled = true;
   eventPlayerStatus.textContent = "";
   button("saveEventPlayer").disabled = true;
   button("removeEventPoster").disabled = true;
@@ -275,6 +279,10 @@ function showPlayerOptions(options: EventPlayerOptions) {
   playerOption("show_schedule").checked = options.show_schedule;
   playerOption("show_recurring").checked = options.show_recurring;
   playerOption("show_latest").checked = options.show_latest;
+  for (const key of playerSwitches) playerOption(key).checked = options[key];
+  for (const key of playerColors) playerOption(key).value = options[key];
+  playPosition.value = options.play_position;
+  appearanceFields.disabled = !options.customize;
   playerOption("show_recurring").disabled = !options.recurring;
   button("saveEventPlayer").disabled = false;
   paintWaitingPreview();
@@ -286,6 +294,7 @@ eventPlayerPanel.ontoggle = () => {
   }
 };
 eventPlayerForm.oninput = (event) => {
+  if (event.target === playerOption("customize")) appearanceFields.disabled = !playerOption("customize").checked;
   if (event.target === playerOption("poster")) {
     releasePosterPreview();
     const file = playerOption("poster").files?.[0];
@@ -313,6 +322,9 @@ eventPlayerForm.onsubmit = (event) => {
     showPlayerOptions(await request<EventPlayerOptions>(`${root}/${active.event.id}/player`, "PUT", {
       poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
       show_latest: playerOption("show_latest").checked,
+      ...Object.fromEntries(playerSwitches.map(key => [key, playerOption(key).checked])),
+      ...Object.fromEntries(playerColors.map(key => [key, playerOption(key).value])),
+      play_position: playPosition.value,
     }));
     eventPlayerStatus.textContent = "Event player saved.";
   });

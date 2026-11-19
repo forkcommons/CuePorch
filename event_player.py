@@ -5,19 +5,26 @@ import json
 
 from flask import abort, request
 
-from library_appearance import brand_image
+from library_appearance import COLORS, PALETTE, brand_image
 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_player_settings(event TEXT PRIMARY KEY, settings TEXT NOT NULL);
 """
 SWITCHES = ("show_schedule", "show_recurring", "show_latest")
-DEFAULTS = dict.fromkeys(SWITCHES, False) | {"poster": None}
+PLAYER_SWITCHES = dict(customize=False, progress=True, volume=True, pip=True, fullscreen=True, show_title=True)
+PLAYER_COLORS = {key: value for key, value in COLORS if key in ("primary", "accent", "icon")}
+APPEARANCE = PLAYER_SWITCHES | PLAYER_COLORS | {"play_position": "bottom"}
+DEFAULTS = dict.fromkeys(SWITCHES, False) | {"poster": None} | APPEARANCE
 
 
 def settings(con, event):
     row = con.execute("SELECT settings FROM live_player_settings WHERE event=?", (event,)).fetchone()
     return DEFAULTS | (json.loads(row["settings"]) if row else {})
+
+
+def appearance(values, event):
+    return {key: values[key] for key in APPEARANCE} | {"live_seek": event.get("dvr_seconds") != 0}
 
 
 def recurring(schedule):
@@ -54,12 +61,18 @@ def register(app, tx, staff, read):
             values = settings(con, uid)
             if request.method == "PUT":
                 body = request.get_json()
-                if not isinstance(body, dict) or any(type(body.get(key, values[key])) is not bool for key in SWITCHES):
+                if not isinstance(body, dict):
                     abort(422, "Choose event player settings.")
-                poster = body.get("poster", values["poster"])
+                values = {key: body.get(key, values[key]) for key in DEFAULTS}
+                if any(type(values[key]) is not bool for key in (*SWITCHES, *PLAYER_SWITCHES)):
+                    abort(422, "Choose event player settings.")
+                if any(not isinstance(values[key], str) or not PALETTE.fullmatch(values[key]) for key in PLAYER_COLORS):
+                    abort(422, "Use six-digit hexadecimal player colors.")
+                if values["play_position"] not in ("bottom", "center", "auto"):
+                    abort(422, "Choose a play button position.")
+                poster = values["poster"]
                 if poster is not None and (not isinstance(poster, str) or not con.execute(
                         "SELECT 1 FROM review_logo WHERE digest=?", (poster,)).fetchone()):
                     abort(422, "Choose an uploaded poster image.")
-                values = {key: body.get(key, values[key]) for key in DEFAULTS}
                 con.execute("INSERT OR REPLACE INTO live_player_settings VALUES(?,?)", (uid, json.dumps(values)))
             return dict(values, image=brand_image(con, values["poster"]), recurring=recurring(event["schedule"]))

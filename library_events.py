@@ -762,6 +762,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if playlist_enabled and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
+            appearance = event_player.appearance(artwork, event)
             if shown and not withdrawn and artwork["show_latest"] and (not form or grant):
                 saved = event_playlist.latest_released(con, row["id"])
                 if saved and saved["opens"] != shown["id"]:
@@ -782,7 +783,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         analytics_token = None
         protected = bool(form)
         host_private = protected or event.get("cueporch_delivery", False)
-        native_video = host_private or captioned or replay_captioned
+        native_video = host_private or captioned or replay_captioned or appearance["customize"]
         can_participate = shown and not withdrawn and (not protected or grant)
         playing = shown
         preview_replay = False
@@ -795,7 +796,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
-            native_replay = host_private or latest_captioned
+            native_replay = host_private or latest_captioned or appearance["customize"]
             replay_address, replay_measurement, replay_status = viewer_playback(event, latest, replay_scope, native_replay, host_private)
             if replay_address and replay_status == "Replay":
                 address, analytics_token, status = replay_address, replay_measurement, replay_status
@@ -810,12 +811,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             pre_live = None
         view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
                      captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=playing,
-                     preview_replay=preview_replay)
+                     preview_replay=preview_replay, appearance=appearance)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=playing, audience_occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
-                                     preview_replay=preview_replay,
+                                     preview_replay=preview_replay, appearance=appearance,
                                      analytics_token=analytics_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,

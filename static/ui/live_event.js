@@ -1,10 +1,13 @@
 import { setupLiveCaptions } from "./live_caption_player.js";
 import { measureEventPlayback } from "./event_playback.js";
 import { waitingPlayer } from "./event_waiting.js";
+import { eventControls } from "./event_controls.js";
 const lobby = document.querySelector("#eventLobby");
 const eventStatus = document.querySelector("#eventStatus");
 const player = document.querySelector("#eventPlayer");
 const dateRow = document.querySelector("#eventOccurrenceTime");
+const eventTitle = document.querySelector("#eventHeader h1");
+const controls = eventControls(player, eventTitle, JSON.parse(document.querySelector("#eventAppearanceData").textContent || "{}"));
 const date = dateRow.querySelector("time");
 const audiencePanels = document.querySelector("#eventAudiencePanels");
 const archiveNav = document.querySelector("#eventArchivePlaylist");
@@ -82,6 +85,7 @@ function renderVideo(address, phase, analytics, video) {
     }
     stopMeasuring = measureEventPlayback(video, analytics);
     const replay = phase === "Replay";
+    controls.attach(video, !replay);
     const currentVideo = video;
     currentVideo.onended = replay ? () => {
         const following = neighboringArchive(1);
@@ -120,6 +124,7 @@ function closePlayer() {
     stopMeasuring = undefined;
     captions.bind();
     captions.select("");
+    controls.reset();
     hls?.destroy();
     hls = undefined;
     player.dataset.address = "";
@@ -148,7 +153,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback } = await response.json();
+        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance } = await response.json();
         if (requested !== location.href)
             return;
         const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
@@ -164,6 +169,7 @@ async function checkStatus() {
             closePlayer();
         previewReplay = fallback;
         lobby.dataset.previewReplay = fallback ? "yes" : "no";
+        controls.setAppearance(appearance);
         const current = player.querySelector("iframe");
         if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
             closePlayer();
@@ -176,6 +182,8 @@ async function checkStatus() {
             }
         }
         else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
+            if (player.querySelector("video"))
+                closePlayer();
             const frame = document.createElement("iframe");
             frame.title = "Event video";
             frame.src = src;
