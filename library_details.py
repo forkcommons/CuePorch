@@ -4,6 +4,8 @@ import json
 
 from flask import abort, request
 
+import review_feedback
+from catalog import video_version_key
 from library_privacy import playback
 from media_tools import video_properties
 
@@ -99,6 +101,22 @@ def parse_details(body):
 
 
 def register(app, tx, staff, root, get_work, title_for, save_title):
+    @app.route("/api/library/work/<uid>/editorial-status", methods=["GET", "PUT"])
+    def editorial_status(uid):
+        staff()
+        with tx() as con:
+            work = get_work(con, uid)
+            if work.get("asset_type", "video") != "video":
+                abort(404)
+            version = video_version_key(work)
+            if request.method == "PUT":
+                body = request.get_json()
+                if not isinstance(body, dict) or body.get("version") != version:
+                    abort(409, "The current version changed. Reload it before setting a status.")
+                review_feedback.set_editorial_status(con, uid, version, body.get("status"))
+            state = review_feedback.editorial_status(con, uid, version)
+        return dict(status=state or review_feedback.STATUSES[0], version=version)
+
     @app.route("/api/library/work/<uid>/details", methods=["GET", "PUT"])
     def video_details(uid):
         staff()

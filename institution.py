@@ -40,6 +40,7 @@ import library_folder_privacy
 import library_folders
 import library_peer_handoff
 import library_privacy
+import library_share
 import library_thumbnail
 import library_trash
 import library_upload
@@ -100,6 +101,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_folder_privacy.SCHEMA
         + library_peer_handoff.SCHEMA
         + library_privacy.SCHEMA
+        + library_share.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
         + library_details.SCHEMA
@@ -1259,7 +1261,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator/videos/<uuid:work>")
     def operator_video(work):
-        return render_template("video_details.html", work=str(work))
+        return render_template("video_details.html", work=str(work), public_url=os.environ.get("CUEPORCH_PUBLIC_URL", ""))
 
     @app.get("/api/delivery")
     def delivery_jobs():

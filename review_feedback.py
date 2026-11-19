@@ -25,6 +25,9 @@ CREATE INDEX IF NOT EXISTS review_comment_cut
 CREATE TABLE IF NOT EXISTS review_decision(
  link TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL,
  PRIMARY KEY(link,version));
+CREATE TABLE IF NOT EXISTS video_editorial_status(
+ work TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL,
+ PRIMARY KEY(work,version));
 CREATE TABLE IF NOT EXISTS review_reaction(
  comment TEXT NOT NULL, actor TEXT NOT NULL, emoji TEXT NOT NULL,
  PRIMARY KEY(comment,actor,emoji));
@@ -38,6 +41,23 @@ OPTIONS = {
 STATUSES = ("In progress", "Needs review", "Approved")
 REACTIONS = ("👍", "❤️", "🎉", "💡")
 REVIEWER_COOKIE = "cueporch_reviewer"
+
+
+def editorial_status(con, work, version):
+    row = con.execute(
+        "SELECT status FROM video_editorial_status WHERE work=? AND version=?",
+        (work, version),
+    ).fetchone()
+    return row["status"] if row else None
+
+
+def set_editorial_status(con, work, version, status):
+    if status not in STATUSES:
+        abort(400, "Choose an available editorial status.")
+    con.execute(
+        "INSERT OR REPLACE INTO video_editorial_status VALUES(?,?,?)",
+        (work, version, status),
+    )
 
 
 def reviewer_token():
@@ -110,6 +130,7 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 "SELECT status FROM review_decision WHERE link=? AND version=?",
                 (uid, version),
             ).fetchone()
+            work = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
             comments = get_comments(con, uid, version, rights["allow_resolved"])
             options = (
                 review_notifications.participants(con, uid, version, comments)
@@ -118,7 +139,7 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             )
             result = {
                 "permissions": rights,
-                "status": status[0] if status else STATUSES[0],
+                "status": editorial_status(con, work["work"], version) or (status[0] if status else STATUSES[0]),
                 "comments": with_reactions(con, uid, version, comments),
                 "mention_options": [
                     {"id": item["id"], "name": item["name"]}
@@ -288,6 +309,8 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             _, rights = scoped_access(con, uid, version)
             if not rights["allow_status"]:
                 abort(403)
+            work = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
+            set_editorial_status(con, work["work"], version, status)
             con.execute(
                 "INSERT OR REPLACE INTO review_decision VALUES (?,?,?)",
                 (uid, version, status),

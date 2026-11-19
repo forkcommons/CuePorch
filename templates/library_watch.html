@@ -11,7 +11,7 @@
   {% if token %}
     <video controls playsinline preload="metadata" aria-label="{{ title }}"
            {% if not download %}controlslist="nodownload"{% endif %}
-           src="{{ url_for('shared_video', token=token) }}">
+           src="{{ url_for('shared_video', token=token) }}{% if start %}#t={{ start }}{% endif %}">
       {% for track in tracks %}
       <track kind="captions" srclang="{{ track.language or 'und' }}"
              label="{{ track.language or 'Captions' }}"

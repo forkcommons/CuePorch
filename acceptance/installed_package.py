@@ -16,7 +16,7 @@ from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
 from installed_migrated_privacy import check_migrated_privacy
-from installed_video_details import check_imported_video_details, check_video_details
+from installed_video_details import check_imported_video_details, check_video_details, check_workspace
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -331,6 +331,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     privacy_defaults = check_privacy_defaults(page, browser, base, auth, replacement)
                     folder_privacy = check_folder_privacy(page, browser, base, auth, replacement)
                     details = check_video_details(page, browser, base, auth)
+                    workspace = check_workspace(page, browser, base, auth, home / "institution.sqlite")
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -357,7 +358,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             privacy_defaults=privacy_defaults,
                             folder_privacy=folder_privacy,
                             migrated_privacy=migrated_privacy,
-                            video_details=details,
+                            video_details=details, workspace=workspace,
                         )
                     )
                 quit_response = requests.post(

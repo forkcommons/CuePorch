@@ -718,7 +718,7 @@ async function editFolderPrivacy(folder: Folder) {
   remove.onclick = () => { void save(false); };
 }
 
-action(uploadDefaults, () => openPrivacy({
+const editUploadDefaults = () => openPrivacy({
   title: "Your upload defaults",
   success: "Upload defaults saved.",
   open: openWorkDialog,
@@ -730,7 +730,8 @@ action(uploadDefaults, () => openPrivacy({
   reload: async () => {},
   absolute: publicAddress,
   status: workDialogStatus,
-}));
+});
+action(uploadDefaults, editUploadDefaults);
 
 action(privacySelected, async () => {
   const selection = [...selected];
@@ -1573,10 +1574,53 @@ libraryUploader({
   reload: () => load(),
 });
 
-action(document.querySelector<HTMLButtonElement>("#load")!, async () => {
+const loadButton = document.querySelector<HTMLButtonElement>("#load")!;
+const linked = new URL(location.href).searchParams;
+let workspaceAction = linked.get("action");
+action(loadButton, async () => {
   await load();
   result.textContent = "Library loaded.";
+  const uid = linked.get("work");
+  if (uid && workspaceAction) {
+    const work = works.find((item) => item.id === uid);
+    if (!work) throw new Error("This work is no longer in the library.");
+    const next = workspaceAction;
+    workspaceAction = null;
+    await fromWorkspace(work, next);
+  }
 });
+if (linked.has("work") && workspaceAction && key.value) loadButton.click();
+
+async function fromWorkspace(work: Work, next: string) {
+  const actions: Record<string, () => void | Promise<unknown>> = {
+    versions: () => versionsDialog(work),
+    reviews: () => reviewLinksDialog(work),
+    defaults: editUploadDefaults,
+    privacy: () => editPrivacy(work),
+    "source-privacy": () => restoreVimeoPrivacy(work),
+    download: () => infoDialog(work, true),
+    copy: () => editTitle(work, true),
+    thumbnail: () => thumbnailDialog(work),
+    move: () => {
+      current = work.folder;
+      selected.add(work.id);
+      renderTree();
+      renderWorks();
+      const outcome = document.getElementById("destination")!;
+      outcome.focus();
+      result.textContent = "Choose a folder and move the selected video.";
+    },
+    delete: () => {
+      current = work.folder;
+      selected.add(work.id);
+      renderTree();
+      renderWorks();
+      document.getElementById("deleteWorks")?.focus();
+      result.textContent = "Use Delete selected to move the video to Recently deleted.";
+    },
+  };
+  if (Object.hasOwn(actions, next)) await actions[next]();
+}
 
 action(
   document.querySelector<HTMLButtonElement>("#publishImports")!,

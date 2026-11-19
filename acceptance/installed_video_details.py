@@ -1,5 +1,9 @@
 """Cover operator metadata and decoded media facts on the installed application."""
 
+import sqlite3
+import time
+from urllib.parse import urlsplit
+
 import requests
 from playwright.sync_api import expect
 
@@ -74,3 +78,71 @@ def check_imported_video_details(base, auth):
     assert data["content"] == ["language"] and data["projection"] == "equirectangular"
     assert data["media"]["width"] == 320 and data["media"]["audio"].startswith("aac")
     return dict(migrated_editorial_fields=True, source_projection_and_audio_format=True)
+
+
+def check_workspace(page, browser, base, auth, database):
+    title = "Institutional video details"
+    workspace = page.url
+    uid = urlsplit(workspace).path.rsplit("/", 1)[-1]
+    api = f"{base}/api/library/work/{uid}"
+    preview = page.locator("#workspacePreview")
+    expect(preview).to_be_visible()
+    assert preview.evaluate("async v => {v.muted=true;await v.play();v.pause();return v.videoWidth}") == 256
+    preview.evaluate("v => {v.currentTime=0.45;}")
+    expect(page.get_by_label("Editorial status")).to_have_value("In progress")
+    page.get_by_label("Editorial status").select_option("Needs review")
+    expect(page.get_by_role("status")).to_have_text("Editorial status saved.")
+    original = requests.get(api + "/editorial-status", headers=auth, timeout=10).json()
+    assert original["status"] == "Needs review"
+
+    assert requests.get(api + "/share-link", timeout=10).status_code == 403
+    assert requests.put(api + "/share-link", timeout=10, json={"slug": "public-reel", "days": 1}).status_code == 403
+    page.get_by_label("Custom link name").fill("city-arts-reel")
+    page.get_by_label("Expiration").select_option("1")
+    page.get_by_role("button", name="Save custom link").click()
+    expect(page.locator("#sharingMessage")).to_have_text("Custom link saved.")
+    page.get_by_role("button", name="Use preview time").click()
+    alias = page.get_by_label("Viewer link").input_value()
+    assert alias == base + "/v/city-arts-reel?start=0.450"
+    row = requests.get(api + "/share-link", headers=auth, timeout=10).json()
+    assert abs(row["alias"]["expires"] - time.time() - 86400) < 60
+
+    response = requests.post(api + "/review-links", headers=auth, timeout=10,
+                             json=dict(name="Workspace reviewer", password="", allow_status=True))
+    response.raise_for_status()
+    review = response.json()
+    guest = browser.new_context()
+    try:
+        view = guest.new_page()
+        view.goto(alias)
+        expect(view.get_by_role("heading", name=title, exact=True)).to_be_visible()
+        player = view.locator("video")
+        width = player.evaluate("async v => {v.muted=true;await v.play();v.pause();return v.videoWidth}")
+        assert width == 256 and player.evaluate("v => v.currentTime") >= 0.4
+        media = base + player.get_attribute("src")
+        assert requests.head(media, timeout=10).status_code == 200
+        with sqlite3.connect(database) as con:
+            con.execute("UPDATE library_share_alias SET expires=? WHERE work=?", (time.time() - 1, uid))
+        assert requests.get(alias, timeout=10).status_code == 404
+        assert requests.head(media, timeout=10).status_code == 404
+        assert requests.get(base + "/watch/work/" + uid, timeout=10).status_code == 200
+        view.goto(base + review["path"])
+        expect(view.locator("#reviewStatus")).to_have_text("Needs review")
+        view.get_by_label("Review status").select_option("Approved")
+        view.get_by_role("button", name="Save status", exact=True).click()
+        expect(view.locator("#reviewStatus")).to_have_text("Approved")
+    finally:
+        guest.close()
+    page.reload()
+    expect(page.get_by_label("Editorial status")).to_have_value("Approved")
+    expect(page.get_by_label("Active review link")).to_have_value(base + review["path"])
+    page.get_by_role("link", name="Versions", exact=True).click()
+    expect(page.get_by_role("dialog", name="Replace video")).to_be_visible()
+    page.goto(workspace)
+    page.get_by_text("File actions", exact=True).click()
+    page.get_by_role("link", name="Download files").click()
+    expect(page.get_by_role("dialog", name="Download " + title)).to_be_visible()
+    return dict(private_operator_preview_width=256, editorial_status_scoped_to_current_cut=True,
+                authorized_reviewer_updates_workspace_status=True, custom_alias_timestamp_playback=True,
+                expired_alias_revoked_existing_media=True, canonical_public_link_unchanged=True,
+                version_and_file_actions_reachable=True)

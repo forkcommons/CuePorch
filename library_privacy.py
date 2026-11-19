@@ -14,6 +14,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_peer_handoff
+import library_share
 from library_trash import hidden
 
 SCHEMA = """
@@ -211,6 +212,17 @@ def protected_route(con, uid):
     ).fetchone() is not None
 
 
+def operator_sharing(con, work, permits):
+    uid = work["id"]
+    row = get_privacy(con, uid)
+    handoff = library_peer_handoff.get(con, uid)
+    if (row is None or protected_route(con, uid) or blocked(con, uid)
+            or (handoff and handoff["state"] == "pending")
+            or not permits(work, json.loads(row["settings"]))):
+        return dict(watch=None, embed_url=None), None
+    return share_paths(uid, row), row["share_key"]
+
+
 def editable(work):
     return work["provider"] == "cueporch-upload" and playback(work) is not None
 
@@ -338,13 +350,18 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         )
         return check_password_hash(password_hash, value)
 
-    def watch(uid, embed, frame):
+    def watch(uid, embed, frame, alias_slug=None):
         with tx() as con:
+            alias = library_share.resolve(con, alias_slug) if alias_slug is not None else None
+            if alias is not None:
+                uid = alias["work"]
             row = get_privacy(con, uid)
             handoff = library_peer_handoff.get(con, uid)
             if handoff and handoff["state"] == "pending":
                 abort(404)
             if row is None or protected_route(con, uid):
+                if alias is not None:
+                    abort(404)
                 return None
             if blocked(con, uid):
                 abort(404)
@@ -380,14 +397,22 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             locked = mode == "password" and not (
                 request.method == "POST" and try_password(con, uid, request.form.get("password", ""), row["password_hash"])
             )
-            token = None if locked else serializer.dumps([uid, row["revision"], video["sha256"]])
+            payload = [uid, row["revision"], video["sha256"]]
+            if alias is not None:
+                payload.append(alias["revision"])
+            token = None if locked else serializer.dumps(payload)
             title = "Protected video" if locked else title_for(con, work)
             details = details_for(con, work) if not locked and not embed else None
+            start = request.args.get("start", "")
+            start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
+            duration = work.get("duration_seconds")
+            if duration and start >= duration:
+                start = 0
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             token=token, tracks=captions(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
-                            unlock_token=unlock_token, details=details),
+                            unlock_token=unlock_token, details=details, start=start),
             401 if locked and request.method == "POST" else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
@@ -395,16 +420,22 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
+    @app.route("/v/<slug>", methods=["GET", "POST"])
+    def custom_watch(slug):
+        return watch(None, False, False, alias_slug=slug)
+
     @app.get("/shared-video/<token>")
     @app.get("/shared-video/<token>/caption/<int:track>")
     def shared_video(token, track=None):
         try:
-            uid, revision, digest = serializer.loads(token, max_age=4 * 3600)
-        except BadSignature:
+            uid, revision, digest, *alias = serializer.loads(token, max_age=4 * 3600)
+        except (BadSignature, ValueError):
             abort(404)
         with tx() as con:
             row = get_privacy(con, uid)
             if not row or row["revision"] != revision or blocked(con, uid):
+                abort(404)
+            if alias and not library_share.current(con, uid, alias[0]):
                 abort(404)
             work = find_work(uid)
             video = playback(work) if work else None

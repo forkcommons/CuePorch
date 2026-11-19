@@ -13,6 +13,7 @@ import library_details
 import library_thumbnail
 import library_versions
 import library_privacy
+import library_share
 import library_peer_handoff
 import review_links
 from catalog import copy_work
@@ -76,6 +77,10 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
 
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_details.register(app, tx, staff, root, get_work, title_for, save_title)
+    library_share.register(
+        app, tx, staff, get_work,
+        lambda con, work: library_privacy.operator_sharing(con, work, permits),
+    )
     replace_video = library_versions.register(app, tx, staff, get_work, root, remember_work)
     review_links.register(app, tx, staff, get_work, title_for, root, replace_video)
 
@@ -96,10 +101,9 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
             thumbnail = library_thumbnail.selected_thumbnail(con, work)
             policy = library_privacy.get_privacy(con, uid)
             shared = None
-            if policy and not library_privacy.protected_route(con, uid):
-                shared = dict(watch=None, embed_url=None)
-                if permits(work, json.loads(policy["settings"])):
-                    shared = library_privacy.share_paths(uid, policy)
+            is_public_record = library_privacy.protected_route(con, uid)
+            if policy and not is_public_record:
+                shared, _ = library_privacy.operator_sharing(con, work, permits)
         files = [
             {
                 k: f[k]
@@ -125,6 +129,8 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
             "creator": work.get("source_creator"),
             "description": details["description"],
             "source_privacy": work.get("source_privacy"),
+            "vimeo_source": work["provider"] == "vimeo",
+            "editable_privacy": not is_public_record and library_privacy.editable(work),
             "disposition": work["disposition"],
             "watch": shared["watch"] if shared else f"/watch/{route['kind']}/{uid}" if route else None,
             "embed": shared["embed_url"] if shared else f"/embed/{route['kind']}/{uid}" if route else None,

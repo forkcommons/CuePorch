@@ -22,6 +22,25 @@ interface VideoDetails {
   added_at: string | null;
 }
 
+interface WorkspaceInfo {
+  watch: string | null;
+  embed: string | null;
+  preview: string | null;
+  vimeo_source: boolean;
+  editable_privacy: boolean;
+}
+
+interface ShareLink {
+  watch: string | null;
+  embed_url: string | null;
+  alias: {slug: string; days: number; expires: number | null; path: string | null} | null;
+}
+
+interface EditorialStatus {
+  version: string;
+  status: string;
+}
+
 const identify = document.querySelector<HTMLFormElement>("#identify")!;
 const key = document.querySelector<HTMLInputElement>("#operatorKey")!;
 const status = document.querySelector<HTMLElement>("#detailsStatus")!;
@@ -33,12 +52,34 @@ const heading = document.querySelector<HTMLElement>("#videoHeading")!;
 const descriptors = document.querySelector<HTMLFieldSetElement>("#matureReasons")!;
 const input = (name: string) => form.elements.namedItem(name) as HTMLInputElement;
 const rating = form.elements.namedItem("rating") as HTMLSelectElement;
+const preview = document.querySelector<HTMLVideoElement>("#workspacePreview")!;
+const previewMessage = document.querySelector<HTMLParagraphElement>("#previewMessage")!;
+const editorial = document.querySelector<HTMLSelectElement>("#editorialState")!;
+const viewer = document.querySelector<HTMLAnchorElement>("#viewerPage")!;
+const links = document.querySelector<HTMLElement>("#workspaceLinks")!;
+const start = document.querySelector<HTMLInputElement>("#shareStart")!;
+const capture = document.querySelector<HTMLButtonElement>("#captureTime")!;
+const viewerLink = document.querySelector<HTMLInputElement>("#workspaceWatch")!;
+const embedLabel = document.querySelector<HTMLElement>("#workspaceEmbedLabel")!;
+const embedCode = document.querySelector<HTMLTextAreaElement>("#workspaceEmbed")!;
+const copyEmbed = document.querySelector<HTMLButtonElement>("#copyEmbed")!;
+const reviewLink = document.querySelector<HTMLInputElement>("#workspaceReview")!;
+const copyReview = document.querySelector<HTMLButtonElement>("#copyReview")!;
+const custom = document.querySelector<HTMLFormElement>("#customLink")!;
+const expires = document.querySelector<HTMLElement>("#customExpires")!;
+const clearCustom = document.querySelector<HTMLButtonElement>("#clearCustom")!;
+const sharingMessage = document.querySelector<HTMLElement>("#sharingMessage")!;
+const privacy = document.querySelector<HTMLAnchorElement>("#editVideoPrivacy")!;
+const sourcePrivacy = document.querySelector<HTMLAnchorElement>("#restoreSourcePrivacy")!;
 
 key.value = sessionStorage.getItem("cueporchOperator") || "";
-const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "") + "/details";
+const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+let info: WorkspaceInfo;
+let sharing: ShareLink;
+let editorialState: EditorialStatus;
 
-async function send(method = "GET", body?: object): Promise<VideoDetails> {
-  const response = await fetch(endpoint, {
+async function call<T>(resource = "", method = "GET", body?: object): Promise<T> {
+  const response = await fetch(endpoint + resource, {
     method,
     headers: {Authorization: "Bearer " + key.value, "Content-Type": "application/json"},
     body: body ? JSON.stringify(body) : undefined,
@@ -47,7 +88,7 @@ async function send(method = "GET", body?: object): Promise<VideoDetails> {
     const html = new DOMParser().parseFromString(await response.text(), "text/html");
     throw new Error(html.querySelector("p")?.textContent || `Request failed (${response.status})`);
   }
-  return response.json();
+  return response.status === 204 ? undefined as T : response.json();
 }
 
 function contentVisibility() {
@@ -95,13 +136,75 @@ function show(details: VideoDetails) {
   }
 }
 
+function address(path: string) {
+  return new URL(path, document.body.dataset.publicUrl || location.origin);
+}
+
+function renderLinks() {
+  const watch = sharing.alias?.path || sharing.watch || info.watch;
+  const embed = sharing.embed_url || info.embed;
+  const target = watch ? address(watch) : null;
+  if (target && sharing.watch && start.validity.valid && start.valueAsNumber > 0) {
+    target.searchParams.set("start", start.value);
+  }
+  viewer.hidden = !target;
+  if (target) viewer.href = target.href;
+  viewerLink.value = target?.href || "";
+  links.hidden = !target && !embed;
+  viewerLink.parentElement!.hidden = !target;
+  start.parentElement!.hidden = !sharing.watch;
+  document.querySelector<HTMLButtonElement>("#copyWatch")!.hidden = !target;
+  capture.hidden = !sharing.watch || preview.hidden;
+  copyEmbed.hidden = embedLabel.hidden = !embed;
+  embedCode.value = embed ? `<iframe src="${address(embed).href}" width="640" height="360" allowfullscreen></iframe>` : "";
+  custom.hidden = !sharing.watch;
+  const alias = sharing.alias;
+  clearCustom.hidden = !alias;
+  expires.hidden = !alias;
+  expires.textContent = alias ? (alias.expires
+    ? (alias.path ? "Expires " : "Expired ") + new Date(alias.expires * 1000).toLocaleString()
+    : "This link has no expiration.") : "";
+  document.querySelector<HTMLElement>("#shareUnavailable")!.hidden = Boolean(target || embed);
+}
+
+function populateCustom() {
+  (custom.elements.namedItem("slug") as HTMLInputElement).value = sharing.alias?.slug || "";
+  (custom.elements.namedItem("days") as HTMLSelectElement).value = String(sharing.alias?.days || 0);
+  renderLinks();
+}
+
+async function loadWorkspace() {
+  const [work, viewerSharing, state, reviews] = await Promise.all([
+    call<WorkspaceInfo>(), call<ShareLink>("/share-link"), call<EditorialStatus>("/editorial-status"),
+    call<{path: string; enabled: boolean; expires: number}[]>("/review-links"),
+  ]);
+  info = work;
+  sharing = viewerSharing;
+  editorialState = state;
+  editorial.value = editorialState.status;
+  editorial.disabled = false;
+  sourcePrivacy.hidden = !info.vimeo_source;
+  privacy.hidden = !info.editable_privacy;
+  const activeReview = reviews.find((link) => link.enabled && link.expires * 1000 > Date.now());
+  copyReview.hidden = reviewLink.parentElement!.hidden = !activeReview;
+  reviewLink.value = activeReview ? address(activeReview.path).href : "";
+  preview.hidden = !info.preview;
+  previewMessage.hidden = Boolean(info.preview);
+  if (info.preview) {
+    const ticket = await call<{preview: string}>("/ticket", "POST", {sha256: info.preview});
+    preview.src = ticket.preview;
+  }
+  populateCustom();
+}
+
 async function load() {
   try {
-    show(await send());
+    show(await call<VideoDetails>("/details"));
     sessionStorage.setItem("cueporchOperator", key.value);
     identify.hidden = true;
     pane.hidden = false;
     status.textContent = "";
+    await loadWorkspace();
   } catch (error) {
     status.textContent = String(error);
   }
@@ -131,12 +234,67 @@ form.onsubmit = async (event) => {
       realistic_ai: input("realistic_ai").checked,
       advertisement: input("advertisement").checked,
     };
-    show(await send("PUT", body));
+    show(await call<VideoDetails>("/details", "PUT", body));
     status.textContent = "Video details saved.";
   } catch (error) {
     status.textContent = String(error);
   } finally {
     submit.disabled = false;
+  }
+};
+
+editorial.onchange = async () => {
+  editorial.disabled = true;
+  try {
+    editorialState = await call<EditorialStatus>("/editorial-status", "PUT", {
+      status: editorial.value, version: editorialState.version,
+    });
+    status.textContent = "Editorial status saved.";
+  } catch (error) {
+    editorial.value = editorialState.status;
+    status.textContent = String(error);
+  } finally {
+    editorial.disabled = false;
+  }
+};
+
+start.oninput = renderLinks;
+capture.onclick = () => { start.value = preview.currentTime.toFixed(3); renderLinks(); };
+
+function copy(button: HTMLButtonElement, field: HTMLInputElement | HTMLTextAreaElement, message: string) {
+  button.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      sharingMessage.textContent = message;
+    } catch {
+      field.select();
+      sharingMessage.textContent = "Selected for copying.";
+    }
+  };
+}
+copy(document.querySelector<HTMLButtonElement>("#copyWatch")!, viewerLink, "Viewer link copied.");
+copy(copyEmbed, embedCode, "Embed code copied.");
+copy(copyReview, reviewLink, "Review link copied.");
+
+custom.onsubmit = async (event) => {
+  event.preventDefault();
+  const values = new FormData(custom);
+  try {
+    sharing = await call<ShareLink>("/share-link", "PUT", {slug: values.get("slug"), days: Number(values.get("days"))});
+    populateCustom();
+    sharingMessage.textContent = "Custom link saved.";
+  } catch (error) {
+    sharingMessage.textContent = String(error);
+  }
+};
+clearCustom.onclick = async () => {
+  try {
+    await call<void>("/share-link", "DELETE");
+    sharing = await call<ShareLink>("/share-link");
+    populateCustom();
+    sharingMessage.textContent = "Custom link removed.";
+  } catch (error) {
+    sharingMessage.textContent = String(error);
   }
 };
 if (key.value) void load();

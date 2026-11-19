@@ -6,7 +6,7 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video details · CuePorch</title>
 </head>
-<body data-work="{{ work }}">
+<body data-work="{{ work }}" data-public-url="{{ public_url }}">
   <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
   <h1 id="videoHeading">Video details</h1>
   <form id="identify">
@@ -16,6 +16,31 @@
   </form>
   <p id="detailsStatus" role="status"></p>
   <main id="videoDetails" hidden>
+    <div class="video-work-actions">
+      <label>Editorial status
+        <select id="editorialState" disabled>
+          <option>In progress</option><option>Needs review</option><option>Approved</option>
+        </select>
+      </label>
+      <a href="/operator/library?work={{ work }}&amp;action=versions">Versions</a>
+      <a href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>
+      <a id="viewerPage" hidden>View video page</a>
+      <details>
+        <summary>File actions</summary>
+        <a href="/operator/library?work={{ work }}&amp;action=download">Download files</a>
+        <a href="/operator/library?work={{ work }}&amp;action=move">Move</a>
+        <a href="/operator/library?work={{ work }}&amp;action=copy">Create a copy</a>
+        <a href="/operator/library?work={{ work }}&amp;action=thumbnail">Change thumbnail</a>
+        <a href="/operator/library?work={{ work }}&amp;action=delete">Delete</a>
+      </details>
+    </div>
+    <div class="video-workspace">
+      <div>
+      <section aria-labelledby="previewTitle">
+        <h2 id="previewTitle">Operator preview</h2>
+        <video id="workspacePreview" controls playsinline preload="metadata" hidden aria-label="Operator preview"></video>
+        <p id="previewMessage" hidden>No browser-playable copy is stored for this video.</p>
+      </section>
     <form id="videoMeta">
       <label>Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000" rows="5"></textarea></label>
@@ -54,6 +79,38 @@
       <h2 id="factsTitle">Stored video</h2>
       <dl id="videoFacts"></dl>
     </section>
+      </div>
+      <aside aria-labelledby="shareHeading">
+        <h2 id="shareHeading">Share</h2>
+        <nav aria-label="Video sharing settings">
+          <a id="editVideoPrivacy" href="/operator/library?work={{ work }}&amp;action=privacy" hidden>Video privacy and embed rules</a>
+          <a id="restoreSourcePrivacy" href="/operator/library?work={{ work }}&amp;action=source-privacy" hidden>Restore Vimeo privacy</a>
+          <a href="/operator/library?work={{ work }}&amp;action=defaults">Upload defaults</a>
+          <a href="/operator/library?work={{ work }}&amp;action=reviews">Manage review links</a>
+        </nav>
+        <label hidden>Active review link <input id="workspaceReview" readonly></label>
+        <button type="button" id="copyReview" hidden>Copy review link</button>
+        <p id="shareUnavailable" hidden>Choose Public, Unlisted or Password privacy to share a viewer link.</p>
+        <div id="workspaceLinks" hidden>
+          <label>Start at (seconds) <input id="shareStart" type="number" min="0" max="999999" step="0.001" value="0"></label>
+          <button type="button" id="captureTime" hidden>Use preview time</button>
+          <label>Viewer link <input id="workspaceWatch" readonly></label>
+          <button type="button" id="copyWatch">Copy link</button>
+          <label id="workspaceEmbedLabel" hidden>Embed code <textarea id="workspaceEmbed" rows="3" readonly></textarea></label>
+          <button type="button" id="copyEmbed" hidden>Copy embed code</button>
+        </div>
+        <form id="customLink" hidden>
+          <label>Custom link name <input name="slug" minlength="3" maxlength="70" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label>
+          <label>Expiration
+            <select name="days"><option value="0">No expiration</option><option value="1">1 day</option><option value="7">1 week</option><option value="30">30 days</option></select>
+          </label>
+          <p id="customExpires" hidden></p>
+          <button type="submit">Save custom link</button>
+          <button type="button" id="clearCustom" hidden>Remove custom link</button>
+        </form>
+        <p id="sharingMessage" aria-live="polite"></p>
+      </aside>
+    </div>
   </main>
   <script type="module" src="/static/ui/video_details.js"></script>
 </body>
