@@ -1295,6 +1295,10 @@ def create_app(root, database, operator, institution, simulation=None):
     def analytics_dashboard():
         return render_template("analytics_dashboard.html")
 
+    @app.get("/operator/record")
+    def record_studio():
+        return render_template("record_studio.html")
+
     @app.get("/operator/videos/<uuid:work>/editing")
     def operator_editing(work):
         return render_template("video_editing.html", work=str(work))

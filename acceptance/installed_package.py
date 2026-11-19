@@ -28,6 +28,7 @@ from installed_registration import check_registration
 from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
 from installed_editing import check_editing, fixture as editor_fixture
+from installed_recording import check_recording
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -88,14 +89,17 @@ def install_windows(setup, home):
 
 def wait_for_desktop(proc, home):
     marker = home / "desktop-session.json"
-    for _ in range(200):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"Installed service exited with code {proc.returncode}")
+            raise RuntimeError(f"{home.name}: installed service exited with code {proc.returncode}")
         try:
             return json.loads(marker.read_text(encoding="utf8"))["url"]
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
             time.sleep(0.1)
-    raise TimeoutError("The installed service did not publish a readable session file")
+    service_log = home / "service.log"
+    log_size = service_log.stat().st_size if service_log.is_file() else None
+    raise TimeoutError(f"{home.name}: no readable desktop session after 60 seconds. Service log bytes: {log_size}")
 
 
 def prepare_previous_windows(home, source, venue):
@@ -361,6 +365,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
                     advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
+                    recording = check_recording(pw, base, auth)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -393,6 +398,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             analytics=analytics,
                             advanced_analytics=advanced_analytics,
                             editing=editing,
+                            recording=recording,
                         )
                     )
                 quit_response = requests.post(

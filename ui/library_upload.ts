@@ -18,8 +18,44 @@ interface UploadEntry {
 }
 
 interface UploadReceipt {
+  id: string;
   pending: boolean;
   visibility: Sharing["visibility"];
+}
+
+export function uploadLibraryFile(
+  file: File, id: string, folder: string, credential: string, options: object | null,
+  progress: (value: number | null) => void,
+) {
+  const data = new FormData();
+  data.set("file", file);
+  data.set("upload_id", id);
+  data.set("folder", folder);
+  if (options) data.set("privacy", JSON.stringify(options));
+  return new Promise<UploadReceipt>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) progress(100 * event.loaded / event.total);
+    };
+    request.upload.onload = () => progress(null);
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        try {
+          resolve(JSON.parse(request.responseText));
+        } catch (_error) {
+          reject(new Error("The upload response was interrupted. Retry this file."));
+        }
+        return;
+      }
+      const page = new DOMParser().parseFromString(request.responseText, "text/html");
+      const message = page.querySelector("p")?.textContent?.trim();
+      reject(new Error(message || `Upload failed (${request.status}).`));
+    };
+    request.onerror = () => reject(new Error("Connection lost. Retry this file."));
+    request.open("POST", "/api/library/uploads");
+    request.setRequestHeader("Authorization", "Bearer " + credential);
+    request.send(data);
+  });
 }
 
 export function libraryUploader(context: UploadContext) {
@@ -103,39 +139,15 @@ export function libraryUploader(context: UploadContext) {
   }
 
   function upload(entry: UploadEntry, folder: string, options: object | null) {
-    const data = new FormData();
-    data.set("file", entry.file);
-    data.set("upload_id", entry.id);
-    data.set("folder", folder);
-    if (options) data.set("privacy", JSON.stringify(options));
     entry.status.textContent = "Uploading…";
     entry.progress.value = 0;
-    return new Promise<UploadReceipt>((resolve, reject) => {
-      const request = new XMLHttpRequest();
-      request.upload.onprogress = (event) => {
-        if (event.lengthComputable) entry.progress.value = 100 * event.loaded / event.total;
-      };
-      request.upload.onload = () => {
+    return uploadLibraryFile(entry.file, entry.id, folder, context.credential(), options, (progress) => {
+      if (progress === null) {
         entry.progress.removeAttribute("value");
         entry.status.textContent = "Preparing for the library…";
-      };
-      request.onload = () => {
-        if (request.status >= 200 && request.status < 300) {
-          try {
-            resolve(JSON.parse(request.responseText));
-          } catch (_error) {
-            reject(new Error("The upload response was interrupted. Retry this file."));
-          }
-          return;
-        }
-        const page = new DOMParser().parseFromString(request.responseText, "text/html");
-        const message = page.querySelector("p")?.textContent?.trim();
-        reject(new Error(message || `Upload failed (${request.status}).`));
-      };
-      request.onerror = () => reject(new Error("Connection lost. Retry this file."));
-      request.open("POST", "/api/library/uploads");
-      request.setRequestHeader("Authorization", "Bearer " + context.credential());
-      request.send(data);
+      } else {
+        entry.progress.value = progress;
+      }
     });
   }
 

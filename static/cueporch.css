@@ -17,6 +17,12 @@ main { max-width: 65rem; }
 .trim-cues { list-style: none; padding: 0; max-height: 24rem; overflow: auto; }
 .trim-cues li { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .4rem 0; }
 .trim-cues span { flex: 1 1 16rem; overflow-wrap: anywhere; }
+#recordCanvas, #takePreview { width: 100%; max-height: 34rem; object-fit: contain; background: #182629; }
+#recordStudio fieldset { display: grid; gap: .5rem; margin-block-end: .8rem; }
+#recordStudio label, #recordStudio aside details { margin-block: .35rem; }
+#recordPrompter { white-space: pre-wrap; max-height: 8rem; overflow: auto; padding: .6rem; background: #112529; color: #fff; }
+#recordDrafts li { margin-block: .4rem; }
+#recordDrafts button + button { margin-inline-start: .35rem; }
 #videoDetails [hidden], #identify[hidden] { display: none; }
 .video-work-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: .7rem 1rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

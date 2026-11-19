@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Record Studio · CuePorch</title>
+</head>
+<body>
+  <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
+  <h1>Record Studio</h1>
+  <form id="recordIdentity">
+    <label>Operator credential <input id="recordKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open Studio</button>
+  </form>
+  <p id="recordStatus" role="status"></p>
+  <main id="recordStudio" hidden>
+    <div class="video-workspace">
+      <section aria-label="Recording preview">
+        <canvas id="recordCanvas" width="1280" height="720" aria-label="Live recording preview"></canvas>
+        <video id="takePreview" controls playsinline hidden aria-label="Finished recording"></video>
+        <div class="video-work-actions">
+          <button type="button" id="beginRecord" disabled>Start recording</button>
+          <button type="button" id="pauseRecord" hidden>Pause</button>
+          <button type="button" id="endRecord" hidden>Stop</button>
+          <button type="button" id="pipRecord" hidden>Picture in picture</button>
+          <span id="recordTime" aria-label="Time recorded"></span>
+        </div>
+        <ul id="recordDrafts" aria-label="Recovered recordings"></ul>
+      </section>
+      <aside aria-label="Recording controls">
+        <fieldset id="recordSources">
+          <legend>Sources</legend>
+          <label><input id="recordCameraEnabled" type="checkbox" checked> Camera</label>
+          <label for="cameraDevice">Camera device</label>
+          <select id="cameraDevice"><option value="">Default</option></select>
+          <label><input id="recordMicEnabled" type="checkbox" checked> Microphone</label>
+          <label for="micDevice">Microphone device</label>
+          <select id="micDevice"><option value="">Default</option></select>
+          <button id="enableDevices" type="button">Connect camera and microphone</button>
+          <label for="recordLevel">Microphone level</label>
+          <meter id="recordLevel" max="1" value="0"></meter>
+          <label><input id="recordSystemAudio" type="checkbox"> Request shared-screen audio</label>
+          <button id="enableScreen" type="button">Share screen</button>
+          <button id="releaseScreen" type="button" hidden>Stop sharing screen</button>
+        </fieldset>
+        <fieldset id="recordFormat">
+          <legend>Canvas</legend>
+          <label>Aspect ratio <select id="recordRatio">
+            <option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option>
+          </select></label>
+          <label>Quality <select id="recordQuality">
+            <option value="720">720p</option><option value="1080">1080p</option>
+            <option value="1440">2K</option><option value="2160">4K</option>
+          </select></label>
+          <label>Layout <select id="recordLayout">
+            <option value="inset">Camera inset</option><option value="side">Side by side</option>
+            <option value="screen">Primary source only</option>
+          </select></label>
+          <label>Background <select id="recordBackground"><option value="solid">Solid</option><option value="gradient">Gradient</option></select></label>
+          <label>Canvas color <input type="color" id="recordColor" value="#244b4d"></label>
+        </fieldset>
+        <details id="recordPrompterSettings">
+          <summary>Teleprompter</summary>
+          <label>Script <textarea id="recordScript" rows="5"></textarea></label>
+          <label>Scroll speed <select id="recordScroll">
+            <option value="0">Off</option><option value=".5">0.5×</option><option value="1" selected>1×</option>
+            <option value="1.5">1.5×</option><option value="2">2×</option>
+          </select></label>
+          <label>Font size <input id="recordFont" type="range" min="16" max="56" value="24"></label>
+          <div id="recordPrompter" tabindex="0" aria-label="Teleprompter script"></div>
+        </details>
+        <form id="recordDestination">
+          <fieldset>
+            <legend>Save to library</legend>
+            <label>Recording title <input id="recordTitle" maxlength="100" required></label>
+            <label for="recordFolder">Destination folder</label>
+            <select id="recordFolder"><option value="">Library root</option></select>
+            <p>Recordings follow this folder’s privacy settings or your upload defaults.</p>
+            <button type="submit" id="saveRecord" disabled>Save recording</button>
+            <button type="button" id="downloadRecord" disabled>Download recording</button>
+          </fieldset>
+        </form>
+        <p id="savedRecording" hidden><a id="savedRecordingLink">Open saved video</a></p>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="/static/ui/record_studio.js"></script>
+</body>
+</html>
