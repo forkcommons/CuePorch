@@ -101,6 +101,17 @@
         <button type="button" id="clearEventProgram">Switch to manual production</button>
         <button type="button" id="refreshEventProgram">Refresh program</button>
       </details>
+      <details id="operatorChat">
+        <summary>Audience chat</summary>
+        <form id="eventChatSettings">
+          <label><input type="checkbox" name="enabled"> Enable audience chat</label>
+          <label>Seconds between messages <input type="number" name="interval" min="0" max="120" value="0" required></label>
+          <button type="submit">Save chat settings</button>
+          <button type="button" id="exportEventChat">Download chat</button>
+        </form>
+        <ol id="operatorChatMessages" class="event-messages" aria-label="Audience messages"></ol>
+        <p id="operatorChatStatus" role="status"></p>
+      </details>
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
     </section>

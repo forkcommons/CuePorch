@@ -13,6 +13,7 @@ import requests
 from event_media import Gateway, HLS_PREFIXES, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
+import event_chat
 import event_program
 import event_schedule
 from catalog import video_version_key
@@ -28,7 +29,7 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
-""" + event_program.SCHEMA
+""" + event_program.SCHEMA + event_chat.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -287,6 +288,27 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if not candidate:
             abort(404)
         return candidate
+
+    def operator_chat(con, uid, opens):
+        _, event = read(con, uid)
+        selected_open(event, opens)
+
+    def audience_chat(con, slug, opens):
+        row, event = read(con, slug, True)
+        slot = selected_open(event, opens)
+        delivery = occurrence(con, row["id"], opens)
+        if publication(con, row, event) != "eligible" or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
+            abort(404)
+        form = library_registration.active(con, "event", row["id"])
+        scope = [row["id"], row["revision"], opens, form["revision"] if form else None]
+        embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
+        if form and not valid_ticket(guests, request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], 12 * 3600):
+            abort(404)
+        now = datetime.now(timezone.utc)
+        active = now < datetime.fromisoformat(slot["end"]) and (not delivery or delivery["delivery"] != "replay")
+        return scope, active
+
+    event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
 
     def provision_event(uid, opens, browser=False, automatic=False):
         try:
@@ -574,7 +596,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      viewer_grant=grant, registration=form if enrollment else None,
-                                     enrollment=enrollment, registration_error=form_error))
+                                     enrollment=enrollment, registration_error=form_error,
+                                     chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
+                                     if shown and not withdrawn and (not protected or grant) else None))
         response = make_response(view, 422 if form_error else 200)
         response.headers["Vary"] = "Accept"
         response.headers["Content-Security-Policy"] = "frame-ancestors " + ("*" if embed else "'none'")

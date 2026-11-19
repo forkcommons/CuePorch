@@ -26,8 +26,22 @@
         <button type="button" id="refreshEvent">Check stream status</button>
       {% endif %}
     </div>
+    {% if chat_endpoint %}
+      <section id="audienceChat" data-endpoint="{{ chat_endpoint }}" data-embed="{{ 'yes' if embed else 'no' }}"
+               aria-labelledby="chatHeading" hidden>
+        <h2 id="chatHeading">Audience chat</h2>
+        <ol id="chatMessages" class="event-messages" aria-label="Messages"></ol>
+        <form id="sendChatMessage">
+          <label>Display name <input name="name" maxlength="60" required></label>
+          <label>Message <input name="message" maxlength="240" required></label>
+          <button type="submit">Send message</button>
+        </form>
+        <p id="chatStatus" role="status"></p>
+      </section>
+    {% endif %}
   </main>
   {% if protected and viewer_grant %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
   <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
+  {% if chat_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_chat.js') }}"></script>{% endif %}
 </body>
 </html>

@@ -487,6 +487,77 @@ def check_srt_delivery(base, keys, ffmpeg):
             browser.close()
 
 
+def check_event_chat(page, browser, base, auth):
+    now = datetime.now(timezone.utc)
+    as_field = lambda moment: moment.strftime("%Y-%m-%dT%H:%M")
+    event = dict(title="Arts audience chat", slug="arts-audience-chat", visibility="public", type="live",
+                 latency="standard", save_replay=False, schedule=dict(timezone="UTC", repeat="none",
+                 start=as_field(now - timedelta(minutes=1)), end=as_field(now + timedelta(minutes=12))))
+    created = requests.post(base + "/api/live-events", headers=auth, json=event, timeout=15)
+    created.raise_for_status()
+    entry = created.json()
+    (slot,) = entry["occurrences"]
+    operator_url = f"{base}/api/live-events/{entry['id']}/{slot['id']}/chat"
+    guest_url = f"{base}/events/{entry['slug']}/{slot['id']}/chat"
+    watch = f"{base}{entry['watch']}?occurrence={slot['id']}"
+    assert requests.get(operator_url, timeout=10).status_code == 403
+    initial = requests.get(guest_url, timeout=10)
+    assert initial.ok and not initial.json()["enabled"]
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="Open production for Arts audience chat", exact=False).click()
+    page.get_by_role("button", name="Registration", exact=True).click()
+    registration = page.locator("#registrationEditor")
+    registration.get_by_label("Require registration before playback").check()
+    registration.get_by_label("Form heading").fill("Register for the screening")
+    registration.get_by_role("button", name="Save registration").click()
+    expect(page.locator("#registrationStatus")).to_have_text("Registration saved.")
+    assert requests.get(guest_url, timeout=10).status_code == 404
+    page.get_by_text("Audience chat", exact=True).click()
+    panel = page.locator("#operatorChat")
+    panel.get_by_label("Enable audience chat").check()
+    panel.get_by_label("Seconds between messages").fill("30")
+    panel.get_by_role("button", name="Save chat settings").click()
+    expect(page.locator("#operatorChatStatus")).to_have_text("Chat settings saved.")
+    author, reader = browser.new_page(), browser.new_page()
+    try:
+        for guest, email in ((author, "filmmaker"), (reader, "visitor")):
+            guest.goto(watch)
+            expect(guest.locator("#audienceChat")).to_have_count(0)
+            form = guest.get_by_role("form", name="Register for the screening")
+            form.get_by_label("Email").fill(email + "@example.invalid")
+            form.get_by_role("button", name="Register and watch").click()
+            expect(guest.locator("#audienceChat")).to_be_visible()
+
+        message = "Welcome to the screening. https://example.invalid/program"
+        composer = author.locator("#sendChatMessage")
+        composer.get_by_label("Display name").fill("Filmmaker")
+        composer.get_by_label("Message", exact=True).fill(message)
+        composer.get_by_role("button", name="Send message").click()
+        published = reader.locator("#chatMessages").get_by_text("Welcome to the screening.", exact=False)
+        expect(published).to_be_visible(timeout=10000)
+        expect(reader.locator("#chatMessages").get_by_role("link")).to_have_attribute("href", "https://example.invalid/program")
+        expect(reader.locator("#chatMessages").get_by_role("button")).to_have_count(0)
+        composer.get_by_label("Message", exact=True).fill("Too soon")
+        composer.get_by_role("button", name="Send message").click()
+        expect(author.locator("#chatStatus")).to_have_text("Wait before sending another chat message.")
+        assert requests.get(operator_url + "/export", timeout=10).status_code == 403
+        report = requests.get(operator_url + "/export", headers=auth, timeout=10)
+        assert report.ok and message in report.text
+        panel.get_by_role("button", name="Remove and block viewer (Filmmaker)").click()
+        expect(published).to_have_count(0, timeout=10000)
+        expect(author.locator("#chatStatus")).to_have_text("You cannot send messages in this event.", timeout=10000)
+        expect(composer).not_to_be_visible()
+        panel.get_by_label("Enable audience chat").uncheck()
+        panel.get_by_role("button", name="Save chat settings").click()
+        expect(reader.locator("#audienceChat")).not_to_be_visible(timeout=10000)
+        return dict(disabled_before_operator_enables=True, unregistered_access_denied=True,
+                    posts_automatically_visible=True, configurable_chat_interval_enforced=True,
+                    operator_can_remove_and_block=True, csv_operator_only=True, disable_hides_open_panel=True)
+    finally:
+        author.context.close()
+        reader.context.close()
+
+
 def check_program_delivery(base, keys, ffmpeg, scratch):
     auth = {"Authorization": "Bearer " + keys["operator"]}
     portal = base + "/api/live-events"

@@ -28,7 +28,7 @@ from installed_registration import check_registration
 from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
 from installed_editing import check_editing, fixture as editor_fixture
-from installed_events import check_event_calendar
+from installed_events import check_event_calendar, check_event_chat
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
@@ -384,6 +384,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     showcases = check_showcases(page, browser, base, auth, museum, venue, editor_master)
                     event_calendar = check_event_calendar(page, base, auth)
+                    event_chat = check_event_chat(page, browser, base, auth)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -420,6 +421,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             timeline=timeline,
                             showcases=showcases | showcase_transfer,
                             event_calendar=event_calendar,
+                            event_chat=event_chat,
                         )
                     )
                 quit_response = requests.post(

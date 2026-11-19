@@ -1,4 +1,5 @@
 import { setupRegistration } from "./video_registration.js";
+import { messageAction, renderChat } from "./event_chat.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -16,6 +17,12 @@ const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
 const programPanel = element("eventProgramPanel");
 const programChoice = element("programChoice");
+const chatPanel = element("operatorChat");
+const chatForm = element("eventChatSettings");
+const chatEnabled = chatForm.elements.namedItem("enabled");
+const chatInterval = chatForm.elements.namedItem("interval");
+const chatMessages = element("operatorChatMessages");
+const chatStatus = element("operatorChatStatus");
 const root = "/api/live-events";
 const publicBase = document.body.dataset.publicUrl || location.origin;
 let calendar;
@@ -77,6 +84,9 @@ function choose(event, instance) {
         registrationEvent = undefined;
     }
     active = { event, instance };
+    chatPanel.open = false;
+    chatMessages.replaceChildren();
+    delete chatMessages.dataset.revision;
     programPanel.open = false;
     program = undefined;
     programSources = [];
@@ -306,6 +316,70 @@ button("addProgramVideo").onclick = () => {
 };
 button("saveEventProgram").onclick = () => void action(() => writeProgram(programSources), "Program queued for the scheduled occurrence.");
 button("clearEventProgram").onclick = () => void action(() => writeProgram([]), "Manual production selected.");
+let chatRequest;
+async function updateChat(method = "GET", body, fields = false) {
+    if (!active || (method === "GET" && !fields && chatRequest))
+        return;
+    const path = mediaPath("chat");
+    const previous = chatRequest;
+    const pending = previous ? previous.then(() => readChat(path, method, body, fields)) : readChat(path, method, body, fields);
+    chatRequest = pending;
+    try {
+        await pending;
+    }
+    finally {
+        if (chatRequest === pending)
+            chatRequest = undefined;
+    }
+}
+async function readChat(path, method, body, fields) {
+    if (mediaPath("chat") !== path || !chatPanel.open)
+        return;
+    try {
+        const state = await request(path, method, body);
+        if (mediaPath("chat") !== path || !chatPanel.open)
+            return;
+        if (fields) {
+            chatEnabled.checked = state.enabled;
+            chatInterval.value = String(state.interval);
+            chatStatus.textContent = method === "PUT" ? "Chat settings saved." : "";
+        }
+        renderChat(chatMessages, state.messages, (entry) => [
+            messageAction("Remove message", entry, () => void updateChat("POST", { type: "remove", id: entry.id })),
+            messageAction("Remove and block viewer", entry, () => void updateChat("POST", { type: "ban", id: entry.id })),
+        ]);
+    }
+    catch (error) {
+        chatStatus.textContent = error instanceof Error ? error.message : String(error);
+    }
+}
+chatPanel.ontoggle = async () => {
+    if (!chatPanel.open)
+        return;
+    chatForm.inert = true;
+    try {
+        await updateChat("GET", undefined, true);
+    }
+    finally {
+        chatForm.inert = false;
+    }
+};
+window.setInterval(() => { if (chatPanel.open && !document.hidden)
+    void updateChat(); }, 3000);
+chatForm.onsubmit = (event) => {
+    event.preventDefault();
+    void updateChat("PUT", { enabled: chatEnabled.checked, interval: Number(chatInterval.value) }, true);
+};
+button("exportEventChat").onclick = () => void action(async () => {
+    const response = await fetch(mediaPath("chat/export"), { headers: { Authorization: "Bearer " + credential.value } });
+    if (!response.ok)
+        throw new Error("Could not download the chat history.");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = "cueporch-event-chat.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
     health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");
