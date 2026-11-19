@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flask import abort, request, send_file
 
+import library_details
 import library_thumbnail
 import library_versions
 import library_privacy
@@ -46,6 +47,26 @@ def title_for(con, work):
     return row[0] if row else work["title"]
 
 
+def save_title(con, work, name):
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 128:
+        abort(400, "Enter a title of 1 to 128 characters.")
+    uid = work["id"]
+    name = name.strip()
+    if title_for(con, work) == name:
+        return
+    con.execute(
+        """INSERT INTO library_title(work,title,changed) VALUES(?,?,?)
+           ON CONFLICT(work) DO UPDATE SET title=excluded.title,
+             changed=excluded.changed,synced=0,attempted=0,error=NULL""",
+        (uid, name, time.time()),
+    )
+    con.execute(
+        """UPDATE route SET description=? WHERE slug=? AND EXISTS
+           (SELECT 1 FROM publication_job j WHERE j.id=route.current_action AND j.work=route.slug)""",
+        (name, uid),
+    )
+
+
 def register(app, tx, staff, read_works, root, remember_work, permits):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
@@ -54,6 +75,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
         return work
 
     library_thumbnail.register(app, tx, staff, get_work, root)
+    library_details.register(app, tx, staff, root, get_work, title_for, save_title)
     replace_video = library_versions.register(app, tx, staff, get_work, root, remember_work)
     review_links.register(app, tx, staff, get_work, title_for, root, replace_video)
 
@@ -70,6 +92,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
             if library_peer_handoff.get(con, uid):
                 route = None
             title = title_for(con, work)
+            details = library_details.details_for(con, work)
             thumbnail = library_thumbnail.selected_thumbnail(con, work)
             policy = library_privacy.get_privacy(con, uid)
             shared = None
@@ -100,7 +123,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
             "source": work["source_url"],
             "duration_seconds": work.get("duration_seconds"),
             "creator": work.get("source_creator"),
-            "description": work.get("description"),
+            "description": details["description"],
             "source_privacy": work.get("source_privacy"),
             "disposition": work["disposition"],
             "watch": shared["watch"] if shared else f"/watch/{route['kind']}/{uid}" if route else None,
@@ -122,23 +145,9 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
         staff()
         body = request.get_json()
         name = body.get("title") if isinstance(body, dict) else None
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 128:
-            abort(400, "Enter a title of 1 to 128 characters.")
-        name = name.strip()
         with tx() as con:
             work = get_work(con, uid)
-            if title_for(con, work) != name:
-                con.execute(
-                    """INSERT INTO library_title(work,title,changed) VALUES(?,?,?)
-                       ON CONFLICT(work) DO UPDATE SET title=excluded.title,
-                         changed=excluded.changed,synced=0,attempted=0,error=NULL""",
-                    (uid, name, time.time()),
-                )
-                con.execute(
-                    """UPDATE route SET description=? WHERE slug=? AND EXISTS
-                       (SELECT 1 FROM publication_job j WHERE j.id=route.current_action AND j.work=route.slug)""",
-                    (name, uid),
-                )
+            save_title(con, work, name)
         return "", 204
 
     @app.post("/api/library/work/<uid>/copy")

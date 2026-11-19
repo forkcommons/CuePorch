@@ -16,6 +16,7 @@ from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
 from installed_migrated_privacy import check_migrated_privacy
+from installed_video_details import check_imported_video_details, check_video_details
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -226,7 +227,13 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     page.goto(desktop)
                     if not upgrade:
                         page.get_by_label("Institution name").fill("New station")
-                        page.get_by_role("button", name="Save setup").click()
+                        with page.expect_response(lambda event: event.url.endswith("/desktop/api/setup")) as setup_result:
+                            page.get_by_role("button", name="Save setup").click()
+                        response = setup_result.value
+                        if not response.ok:
+                            service_log = (home / "service.log").read_text(encoding="utf8", errors="replace")
+                            frames = [line for line in service_log.splitlines() if line.startswith(("  File ", "AssertionError", "Traceback"))]
+                            raise AssertionError(f"Desktop setup returned {response.status}\n" + "\n".join(frames[-14:]))
                     page.get_by_role("link", name="Open operator console").click()
                     page.get_by_role("link", name="Move from Vimeo").click()
                     page.get_by_role("button", name="Preview transfer").click()
@@ -323,11 +330,13 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     privacy_result = check_privacy(page, browser, base, auth, museum, venue)
                     privacy_defaults = check_privacy_defaults(page, browser, base, auth, replacement)
                     folder_privacy = check_folder_privacy(page, browser, base, auth, replacement)
+                    details = check_video_details(page, browser, base, auth)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
                     )
                     migrated_privacy = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
+                    details.update(check_imported_video_details(base, auth))
                     browser.close()
                     results.append(
                         dict(
@@ -348,6 +357,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             privacy_defaults=privacy_defaults,
                             folder_privacy=folder_privacy,
                             migrated_privacy=migrated_privacy,
+                            video_details=details,
                         )
                     )
                 quit_response = requests.post(

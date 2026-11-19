@@ -19,6 +19,21 @@
       {% endfor %}
     </video>
     {% if download %}<p><a href="{{ url_for('shared_video', token=token, download=1) }}">Download video</a></p>{% endif %}
+    {% if details %}
+      {% if details.description %}<p>{{ details.description }}</p>{% endif %}
+      {% if details.rating == 'mature' %}
+        {% set content_labels = {'language': 'Profanity', 'drugs': 'Drug or alcohol use', 'violence': 'Violence', 'nudity': 'Nudity'} %}
+        <p>Mature audiences{% for descriptor in details.content %} · {{ content_labels[descriptor] }}{% endfor %}</p>
+      {% endif %}
+      {% if details.advertisement %}<p>Contains advertisement</p>{% endif %}
+      {% if details.realistic_ai %}<p>Includes realistic AI-generated content</p>{% endif %}
+      {% if details.credits %}<dl>{% for credit in details.credits %}
+        <dt>{{ credit.name }}</dt>{% if credit.role %}<dd>{{ credit.role }}</dd>{% endif %}
+      {% endfor %}</dl>{% endif %}
+      {% if details.tags %}<p>{{ details.tags | join(' · ') }}</p>{% endif %}
+      {% if details.categories %}<p>{{ details.categories | join(' · ') }}</p>{% endif %}
+      {% if details.license %}<p>{{ 'CC0 Public Domain Dedication' if details.license == 'cc0' else 'Creative Commons ' ~ details.license | upper }}</p>{% endif %}
+    {% endif %}
   {% else %}
     <form method="post">
       {% if wrong_password %}<p role="alert">The password did not match.</p>{% endif %}

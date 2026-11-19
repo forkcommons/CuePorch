@@ -291,6 +291,17 @@ def _migrate(institution, root, source, dry_run, refresh):
             record["source_creator"] = owner["name"]
         record["source_created_time"] = video.get("created_time")
         record["source_modified_time"] = video.get("modified_time")
+        for product_field, source_field in (
+            ("source_license", "license"),
+            ("source_tags", "tags"),
+            ("source_categories", "categories"),
+            ("source_content_rating", "content_rating"),
+        ):
+            if source_field in video:
+                record[product_field] = video[source_field]
+        spatial = video.get("spatial")
+        if isinstance(spatial, dict) and isinstance(spatial.get("projection"), str):
+            record["source_projection"] = spatial["projection"]
         items = list(assets(video, tracks))
         checkpoint = root / "checkpoints" / (vid + ".json")
         revision = video.get("modified_time")

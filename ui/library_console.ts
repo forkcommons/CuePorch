@@ -538,6 +538,9 @@ function cardMenu(work: Work) {
     [work.asset_type === "video" ? "Video info" : "File info", () => infoDialog(work, false)],
     ["Download", () => infoDialog(work, true)],
   ];
+  if (work.asset_type === "video") {
+    entries.unshift(["Edit video details", () => { location.href = "/operator/videos/" + encodeURIComponent(work.id); }]);
+  }
   if (work.vimeo_source) entries.push(["Restore Vimeo privacy", () => restoreVimeoPrivacy(work)]);
   for (const [label, run] of entries) {
     const button = document.createElement("button");

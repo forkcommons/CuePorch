@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Video details · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
+  <h1 id="videoHeading">Video details</h1>
+  <form id="identify">
+    <label for="operatorKey">Operator credential</label>
+    <input id="operatorKey" type="password" autocomplete="current-password" required>
+    <button type="submit">Open video details</button>
+  </form>
+  <p id="detailsStatus" role="status"></p>
+  <main id="videoDetails" hidden>
+    <form id="videoMeta">
+      <label>Title <input name="title" maxlength="128" required></label>
+      <label>Description <textarea name="description" maxlength="5000" rows="5"></textarea></label>
+      <label>Tags (one per line) <textarea name="tags" rows="3"></textarea></label>
+      <label>Categories (one per line) <textarea name="categories" rows="3"></textarea></label>
+      <label>Credits (one name per line with an optional role after |) <textarea name="credits" rows="4"></textarea></label>
+      <label for="copyright">Copyright license</label>
+      <select id="copyright" name="license">
+        <option value="">None</option>
+        <option value="by">Creative Commons Attribution</option>
+        <option value="by-sa">Creative Commons Attribution-ShareAlike</option>
+        <option value="by-nd">Creative Commons Attribution-NoDerivatives</option>
+        <option value="by-nc">Creative Commons Attribution-NonCommercial</option>
+        <option value="by-nc-sa">Creative Commons Attribution-NonCommercial-ShareAlike</option>
+        <option value="by-nc-nd">Creative Commons Attribution-NonCommercial-NoDerivatives</option>
+        <option value="cc0">CC0 Public Domain Dedication</option>
+      </select>
+      <label for="contentRating">Content rating</label>
+      <select name="rating" id="contentRating">
+        <option value="unrated">Unrated</option>
+        <option value="all">All audiences</option>
+        <option value="mature">Mature</option>
+      </select>
+      <fieldset id="matureReasons" hidden>
+        <legend>Content descriptors</legend>
+        <label><input type="checkbox" name="content" value="language"> Profanity</label>
+        <label><input type="checkbox" name="content" value="drugs"> Drug or alcohol use</label>
+        <label><input type="checkbox" name="content" value="violence"> Violence</label>
+        <label><input type="checkbox" name="content" value="nudity"> Nudity</label>
+      </fieldset>
+      <label><input type="checkbox" name="realistic_ai"> Includes realistic AI-generated content</label>
+      <label><input type="checkbox" name="advertisement"> Contains advertisement</label>
+      <button type="submit">Save video details</button>
+    </form>
+    <section aria-labelledby="factsTitle">
+      <h2 id="factsTitle">Stored video</h2>
+      <dl id="videoFacts"></dl>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/video_details.js"></script>
+</body>
+</html>

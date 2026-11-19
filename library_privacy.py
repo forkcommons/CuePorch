@@ -251,7 +251,7 @@ def apply_settings(con, action, work, settings, password_hash):
     )
 
 
-def register(app, tx, staff, action, read_works, root, title_for, operator, permits):
+def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
 
@@ -382,11 +382,12 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             )
             token = None if locked else serializer.dumps([uid, row["revision"], video["sha256"]])
             title = "Protected video" if locked else title_for(con, work)
+            details = details_for(con, work) if not locked and not embed else None
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             token=token, tracks=captions(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
-                            unlock_token=unlock_token),
+                            unlock_token=unlock_token, details=details),
             401 if locked and request.method == "POST" else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"

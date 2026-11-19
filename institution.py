@@ -35,6 +35,7 @@ from waitress import serve
 
 from cueporch import verify
 import library_actions
+import library_details
 import library_folder_privacy
 import library_folders
 import library_peer_handoff
@@ -101,6 +102,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_privacy.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
+        + library_details.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
     )
@@ -1097,7 +1099,8 @@ def create_app(root, database, operator, institution, simulation=None):
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
-        app, tx, staff, action, read_library_works, root, library_actions.title_for, operator, vimeo_privacy.permits
+        app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
+        vimeo_privacy.permits, library_details.details_for,
     )
 
     @app.get("/api/library")
@@ -1253,6 +1256,10 @@ def create_app(root, database, operator, institution, simulation=None):
         return render_template(
             "library_console.html", public_url=os.environ.get("CUEPORCH_PUBLIC_URL", "")
         )
+
+    @app.get("/operator/videos/<uuid:work>")
+    def operator_video(work):
+        return render_template("video_details.html", work=str(work))
 
     @app.get("/api/delivery")
     def delivery_jobs():

@@ -121,6 +121,11 @@ def build_server(directory, port=0):
                                 download=[dict(quality="hd", type="video/mp4", size=len(media),
                                                link=f"{origin}/media/{identifier}.mp4")],
                             ))
+                            if identifier == 74:
+                                values[-1].update(license="by", tags=[{"tag": "city council"}],
+                                                  categories=[{"name": "Documentary"}],
+                                                  content_rating=["advertisement", "language"],
+                                                  spatial={"projection": "equirectangular"})
                 elif path == "/videos/72/privacy/domains":
                     values = [{"domain": "museum.example"}]
                 elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):

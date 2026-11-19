@@ -74,6 +74,8 @@ def video_properties(path):
         )
     except (OSError, subprocess.TimeoutExpired):
         return {}
+    audio = re.search(r"Audio: ([^,\r\n]+)(?:, (\d+ Hz), ([^,\r\n]+))?", result.stderr)
+    audio_info = ", ".join(part for part in audio.groups() if part) if audio else None
     for line in result.stderr.splitlines():
         if "Video:" not in line or "(attached pic)" in line:
             continue
@@ -83,5 +85,6 @@ def video_properties(path):
             "width": int(size[1]) if size else None,
             "height": int(size[2]) if size else None,
             "fps": float(rate[1]) if rate else None,
+            "audio": audio_info,
         }
     return {}
