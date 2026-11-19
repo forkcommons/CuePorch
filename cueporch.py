@@ -76,6 +76,9 @@ def import_collection(source, destination):
                 "chapters",
                 "known_embed_pages",
                 "related_work",
+                "asset_type",
+                "source_creator",
+                "source_upload_sha256",
             ):
                 if field in row:
                     record[field] = row[field]
@@ -89,7 +92,7 @@ def import_collection(source, destination):
                     "caption-source",
                 ):
                     raise ValueError("Unrecognized file role")
-                for field in ("language", "provenance"):
+                for field in ("language", "provenance", "name"):
                     if field in attachment:
                         item[field] = attachment[field]
                 path = source.parent / attachment["path"]

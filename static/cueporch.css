@@ -66,6 +66,10 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .library-dialog dt { font-weight: 600; }
 .library-dialog video { margin-block: .5rem; }
 .library-dialog .thumbnail-preview { width: min(320px, 100%); height: auto; display: block; }
+.library-dialog img { max-width: 100%; height: auto; }
+#uploadDrop { border: 2px dashed #57958c; padding: 1rem; }
+#uploadFiles { padding-inline-start: 1.25rem; overflow-wrap: anywhere; }
+#uploadFiles progress { display: block; width: min(16rem, 100%); }
 .review-page { max-width: 64rem; margin: 2rem auto; padding: 0 1rem; }
 .review-page video { display: block; width: min(100%, 60rem); max-height: 75vh; background: #18212d; }
 .review-logo { display: block; max-width: 12rem; max-height: 5rem; object-fit: contain; object-position: left; }

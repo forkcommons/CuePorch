@@ -5,7 +5,8 @@ import subprocess
 from functools import lru_cache
 
 
-def prepare_screening(source, target):
+def prepare_screening(source, target, input_format=None):
+    decoder = ["-f", input_format] if input_format else []
     result = subprocess.run(
         [
             "ffmpeg",
@@ -14,6 +15,7 @@ def prepare_screening(source, target):
             "error",
             "-protocol_whitelist",
             "file,pipe",
+            *decoder,
             "-i",
             str(source),
             "-map",
@@ -40,7 +42,7 @@ def prepare_screening(source, target):
         ],
         capture_output=True,
     )
-    if result.returncode or not target.is_file():
+    if result.returncode or not target.is_file() or not target.stat().st_size:
         raise ValueError("Unable to prepare the screening copy")
     duration = [
         int(value)

@@ -38,6 +38,7 @@ import library_actions
 import library_folders
 import library_thumbnail
 import library_trash
+import library_upload
 import library_worker
 import review_links
 import review_push
@@ -1055,6 +1056,7 @@ def create_app(root, database, operator, institution, simulation=None):
         works[work["id"]] = work
 
     library_actions.register(app, tx, staff, read_library_works, root, remember_work)
+    library_upload.register(app, tx, staff, root, database, institution, remember_work)
 
     @app.get("/api/library")
     def library():
@@ -1091,6 +1093,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return [
             dict(
                 id=w["id"],
+                asset_type=w.get("asset_type", "video"),
                 title=titles[w["id"]]["title"] if w["id"] in titles else w["title"],
                 folder=placement.get(w["id"]),
                 watch_later=w["id"] in queue,

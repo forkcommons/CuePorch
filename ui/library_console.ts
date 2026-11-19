@@ -1,7 +1,11 @@
 import { renderCommentText } from "./review_comment_text.js";
+import { libraryUploader } from "./library_upload.js";
+
+type AssetType = "video" | "audio" | "image" | "document";
 
 interface Work {
   id: string;
+  asset_type: AssetType;
   title: string;
   creator: string | null;
   added_at: string | null;
@@ -29,6 +33,7 @@ interface FileInfo {
   format: string;
   bytes: number;
   language?: string;
+  name?: string;
 }
 
 interface WorkInfo {
@@ -41,6 +46,7 @@ interface WorkInfo {
   duration_seconds: number | null;
   disposition: string;
   files: FileInfo[];
+  asset_type: AssetType;
   watch: string | null;
   embed: string | null;
   preview: string | null;
@@ -130,6 +136,7 @@ const empty = document.querySelector<HTMLElement>("#empty")!;
 const table = document.querySelector<HTMLTableElement>("#workTable")!;
 const search = document.querySelector<HTMLInputElement>("#search")!;
 const privacy = document.querySelector<HTMLSelectElement>("#privacy")!;
+const assetType = document.querySelector<HTMLSelectElement>("#assetType")!;
 const sort = document.querySelector<HTMLSelectElement>("#sort")!;
 const view = document.querySelector<HTMLSelectElement>("#view")!;
 const editFolder = document.querySelector<HTMLButtonElement>("#editFolder")!;
@@ -240,6 +247,8 @@ function renderTree() {
     sectionButton("Recently deleted"),
   );
   workBrowse.hidden = section === "Recently deleted";
+  document.querySelector<HTMLElement>("#uploadHint")!.hidden = section !== "Library";
+  document.querySelector<HTMLButtonElement>("#uploadLibrary")!.hidden = section !== "Library";
   trashBrowse.hidden = section !== "Recently deleted";
   const folder = folders.find((entry) => entry.id === current);
   heading.textContent =
@@ -335,6 +344,7 @@ function renderWorks() {
           : work.folder === current) &&
       (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
       work.title.toLocaleLowerCase().includes(query) &&
+      (!assetType.value || (assetType.value === "video") === (work.asset_type === "video")) &&
       (!privacy.value || (work.source_privacy || "Unknown") === privacy.value),
   );
   visible.sort((a, b) => {
@@ -375,6 +385,7 @@ function renderWorks() {
     const info = document.createElement("small");
     info.className = "work-info";
     info.textContent = [
+      work.asset_type === "video" ? "" : work.asset_type,
       work.creator,
       durationText(work.duration_seconds),
       work.version_count > 1 ? work.version_count + " retained versions" : "",
@@ -414,7 +425,8 @@ function renderWorks() {
     remove.setAttribute("aria-label", "Delete " + work.title);
     action(remove, () => removeItems("work", [work.id]));
     actions.append(remove);
-    for (const pub of work.public_eligible ? [false, true] : [false]) {
+    const destinations = work.asset_type !== "video" ? [] : work.public_eligible ? [false, true] : [false];
+    for (const pub of destinations) {
       const button = document.createElement("button");
       button.textContent = pub ? "Publish publicly" : "Deliver privately";
       action(button, async () => {
@@ -465,7 +477,8 @@ function cardMenu(work: Work) {
   summary.textContent = "Actions";
   summary.setAttribute("aria-label", "Actions for " + work.title);
   menu.append(summary);
-  const entries: [string, () => void | Promise<void>][] = [
+  type Entry = [string, () => void | Promise<void>];
+  const video: Entry[] = work.asset_type === "video" ? [
     ["Share", () => shareDialog(work)],
     ["Copy link", () => shareDialog(work, "watch")],
     ["Review link", () => reviewLinksDialog(work)],
@@ -474,11 +487,14 @@ function cardMenu(work: Work) {
       work.watch_later ? "Remove from Watch later" : "Watch later",
       () => saveForLater(work),
     ],
-    ["Rename", () => editTitle(work, false)],
-    ["Create a copy", () => editTitle(work, true)],
     ["Change thumbnail", () => thumbnailDialog(work)],
     ["Replace", () => versionsDialog(work)],
-    ["Video info", () => infoDialog(work, false)],
+  ] : [];
+  const entries: Entry[] = [
+    ...video,
+    ["Rename", () => editTitle(work, false)],
+    ["Create a copy", () => editTitle(work, true)],
+    [work.asset_type === "video" ? "Video info" : "File info", () => infoDialog(work, false)],
     ["Download", () => infoDialog(work, true)],
   ];
   for (const [label, run] of entries) {
@@ -991,7 +1007,7 @@ async function versionsDialog(work: Work) {
 
 async function infoDialog(work: Work, download: boolean) {
   const info = await getWorkInfo(work);
-  openWorkDialog(download ? "Download " + info.title : "Video info");
+  openWorkDialog(download ? "Download " + info.title : info.asset_type === "video" ? "Video info" : "File info");
   if (!download) {
     const facts = document.createElement("dl");
     const fields = {
@@ -1020,13 +1036,21 @@ async function infoDialog(work: Work, download: boolean) {
     if (info.preview) {
       const hash = info.preview;
       const preview = document.createElement("button");
-      preview.textContent = "Load video preview";
+      preview.textContent = `Load ${info.asset_type} preview`;
       action(preview, async () => {
-        const video = document.createElement("video");
-        video.src = (await mediaTicket(work, hash)).preview;
-        video.controls = true;
-        video.preload = "metadata";
-        preview.replaceWith(video);
+        const url = (await mediaTicket(work, hash)).preview;
+        if (info.asset_type === "image") {
+          const image = document.createElement("img");
+          image.alt = info.title;
+          image.src = url;
+          preview.replaceWith(image);
+        } else {
+          const player = document.createElement(info.asset_type === "audio" ? "audio" : "video");
+          player.src = url;
+          player.controls = true;
+          player.preload = "metadata";
+          preview.replaceWith(player);
+        }
       });
       workDialogBody.append(preview);
     }
@@ -1039,6 +1063,7 @@ async function infoDialog(work: Work, download: boolean) {
     item.textContent = [
       file.role,
       file.format.toUpperCase(),
+      file.name,
       file.language,
       file.bytes.toLocaleString() + " bytes",
     ]
@@ -1059,7 +1084,7 @@ async function infoDialog(work: Work, download: boolean) {
     list.append(item);
   }
   if (list.childElementCount) workDialogBody.append(list);
-  else workDialogBody.append("No video file is available.");
+  else workDialogBody.append("No file is available.");
 }
 
 workDialog.onclose = () => {
@@ -1285,6 +1310,7 @@ document.querySelector<HTMLButtonElement>("#cancelFolder")!.onclick = () =>
   editor.close();
 search.oninput =
   creator.oninput =
+  assetType.onchange =
   privacy.onchange =
   sort.onchange =
   view.onchange =
@@ -1292,6 +1318,14 @@ search.oninput =
       selected.clear();
       renderWorks();
     };
+
+libraryUploader({
+  available: () => !library.hidden && section === "Library",
+  folder: () => current,
+  folderOptions,
+  credential: () => key.value,
+  reload: () => load(),
+});
 
 action(document.querySelector<HTMLButtonElement>("#load")!, async () => {
   await load();

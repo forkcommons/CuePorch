@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS publication_job(
 
 
 def enqueue(con, work, public, scheduled=0, kind="work"):
+    if work.get("asset_type", "video") != "video":
+        raise ValueError("Only videos can be delivered to PeerTube")
     if public and (
         work.get("source_privacy") not in ("public", "anybody")
         or work.get("source_embed_policy") not in ("anywhere", "public")

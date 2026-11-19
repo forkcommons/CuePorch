@@ -67,7 +67,7 @@ def check_private(page, base, auth, database, work, grant, existing_embed, downl
     expect(page.get_by_text("No recently deleted items match.")).to_be_visible()
     assert requests.head(download_url, timeout=10).status_code == 404
     page.get_by_label("Deleted by").fill("operator")
-    page.get_by_label("Type").select_option("folder")
+    page.locator("#trashBrowse").get_by_label("Type").select_option("folder")
     restore = page.get_by_role("button", name="Restore Station programs", exact=True)
     restore.click()
     expect(page.get_by_text("No recently deleted items match.")).to_be_visible()

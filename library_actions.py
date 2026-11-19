@@ -30,6 +30,11 @@ VIDEO_MIME = {
     "webm": "video/webm",
     "mkv": "video/x-matroska",
 }
+PREVIEW_MIME = {
+    "video": VIDEO_MIME,
+    "image": {"png": "image/png"},
+    "audio": {"mp3": "audio/mpeg"},
+}
 
 
 def title_for(con, work):
@@ -65,16 +70,23 @@ def register(app, tx, staff, read_works, root, remember_work):
         files = [
             {
                 k: f[k]
-                for k in ("sha256", "role", "format", "bytes", "language")
+                for k in ("sha256", "role", "format", "bytes", "language", "name")
                 if k in f
             }
             for f in work["files"]
         ]
+        asset_type = work.get("asset_type", "video")
+        accepted = PREVIEW_MIME.get(asset_type, {})
+        display_files = (
+            sorted(files, key=lambda item: item["role"] != "playback")
+            if "asset_type" in work else files
+        )
         return {
             "id": uid,
             "title": title,
             "source_title": work["title"],
             "files": files,
+            "asset_type": asset_type,
             "source": work["source_url"],
             "duration_seconds": work.get("duration_seconds"),
             "creator": work.get("source_creator"),
@@ -87,9 +99,9 @@ def register(app, tx, staff, read_works, root, remember_work):
             "preview": next(
                 (
                     f["sha256"]
-                    for f in files
-                    if f["role"] in ("playback", "original")
-                    and f["format"] in VIDEO_MIME
+                    for f in display_files
+                    if f["role"] in ("original", "playback") and f["format"] in accepted
+                    and (asset_type == "video" or f["role"] == "playback")
                 ),
                 None,
             ),
@@ -195,20 +207,32 @@ def register(app, tx, staff, read_works, root, remember_work):
             if not item:
                 abort(404)
             name = title_for(con, work)
+            asset_type = work.get("asset_type", "video")
         media = root / "objects" / row["object"]
         if not media.is_file():
             abort(404)
         fmt = item["format"]
         suffix = fmt if re.fullmatch("[a-zA-Z0-9]{1,10}", fmt) else "bin"
         title = re.sub('[<>:"/\\\\|?*\\x00-\\x1f]', "_", name).strip(" .") or "video"
-        preview = request.args.get("preview") == "1" and fmt in VIDEO_MIME
+        accepted = PREVIEW_MIME.get(asset_type, {})
+        preview = (
+            request.args.get("preview") == "1"
+            and fmt in accepted
+            and (asset_type == "video" or item["role"] == "playback")
+        )
+        filename = (
+            item.get("name", title + "." + suffix)
+            if work["provider"] == "cueporch-upload"
+            else title + "." + suffix
+        )
         response = send_file(
             media,
             as_attachment=not preview,
-            download_name=title + "." + suffix,
-            mimetype=VIDEO_MIME.get(fmt, "application/octet-stream"),
+            download_name=filename,
+            mimetype=accepted[fmt] if preview else "application/octet-stream",
             conditional=True,
         )
+        response.headers["X-Content-Type-Options"] = "nosniff"
         response.cache_control.no_store = True
         response.cache_control.private = True
         return response
