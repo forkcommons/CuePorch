@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleDetection": "force",
+    "strict": true,
+    "outDir": "../static/ui",
+    "noEmitOnError": true
+  },
+  "include": ["*.ts"]
+}

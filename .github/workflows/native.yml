@@ -1,0 +1,58 @@
+name: Native packages
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r requirements.txt pyinstaller==6.17.0 imageio-ffmpeg==0.6.0
+          rustup show
+      - name: Build native layout and installer
+        run: |
+          python packaging/build.py build
+          python packaging/build.py package
+      - name: Install actual package
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            sudo installer -pkg "$(find dist -maxdepth 1 -name '*.pkg')" -target /
+            echo 'LAUNCHER=/Applications/CuePorch.app/Contents/MacOS/CuePorch' >> "$GITHUB_ENV"
+          else
+            sudo dpkg -i dist/*.deb
+            echo 'LAUNCHER=/opt/cueporch/CuePorch' >> "$GITHUB_ENV"
+          fi
+      - name: Prepare independent client and baseline
+        run: |
+          python -m pip install -r requirements-acceptance.txt
+          python -m playwright install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/fixture-tools"
+          git archive v0.1.0 | tar -x -C "$RUNNER_TEMP/base"
+          ln -s "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" "$RUNNER_TEMP/fixture-tools/ffmpeg"
+          echo "$RUNNER_TEMP/fixture-tools" >> "$GITHUB_PATH"
+      - name: Test fresh and upgraded installed application
+        run: python acceptance/installed_package.py "$LAUNCHER" "$RUNNER_TEMP/base" dist/installed-tests.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CuePorch-0.2.0-${{ runner.os }}
+          path: |
+            dist/*.deb
+            dist/*.pkg
+            dist/installed-tests.json
+          retention-days: 1

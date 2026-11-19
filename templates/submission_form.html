@@ -8,8 +8,4 @@
         <label><input type="checkbox" name="public_trailer"> Authorize public viewing and embedding of this trailer</label>
         <label>Viewing terms <select name="terms"><option value="private">Private screening</option>
         <option value="public">Public viewing and embedding authorized</option></select></label><label>Publication time (local; blank for immediate delivery)<input id="releaseTime" type="datetime-local"></label><button>Submit</button></form>
-        <p id="message" role="status"></p><script>let objectUrl;master.onchange=()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);
- if(master.files.length){objectUrl=URL.createObjectURL(master.files[0]);preview.src=objectUrl;preview.hidden=false;}};
- submission.onsubmit=async e=>{e.preventDefault();
-        const data=new FormData(submission);data.set("scheduled",releaseTime.value?String(new Date(releaseTime.value).getTime()/1000):"0");const r=await fetch('/api/submissions',{method:'POST',headers:{Authorization:'Bearer '+access.value},body:data});
-        message.textContent=r.ok?'Received '+(await r.json()).work:'Submission failed ('+r.status+')';};</script></html>
+        <p id="message" role="status"></p><script type="module" src="/static/ui/submission_form.js"></script></html>
