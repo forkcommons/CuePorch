@@ -44,9 +44,9 @@ def free_port():
 
 
 @contextmanager
-def receive(ffmpeg, port, name, path):
+def receive(ffmpeg, port, name, path, timeout=120):
     with subprocess.Popen([
-        str(ffmpeg), "-nostdin", "-v", "error", "-listen", "1", "-timeout", "120",
+        str(ffmpeg), "-nostdin", "-v", "error", "-listen", "1", "-timeout", str(timeout),
         "-i", f"rtmp://127.0.0.1:{port}/live/{name}", "-map", "0", "-c", "copy", "-flush_packets", "1",
         "-y", str(path),
     ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

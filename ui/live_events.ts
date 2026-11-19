@@ -18,9 +18,13 @@ interface Occurrence {id: number; start: string; end: string; local: string; del
 interface LiveEvent {
   id: string; slug: string; revision: string; editable: boolean; event: EventSettings; publication: string;
   occurrences: Occurrence[]; watch: string | null; embed: string | null;
+  preview_encoder: boolean;
 }
 interface Calendar {events: LiveEvent[]; overlaps: string[]; host_ready: boolean;}
-interface Encoder {server: string; secure_server?: string; key: string; public: boolean;}
+interface Encoder {server: string; secure_server?: string; key: string; public: boolean; preview: boolean;}
+interface EncoderPreview {state: "inactive" | "waiting" | "signal" | "ended" | "released"; address: string | null;}
+interface PreviewHls {loadSource(address: string): void; attachMedia(video: HTMLVideoElement): void; destroy(): void;}
+type PreviewHlsFactory = {new (config: object): PreviewHls; isSupported(): boolean};
 interface EventHealth extends RelayHealth {
   state: string; viewers?: number;
   delivery_settings?: {latency: string | null; dvr_seconds: number | null};
@@ -39,7 +43,7 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
 }
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
-interface SrtListener {server: string; passphrase: string; key_bytes: number;}
+interface SrtListener {server: string; passphrase: string; key_bytes: number; preview: boolean;}
 interface ProgramSource {work: string; cut: string;}
 interface ProgramChoice extends ProgramSource {title: string;}
 interface EventProgram {
@@ -97,6 +101,15 @@ const destinationForm = element<HTMLFormElement>("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const previewEncoder = input("privateEncoderPreview");
+const encoderPreviewPanel = element("encoderPreview");
+const encoderPreviewStatus = element("encoderPreviewStatus");
+const encoderPreviewVideo = element<HTMLVideoElement>("encoderPreviewVideo");
+const releasePreview = button("releaseEncoderPreview");
+const PreviewHls = (window as Window & {Hls?: PreviewHlsFactory}).Hls;
+let previewPlayer: PreviewHls | undefined;
+let previewOpened = 0;
+let checkingPreview = false;
 const starting = input("calendarFirst"), ending = input("calendarLast");
 const programPanel = element<HTMLDetailsElement>("eventProgramPanel");
 const programChoice = element<HTMLSelectElement>("programChoice");
@@ -150,6 +163,66 @@ function mediaPath(suffix: string) {
   return `${root}/${active!.event.id}/${active!.instance.id}/${suffix}`;
 }
 
+function stopEncoderPreview() {
+  previewPlayer?.destroy();
+  previewPlayer = undefined;
+  if (previewOpened) {
+    encoderPreviewVideo.removeAttribute("src");
+    encoderPreviewVideo.load();
+  }
+  previewOpened = 0;
+  encoderPreviewVideo.hidden = true;
+}
+
+function showEncoderPreview(open: boolean) {
+  stopEncoderPreview();
+  encoderPreviewPanel.hidden = !open;
+  releasePreview.disabled = true;
+  encoderPreviewStatus.textContent = open ? "Waiting for the private encoder signal." : "";
+  if (open) void refreshEncoderPreview();
+}
+
+async function refreshEncoderPreview() {
+  if (!active || checkingPreview || encoderPreviewPanel.hidden) return;
+  const selection = active;
+  checkingPreview = true;
+  try {
+    const result = await request<EncoderPreview>(mediaPath("preview"));
+    if (selection !== active || encoderPreviewPanel.hidden) return;
+    releasePreview.disabled = result.state !== "signal";
+    encoderPreviewStatus.textContent = {
+      waiting: "Waiting for the private encoder signal.", signal: "The private encoder signal is ready.",
+      ended: "The private encoder signal has ended.", inactive: "This occurrence is no longer in preview.",
+      released: "The encoder is live.",
+    }[result.state];
+    if (!result.address) stopEncoderPreview();
+    else if (Date.now() - previewOpened > 25 * 60 * 1000) {
+      stopEncoderPreview();
+      if (PreviewHls?.isSupported()) {
+        previewPlayer = new PreviewHls({enableWorker: true, liveDurationInfinity: true});
+        previewPlayer.loadSource(result.address);
+        previewPlayer.attachMedia(encoderPreviewVideo);
+      } else if (encoderPreviewVideo.canPlayType("application/vnd.apple.mpegurl")) {
+        encoderPreviewVideo.src = result.address;
+      } else {
+        encoderPreviewStatus.textContent = "This browser cannot play the private preview.";
+        return;
+      }
+      previewOpened = Date.now();
+      encoderPreviewVideo.hidden = false;
+    }
+  } catch (error) {
+    if (selection === active && !encoderPreviewPanel.hidden) {
+      releasePreview.disabled = true;
+      encoderPreviewStatus.textContent = error instanceof Error ? error.message : "Could not check the private encoder signal.";
+    }
+  } finally {
+    checkingPreview = false;
+  }
+}
+
+window.setInterval(() => { if (!document.hidden) void refreshEncoderPreview(); }, 3000);
+
 async function downloadEventFile(path: string, filename: string) {
   const response = await fetch(path, {headers: {Authorization: "Bearer " + credential.value}});
   if (!response.ok) throw new Error("Could not download the event report.");
@@ -199,6 +272,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   key.value = "";
   element("srtSettings").hidden = true;
   input("srtPassphrase").value = "";
+  previewEncoder.checked = event.preview_encoder;
+  showEncoderPreview(instance.delivery === "preview");
   health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
   measurements.textContent = "";
   analytics.open = false;
@@ -456,6 +531,15 @@ form.onsubmit = (event) => {
   }, "Event saved.");
 };
 
+previewEncoder.onchange = () => void action(async () => {
+  const event = active!.event;
+  try {
+    const value = await request<{preview: boolean}>(`${root}/${event.id}/encoder-settings`, "PUT", {preview: previewEncoder.checked});
+    event.preview_encoder = value.preview;
+  } finally {
+    previewEncoder.checked = event.preview_encoder;
+  }
+}, "Encoder preview preference saved.");
 button("prepareEncoder").onclick = () => void action(async () => {
   const connection = await request<Encoder>(mediaPath("encoder"), "POST");
   input("rtmpServer").value = connection.server;
@@ -465,8 +549,15 @@ button("prepareEncoder").onclick = () => void action(async () => {
   encoder.hidden = false;
   button("withdrawEvent").textContent = "Withdraw this occurrence";
   button("withdrawEvent").disabled = false;
-  health.textContent = "Waiting for the encoder.";
+  showEncoderPreview(connection.preview);
+  health.textContent = connection.preview ? "Encoder prepared for private preview." : "Waiting for the encoder.";
 });
+releasePreview.onclick = () => void action(async () => {
+  await request<EncoderPreview>(mediaPath("preview"), "POST");
+  showEncoderPreview(false);
+  active!.instance.delivery = "ready";
+  health.textContent = "Released. Waiting for the audience stream to start.";
+}, "Private encoder released.");
 button("copyEncoderKey").onclick = () => void action(async () => {
   await navigator.clipboard.writeText(key.value);
 }, "Stream key copied.");
@@ -479,6 +570,7 @@ button("prepareSrt").onclick = () => void action(async () => {
   element("srtSettings").hidden = false;
   button("withdrawEvent").textContent = "Withdraw this occurrence";
   button("withdrawEvent").disabled = false;
+  if (result.preview) showEncoderPreview(true);
 }, "SRT listener is ready for the encoder.");
 button("stopSrt").onclick = () => void action(async () => {
   await request(mediaPath("srt"), "DELETE");

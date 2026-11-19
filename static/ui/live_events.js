@@ -54,6 +54,15 @@ const destinationForm = element("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const previewEncoder = input("privateEncoderPreview");
+const encoderPreviewPanel = element("encoderPreview");
+const encoderPreviewStatus = element("encoderPreviewStatus");
+const encoderPreviewVideo = element("encoderPreviewVideo");
+const releasePreview = button("releaseEncoderPreview");
+const PreviewHls = window.Hls;
+let previewPlayer;
+let previewOpened = 0;
+let checkingPreview = false;
 const starting = input("calendarFirst"), ending = input("calendarLast");
 const programPanel = element("eventProgramPanel");
 const programChoice = element("programChoice");
@@ -106,6 +115,71 @@ async function action(work, message = "") {
 function mediaPath(suffix) {
     return `${root}/${active.event.id}/${active.instance.id}/${suffix}`;
 }
+function stopEncoderPreview() {
+    previewPlayer?.destroy();
+    previewPlayer = undefined;
+    if (previewOpened) {
+        encoderPreviewVideo.removeAttribute("src");
+        encoderPreviewVideo.load();
+    }
+    previewOpened = 0;
+    encoderPreviewVideo.hidden = true;
+}
+function showEncoderPreview(open) {
+    stopEncoderPreview();
+    encoderPreviewPanel.hidden = !open;
+    releasePreview.disabled = true;
+    encoderPreviewStatus.textContent = open ? "Waiting for the private encoder signal." : "";
+    if (open)
+        void refreshEncoderPreview();
+}
+async function refreshEncoderPreview() {
+    if (!active || checkingPreview || encoderPreviewPanel.hidden)
+        return;
+    const selection = active;
+    checkingPreview = true;
+    try {
+        const result = await request(mediaPath("preview"));
+        if (selection !== active || encoderPreviewPanel.hidden)
+            return;
+        releasePreview.disabled = result.state !== "signal";
+        encoderPreviewStatus.textContent = {
+            waiting: "Waiting for the private encoder signal.", signal: "The private encoder signal is ready.",
+            ended: "The private encoder signal has ended.", inactive: "This occurrence is no longer in preview.",
+            released: "The encoder is live.",
+        }[result.state];
+        if (!result.address)
+            stopEncoderPreview();
+        else if (Date.now() - previewOpened > 25 * 60 * 1000) {
+            stopEncoderPreview();
+            if (PreviewHls?.isSupported()) {
+                previewPlayer = new PreviewHls({ enableWorker: true, liveDurationInfinity: true });
+                previewPlayer.loadSource(result.address);
+                previewPlayer.attachMedia(encoderPreviewVideo);
+            }
+            else if (encoderPreviewVideo.canPlayType("application/vnd.apple.mpegurl")) {
+                encoderPreviewVideo.src = result.address;
+            }
+            else {
+                encoderPreviewStatus.textContent = "This browser cannot play the private preview.";
+                return;
+            }
+            previewOpened = Date.now();
+            encoderPreviewVideo.hidden = false;
+        }
+    }
+    catch (error) {
+        if (selection === active && !encoderPreviewPanel.hidden) {
+            releasePreview.disabled = true;
+            encoderPreviewStatus.textContent = error instanceof Error ? error.message : "Could not check the private encoder signal.";
+        }
+    }
+    finally {
+        checkingPreview = false;
+    }
+}
+window.setInterval(() => { if (!document.hidden)
+    void refreshEncoderPreview(); }, 3000);
 async function downloadEventFile(path, filename) {
     const response = await fetch(path, { headers: { Authorization: "Bearer " + credential.value } });
     if (!response.ok)
@@ -149,6 +223,8 @@ function choose(event, instance) {
     key.value = "";
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
+    previewEncoder.checked = event.preview_encoder;
+    showEncoderPreview(instance.delivery === "preview");
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
     measurements.textContent = "";
     analytics.open = false;
@@ -411,6 +487,16 @@ form.onsubmit = (event) => {
             choose(created, created.occurrences[0]);
     }, "Event saved.");
 };
+previewEncoder.onchange = () => void action(async () => {
+    const event = active.event;
+    try {
+        const value = await request(`${root}/${event.id}/encoder-settings`, "PUT", { preview: previewEncoder.checked });
+        event.preview_encoder = value.preview;
+    }
+    finally {
+        previewEncoder.checked = event.preview_encoder;
+    }
+}, "Encoder preview preference saved.");
 button("prepareEncoder").onclick = () => void action(async () => {
     const connection = await request(mediaPath("encoder"), "POST");
     input("rtmpServer").value = connection.server;
@@ -420,8 +506,15 @@ button("prepareEncoder").onclick = () => void action(async () => {
     encoder.hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
-    health.textContent = "Waiting for the encoder.";
+    showEncoderPreview(connection.preview);
+    health.textContent = connection.preview ? "Encoder prepared for private preview." : "Waiting for the encoder.";
 });
+releasePreview.onclick = () => void action(async () => {
+    await request(mediaPath("preview"), "POST");
+    showEncoderPreview(false);
+    active.instance.delivery = "ready";
+    health.textContent = "Released. Waiting for the audience stream to start.";
+}, "Private encoder released.");
 button("copyEncoderKey").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(key.value);
 }, "Stream key copied.");
@@ -434,6 +527,8 @@ button("prepareSrt").onclick = () => void action(async () => {
     element("srtSettings").hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
+    if (result.preview)
+        showEncoderPreview(true);
 }, "SRT listener is ready for the encoder.");
 button("stopSrt").onclick = () => void action(async () => {
     await request(mediaPath("srt"), "DELETE");

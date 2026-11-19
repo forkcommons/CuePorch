@@ -1,6 +1,7 @@
 """Institution event schedules and the operator's live production controls."""
 
 from datetime import date, datetime, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import json
 import re
 import uuid
@@ -11,7 +12,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
-from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
+from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
 import event_analytics
 import event_chat
@@ -40,6 +41,10 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
+CREATE TABLE IF NOT EXISTS live_encoder_preview(
+ event TEXT NOT NULL, opens INTEGER NOT NULL, source TEXT, cutoff REAL, server TEXT, key BLOB,
+ PRIMARY KEY(event,opens));
+CREATE TABLE IF NOT EXISTS live_encoder_preference(event TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
@@ -67,6 +72,16 @@ def publication(con, row, event):
 
 def occurrence(con, uid, opens):
     return con.execute("SELECT * FROM live_occurrence WHERE event=? AND opens=?", (uid, opens)).fetchone()
+
+
+def private_delivery(con, event, uid, opens):
+    return bool(event.get("cueporch_delivery") or con.execute(
+        "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
+
+
+def encoder_preview_enabled(con, uid):
+    row = con.execute("SELECT enabled FROM live_encoder_preference WHERE event=?", (uid,)).fetchone()
+    return bool(row and row["enabled"])
 
 
 def publishing_action(con, action, uid, event):
@@ -120,6 +135,7 @@ def publish_replays(tx, database, origin, connect, action):
                         continue
                     _, event = read(con, uid)
                     registered = library_registration.active(con, "event", uid) is not None
+                    managed = private_delivery(con, event, uid, opens)
                 host = connect(origin)
                 if event_peer.observe(host, remote)["state"] != "replay":
                     continue
@@ -129,7 +145,7 @@ def publish_replays(tx, database, origin, connect, action):
                     if decision in ("eligible", "waiting"):
                         event_replay_captions.queue(con, action, uid, opens)
                 if decision == "eligible":
-                    if not registered and not event.get("cueporch_delivery"):
+                    if not registered and not managed:
                         host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
@@ -176,6 +192,7 @@ def summary(con, row, event, first, last):
         upcoming["program"] = program["state"] if program else None
         sessions.append(upcoming)
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
+                preview_encoder=encoder_preview_enabled(con, row["id"]),
                 publication=visible, occurrences=sessions,
                 watch=url_for("event_page", slug=row["slug"]) if visible == "eligible" else None,
                 embed=url_for("event_embed", slug=row["slug"]) if visible == "eligible" else None)
@@ -214,6 +231,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     def stop():
         outputs.close()
+        preview_outputs.close()
         programs.close()
         studio.close()
         captions.close()
@@ -224,6 +242,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
+    preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
     measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
@@ -434,13 +453,29 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             slot = find_open(event, opens)
             if slot and datetime.fromisoformat(slot["end"]) > now and can_simulcast(con, uid, event):
                 targets = con.execute("SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1", (uid,)).fetchall()
-                candidates[uid, opens] = (row["origin"], row["remote"], targets)
+                candidates[uid, opens] = (row["origin"], row["remote"], targets, None)
         return candidates
 
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
     event_simulcast.register(app, tx, staff, destination_access, outputs)
 
-    def provision_event(uid, opens, browser=False, automatic=False):
+    def released_previews(con):
+        now = datetime.now(timezone.utc)
+        candidates = {}
+        for row in con.execute("""SELECT p.*,o.origin,e.settings FROM live_encoder_preview p
+                JOIN live_occurrence o ON o.event=p.event AND o.opens=p.opens JOIN live_event e ON e.id=p.event
+                WHERE o.delivery='ready' AND p.source IS NOT NULL"""):
+            uid, opens = row["event"], row["opens"]
+            slot = find_open(json.loads(row["settings"]), opens)
+            if slot and datetime.fromisoformat(slot["end"]) > now:
+                receiver = dict(id="audience", server=row["server"], secret=row["key"])
+                candidates[uid, opens] = (row["origin"], row["source"], [receiver], row["cutoff"])
+        return candidates
+
+    preview_outputs = event_simulcast.Simulcast(
+        app, tx, media, database, signing_key, released_previews, directory="event-preview-output")
+
+    def provision_event(uid, opens, browser=False, automatic=False, preview=None):
         try:
             with tx() as con:
                 row, event = read(con, uid)
@@ -454,28 +489,43 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     abort(409, "This event's publication is waiting for approval or was declined.")
                 saved = occurrence(con, uid, opens)
                 registered = library_registration.active(con, "event", uid) is not None
+                bridge = con.execute("SELECT source FROM live_encoder_preview WHERE event=? AND opens=?",
+                                     (uid, opens)).fetchone()
                 state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
+                if preview is None:
+                    preview = state == "preview" or (state in (None, "staged") and not automatic and encoder_preview_enabled(con, uid))
                 if state in ("withdrawing", "withdrawn"):
                     abort(409, "This occurrence is being withdrawn or has been withdrawn.")
                 if state == "replay":
                     abort(409, "This occurrence already has a finished recording.")
+                if state == "preview" and not preview:
+                    abort(409, "This encoder is private. Release it from Encoder preview.")
+                if state == "ready" and preview and not (bridge and bridge["source"]):
+                    abort(409, "This occurrence already has a live delivery channel.")
             with event_peer.connected_host(expected) as host:
                 broadcast = visible == "eligible" and not registered
+                if state == "ready" and bridge and bridge["source"]:
+                    if browser:
+                        abort(409, "The original external encoder is already feeding this broadcast.")
+                    return dict(event_peer.encoder(host, bridge["source"]), public=broadcast, preview=False)
                 if saved:
                     remote = saved["remote"]
                 else:
-                    remote = event_peer.stage_remote(host, f"CuePorch event {uid} {opens}", event)
+                    source = event | {"save_replay": False} if preview else event
+                    remote = event_peer.stage_remote(host, f"CuePorch {'preview' if preview else 'event'} {uid} {opens}", source)
                     with tx() as con:
                         con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)",
                                     (uid, opens, host.origin, remote, "staged"))
-                if state != "ready":
-                    event_peer.release_remote(host, remote, event, broadcast and not event.get("cueporch_delivery"))
+                if state not in ("ready", "preview"):
+                    event_peer.release_remote(host, remote, event, broadcast and not preview and not event.get("cueporch_delivery"))
                     with tx() as con:
-                        con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
-                                    (uid, opens))
+                        if preview:
+                            con.execute("INSERT OR IGNORE INTO live_encoder_preview(event,opens) VALUES(?,?)", (uid, opens))
+                        con.execute("UPDATE live_occurrence SET delivery=? WHERE event=? AND opens=?",
+                                    ("preview" if preview else "ready", uid, opens))
                 if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
                     abort(409, "This event already has a live or finished signal.")
-                return dict(event_peer.encoder(host, remote), public=broadcast)
+                return dict(event_peer.encoder(host, remote), public=broadcast and not preview, preview=preview)
         except event_peer.UnsupportedDvrWindow as error:
             abort(422, str(error))
         except (ValueError, requests.RequestException, KeyError):
@@ -484,11 +534,25 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.post("/api/live-events/<uid>/<int:opens>/encoder")
     def prepare_external_encoder(uid, opens):
         staff()
+        body = request.get_json() if request.is_json else {}
+        if not isinstance(body, dict) or type(body.get("preview", False)) is not bool:
+            abort(422, "Choose whether to preview the encoder privately.")
         try:
             with locked(uid):
-                return provision_event(uid, opens)
+                return provision_event(uid, opens, preview=body.get("preview"))
         except Timeout:
             abort(409, "Another operation is preparing this event.")
+
+    @app.put("/api/live-events/<uid>/encoder-settings")
+    def encoder_preferences(uid):
+        staff()
+        body = request.get_json()
+        if not isinstance(body, dict) or type(body.get("preview")) is not bool:
+            abort(422, "Choose whether to preview external encoders for this event.")
+        with tx() as con:
+            read(con, uid)
+            con.execute("INSERT OR REPLACE INTO live_encoder_preference VALUES(?,?)", (uid, body["preview"]))
+        return dict(preview=body["preview"])
 
     @app.route("/api/live-events/<uid>/<int:opens>/program", methods=["GET", "PUT"])
     def event_program_settings(uid, opens):
@@ -540,7 +604,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         staff()
         try:
             with locked(uid):
-                connection = provision_event(uid, opens, browser=True)
+                connection = provision_event(uid, opens, browser=True, preview=False)
                 return dict(token=studio.start(uid, opens, connection)), 201
         except Timeout:
             abort(409, "Another operation is preparing this event.")
@@ -581,7 +645,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             studio.close_srt(uid, opens)
             return "", 204
         body = request.get_json()
-        if not isinstance(body, dict):
+        if not isinstance(body, dict) or type(body.get("preview", False)) is not bool:
             abort(422, "Choose a receiving interface and port.")
         try:
             endpoint = srt_endpoint(body.get("interface"), body.get("port"))
@@ -591,9 +655,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             with locked(uid):
                 prior = studio.srt_credentials(uid, opens, endpoint)
                 if prior:
-                    return prior
-                connection = provision_event(uid, opens, browser=True)
-                return studio.srt(uid, opens, connection, endpoint)
+                    with tx() as con:
+                        delivery = occurrence(con, uid, opens)
+                        return dict(prior, preview=bool(delivery and delivery["delivery"] == "preview"))
+                connection = provision_event(uid, opens, browser=True, preview=body.get("preview"))
+                return dict(studio.srt(uid, opens, connection, endpoint), preview=connection["preview"])
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
@@ -608,7 +674,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             _, event = read(con, uid)
             selected_open(event, opens)
             target = occurrence(con, uid, opens)
-            managed = event.get("cueporch_delivery") or library_registration.active(con, "event", uid)
+            managed = private_delivery(con, event, uid, opens) or library_registration.active(con, "event", uid)
         local = studio.health(uid, opens)
         if request.args.get("source") == "relay":
             return dict(encoder=local)
@@ -674,6 +740,85 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             phase = {"ready": "live", "replay": "replay"}.get(target["delivery"]) if target else None
             return event_analytics.summarize(con, uid, opens, phase)
 
+    def hls_manifest(delivery, raw, host_private):
+        manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
+        directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)
+        return HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/"), filename
+
+    @app.route("/api/live-events/<uid>/<int:opens>/preview", methods=["GET", "POST"])
+    def encoder_preview(uid, opens):
+        staff()
+
+        def target():
+            with tx() as con:
+                row, event = read(con, uid)
+                slot = selected_open(event, opens)
+                delivery = occurrence(con, uid, opens)
+                return row["revision"], event, slot, delivery, publication(con, row, event)
+
+        try:
+            if request.method == "POST":
+                with locked(uid):
+                    _, event, slot, delivery, visible = target()
+                    if delivery and delivery["delivery"] == "ready":
+                        return dict(state="released", address=None)
+                    if not delivery or delivery["delivery"] != "preview":
+                        abort(409, "Prepare the encoder for private preview first.")
+                    if visible not in ("eligible", "private") or datetime.fromisoformat(slot["end"]) <= datetime.now(timezone.utc):
+                        abort(409, "This occurrence cannot start. Check its schedule and publication status.")
+                    origin, source = delivery["origin"], delivery["remote"]
+                    with media.read(origin, "/api/v1/videos/" + source) as response:
+                        observed = event_peer.status(response.json())
+                        host_time = parsedate_to_datetime(response.headers["Date"])
+                    if observed["public"]:
+                        abort(409, "Restore the private setting on the connected video host before releasing.")
+                    if observed["state"] != "live":
+                        abort(409, "Wait for a live signal before releasing the encoder.")
+                    if host_time.tzinfo is None:
+                        raise ValueError("The video host time is unavailable.")
+                    # New audience ingest starts after the source host clock at release.
+                    # The HTTP date has one-second precision, so discard the current second as well.
+                    cutoff = host_time.timestamp() + 1
+                    with event_peer.connected_host(origin) as host:
+                        remote = event_peer.stage_remote(host, f"CuePorch audience {uid} {opens}", event)
+                        server, _, key = ingest_address(event_peer.encoder(host, remote)).rpartition("/")
+                    protected_key = preview_outputs.cipher.encrypt(key.encode())
+                    with tx() as con:
+                        con.execute("UPDATE live_encoder_preview SET source=?,cutoff=?,server=?,key=? WHERE event=? AND opens=?",
+                                    (source, cutoff, server, protected_key, uid, opens))
+                        con.execute("UPDATE live_occurrence SET delivery='ready',remote=? WHERE event=? AND opens=?", (remote, uid, opens))
+                    return dict(state="released", address=None)
+
+            revision, _, _, delivery, _ = target()
+            if not delivery or delivery["delivery"] != "preview":
+                return dict(state="inactive", address=None)
+            raw = media.metadata(delivery["origin"], delivery["remote"])
+            observed = event_peer.status(raw)
+            if observed["state"] != "live" or observed["public"]:
+                return dict(state="waiting" if observed["state"] == "waiting_for_encoder" else "ended", address=None)
+            gateway, filename = hls_manifest(delivery, raw, True)
+            token = preview_files.dumps([uid, revision, opens, delivery["remote"], gateway])
+            return dict(state="signal", address=url_for("encoder_preview_file", token=token, filename=filename))
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except (ValueError, requests.RequestException, KeyError, StopIteration):
+            abort(502, "Could not read the private encoder feed.")
+
+    @app.get("/encoder-preview/<token>/<filename>")
+    def encoder_preview_file(token, filename):
+        try:
+            uid, revision, opens, remote, gateway = preview_files.loads(token, max_age=30 * 60)
+            if not LIVE_FILE.fullmatch(filename):
+                abort(404)
+            with tx() as con:
+                row, _ = read(con, uid)
+                delivery = occurrence(con, uid, opens)
+                if row["revision"] != revision or not delivery or delivery["delivery"] != "preview" or delivery["remote"] != remote:
+                    abort(404)
+            return media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
+        except (BadSignature, ValueError, requests.RequestException):
+            abort(404)
+
     def viewer_playback(event, delivery, scope, native_video, host_private):
         address = analytics_token = None
         status = "Scheduled"
@@ -684,9 +829,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 available = (observed["public"] != host_private and (observed["state"] == "live" or
                              (observed["state"] == "replay" and delivery["delivery"] == "replay")))
                 if available:
-                    manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-                    directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)
-                    gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
+                    gateway, filename = hls_manifest(delivery, raw, host_private)
                     replay = observed["state"] == "replay"
                     session = files.dumps(scope + [delivery["remote"], gateway, replay])
                     address = url_for("event_media_file", token=session, filename=filename)
@@ -763,11 +906,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
+            managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
+            latest_managed = False
             if shown and not withdrawn and artwork["show_latest"] and (not form or grant):
                 saved = event_playlist.latest_released(con, row["id"])
                 if saved and saved["opens"] != shown["id"]:
                     latest = saved
                     latest_slot = selected_open(event, latest["opens"])
+                    latest_managed = private_delivery(con, event, row["id"], latest["opens"])
                     latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
             poster = url_for("event_poster", slug=slug, opens=shown["id"], digest=artwork["poster"]) if (
                 shown and not withdrawn and artwork["poster"]) else None
@@ -782,7 +928,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         address = None
         analytics_token = None
         protected = bool(form)
-        host_private = protected or event.get("cueporch_delivery", False)
+        host_private = protected or managed
         native_video = host_private or captioned or replay_captioned or appearance["customize"]
         can_participate = shown and not withdrawn and (not protected or grant)
         playing = shown
@@ -796,8 +942,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
-            native_replay = host_private or latest_captioned or appearance["customize"]
-            replay_address, replay_measurement, replay_status = viewer_playback(event, latest, replay_scope, native_replay, host_private)
+            private_replay = protected or latest_managed
+            native_replay = private_replay or latest_captioned or appearance["customize"]
+            replay_address, replay_measurement, replay_status = viewer_playback(event, latest, replay_scope, native_replay, private_replay)
             if replay_address and replay_status == "Replay":
                 address, analytics_token, status = replay_address, replay_measurement, replay_status
                 native_video, playing, preview_replay = native_replay, latest_slot, True

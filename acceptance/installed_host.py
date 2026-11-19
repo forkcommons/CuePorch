@@ -19,6 +19,7 @@ from installed_library_recording import check_library_recording
 from installed_event_playlist import check_event_playlist
 from installed_event_waiting import check_event_waiting
 from installed_event_controls import check_event_controls
+from installed_encoder_preview import check_encoder_preview
 from installed_waiting_replay import check_waiting_replay
 from installed_program_graphics import check_program_graphics
 from installed_replay_captions import check_replay_captions
@@ -32,6 +33,7 @@ p.add_argument("launcher", type=Path)
 p.add_argument("origin")
 p.add_argument("report", type=Path)
 p.add_argument("--setup-timeout", type=int, default=45000, help="Browser setup response timeout in milliseconds")
+p.add_argument("--ffmpeg-report-directory", type=Path, help="Capture FFmpeg diagnostics for local synthetic fixtures")
 p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cable package for review defaults acceptance")
 modes = p.add_mutually_exclusive_group()
 modes.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
@@ -50,6 +52,7 @@ live_modes.add_argument("--library-replay", action="store_true", help="Verify a 
 live_modes.add_argument("--replay-playlist", action="store_true", help="Verify a recurring event's watch and iframe playlist")
 live_modes.add_argument("--event-waiting", action="store_true", help="Verify event poster and schedule through transition to live playback")
 live_modes.add_argument("--event-controls", action="store_true", help="Verify customized live playback controls on watch and embed")
+live_modes.add_argument("--encoder-preview", action="store_true", help="Verify private external RTMP and SRT previews and release")
 live_modes.add_argument("--waiting-replay", action="store_true", help="Verify registered replay and live transition on the same event player")
 live_modes.add_argument("--simulcast-event", action="store_true", help="Verify real RTMP and RTMPS event receivers")
 p.add_argument("--caption-speech", type=Path, help="Use a spoken audio fixture for live caption acceptance")
@@ -60,7 +63,7 @@ if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.event_controls or
-        a.waiting_replay or a.simulcast_event or
+        a.waiting_replay or a.simulcast_event or a.encoder_preview or
         a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
 if (a.captions_event or a.replay_captions) and (not a.caption_speech or not a.caption_speech.is_file()):
@@ -129,9 +132,12 @@ with tempfile.TemporaryDirectory() as tmp:
         material = tls_certificate(root) if a.simulcast_event else None
         if material:
             env["SSL_CERT_FILE"] = str(material[0])
+        if a.ffmpeg_report_directory:
+            env["FFREPORT"] = "file=ffmpeg-%t.log:level=48"
         started = time.monotonic()
         proc = subprocess.Popen(
-            [str(a.launcher.resolve()), "--data", str(home), "--headless"], env=env
+            [str(a.launcher.resolve()), "--data", str(home), "--headless"], env=env,
+            cwd=a.ffmpeg_report_directory,
         )
         try:
             for _ in range(600):
@@ -188,6 +194,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_event_waiting(base, keys, ffmpeg)
                 elif a.event_controls:
                     evidence["event_delivery"] = check_event_controls(base, keys, ffmpeg)
+                elif a.encoder_preview:
+                    evidence["event_delivery"] = check_encoder_preview(base, keys, ffmpeg, root, a.report)
                 elif a.waiting_replay:
                     evidence["event_delivery"] = check_waiting_replay(base, keys, ffmpeg)
                 elif a.simulcast_event:

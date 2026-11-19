@@ -85,6 +85,34 @@ def timed_fragments(playlist):
             duration = None
 
 
+def released_fragments(playlist, cutoff):
+    fragments = list(timed_fragments(playlist))
+    retained = next((index for index, fragment in enumerate(fragments) if fragment.start >= cutoff), None)
+    if (retained is None or not fragments or len(fragments) != sum(
+            bool(line) and not line.startswith("#") for line in playlist.splitlines()) or
+            any(fragment.initialization for fragment in fragments)):
+        raise ValueError("Waiting for complete released live segments.")
+    lines = playlist.splitlines()
+    sequence = next((int(line.rsplit(":", 1)[1]) for line in lines if line.startswith("#EXT-X-MEDIA-SEQUENCE:")), 0)
+    released = fragments[retained:]
+    if any(fragment.start < cutoff for fragment in released):
+        raise ValueError("The released live sequence has conflicting timestamps.")
+    return sequence + retained, released
+
+
+def released_variant(playlist, sequence, fragments):
+    """Write a live TS playlist containing the caller's released fragments."""
+    lines = playlist.splitlines()
+    headers = [line for line in lines if line == "#EXTM3U" or line == "#EXT-X-INDEPENDENT-SEGMENTS" or
+               line.startswith(("#EXT-X-VERSION:", "#EXT-X-TARGETDURATION:"))]
+    headers.append(f"#EXT-X-MEDIA-SEQUENCE:{sequence}")
+    for fragment in fragments:
+        headers.extend((f"#EXTINF:{fragment.duration},", fragment.name))
+    if "#EXT-X-ENDLIST" in lines:
+        headers.append("#EXT-X-ENDLIST")
+    return "\n".join(headers) + "\n"
+
+
 class LiveAudio:
     def __init__(self, media, origin, remote, playlist):
         self.media = media

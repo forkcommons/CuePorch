@@ -18,9 +18,9 @@ from flask import abort, request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
-from event_audio import MASTER_MAX, SEGMENT_MAX, selected_variant
+from event_audio import MASTER_MAX, SEGMENT_MAX, released_fragments, released_variant, selected_variant
 from event_capture import EncoderProgress
-from event_media import LIVE_FILE, manifest_text, root_path
+from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
 import event_peer
 
 
@@ -67,14 +67,62 @@ def highest_variant(master):
     return "\n".join(retained) + "\n"
 
 
+def common_start(video, audio, latest):
+    """Choose video and audio fragments from the same point in host time."""
+    positions = range(len(video) - 1)
+    for video_index in (reversed(positions) if latest else positions):
+        picture = video[video_index]
+        audio_index, sound = min(enumerate(audio[:-1]), key=lambda item: abs(item[1].start - picture.start))
+        if abs(sound.start - picture.start) < min(picture.duration, sound.duration) / 2:
+            return video_index, audio_index
+    raise ValueError("Waiting for released video and audio to share a start time.")
+
+
 class ProgramStream:
     """Mux separate HLS audio and video from a private, occurrence-scoped loopback source."""
 
-    def __init__(self, media, origin, remote, address, private):
+    def __init__(self, media, origin, remote, address, private, cutoff=None):
         directory, master = root_path(origin, address, remote, private)
         scope = "/" + uuid.uuid4().hex + "/"
         self.pending = Queue(maxsize=24)
         self.stopping = Event()
+        released_parts = {}
+        first_playlists = {}
+        first_times = {}
+        released_lock = Lock()
+
+        def read(name, limit):
+            with media.read(origin, directory + "/" + name, stream=True) as response:
+                payload = response.raw.read(limit + 1)
+            if len(payload) > limit:
+                raise ValueError("The live resource is too large.")
+            return payload
+
+        initial_master = highest_variant(manifest_text(read(master, MASTER_MAX)))
+        video = selected_variant(initial_master, audio=False)
+        audio = [name for line in initial_master.splitlines() if line.startswith("#EXT-X-MEDIA:TYPE=AUDIO,")
+                 for name in MANIFEST_URI.findall(line)]
+        inputs = (video, audio[0]) if audio else (video,)
+        aligned = cutoff is not None
+        if aligned or audio:
+            if any(not LIVE_FILE.fullmatch(name) or not name.endswith(".m3u8") for name in inputs):
+                raise ValueError("The program must use supported live playlists.")
+            playlists = [manifest_text(read(name, MASTER_MAX)) for name in inputs]
+            aligned = aligned or all("#EXT-X-PROGRAM-DATE-TIME:" in playlist for playlist in playlists)
+        if aligned:
+            lower_bound = cutoff if cutoff is not None else float("-inf")
+            fragments = [released_fragments(playlist, lower_bound) for playlist in playlists]
+            if any(len(parts) < 2 for _, parts in fragments):
+                raise ValueError("Waiting for released video and audio to be ready together.")
+            starts = common_start(*(parts for _, parts in fragments), latest=cutoff is None) if audio else (0,)
+            for name, playlist, (sequence, parts), offset in zip(inputs, playlists, fragments, starts):
+                selected = parts[offset:]
+                first_playlists[name] = released_variant(playlist, sequence + offset, selected).encode()
+                first_times[name] = selected[0].start
+                released_parts[name] = {part.name for part in selected}
+        else:
+            inputs = (master,)
+        self.audio_required = bool(aligned and audio)
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -85,13 +133,26 @@ class ProgramStream:
                 playlist = name.endswith(".m3u8")
                 limit = MASTER_MAX if playlist else SEGMENT_MAX
                 try:
-                    with media.read(origin, directory + "/" + name, stream=True) as response:
-                        payload = response.raw.read(limit + 1)
-                    if len(payload) > limit:
-                        raise ValueError("The live resource is too large.")
-                    if playlist:
-                        content = manifest_text(payload)
-                        payload = (highest_variant(content) if name == master else content).encode()
+                    payload = None
+                    if aligned:
+                        with released_lock:
+                            if playlist and name not in released_parts:
+                                raise ValueError("This playlist is outside the released program.")
+                            if not playlist and not any(name in segments for segments in released_parts.values()):
+                                raise ValueError("This segment is outside the released program.")
+                            payload = first_playlists.pop(name, None)
+                    if payload is None:
+                        payload = read(name, limit)
+                        if playlist:
+                            content = manifest_text(payload)
+                            if aligned:
+                                sequence, fragments = released_fragments(content, first_times[name])
+                                content = released_variant(content, sequence, fragments)
+                                with released_lock:
+                                    released_parts[name] = {fragment.name for fragment in fragments}
+                            elif name == master:
+                                content = highest_variant(content)
+                            payload = content.encode()
                 except TRANSPORT_ERRORS:
                     self.send_error(404)
                     return
@@ -106,12 +167,18 @@ class ProgramStream:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        url = f"http://127.0.0.1:{self.server.server_port}{scope}{master}"
+        url = f"http://127.0.0.1:{self.server.server_port}{scope}"
+        input_arguments = []
+        for filename in inputs:
+            input_arguments.extend(("-rw_timeout", "8000000", "-protocol_whitelist", "http,tcp",
+                                    "-live_start_index", "0" if aligned else "-1", "-i", url + filename))
+        timestamps = ["-copyts"] if aligned else []
+        normalize = ["-avoid_negative_ts", "make_non_negative"] if aligned else []
         try:
             self.process = subprocess.Popen([
-                "ffmpeg", "-nostdin", "-v", "error", "-rw_timeout", "8000000",
-                "-protocol_whitelist", "http,tcp", "-live_start_index", "-1", "-i", url,
-                "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-f", "mpegts",
+                "ffmpeg", "-nostdin", "-v", "error", *timestamps, *input_arguments,
+                "-map", "0:v:0", "-map", "1:a:0" if self.audio_required else "0:a:0?", "-c", "copy", "-f", "mpegts",
+                *normalize,
                 "-mpegts_flags", "+resend_headers", "-muxdelay", "0", "-flush_packets", "1", "pipe:1",
             ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -159,18 +226,20 @@ def end_process(process):
 
 
 class Leg:
-    def __init__(self, server, key):
+    def __init__(self, server, key, audio_required):
         self.pending = Queue(maxsize=48)
         self.stopping = Event()
         tls = []
         if server.startswith("rtmps://"):
             tls = ["-tls_verify", "1", "-verifyhost", urlsplit(server).hostname,
                    "-ca_file", os.environ.get("SSL_CERT_FILE") or requests.certs.where()]
+        probe = ["-probesize", "1048576", "-analyzeduration", "5000000"] if audio_required else [
+            "-probesize", "262144", "-analyzeduration", "1000000"]
         self.encoder = EncoderProgress([
-            "-fflags", "+genpts", "-probesize", "262144", "-analyzeduration", "1000000",
+            "-fflags", "+genpts", *probe,
             "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0",
-            "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-rw_timeout", "6000000",
-            *tls, "-rtmp_playpath", key, "-f", "flv", server,
+            "-map", "0:v:0", "-map", "0:a:0" if audio_required else "0:a:0?", "-c", "copy", "-rw_timeout", "6000000",
+            *tls, "-rtmp_playpath", key, "-f", "flv", "-flush_packets", "1", server,
         ], subprocess.PIPE)
         self.thread = Thread(target=self.feed, name="CuePorch RTMP destination", daemon=True)
         self.thread.start()
@@ -206,11 +275,12 @@ class Leg:
 
 
 class Program:
-    def __init__(self, media, origin, remote, cipher):
+    def __init__(self, media, origin, remote, cipher, cutoff):
         self.media = media
         self.origin = origin
         self.remote = remote
         self.cipher = cipher
+        self.cutoff = cutoff
         self.lock = Lock()
         self.rows = {}
         self.legs = {}
@@ -231,7 +301,7 @@ class Program:
         with self.lock:
             self.states[uid] = state
 
-    def sync(self):
+    def sync(self, audio_required):
         with self.lock:
             rows = self.rows.copy()
         now = monotonic()
@@ -243,7 +313,7 @@ class Program:
                 continue
             try:
                 key = self.cipher.decrypt(row["secret"]).decode("utf-8")
-                self.legs[uid] = Leg(row["server"], key)
+                self.legs[uid] = Leg(row["server"], key, audio_required)
                 self.status(uid, "connecting")
             except (InvalidToken, OSError, ValueError):
                 self.next_connect[uid] = now + RECONNECT_SECONDS
@@ -263,7 +333,7 @@ class Program:
         if state["state"] != "live":
             return None
         master = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-        return ProgramStream(self.media, self.origin, self.remote, master, not state["public"])
+        return ProgramStream(self.media, self.origin, self.remote, master, not state["public"], self.cutoff)
 
     def run(self, lease_path):
         try:
@@ -286,7 +356,7 @@ class Program:
                         self.stopping.wait(1)
                         continue
                     last_chunk = monotonic()
-                self.sync()
+                self.sync(source.audio_required)
                 try:
                     payload = source.pending.get(timeout=.25)
                 except Empty:
@@ -309,13 +379,13 @@ class Program:
 
 
 class Simulcast:
-    def __init__(self, app, tx, media, database, signing_key, candidates):
+    def __init__(self, app, tx, media, database, signing_key, candidates, directory="event-simulcast"):
         self.app = app
         self.tx = tx
         self.media = media
         self.candidates = candidates
         self.cipher = Fernet(urlsafe_b64encode(digest(signing_key.encode(), b"CuePorch RTMP streams", "sha256")))
-        self.directory = database.parent / "event-simulcast"
+        self.directory = database.parent / directory
         self.jobs = {}
         self.stopping = Event()
         self.lock = Lock()
@@ -339,11 +409,11 @@ class Simulcast:
         for scope, job in self.jobs.items():
             if scope not in candidates:
                 job.stopping.set()
-        for scope, (origin, remote, rows) in candidates.items():
+        for scope, (origin, remote, rows, cutoff) in candidates.items():
             if scope in self.jobs:
                 self.jobs[scope].configure(rows)
                 continue
-            job = Program(self.media, origin, remote, self.cipher)
+            job = Program(self.media, origin, remote, self.cipher, cutoff)
             job.configure(rows)
             filename = self.directory / f"{scope[0]}-{scope[1]}.lock"
             job.thread = Thread(target=job.run, args=(filename,), name="CuePorch live simulcast", daemon=True)

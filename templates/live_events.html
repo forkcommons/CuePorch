@@ -71,7 +71,14 @@
       <button type="button" id="editEvent">Edit event</button>
       <button type="button" id="configureEventRegistration">Registration</button>
       <a id="eventStudio">Open browser studio</a>
+      <label><input type="checkbox" id="privateEncoderPreview"> Preview external encoder privately</label>
       <button type="button" id="prepareEncoder">Prepare encoder</button>
+      <section id="encoderPreview" aria-labelledby="encoderPreviewHeading" hidden>
+        <h3 id="encoderPreviewHeading">Encoder preview</h3>
+        <p id="encoderPreviewStatus" role="status"></p>
+        <video id="encoderPreviewVideo" controls playsinline muted autoplay aria-label="Private encoder preview" hidden></video>
+        <button type="button" id="releaseEncoderPreview" disabled>Go live</button>
+      </section>
       <button type="button" id="readEventHealth">Refresh stream status</button>
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
@@ -215,6 +222,7 @@
     </section>
     {% include 'registration_editor.html' %}
   </main>
+  <script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>
   <script type="module" src="{{ url_for('static', filename='ui/live_events.js') }}"></script>
 </body>
 </html>
