@@ -1,4 +1,5 @@
 """Local desktop onboarding and runtime for the packaged institution service."""
+
 import argparse
 import hmac
 import json
@@ -7,19 +8,22 @@ import secrets
 import shutil
 import sys
 import tempfile
+import subprocess
 import threading
 from pathlib import Path
 
 from filelock import FileLock, Timeout
 from flask import Flask, abort, jsonify, render_template, request
-from waitress import create_server
+from waitress import create_server, wasyncore
 
 from institution import create_app
 from peertube_destination import PeerTube
 
 
 def save(path, values):
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as f:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as f:
         json.dump(values, f)
         f.flush()
         os.fsync(f.fileno())
@@ -51,6 +55,7 @@ def main():
     base = "http://127.0.0.1:" + str(port)
     shell = Flask(__name__)
     mutation = threading.Lock()
+    stopping = threading.Event()
     institution = None
     settings = read(config) if config.exists() else {}
     if getattr(sys, "frozen", False):
@@ -59,17 +64,33 @@ def main():
 
     def activate():
         keys = read(owner)
-        destination = settings.get("origin") or os.environ.get("CUEPORCH_PEERTUBE_ORIGIN")
+        destination = settings.get("origin") or os.environ.get(
+            "CUEPORCH_PEERTUBE_ORIGIN"
+        )
         if destination:
             os.environ["CUEPORCH_PEERTUBE_ORIGIN"] = destination
             if settings.get("origin"):
-                os.environ.update(PEERTUBE_USERNAME=settings["username"], PEERTUBE_PASSWORD=settings["password"])
-        os.environ.update(CUEPORCH_STATION_KEY=keys["station"], CUEPORCH_CREATOR_KEY=keys["creator"])
+                os.environ.update(
+                    PEERTUBE_USERNAME=settings["username"],
+                    PEERTUBE_PASSWORD=settings["password"],
+                )
+        os.environ.update(
+            CUEPORCH_STATION_KEY=keys["station"], CUEPORCH_CREATOR_KEY=keys["creator"]
+        )
         collection = home / "collection"
         if not (collection / "manifest.json").exists():
             (collection / "objects").mkdir(parents=True, exist_ok=True)
-            save(collection / "manifest.json", {"schema": 1, "institution": keys["institution"], "works": []})
-        return create_app(collection, home / "institution.sqlite", keys["operator"], keys["institution"], os.environ.get("CUEPORCH_SIMULATOR"))
+            save(
+                collection / "manifest.json",
+                {"schema": 1, "institution": keys["institution"], "works": []},
+            )
+        return create_app(
+            collection,
+            home / "institution.sqlite",
+            keys["operator"],
+            keys["institution"],
+            os.environ.get("CUEPORCH_SIMULATOR"),
+        )
 
     if owner.exists():
         institution = activate()
@@ -90,9 +111,12 @@ def main():
     @shell.get("/desktop/api/status")
     def status():
         keys = read(owner) if owner.exists() else {}
-        return jsonify(institution=keys.get("institution"), operator=keys.get("operator"),
-                       origin=settings.get("origin") or os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"),
-                       data=str(home))
+        return jsonify(
+            institution=keys.get("institution"),
+            operator=keys.get("operator"),
+            origin=settings.get("origin") or os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"),
+            data=str(home),
+        )
 
     @shell.post("/desktop/api/setup")
     def setup():
@@ -108,16 +132,74 @@ def main():
                 abort(409, "A publishing host is already configured.")
             origin = str(body.get("origin", "")).strip().rstrip("/")
             new = {}
-            if origin:
-                new = dict(origin=origin, username=str(body.get("username", "")), password=str(body.get("password", "")))
+            if not owner.exists():
+                if (home / "institution.sqlite").exists() or (
+                    home / "collection/manifest.json"
+                ).exists():
+                    abort(
+                        409,
+                        "Existing data requires its original operator.json. Restore that file first.",
+                    )
+                save(
+                    owner,
+                    dict(
+                        institution=name,
+                        **{
+                            k: secrets.token_urlsafe(32)
+                            for k in ("operator", "creator", "station", "publisher")
+                        },
+                    ),
+                )
+            if body.get("localHost"):
+                from deploy.bootstrap import provision as provision_host
+                from provision_publisher import provision as provision_account
+
+                if not shutil.which("docker"):
+                    abort(
+                        400,
+                        "Start a Docker-compatible Linux container engine or connect an existing PeerTube host.",
+                    )
+                host = home / "host"
+                try:
+                    provision_host(host, 19000, 11935)
+                    values = dict(
+                        line.split("=", 1)
+                        for line in (host / ".env").read_text().splitlines()
+                        if "=" in line
+                    )
+                    if values.get("PUBLIC_HTTPS") == "true":
+                        origin = "https://" + values["PUBLIC_HOST"]
+                        if values.get("PUBLIC_PORT", "443") != "443":
+                            origin += ":" + values["PUBLIC_PORT"]
+                    else:
+                        origin = "http://localhost:" + values.get(
+                            "PUBLIC_PORT", "19000"
+                        )
+                    keys = read(owner)
+                    username = provision_account(
+                        origin, keys, values["OPERATOR_PASSWORD"]
+                    )
+                    new = dict(
+                        origin=origin, username=username, password=keys["publisher"]
+                    )
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                    abort(
+                        400,
+                        "Could not start the private video host. Check the container engine and its storage, then retry.",
+                    )
+            elif origin:
+                new = dict(
+                    origin=origin,
+                    username=str(body.get("username", "")),
+                    password=str(body.get("password", "")),
+                )
                 try:
                     PeerTube(origin, new["username"], new["password"])
                 except Exception:
-                    abort(400, "Could not sign in to the video host. Check its address and publishing account.")
-            if not owner.exists():
-                if (home / "institution.sqlite").exists() or (home / "collection/manifest.json").exists():
-                    abort(409, "Existing data requires its original operator.json. Restore that file first.")
-                save(owner, dict(institution=name, **{k: secrets.token_urlsafe(32) for k in ("operator","creator","station","publisher")}))
+                    abort(
+                        400,
+                        "Could not sign in to the video host. Check its address and publishing account.",
+                    )
             settings = new
             save(config, settings)
             institution = activate()
@@ -125,23 +207,36 @@ def main():
 
     @shell.post("/desktop/api/quit")
     def quit_app():
-        threading.Timer(0.5, server.close).start()
+        threading.Timer(0.3, stopping.set).start()
         return jsonify(ok=True)
 
     def dispatch(env, start):
         path = env["PATH_INFO"]
-        if institution is None or path.startswith("/desktop") or path == "/static/ui/desktop.js":
+        if (
+            institution is None
+            or path.startswith("/desktop")
+            or path == "/static/ui/desktop.js"
+        ):
             return shell(env, start)
         return institution(env, start)
 
-    server = create_server(dispatch, host="127.0.0.1", port=port,
-                           max_request_body_size=int(os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", 8 * 1024**3)))
+    server = create_server(
+        dispatch,
+        host="127.0.0.1",
+        port=port,
+        max_request_body_size=int(
+            os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", 8 * 1024**3)
+        ),
+    )
     try:
         url = base + "/desktop#" + token
         save(handle, {"url": url})
         print(url, flush=True)
-        server.run()
+        while not stopping.is_set():
+            wasyncore.loop(timeout=0.2, count=1, map=server._map)
     finally:
+        server.task_dispatcher.shutdown()
+        wasyncore.close_all(server._map)
         handle.unlink(missing_ok=True)
         lock.release()
 

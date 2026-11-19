@@ -9,7 +9,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +48,11 @@ jobs:
           echo "$RUNNER_TEMP/fixture-tools" >> "$GITHUB_PATH"
       - name: Test fresh and upgraded installed application
         run: python acceptance/installed_package.py "$LAUNCHER" "$RUNNER_TEMP/base" dist/installed-tests.json
+      - name: Provision disposable PeerTube host
+        shell: bash
+        run: bash acceptance/ci-host.sh
+      - name: Publish and play an actual PeerTube embed from the installed app
+        run: python acceptance/installed_host.py "$LAUNCHER" http://localhost:19000 dist/hosted-playback.json
       - uses: actions/upload-artifact@v4
         with:
           name: CuePorch-0.2.0-${{ runner.os }}
@@ -55,4 +60,5 @@ jobs:
             dist/*.deb
             dist/*.pkg
             dist/installed-tests.json
+            dist/hosted-playback.json
           retention-days: 1

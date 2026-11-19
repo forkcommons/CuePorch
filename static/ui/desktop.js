@@ -31,11 +31,14 @@ async function refresh() {
 }
 setup.onsubmit = async (event) => {
     event.preventDefault();
+    message.textContent =
+        "Setting up your library. A new video host can take several minutes.";
     const response = await fetch("/desktop/api/setup", {
         method: "POST",
         headers,
         body: JSON.stringify({
             institution: field("name").value,
+            localHost: field("localHost").checked,
             origin: field("origin").value,
             username: field("username").value,
             password: field("password").value,
@@ -43,7 +46,10 @@ setup.onsubmit = async (event) => {
     });
     if (!response.ok) {
         message.textContent =
-            "Setup failed. Check the institution name, video host and credentials.";
+            new DOMParser()
+                .parseFromString(await response.text(), "text/html")
+                .querySelector("p")?.textContent ||
+                "Setup failed. Check the video host and try again.";
         return;
     }
     field("password").value = "";
