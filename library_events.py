@@ -230,6 +230,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                scene_endpoint=url_for("studio_scene_deck", uid=uid, opens=opens),
                                health_endpoint=url_for("event_health", uid=uid, opens=opens),
                                speaker_endpoint=url_for("event_speakers", event=uid, opens=opens),
+                               engagement_endpoint=url_for("operator_event_engagement", uid=uid, opens=opens),
                                speaker_public_url=public_url)
 
     @app.route("/api/live-events", methods=["GET", "POST"])

@@ -277,14 +277,15 @@ export function setupSceneDeck(path, credential, changed, useAudio) {
     return {
         async load() { showDeck(await request()); },
         ready() { return Boolean(current?.video || current?.scene.layout === "title"); },
-        draw(context, camera, screen) {
+        stage() { return { id: current?.scene.id ?? "", brand: current?.brand ?? deck?.brand }; },
+        draw(context, camera, screen, engagement = false) {
             if (deck && panel.open && !form.hidden) {
                 const scene = readForm();
                 paint(preview, { scene, brand: deck.brand, image: previews.get(scene.image || "")?.image,
                     logo: previews.get(deck.brand.logo || "")?.image }, camera, screen, true);
             }
             if (current)
-                paint(context, current, camera, screen, lowerThird);
+                paint(context, current, camera, screen, lowerThird && !engagement);
             return Boolean(current);
         },
         close() { releaseClip(); for (const item of previews.values())

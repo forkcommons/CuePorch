@@ -7,7 +7,8 @@
   <title>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }} · CuePorch</title>
 </head>
 <body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}"
-      data-speaker-endpoint="{{ speaker_endpoint or '' }}" data-public-url="{{ speaker_public_url or '' }}">
+      data-speaker-endpoint="{{ speaker_endpoint or '' }}" data-public-url="{{ speaker_public_url or '' }}"
+      data-engagement-endpoint="{{ engagement_endpoint or '' }}">
   <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
@@ -85,6 +86,7 @@
           <p id="studioSceneStatus" role="status"></p>
         </details>
         {% endif %}
+        {% if engagement_endpoint %}{% include 'event_producer_engagement.html' %}{% endif %}
         <fieldset id="recordSources">
           <legend>Sources</legend>
           <label><input id="recordCameraEnabled" type="checkbox" checked> Camera</label>

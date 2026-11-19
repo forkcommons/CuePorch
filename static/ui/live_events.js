@@ -95,7 +95,7 @@ async function downloadEventFile(path, filename) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
-const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
+const { close: closeEngagement } = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
 const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
     const response = await fetch(root + "/" + registrationEvent + "/registration/export", {

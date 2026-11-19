@@ -133,7 +133,7 @@ async function downloadEventFile(path: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
-const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) =>
+const {close: closeEngagement} = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) =>
   action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)),
 );
 

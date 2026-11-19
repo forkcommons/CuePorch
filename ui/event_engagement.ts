@@ -1,19 +1,27 @@
 import {renderCommentText} from "./review_comment_text.js";
 
-interface Question {
+export interface Question {
   id: string; name: string | null; question: string; answer: string | null; state: string;
   voted: boolean; votes: number; highlighted: boolean; sent: number; archived: boolean;
 }
-interface Poll {
+export interface Poll {
   id: string; question: string; choices: string[]; state: string; correct: number | null;
   counts: number[] | null; choice: number | null;
 }
-interface Engagement {
+export interface Engagement {
   qa: {policy: {enabled: boolean; anonymous: boolean; review?: boolean}; questions: Question[]};
   polls: Poll[];
 }
 interface GuestEngagement extends Engagement {session: string; active: boolean;}
 type Method = "GET" | "PUT" | "POST";
+export type GraphicKind = "qa" | "poll";
+export interface EngagementProjection {
+  sync(state?: Engagement): void;
+  revision(): string;
+  shown(kind: GraphicKind, id: string): boolean;
+  toggle(kind: GraphicKind, id: string): void;
+  watching(): boolean;
+}
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const field = <T extends HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(form: HTMLFormElement, key: string) =>
@@ -65,6 +73,7 @@ function pollResults(list: HTMLElement, poll: Poll) {
 export function setupProducerEngagement(
   endpoint: () => string, fetchState: (path: string, method: Method, body?: object) => Promise<Engagement>,
   exportData: (feature: string, filename: string) => Promise<void>,
+  projection?: EngagementProjection,
 ) {
   const panel = element<HTMLDetailsElement>("operatorEngagement");
   const qa = element<HTMLFormElement>("eventQASettings");
@@ -74,6 +83,7 @@ export function setupProducerEngagement(
   let draft: string | null = null;
   let answerTo: string | null = null;
   let pending: Promise<void> | undefined;
+  let current: Engagement | undefined;
 
   function editPoll(poll?: Poll) {
     pollEditor.reset();
@@ -95,24 +105,40 @@ export function setupProducerEngagement(
         field<HTMLInputElement>(qa, key).checked = Boolean(state.qa.policy[key]);
       }
     }
+    const stageRevision = projection?.revision() || "";
+    function graphic(item: HTMLElement, kind: GraphicKind, id: string) {
+      if (!projection) return;
+      const name = kind === "qa" ? "question" : "poll";
+      const button = control(projection.shown(kind, id) ? "Hide " + name + " from scene" : "Show " + name + " on scene",
+        () => {
+          projection.toggle(kind, id);
+          render(state, false);
+          panel.querySelector<HTMLButtonElement>(`[data-event-graphic="${kind}-${id}"]`)?.focus();
+        });
+      button.dataset.eventGraphic = kind + "-" + id;
+      item.append(button);
+    }
     showList(element("operatorQuestions"), state.qa.questions, (question) => {
       const item = questionItem(question);
       const command = (type: string) => void send("POST", {feature: "qa", type, id: question.id});
       if (question.archived) item.append(control("Restore question", () => command("restore")));
       else {
         if (question.state === "pending") item.append(control("Publish question", () => command("publish")));
-        else item.append(control(question.highlighted ? "Unpin question" : "Pin question", () => command("highlight")),
-          control("Reply", () => {
-            answerTo = question.id;
-            element("answeringQuestion").textContent = question.question;
-            field(answering, "answer").value = question.answer || "";
-            answering.hidden = false;
-            field(answering, "answer").focus();
-          }));
+        else {
+          item.append(control(question.highlighted ? "Unpin question" : "Pin question", () => command("highlight")),
+            control("Reply", () => {
+              answerTo = question.id;
+              element("answeringQuestion").textContent = question.question;
+              field(answering, "answer").value = question.answer || "";
+              answering.hidden = false;
+              field(answering, "answer").focus();
+            }));
+          if (state.qa.policy.enabled) graphic(item, "qa", question.id);
+        }
         item.append(control("Archive question", () => command("archive")));
       }
       return item;
-    });
+    }, stageRevision + state.qa.policy.enabled);
     showList(element("operatorPolls"), state.polls, (poll) => {
       const item = document.createElement("li");
       text(item, poll.question, "strong");
@@ -124,24 +150,37 @@ export function setupProducerEngagement(
       if (poll.state === "draft") item.append(control("Edit draft", () => editPoll(poll)), control("Open poll", () => command("open")));
       if (poll.state === "open") item.append(control("Publish results", () => command("results")));
       if (poll.state === "results") item.append(control("Archive poll", () => command("archive")));
+      if (poll.state === "open" || poll.state === "results") graphic(item, "poll", poll.id);
       return item;
-    });
+    }, stageRevision);
   }
 
+  const needsState = () => panel.open || projection?.watching();
+
   async function read(path: string, method: Method, body?: object, settings = false) {
-    if (!panel.open || endpoint() !== path) return;
+    if (!needsState() || endpoint() !== path) return;
     try {
       const state = await fetchState(path, method, body);
-      if (!panel.open || endpoint() !== path) return;
+      if (!needsState() || endpoint() !== path) return;
+      current = state;
+      projection?.sync(state);
       if (method !== "GET") notice.textContent = "Engagement updated.";
-      render(state, settings);
+      if (panel.open) render(state, settings);
     } catch (error) {
+      if (method === "GET" && projection) {
+        current = undefined;
+        projection.sync();
+        element("operatorQuestions").replaceChildren();
+        element("operatorPolls").replaceChildren();
+        delete element("operatorQuestions").dataset.revision;
+        delete element("operatorPolls").dataset.revision;
+      }
       notice.textContent = error instanceof Error ? error.message : String(error);
     }
   }
 
   async function send(method: Method = "GET", body?: object, settings = false) {
-    if (!panel.open || (pending && method === "GET" && !settings)) return;
+    if (!needsState() || (pending && method === "GET" && !settings)) return;
     const path = endpoint();
     const previous = pending;
     const job = previous ? previous.then(() => read(path, method, body, settings)) : read(path, method, body, settings);
@@ -154,7 +193,7 @@ export function setupProducerEngagement(
     qa.inert = true;
     try { await send("GET", undefined, true); } finally { qa.inert = false; }
   };
-  window.setInterval(() => { if (panel.open && !document.hidden) void send(); }, 3000);
+  window.setInterval(() => { if (needsState() && (!document.hidden || projection?.watching())) void send(); }, 3000);
   qa.onsubmit = (event) => {
     event.preventDefault();
     void send("PUT", {feature: "qa", ...Object.fromEntries(["enabled", "anonymous", "review"].map((key) =>
@@ -177,15 +216,20 @@ export function setupProducerEngagement(
   element("resetEventPoll").onclick = () => editPoll();
   element("exportEventQuestions").onclick = () => void exportData("qa", "cueporch-event-questions.csv");
   element("exportEventPolls").onclick = () => void exportData("poll", "cueporch-event-polls.csv");
-  return () => {
-    panel.open = false;
-    notice.textContent = "";
-    clearAnswer();
-    editPoll();
-    for (const id of ["operatorQuestions", "operatorPolls"]) {
-      element(id).replaceChildren();
-      delete element(id).dataset.revision;
-    }
+  return {
+    sceneChanged() { if (current && panel.open) render(current, false); },
+    close() {
+      panel.open = false;
+      current = undefined;
+      projection?.sync();
+      notice.textContent = "";
+      clearAnswer();
+      editPoll();
+      for (const id of ["operatorQuestions", "operatorPolls"]) {
+        element(id).replaceChildren();
+        delete element(id).dataset.revision;
+      }
+    },
   };
 }
 

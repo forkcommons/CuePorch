@@ -45,7 +45,7 @@ function pollResults(list, poll) {
         text(list, `${option} · ${count} votes (${percent}%)${poll.correct === index ? " · Correct answer" : ""}`, "li");
     }
 }
-export function setupProducerEngagement(endpoint, fetchState, exportData) {
+export function setupProducerEngagement(endpoint, fetchState, exportData, projection) {
     const panel = element("operatorEngagement");
     const qa = element("eventQASettings");
     const pollEditor = element("eventPollEditor");
@@ -54,6 +54,7 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
     let draft = null;
     let answerTo = null;
     let pending;
+    let current;
     function editPoll(poll) {
         pollEditor.reset();
         draft = poll?.id || null;
@@ -73,6 +74,19 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
                 field(qa, key).checked = Boolean(state.qa.policy[key]);
             }
         }
+        const stageRevision = projection?.revision() || "";
+        function graphic(item, kind, id) {
+            if (!projection)
+                return;
+            const name = kind === "qa" ? "question" : "poll";
+            const button = control(projection.shown(kind, id) ? "Hide " + name + " from scene" : "Show " + name + " on scene", () => {
+                projection.toggle(kind, id);
+                render(state, false);
+                panel.querySelector(`[data-event-graphic="${kind}-${id}"]`)?.focus();
+            });
+            button.dataset.eventGraphic = kind + "-" + id;
+            item.append(button);
+        }
         showList(element("operatorQuestions"), state.qa.questions, (question) => {
             const item = questionItem(question);
             const command = (type) => void send("POST", { feature: "qa", type, id: question.id });
@@ -81,7 +95,7 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
             else {
                 if (question.state === "pending")
                     item.append(control("Publish question", () => command("publish")));
-                else
+                else {
                     item.append(control(question.highlighted ? "Unpin question" : "Pin question", () => command("highlight")), control("Reply", () => {
                         answerTo = question.id;
                         element("answeringQuestion").textContent = question.question;
@@ -89,10 +103,13 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
                         answering.hidden = false;
                         field(answering, "answer").focus();
                     }));
+                    if (state.qa.policy.enabled)
+                        graphic(item, "qa", question.id);
+                }
                 item.append(control("Archive question", () => command("archive")));
             }
             return item;
-        });
+        }, stageRevision + state.qa.policy.enabled);
         showList(element("operatorPolls"), state.polls, (poll) => {
             const item = document.createElement("li");
             text(item, poll.question, "strong");
@@ -107,26 +124,40 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
                 item.append(control("Publish results", () => command("results")));
             if (poll.state === "results")
                 item.append(control("Archive poll", () => command("archive")));
+            if (poll.state === "open" || poll.state === "results")
+                graphic(item, "poll", poll.id);
             return item;
-        });
+        }, stageRevision);
     }
+    const needsState = () => panel.open || projection?.watching();
     async function read(path, method, body, settings = false) {
-        if (!panel.open || endpoint() !== path)
+        if (!needsState() || endpoint() !== path)
             return;
         try {
             const state = await fetchState(path, method, body);
-            if (!panel.open || endpoint() !== path)
+            if (!needsState() || endpoint() !== path)
                 return;
+            current = state;
+            projection?.sync(state);
             if (method !== "GET")
                 notice.textContent = "Engagement updated.";
-            render(state, settings);
+            if (panel.open)
+                render(state, settings);
         }
         catch (error) {
+            if (method === "GET" && projection) {
+                current = undefined;
+                projection.sync();
+                element("operatorQuestions").replaceChildren();
+                element("operatorPolls").replaceChildren();
+                delete element("operatorQuestions").dataset.revision;
+                delete element("operatorPolls").dataset.revision;
+            }
             notice.textContent = error instanceof Error ? error.message : String(error);
         }
     }
     async function send(method = "GET", body, settings = false) {
-        if (!panel.open || (pending && method === "GET" && !settings))
+        if (!needsState() || (pending && method === "GET" && !settings))
             return;
         const path = endpoint();
         const previous = pending;
@@ -151,7 +182,7 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
             qa.inert = false;
         }
     };
-    window.setInterval(() => { if (panel.open && !document.hidden)
+    window.setInterval(() => { if (needsState() && (!document.hidden || projection?.watching()))
         void send(); }, 3000);
     qa.onsubmit = (event) => {
         event.preventDefault();
@@ -174,15 +205,21 @@ export function setupProducerEngagement(endpoint, fetchState, exportData) {
     element("resetEventPoll").onclick = () => editPoll();
     element("exportEventQuestions").onclick = () => void exportData("qa", "cueporch-event-questions.csv");
     element("exportEventPolls").onclick = () => void exportData("poll", "cueporch-event-polls.csv");
-    return () => {
-        panel.open = false;
-        notice.textContent = "";
-        clearAnswer();
-        editPoll();
-        for (const id of ["operatorQuestions", "operatorPolls"]) {
-            element(id).replaceChildren();
-            delete element(id).dataset.revision;
-        }
+    return {
+        sceneChanged() { if (current && panel.open)
+            render(current, false); },
+        close() {
+            panel.open = false;
+            current = undefined;
+            projection?.sync();
+            notice.textContent = "";
+            clearAnswer();
+            editPoll();
+            for (const id of ["operatorQuestions", "operatorPolls"]) {
+                element(id).replaceChildren();
+                delete element(id).dataset.revision;
+            }
+        },
     };
 }
 const audience = document.querySelector("#viewerEngagement");

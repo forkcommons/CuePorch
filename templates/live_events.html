@@ -165,41 +165,7 @@
         <ol id="operatorChatMessages" class="event-messages" aria-label="Audience messages"></ol>
         <p id="operatorChatStatus" role="status"></p>
       </details>
-      <details id="operatorEngagement">
-        <summary>Q&amp;A and polls</summary>
-        <h3>Q&amp;A</h3>
-        <form id="eventQASettings">
-          <label><input type="checkbox" name="enabled"> Enable audience Q&amp;A</label>
-          <label><input type="checkbox" name="anonymous"> Allow anonymous questions</label>
-          <label><input type="checkbox" name="review"> Approve questions before publishing</label>
-          <button type="submit">Save Q&amp;A settings</button>
-          <button type="button" id="exportEventQuestions">Download questions</button>
-        </form>
-        <form id="eventAnswerQuestion" hidden>
-          <p id="answeringQuestion"></p>
-          <label>Reply <textarea name="answer" maxlength="1000"></textarea></label>
-          <button type="submit">Mark answered</button>
-          <button type="button" id="closeAnswerQuestion">Cancel reply</button>
-        </form>
-        <ol id="operatorQuestions"></ol>
-        <h3>Polls</h3>
-        <form id="eventPollEditor">
-          <label>Poll question <input name="question" maxlength="120" required></label>
-          <label>Option 1 <input name="option1" maxlength="120" required></label>
-          <label>Option 2 <input name="option2" maxlength="120" required></label>
-          <label>Option 3 <input name="option3" maxlength="120"></label>
-          <label>Option 4 <input name="option4" maxlength="120"></label>
-          <label>Correct answer <select name="correct">
-            <option value="">No correct answer</option><option value="0">Option 1</option><option value="1">Option 2</option>
-            <option value="2">Option 3</option><option value="3">Option 4</option>
-          </select></label>
-          <button type="submit">Save poll draft</button>
-          <button type="button" id="resetEventPoll">New poll</button>
-          <button type="button" id="exportEventPolls">Download polls</button>
-        </form>
-        <ol id="operatorPolls"></ol>
-        <p id="operatorEngagementStatus" role="status"></p>
-      </details>
+      {% include 'event_producer_engagement.html' %}
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
     </section>

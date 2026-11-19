@@ -5,6 +5,7 @@ import { BrowserBroadcast } from "./event_broadcast.js";
 import { setupSceneDeck } from "./event_scenes.js";
 import { relaySummary } from "./event_health.js";
 import { StudioAudio } from "./studio_audio.js";
+import { setupStudioEngagement } from "./studio_engagement.js";
 import { setupSpeakers } from "./studio_speakers.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
@@ -29,9 +30,11 @@ const healthEndpoint = document.body.dataset.eventHealth;
 const relayHealth = document.querySelector("#studioRelayHealth");
 const mode = document.querySelector("#browserProductionMode");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
-const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, updateControls, selectClipAudio) : null;
+const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, sceneChanged, selectClipAudio) : null;
 const speakerEndpoint = document.body.dataset.speakerEndpoint;
 const speakers = speakerEndpoint ? setupSpeakers(speakerEndpoint, () => key.value, () => { wireAudio(); updateControls(); }) : null;
+const engagementEndpoint = document.body.dataset.engagementEndpoint;
+const engagement = engagementEndpoint ? setupStudioEngagement(engagementEndpoint, () => key.value, () => scenes?.stage() ?? { id: "" }) : null;
 let camera = null;
 let screen = null;
 let active = null;
@@ -80,6 +83,10 @@ function updateControls() {
     button("downloadRecord").disabled = !take || running || busy;
     prompter.hidden = Boolean(screen) || !script.value.trim();
     button("pipRecord").hidden = !document.pictureInPictureEnabled || !canvas.captureStream;
+}
+function sceneChanged() {
+    updateControls();
+    engagement?.sceneChanged();
 }
 if (healthEndpoint && relayHealth) {
     let reading = false;
@@ -162,7 +169,8 @@ function draw(now) {
         background: select("recordBackground").value };
     const guests = speakers?.activeFeeds().flatMap(feed => feed.preview ? [feed.preview] : []) || [];
     const presenter = guests[0] || camera?.preview || null;
-    const painted = scenes?.draw(context, presenter, screen?.preview || null);
+    const graphic = engagement?.graphic();
+    const painted = scenes?.draw(context, presenter, screen?.preview || null, Boolean(graphic));
     if (!painted && guests.length > 1) {
         const local = [screen?.preview, camera?.preview].filter(item => item != null);
         drawTileGrid(context, [...guests, ...local], options.color);
@@ -170,6 +178,8 @@ function draw(now) {
     else if (!painted) {
         drawRecording(context, options, presenter, screen?.preview || null);
     }
+    if (graphic)
+        engagement?.paint(context, graphic);
     audio?.updateMeters();
     if (active) {
         const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
@@ -545,6 +555,7 @@ identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)
     run(open);
 window.addEventListener("pagehide", () => {
+    engagement?.close();
     speakers?.close();
     scenes?.close();
     closeSource(camera);

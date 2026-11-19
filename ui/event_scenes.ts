@@ -278,13 +278,15 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   return {
     async load() { showDeck(await request()); },
     ready() { return Boolean(current?.video || current?.scene.layout === "title"); },
-    draw(context: CanvasRenderingContext2D, camera: HTMLVideoElement | null, screen: HTMLVideoElement | null) {
+    stage() { return {id: current?.scene.id ?? "", brand: current?.brand ?? deck?.brand}; },
+    draw(context: CanvasRenderingContext2D, camera: HTMLVideoElement | null, screen: HTMLVideoElement | null,
+      engagement = false) {
       if (deck && panel.open && !form.hidden) {
         const scene = readForm();
         paint(preview, {scene, brand: deck.brand, image: previews.get(scene.image || "")?.image,
           logo: previews.get(deck.brand.logo || "")?.image}, camera, screen, true);
       }
-      if (current) paint(context, current, camera, screen, lowerThird);
+      if (current) paint(context, current, camera, screen, lowerThird && !engagement);
       return Boolean(current);
     },
     close() { releaseClip(); for (const item of previews.values()) URL.revokeObjectURL(item.url); previews.clear(); },

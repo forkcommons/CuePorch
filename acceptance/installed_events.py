@@ -500,6 +500,29 @@ def prepare_live_scenes(operator, base, studio, auth, scratch, ffmpeg):
     return panel
 
 
+def wait_broadcast_pixel(video, x, y, rgb, tolerance=45):
+    observed = video.evaluate("""async (video, {x,y,rgb,tolerance}) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 1;
+        const context = canvas.getContext('2d', {willReadFrequently: true});
+        const start = video.currentTime;
+        const end = performance.now() + 45000;
+        let result;
+        while (performance.now() < end) {
+            if (video.readyState >= 2 && video.videoWidth) {
+                context.drawImage(video, video.videoWidth*x, video.videoHeight*y,1,1,0,0,1,1);
+                result = [...context.getImageData(0,0,1,1).data].slice(0,3);
+                if (result.every((value, index) => Math.abs(value-rgb[index]) < tolerance)) return {matched:true};
+            }
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        return {matched:false, result, start, currentTime:video.currentTime, paused:video.paused,
+                readyState:video.readyState, width:video.videoWidth,
+                bufferedEnd:video.buffered.length ? video.buffered.end(video.buffered.length-1) : null};
+    }""", {"x": x, "y": y, "rgb": rgb, "tolerance": tolerance})
+    assert observed["matched"], f"Guest did not decode {rgb} at {x}, {y}: {observed}"
+
+
 def check_broadcast_graphics(guest, panel):
     video = guest.locator("#eventPlayer video")
 
@@ -509,24 +532,7 @@ def check_broadcast_graphics(guest, panel):
             const result = [...canvas.getContext('2d').getImageData(canvas.width*x,canvas.height*y,1,1).data].slice(0,3);
             return result.every((value, index) => Math.abs(value-rgb[index]) < 45);
         }""", arg={"x": x, "y": y, "rgb": rgb}, timeout=12000)
-        observed = video.evaluate("""async (video, {x,y,rgb}) => {
-            const canvas = document.createElement('canvas');
-            canvas.width = canvas.height = 1;
-            const context = canvas.getContext('2d', {willReadFrequently: true});
-            const start = video.currentTime;
-            const end = performance.now() + 45000;
-            let result;
-            while (performance.now() < end) {
-                context.drawImage(video, video.videoWidth*x, video.videoHeight*y,1,1,0,0,1,1);
-                result = [...context.getImageData(0,0,1,1).data].slice(0,3);
-                if (result.every((value, index) => Math.abs(value-rgb[index]) < 45)) return {matched:true};
-                await new Promise(resolve => setTimeout(resolve, 250));
-            }
-            return {matched:false, result, start, currentTime:video.currentTime, paused:video.paused,
-                    readyState:video.readyState, width:video.videoWidth,
-                    bufferedEnd:video.buffered.length ? video.buffered.end(video.buffered.length-1) : null};
-        }""", {"x": x, "y": y, "rgb": rgb})
-        assert observed["matched"], f"Guest did not decode {rgb} at {x}, {y}: {observed}"
+        wait_broadcast_pixel(video, x, y, rgb)
 
     pixel(.22, .31, [186, 32, 43])
     pixel(.91, .89, [255, 255, 0])
