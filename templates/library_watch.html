@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>{{ title }} · CuePorch</title>
+</head>
+<body>
+  {% if not embed %}<h1>{{ title }}</h1>{% endif %}
+  {% if token %}
+    <video controls playsinline preload="metadata" aria-label="{{ title }}"
+           {% if not download %}controlslist="nodownload"{% endif %}
+           src="{{ url_for('shared_video', token=token) }}">
+      {% for track in tracks %}
+      <track kind="captions" srclang="{{ track.language or 'und' }}"
+             label="{{ track.language or 'Captions' }}"
+             src="{{ url_for('shared_video', token=token, track=loop.index0) }}">
+      {% endfor %}
+    </video>
+    {% if download %}<p><a href="{{ url_for('shared_video', token=token, download=1) }}">Download video</a></p>{% endif %}
+  {% else %}
+    <form method="post">
+      {% if wrong_password %}<p role="alert">The password did not match.</p>{% endif %}
+      {% if unlock_token %}<input type="hidden" name="frame" value="{{ unlock_token }}">{% endif %}
+      <label>Video password <input type="password" name="password" maxlength="256" required></label>
+      <button type="submit">Watch video</button>
+    </form>
+  {% endif %}
+  {% if not embed %}<p><a href="{{ url_for('support', work=work) }}">Report an issue or appeal</a></p>{% endif %}
+</body>
+</html>

@@ -1,5 +1,6 @@
 import { renderCommentText } from "./review_comment_text.js";
 import { libraryUploader } from "./library_upload.js";
+import { openPrivacy } from "./library_privacy.js";
 const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
 const deleteWorks = document.querySelector("#deleteWorks");
@@ -257,7 +258,18 @@ function renderWorks() {
             .filter(Boolean)
             .join(" · ");
         title.append(info);
-        row.insertCell().textContent = work.source_privacy || "Unknown";
+        const sharing = row.insertCell();
+        if (work.editable_privacy) {
+            const button = document.createElement("button");
+            const visibility = work.visibility || "private";
+            button.textContent = visibility === "embed_only"
+                ? "Embed only" : visibility[0].toUpperCase() + visibility.slice(1);
+            button.setAttribute("aria-label", "Change privacy for " + work.title);
+            action(button, () => editPrivacy(work));
+            sharing.append(button);
+        }
+        else
+            sharing.textContent = work.source_privacy || "Unknown";
         row.insertCell().textContent = [
             work.quality,
             ...work.exceptions.map((item) => typeof item === "string" ? item : JSON.stringify(item)),
@@ -362,6 +374,21 @@ function openWorkDialog(title) {
     workDialogStatus.textContent = "";
     if (!workDialog.open)
         workDialog.showModal();
+    return workDialogBody;
+}
+function publicAddress(path) {
+    return new URL(path, document.body.dataset.publicUrl || location.origin).href;
+}
+function editPrivacy(work) {
+    const endpoint = workEndpoint(work) + "/privacy";
+    return openPrivacy({
+        open: openWorkDialog,
+        read: async () => (await completed(await request(endpoint))).json(),
+        save: async (settings) => (await completed(await request(endpoint, "PUT", settings))).json(),
+        reload: load,
+        absolute: publicAddress,
+        status: workDialogStatus,
+    });
 }
 async function copyText(field) {
     try {
@@ -377,29 +404,34 @@ async function copyText(field) {
 async function shareDialog(work, copy) {
     const info = await getWorkInfo(work);
     openWorkDialog("Share " + info.title);
-    if (!info.watch || !info.embed) {
+    if (!info.watch && !info.embed) {
         const link = document.createElement("a");
         link.href = "/operator/exhibitions";
         link.textContent = "Manage private screening grants";
-        workDialogBody.append("This work has no public link. ", link);
+        workDialogBody.append("No viewer link has been created. ", link);
         return;
     }
-    const url = document.body.dataset.publicUrl || location.origin;
-    const watch = document.createElement("input");
-    const embed = document.createElement("textarea");
-    watch.value = new URL(info.watch, url).href;
-    const iframe = document.createElement("iframe");
-    iframe.src = new URL(info.embed, url).href;
-    iframe.title = info.title;
-    iframe.width = "640";
-    iframe.height = "360";
-    iframe.allowFullscreen = true;
-    iframe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
-    embed.value = iframe.outerHTML;
+    const watch = info.watch && document.createElement("input");
+    const embed = info.embed && document.createElement("textarea");
+    if (watch && info.watch)
+        watch.value = publicAddress(info.watch);
+    if (embed && info.embed) {
+        const iframe = document.createElement("iframe");
+        iframe.src = publicAddress(info.embed);
+        iframe.title = info.title;
+        iframe.width = "640";
+        iframe.height = "360";
+        iframe.allowFullscreen = true;
+        iframe.referrerPolicy = "origin";
+        iframe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
+        embed.value = iframe.outerHTML;
+    }
     for (const [label, field] of [
         ["Watch link", watch],
         ["Embed code", embed],
     ]) {
+        if (!field)
+            continue;
         const labelElement = document.createElement("label");
         labelElement.textContent = label;
         field.readOnly = true;
@@ -410,8 +442,15 @@ async function shareDialog(work, copy) {
         action(button, () => copyText(field));
         workDialogBody.append(labelElement, button);
     }
-    if (copy)
-        await copyText(copy === "watch" ? watch : embed);
+    if (copy) {
+        const field = copy === "watch" ? watch : embed;
+        if (field)
+            await copyText(field);
+        else
+            workDialogStatus.textContent = copy === "watch"
+                ? "This video is shared through its embed."
+                : "Embedding is disabled for this video.";
+    }
 }
 async function mediaTicket(work, sha256) {
     const response = await completed(await request(workEndpoint(work) + "/ticket", "POST", { sha256 }));

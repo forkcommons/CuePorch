@@ -36,6 +36,7 @@ from waitress import serve
 from cueporch import verify
 import library_actions
 import library_folders
+import library_privacy
 import library_thumbnail
 import library_trash
 import library_upload
@@ -92,6 +93,7 @@ def create_app(root, database, operator, institution, simulation=None):
         SCHEMA
         + library_worker.SCHEMA
         + library_folders.SCHEMA
+        + library_privacy.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
         + library_thumbnail.SCHEMA
@@ -208,6 +210,7 @@ def create_app(root, database, operator, institution, simulation=None):
             con.execute(
                 "DELETE FROM case_change WHERE action_id=?", (change["action_id"],)
             )
+        library_privacy.apply_pending(con)
 
     @app.after_request
     def cache(response):
@@ -924,11 +927,33 @@ def create_app(root, database, operator, institution, simulation=None):
                    WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)
                    ORDER BY description,slug"""
             ).fetchall()
+            routes = [dict(route) for route in routes]
+            route_ids = {route["slug"] for route in routes}
+            explicit = {
+                row["work"]
+                for row in con.execute("SELECT work,settings FROM library_privacy")
+                if json.loads(row["settings"])["visibility"] == "public"
+                and row["work"] not in route_ids
+                and not library_privacy.blocked(con, row["work"])
+            }
+            if explicit:
+                routes.extend(
+                    dict(kind="work", slug=w["id"], description=library_actions.title_for(con, w))
+                    for w in read_library_works()
+                    if w["id"] in explicit
+                )
+                routes.sort(key=lambda row: (row["description"] or "", row["slug"]))
         return render_template("catalog.html", name=institution, rows=routes)
 
-    @app.get("/watch/<kind>/<slug>")
-    @app.get("/embed/<kind>/<slug>")
+    @app.route("/watch/<kind>/<slug>", methods=["GET", "POST"])
+    @app.route("/embed/<kind>/<slug>", methods=["GET", "POST"])
     def watch(kind, slug):
+        embed = request.path.startswith("/embed/")
+        if kind == "work":
+            frame = request.headers.get("Sec-Fetch-Dest") in ("iframe", "frame")
+            local = local_watch(slug, embed, frame)
+            if local is not None:
+                return local
         with tx() as con:
             row = con.execute(
                 """SELECT * FROM route WHERE kind=? AND slug=?
@@ -937,7 +962,9 @@ def create_app(root, database, operator, institution, simulation=None):
             ).fetchone()
         if not row:
             abort(404)
-        if request.path.startswith("/embed/"):
+        if request.method == "POST":
+            abort(405)
+        if embed:
             return redirect(row["destination"], code=302)
         return render_template(
             "watch.html",
@@ -1057,6 +1084,9 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_actions.register(app, tx, staff, read_library_works, root, remember_work)
     library_upload.register(app, tx, staff, root, database, institution, remember_work)
+    local_watch = library_privacy.register(
+        app, tx, staff, action, read_library_works, root, library_actions.title_for, operator
+    )
 
     @app.get("/api/library")
     def library():
@@ -1067,6 +1097,11 @@ def create_app(root, database, operator, institution, simulation=None):
                 "SELECT j.work,j.status,j.remote,j.error,r.kind AS route_kind FROM publication_job j LEFT JOIN route r ON r.slug=j.work AND r.kind=j.kind ORDER BY j.rowid"
             ).fetchall()
             placement = dict(con.execute("SELECT work,folder FROM library_placement"))
+            visibility = {
+                row["work"]: json.loads(row["settings"])["visibility"]
+                for row in con.execute("SELECT work,settings FROM library_privacy")
+            }
+            protected = {row[0] for row in con.execute("SELECT slug FROM route WHERE public_record=1")}
             deleted = {
                 row[0]
                 for row in con.execute(
@@ -1101,6 +1136,9 @@ def create_app(root, database, operator, institution, simulation=None):
                 if w["id"] in titles
                 else False,
                 source_privacy=w.get("source_privacy"),
+                editable_privacy=w["provider"] == "cueporch-upload"
+                and w["id"] not in protected and library_privacy.playback(w) is not None,
+                visibility=visibility.get(w["id"]) if w["id"] not in protected else None,
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),
                 added_at=w.get("library_added_at"),

@@ -11,6 +11,7 @@ from flask import abort, request, send_file
 
 import library_thumbnail
 import library_versions
+import library_privacy
 import review_links
 from catalog import copy_work
 from library_trash import hidden
@@ -67,6 +68,8 @@ def register(app, tx, staff, read_works, root, remember_work):
             ).fetchone()
             title = title_for(con, work)
             thumbnail = library_thumbnail.selected_thumbnail(con, work)
+            policy = library_privacy.get_privacy(con, uid)
+            shared = library_privacy.share_paths(uid, policy) if policy and not library_privacy.protected_route(con, uid) else None
         files = [
             {
                 k: f[k]
@@ -93,8 +96,8 @@ def register(app, tx, staff, read_works, root, remember_work):
             "description": work.get("description"),
             "source_privacy": work.get("source_privacy"),
             "disposition": work["disposition"],
-            "watch": f"/watch/{route['kind']}/{uid}" if route else None,
-            "embed": f"/embed/{route['kind']}/{uid}" if route else None,
+            "watch": shared["watch"] if shared else f"/watch/{route['kind']}/{uid}" if route else None,
+            "embed": shared["embed_url"] if shared else f"/embed/{route['kind']}/{uid}" if route else None,
             "thumbnail": thumbnail is not None,
             "preview": next(
                 (
