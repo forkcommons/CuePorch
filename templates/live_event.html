@@ -29,7 +29,7 @@
     </div>
     <section id="eventCaptions" data-endpoint="{{ caption_endpoint or '' }}" aria-label="Live captions" hidden>
       <button type="button" id="toggleLiveCaptions" aria-pressed="false" disabled>Show live captions</button>
-      <details><summary>Live transcript</summary><ol aria-label="Caption lines"></ol></details>
+      <details><summary id="eventTranscriptLabel">Live transcript</summary><ol aria-label="Caption lines"></ol></details>
       <p role="status"></p>
     </section>
     {% if chat_endpoint %}

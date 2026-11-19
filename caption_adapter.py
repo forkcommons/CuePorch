@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from time import monotonic
 
 from cueporch import checksum
 
@@ -36,10 +37,50 @@ def command():
     return [], env
 
 
-def transcribe_caption(collection, media, language=None):
+def wait_for_transcription(args, env, timeout, stopping):
+    options = dict(env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if stopping is None:
+        return subprocess.run(args, timeout=timeout, **options).returncode
+    deadline = monotonic() + timeout
+    with subprocess.Popen(args, **options) as process:
+        try:
+            while process.poll() is None:
+                if stopping.wait(0.2):
+                    raise CaptionError("The transcription was interrupted.")
+                if monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired("TextFlowKit", timeout)
+            return process.returncode
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
+def transcribe_path(source, output, language=None, stopping=None):
     args, env = command()
     if not args:
         raise CaptionError("missing; no local TextFlowKit installation")
+    options = ["--language", language.split("-", 1)[0]] if language else []
+    result = wait_for_transcription(
+        args + ["transcribe", str(source), "--formats", "vtt,json", "--engine", "whistle",
+                "--output-dir", str(output)] + options,
+        env, int(env.get("CUEPORCH_CAPTION_TIMEOUT", "14400")), stopping,
+    )
+    if result:
+        raise CaptionError("TextFlowKit transcription failed")
+    vtts = list(output.rglob("*.vtt"))
+    transcripts = list(output.rglob("*.json"))
+    if len(vtts) != 1 or len(transcripts) != 1:
+        raise CaptionError("TextFlowKit output was incomplete")
+    return vtts[0].read_bytes(), transcripts[0].read_bytes()
+
+
+def transcribe_caption(collection, media, language=None):
     with tempfile.TemporaryDirectory(dir=collection.parent) as temp:
         folder = Path(temp)
         src = folder / ("source." + media["format"])
@@ -48,34 +89,7 @@ def transcribe_caption(collection, media, language=None):
             os.link(original, src)
         except OSError:
             shutil.copyfile(original, src)
-        output = folder / "tracks"
-        options = []
-        if language:
-            options += ["--language", language.split("-", 1)[0]]
-        result = subprocess.run(
-            args
-            + [
-                "transcribe",
-                str(src),
-                "--formats",
-                "vtt,json",
-                "--engine",
-                "whistle",
-                "--output-dir",
-                str(output),
-            ] + options,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=int(env.get("CUEPORCH_CAPTION_TIMEOUT", "14400")),
-        )
-        if result.returncode:
-            raise CaptionError("TextFlowKit transcription failed")
-        vtts = list(output.rglob("*.vtt"))
-        transcripts = list(output.rglob("*.json"))
-        if len(vtts) != 1 or len(transcripts) != 1:
-            raise CaptionError("TextFlowKit output was incomplete")
-        return vtts[0].read_bytes(), transcripts[0].read_bytes()
+        return transcribe_path(src, folder / "tracks", language)
 
 
 def caption_work(work, collection):

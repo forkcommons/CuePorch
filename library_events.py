@@ -18,6 +18,7 @@ import event_chat
 import event_captions
 import event_engagement
 import event_program
+import event_replay_captions
 import event_schedule
 import event_scenes
 import event_speakers
@@ -35,7 +36,7 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
-       + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA)
+       + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA + event_replay_captions.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -90,8 +91,13 @@ def publish_replays(tx, database, origin, connect, action):
     with tx() as con:
         candidates = con.execute(
             """SELECT o.event,o.opens,o.remote FROM live_occurrence o JOIN live_event e ON e.id=o.event
-               JOIN action a ON a.id=e.publication WHERE o.origin=? AND o.delivery='ready' AND a.status='eligible'
-               AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=?""",
+               JOIN action a ON a.id=e.publication WHERE o.origin=? AND a.status='eligible'
+               AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=? AND
+               (o.delivery='ready' OR (o.delivery='replay' AND EXISTS (
+                   SELECT 1 FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens AND s.enabled=1
+               ) AND NOT EXISTS (
+                   SELECT 1 FROM live_replay_captions c WHERE c.event=o.event AND c.opens=o.opens
+               )))""",
             (origin, datetime.now(timezone.utc).timestamp()),
         ).fetchall()
     for item in candidates:
@@ -100,6 +106,9 @@ def publish_replays(tx, database, origin, connect, action):
             with lock_event(database, uid, timeout=0):
                 with tx() as con:
                     saved = occurrence(con, uid, opens)
+                    if saved["delivery"] == "replay":
+                        event_replay_captions.queue(con, action, uid, opens)
+                        continue
                     if saved["delivery"] != "ready":
                         continue
                     _, event = read(con, uid)
@@ -110,6 +119,8 @@ def publish_replays(tx, database, origin, connect, action):
                 with tx() as con:
                     decision = action(con, f"live-replay-{uid}-{opens}", "replay",
                                       dict(title=event["title"], event=uid, occurrence=opens))
+                    if decision in ("eligible", "waiting"):
+                        event_replay_captions.queue(con, action, uid, opens)
                 if decision == "eligible":
                     if not registered and not event.get("cueporch_delivery"):
                         host.set_public(remote, True)
@@ -193,6 +204,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         programs.close()
         studio.close()
         captions.close()
+        replay_captions.close()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
@@ -352,6 +364,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_speakers.register(app, tx, staff, speaker_access)
     event_captions.register(app, tx, staff, operator_chat, audience_chat)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
+    event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
+    replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)
 
     def provision_event(uid, opens, browser=False, automatic=False):
         try:
@@ -617,6 +631,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             form = library_registration.active(con, "event", row["id"]) if shown and not withdrawn else None
             captioned = bool(shown and not withdrawn and (not delivery or delivery["delivery"] != "replay") and
                              event_captions.active_track(con, row["id"], shown["id"]))
+            replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
+                                    event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             if form:
                 if request.method == "POST":
@@ -634,7 +650,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         analytics_token = None
         protected = bool(form)
         host_private = protected or event.get("cueporch_delivery", False)
-        native_video = host_private or captioned
+        native_video = host_private or captioned or replay_captioned
         can_participate = shown and not withdrawn and (not protected or grant)
         status = "Scheduled"
         if withdrawn:
@@ -672,13 +688,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     status = "The replay is awaiting release"
             except (ValueError, requests.RequestException, KeyError, StopIteration):
                 status = "The stream is unavailable"
-        caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"]) if can_participate else None
+        caption_endpoint = None
+        if can_participate:
+            if status == "Replay" and native_video:
+                caption_endpoint = url_for("audience_replay_captions", slug=slug, opens=shown["id"])
+            elif captioned:
+                caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"])
         view = (dict(status=status, address=address, protected=protected, native_video=native_video,
-                     captions=caption_endpoint if captioned else None, analytics_token=analytics_token)
+                     captions=caption_endpoint, analytics_token=analytics_token)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
-                                     native_video=native_video, caption_endpoint=caption_endpoint if captioned else None,
+                                     native_video=native_video, caption_endpoint=caption_endpoint,
                                      analytics_token=analytics_token,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,

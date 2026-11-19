@@ -28,6 +28,7 @@ interface AudienceMetrics {
   watched_seconds: number; average_seconds_per_load: number;
 }
 interface ProductionCaptions {enabled: boolean; language: string; status: string; cue_count: number;}
+interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
 interface ProgramSource {work: string; cut: string;}
 interface ProgramChoice extends ProgramSource {title: string;}
@@ -57,6 +58,10 @@ const captionForm = element<HTMLFormElement>("productionCaptions");
 const captionEnabled = captionForm.elements.namedItem("enabled") as HTMLInputElement;
 const captionLanguage = captionForm.elements.namedItem("language") as HTMLSelectElement;
 const captionStatus = element("productionCaptionStatus");
+const replayCaptions = element<HTMLDetailsElement>("eventReplayCaptions");
+const replayCaptionForm = element<HTMLFormElement>("replaceReplayCaptions");
+const replayCaptionStatus = element("replayCaptionStatus");
+let replayCaptionRevision = "";
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -82,8 +87,9 @@ credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
 async function request<T>(path: string, method = "GET", body?: object): Promise<T> {
   const headers: Record<string, string> = {Authorization: "Bearer " + credential.value};
-  if (body) headers["Content-Type"] = "application/json";
-  const result = await fetch(path, {method, headers, body: body ? JSON.stringify(body) : undefined});
+  const multipart = body instanceof FormData;
+  if (body && !multipart) headers["Content-Type"] = "application/json";
+  const result = await fetch(path, {method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined});
   if (!result.ok) {
     const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;
     throw new Error(detail || `Request failed (${result.status})`);
@@ -111,7 +117,7 @@ function mediaPath(suffix: string) {
   return `${root}/${active!.event.id}/${active!.instance.id}/${suffix}`;
 }
 
-async function downloadCsv(path: string, filename: string) {
+async function downloadEventFile(path: string, filename: string) {
   const response = await fetch(path, {headers: {Authorization: "Bearer " + credential.value}});
   if (!response.ok) throw new Error("Could not download the event report.");
   const link = document.createElement("a");
@@ -122,7 +128,7 @@ async function downloadCsv(path: string, filename: string) {
 }
 
 const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) =>
-  action(() => downloadCsv(mediaPath(`engagement/${feature}/export`), filename)),
+  action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)),
 );
 
 const registrationEditor = element<HTMLFormElement>("registrationEditor");
@@ -167,6 +173,10 @@ function choose(event: LiveEvent, instance: Occurrence) {
   analyticsStatus.textContent = "";
   captionSettings.open = false;
   captionStatus.textContent = "";
+  replayCaptions.open = false;
+  replayCaptionForm.reset();
+  replayCaptionStatus.textContent = replayCaptionRevision = "";
+  button("downloadReplayCaptions").disabled = button("saveReplayCaptions").disabled = true;
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -428,7 +438,7 @@ chatForm.onsubmit = (event) => {
   event.preventDefault();
   void updateChat("PUT", {enabled: chatEnabled.checked, interval: Number(chatInterval.value)}, true);
 };
-button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
+button("exportEventChat").onclick = () => void action(() => downloadEventFile(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 
 button("readEventHealth").onclick = () => void action(async () => {
   const result = await request<EventHealth>(mediaPath("health"));
@@ -495,6 +505,39 @@ async function updateCaptionSettings(update = false) {
 captionSettings.ontoggle = () => { if (captionSettings.open) void action(() => updateCaptionSettings()); };
 captionForm.onsubmit = event => { event.preventDefault(); void action(() => updateCaptionSettings(true)); };
 button("refreshLiveCaptions").onclick = () => void action(() => updateCaptionSettings());
+
+async function updateReplayCaptions(data?: FormData) {
+  if (data) data.set("revision", replayCaptionRevision);
+  const result = await request<ReplayCaptions>(mediaPath("replay-captions"), data ? "POST" : "GET", data);
+  replayCaptionRevision = result.revision;
+  (replayCaptionForm.elements.namedItem("language") as HTMLInputElement).value = result.language;
+  button("downloadReplayCaptions").disabled = !result.has_track;
+  button("saveReplayCaptions").disabled = !result.archived;
+  const states: Record<string, string> = {
+    queued: "Caption generation is queued.",
+    running: "Transcribing the finished recording.",
+    failed: "Could not generate captions. You can upload a subtitle file.",
+    no_speech: "The caption engine did not find speech.",
+    unavailable: result.archived ? "No caption track has been saved." : "The recording is still being prepared.",
+  };
+  replayCaptionStatus.textContent = result.has_track
+    ? (result.published ? "Replay captions are ready." : "Replay captions are awaiting approval.")
+    : states[result.state];
+}
+
+replayCaptions.ontoggle = () => { if (replayCaptions.open) void action(() => updateReplayCaptions()); };
+button("refreshReplayCaptions").onclick = () => void action(() => updateReplayCaptions());
+button("downloadReplayCaptions").onclick = () => void action(() =>
+  downloadEventFile(mediaPath("replay-captions") + "?download=1", "cueporch-replay-captions.vtt"));
+replayCaptionForm.onsubmit = event => {
+  event.preventDefault();
+  const data = new FormData(replayCaptionForm);
+  void action(async () => {
+    await updateReplayCaptions(data);
+    (replayCaptionForm.elements.namedItem("track") as HTMLInputElement).value = "";
+  });
+};
+
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;
   key.value = "";

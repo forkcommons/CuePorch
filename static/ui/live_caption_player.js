@@ -2,6 +2,7 @@ export function setupLiveCaptions(grant, embed) {
     const region = document.querySelector("#eventCaptions");
     const list = region.querySelector("ol");
     const toggle = region.querySelector("#toggleLiveCaptions");
+    const transcript = region.querySelector("#eventTranscriptLabel");
     const status = region.querySelector("[role=status]");
     const cues = new Map();
     const added = new Set();
@@ -12,7 +13,15 @@ export function setupLiveCaptions(grant, embed) {
     let reading = false;
     let isEnabled = true;
     let shown = false;
-    let since = 0;
+    let replay = false;
+    let revision = "";
+    let since = -1;
+    function label() { return replay ? "Replay captions" : "Live captions"; }
+    function updateLabel() {
+        transcript.textContent = replay ? "Replay transcript" : "Live transcript";
+        region.setAttribute("aria-label", label());
+        toggle.textContent = (shown ? "Hide " : "Show ") + label().toLowerCase();
+    }
     function timestamp() {
         const mediaDate = clock?.();
         return mediaDate != null && Number.isFinite(mediaDate) && source ? mediaDate - source.currentTime * 1000 : null;
@@ -36,15 +45,20 @@ export function setupLiveCaptions(grant, embed) {
         cues.clear();
         added.clear();
         list.replaceChildren();
-        since = 0;
+        since = -1;
+        revision = "";
     }
-    function bind(video, date) {
+    function bind(video, date, archived = false) {
+        if (replay !== archived)
+            clear();
+        replay = archived;
+        updateLabel();
         source?.removeEventListener("timeupdate", install);
         if (track)
             track.mode = "disabled";
         source = video;
         clock = date;
-        track = video && endpoint ? video.addTextTrack("captions", "Live captions") : undefined;
+        track = video && endpoint ? video.addTextTrack("captions", label()) : undefined;
         if (track)
             track.mode = shown ? "showing" : "hidden";
         added.clear();
@@ -57,7 +71,11 @@ export function setupLiveCaptions(grant, embed) {
         reading = true;
         const active = endpoint;
         try {
-            const response = await fetch(`${active}?since=${since}`, { cache: "no-store", headers: {
+            const address = new URL(active, location.href);
+            address.searchParams.set("since", String(since));
+            if (revision)
+                address.searchParams.set("revision", revision);
+            const response = await fetch(address, { cache: "no-store", headers: {
                     "X-CuePorch-Event-Viewer": grant, "X-CuePorch-Chat-Embed": embed ? "yes" : "no",
                 } });
             if (active !== endpoint)
@@ -69,11 +87,17 @@ export function setupLiveCaptions(grant, embed) {
             if (!response.ok)
                 return;
             const received = await response.json();
+            if (active !== endpoint)
+                return;
             isEnabled = received.enabled;
             region.hidden = !isEnabled;
             if (!isEnabled) {
                 clear();
                 return;
+            }
+            if (received.revision && revision !== received.revision) {
+                clear();
+                revision = received.revision;
             }
             for (const cue of received.cues) {
                 if (cues.has(cue.starts))
@@ -105,7 +129,7 @@ export function setupLiveCaptions(grant, embed) {
                     list.firstElementChild?.remove();
             }
             toggle.disabled = cues.size === 0;
-            status.textContent = cues.size ? "" : "Waiting for live captions.";
+            status.textContent = cues.size ? "" : `Waiting for ${label().toLowerCase()}.`;
             install();
         }
         catch {
@@ -124,7 +148,7 @@ export function setupLiveCaptions(grant, embed) {
             return;
         }
         if (!track && source) {
-            track = source.addTextTrack("captions", "Live captions");
+            track = source.addTextTrack("captions", label());
             track.mode = shown ? "showing" : "hidden";
         }
         void poll();
@@ -134,7 +158,7 @@ export function setupLiveCaptions(grant, embed) {
         toggle.setAttribute("aria-pressed", String(shown));
         if (track)
             track.mode = shown ? "showing" : "hidden";
-        toggle.textContent = shown ? "Hide live captions" : "Show live captions";
+        updateLabel();
     };
     const timer = window.setInterval(() => { if (!document.hidden)
         void poll(); }, 2500);

@@ -101,6 +101,17 @@
         </form>
         <p id="productionCaptionStatus" role="status"></p>
       </details>
+      <details id="eventReplayCaptions">
+        <summary>Replay captions</summary>
+        <p id="replayCaptionStatus" role="status"></p>
+        <button type="button" id="refreshReplayCaptions">Refresh replay captions</button>
+        <button type="button" id="downloadReplayCaptions" disabled>Download WebVTT</button>
+        <form id="replaceReplayCaptions">
+          <label>Caption language <input name="language" value="en" required></label>
+          <label>Subtitle file <input name="track" type="file" accept=".vtt,.srt" required></label>
+          <button type="submit" id="saveReplayCaptions" disabled>Replace replay captions</button>
+        </form>
+      </details>
       <div id="encoderSettings" hidden>
         <label>RTMP server <input id="rtmpServer" readonly></label>
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>

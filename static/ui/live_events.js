@@ -23,6 +23,10 @@ const captionForm = element("productionCaptions");
 const captionEnabled = captionForm.elements.namedItem("enabled");
 const captionLanguage = captionForm.elements.namedItem("language");
 const captionStatus = element("productionCaptionStatus");
+const replayCaptions = element("eventReplayCaptions");
+const replayCaptionForm = element("replaceReplayCaptions");
+const replayCaptionStatus = element("replayCaptionStatus");
+let replayCaptionRevision = "";
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -46,9 +50,10 @@ let programSources = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function request(path, method = "GET", body) {
     const headers = { Authorization: "Bearer " + credential.value };
-    if (body)
+    const multipart = body instanceof FormData;
+    if (body && !multipart)
         headers["Content-Type"] = "application/json";
-    const result = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const result = await fetch(path, { method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined });
     if (!result.ok) {
         const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;
         throw new Error(detail || `Request failed (${result.status})`);
@@ -76,7 +81,7 @@ async function action(work, message = "") {
 function mediaPath(suffix) {
     return `${root}/${active.event.id}/${active.instance.id}/${suffix}`;
 }
-async function downloadCsv(path, filename) {
+async function downloadEventFile(path, filename) {
     const response = await fetch(path, { headers: { Authorization: "Bearer " + credential.value } });
     if (!response.ok)
         throw new Error("Could not download the event report.");
@@ -86,7 +91,7 @@ async function downloadCsv(path, filename) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
-const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadCsv(mediaPath(`engagement/${feature}/export`), filename)));
+const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
 const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
     const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
@@ -126,6 +131,10 @@ function choose(event, instance) {
     analyticsStatus.textContent = "";
     captionSettings.open = false;
     captionStatus.textContent = "";
+    replayCaptions.open = false;
+    replayCaptionForm.reset();
+    replayCaptionStatus.textContent = replayCaptionRevision = "";
+    button("downloadReplayCaptions").disabled = button("saveReplayCaptions").disabled = true;
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -404,7 +413,7 @@ chatForm.onsubmit = (event) => {
     event.preventDefault();
     void updateChat("PUT", { enabled: chatEnabled.checked, interval: Number(chatInterval.value) }, true);
 };
-button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
+button("exportEventChat").onclick = () => void action(() => downloadEventFile(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
     const settings = result.delivery_settings;
@@ -480,6 +489,37 @@ captionSettings.ontoggle = () => { if (captionSettings.open)
     void action(() => updateCaptionSettings()); };
 captionForm.onsubmit = event => { event.preventDefault(); void action(() => updateCaptionSettings(true)); };
 button("refreshLiveCaptions").onclick = () => void action(() => updateCaptionSettings());
+async function updateReplayCaptions(data) {
+    if (data)
+        data.set("revision", replayCaptionRevision);
+    const result = await request(mediaPath("replay-captions"), data ? "POST" : "GET", data);
+    replayCaptionRevision = result.revision;
+    replayCaptionForm.elements.namedItem("language").value = result.language;
+    button("downloadReplayCaptions").disabled = !result.has_track;
+    button("saveReplayCaptions").disabled = !result.archived;
+    const states = {
+        queued: "Caption generation is queued.",
+        running: "Transcribing the finished recording.",
+        failed: "Could not generate captions. You can upload a subtitle file.",
+        no_speech: "The caption engine did not find speech.",
+        unavailable: result.archived ? "No caption track has been saved." : "The recording is still being prepared.",
+    };
+    replayCaptionStatus.textContent = result.has_track
+        ? (result.published ? "Replay captions are ready." : "Replay captions are awaiting approval.")
+        : states[result.state];
+}
+replayCaptions.ontoggle = () => { if (replayCaptions.open)
+    void action(() => updateReplayCaptions()); };
+button("refreshReplayCaptions").onclick = () => void action(() => updateReplayCaptions());
+button("downloadReplayCaptions").onclick = () => void action(() => downloadEventFile(mediaPath("replay-captions") + "?download=1", "cueporch-replay-captions.vtt"));
+replayCaptionForm.onsubmit = event => {
+    event.preventDefault();
+    const data = new FormData(replayCaptionForm);
+    void action(async () => {
+        await updateReplayCaptions(data);
+        replayCaptionForm.elements.namedItem("track").value = "";
+    });
+};
 button("withdrawEvent").onclick = () => void action(async () => {
     encoder.hidden = true;
     key.value = "";

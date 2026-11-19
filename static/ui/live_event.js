@@ -24,6 +24,8 @@ function renderVideo(address, phase, analytics, video) {
         player.replaceChildren(video);
     }
     stopMeasuring = measureEventPlayback(video, analytics);
+    const replay = phase === "Replay";
+    const replayDate = () => video.currentTime * 1000;
     if (Hls?.isSupported()) {
         const session = new Hls({
             enableWorker: true,
@@ -33,12 +35,13 @@ function renderVideo(address, phase, analytics, video) {
         session.loadSource(address);
         session.attachMedia(video);
         hls = session;
-        captions.bind(video, () => session.playingDate?.getTime() ?? null);
+        captions.bind(video, replay ? replayDate : () => session.playingDate?.getTime() ?? null, replay);
     }
     else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         video.src = address;
         const native = video;
-        captions.bind(video, () => (native.getStartDate?.().getTime() ?? Number.NaN) + native.currentTime * 1000);
+        captions.bind(video, replay ? replayDate :
+            () => (native.getStartDate?.().getTime() ?? Number.NaN) + native.currentTime * 1000, replay);
     }
     else {
         eventStatus.textContent = "This browser cannot play the stream";

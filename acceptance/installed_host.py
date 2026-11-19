@@ -15,6 +15,7 @@ from installed_languages import check_hosted_languages
 from installed_interactivity import check_hosted_chapters
 from installed_events import check_browser_delivery, check_live_delivery, check_program_delivery, check_registered_live, check_srt_delivery
 from installed_live_captions import check_live_captions
+from installed_replay_captions import check_replay_captions
 from installed_speakers import check_speaker_delivery
 import psutil
 
@@ -33,6 +34,7 @@ live_modes.add_argument("--scenes-event", action="store_true", help="Verify live
 live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify live DVR and actual browser relay diagnostics")
 live_modes.add_argument("--speakers-event", action="store_true", help="Verify browser guests and private speaker chat")
 live_modes.add_argument("--captions-event", action="store_true", help="Verify live captions from real encoder audio")
+live_modes.add_argument("--replay-captions", action="store_true", help="Verify local captions on a hosted recording")
 p.add_argument("--caption-speech", type=Path, help="Use a spoken audio fixture for live caption acceptance")
 live_modes.add_argument("--srt-event", action="store_true", help="Test encrypted SRT through the installed production controls")
 live_modes.add_argument("--program-event", action="store_true", help="Test an unattended prerecorded event from installed CuePorch")
@@ -40,10 +42,10 @@ a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or
-        a.captions_event or a.srt_event or a.program_event) and not a.live_rtmp_port:
+        a.captions_event or a.replay_captions or a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
-if a.captions_event and (not a.caption_speech or not a.caption_speech.is_file()):
-    p.error("--captions-event requires the --caption-speech audio fixture")
+if (a.captions_event or a.replay_captions) and (not a.caption_speech or not a.caption_speech.is_file()):
+    p.error("Caption acceptance requires the --caption-speech audio fixture")
 
 
 def check_station_review(base, keys, package):
@@ -150,6 +152,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_browser_delivery(base, keys, diagnostics=True)
                 elif a.speakers_event:
                     evidence["event_delivery"] = check_speaker_delivery(base, keys, ffmpeg)
+                elif a.replay_captions:
+                    evidence["event_delivery"] = check_replay_captions(base, keys, ffmpeg, a.caption_speech.resolve())
                 elif a.captions_event:
                     speech = a.caption_speech.resolve()
                     evidence["event_delivery"] = {
@@ -192,6 +196,13 @@ with tempfile.TemporaryDirectory() as tmp:
             response.raise_for_status()
             assert proc.wait(timeout=20) == 0, "The installed desktop did not exit cleanly"
             a.report.write_text(json.dumps(evidence, indent=2), encoding="utf8")
+        except Exception:
+            log = home / "service.log"
+            if a.replay_captions and log.is_file():
+                for detail in log.read_text(encoding="utf8", errors="replace").splitlines():
+                    if "Replay caption generation failed" in detail:
+                        print(detail, flush=True)
+            raise
         finally:
             if proc.poll() is None:
                 for child in psutil.Process(proc.pid).children(recursive=True):
