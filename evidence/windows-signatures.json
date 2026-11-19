@@ -1,0 +1,30 @@
+[
+  {
+    "file": "CuePorch-0.2.0-Windows-x64-Setup.exe",
+    "sha256": "2DA4059CE43956790DF377FB66EB9A9A3F4C934EB078F1E2EFEBFBA864165FBD",
+    "status": "Valid",
+    "publisher": "CN=Scott Converse, O=Scott Converse, L=Longmont, S=co, C=US",
+    "timestamp_authority": "CN=Microsoft Public RSA Time Stamping Authority, OU=nShield TSS ESN:7A00-05E0-D947, OU=Microsoft America Operations, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  {
+    "file": "CuePorch.exe",
+    "sha256": "32C50773F6FAC4179692F60FE164C627AFDE437B65E2CC7964B6E511053F8529",
+    "status": "Valid",
+    "publisher": "CN=Scott Converse, O=Scott Converse, L=Longmont, S=co, C=US",
+    "timestamp_authority": "CN=Microsoft Public RSA Time Stamping Authority, OU=nShield TSS ESN:7A00-05E0-D947, OU=Microsoft America Operations, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  {
+    "file": "cueporch-service.exe",
+    "sha256": "3C9A456A4D571965A53E0B488729EFDEA35DEA262C517EACD25371BED1CC6B9E",
+    "status": "Valid",
+    "publisher": "CN=Scott Converse, O=Scott Converse, L=Longmont, S=co, C=US",
+    "timestamp_authority": "CN=Microsoft Public RSA Time Stamping Authority, OU=nShield TSS ESN:7D00-05E0-D947, OU=Microsoft America Operations, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  {
+    "file": "unins000.exe",
+    "sha256": "F8569D811D20CBCA62F114C2E2D65902CEF19831980E9DF11CE39677822C1793",
+    "status": "Valid",
+    "publisher": "CN=Scott Converse, O=Scott Converse, L=Longmont, S=co, C=US",
+    "timestamp_authority": "CN=Microsoft Public RSA Time Stamping Authority, OU=nShield TSS ESN:7800-05E0-D947, OU=Microsoft America Operations, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  }
+]

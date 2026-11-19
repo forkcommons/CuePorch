@@ -1,0 +1,10 @@
+{
+  "real_peertube": true,
+  "source": "three-item HTTP simulator",
+  "inventory": 3,
+  "private_deliveries": 2,
+  "public_eligible": 1,
+  "first_embed_seconds": 70.13,
+  "transfer_seconds": 4.83,
+  "repeat_preserved_job_and_video_ids": true
+}

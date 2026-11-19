@@ -1,0 +1,18 @@
+[
+  {
+    "upgrade": false,
+    "inventory": 3,
+    "missing_media": 1,
+    "repeat_ids_unique": true,
+    "playback_width": 320,
+    "anonymous_denied": true
+  },
+  {
+    "upgrade": true,
+    "inventory": 3,
+    "missing_media": 1,
+    "repeat_ids_unique": true,
+    "playback_width": 320,
+    "anonymous_denied": true
+  }
+]

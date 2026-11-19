@@ -12,6 +12,11 @@ p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("baseline", type=Path)
 p.add_argument("report", type=Path)
+p.add_argument(
+    "--windows-setup",
+    type=Path,
+    help="Install into the isolated launcher directory and verify the generated Start menu shortcut",
+)
 args = p.parse_args()
 results = []
 
@@ -62,6 +67,38 @@ with tempfile.TemporaryDirectory() as tmp:
                     for f in (home / "collection/objects").iterdir()
                 }
                 prior_keys = (home / "operator.json").read_bytes()
+            if args.windows_setup:
+                import platform
+
+                assert platform.system() == "Windows"
+                subprocess.run(
+                    [
+                        str(args.windows_setup.resolve()),
+                        "/VERYSILENT",
+                        "/SUPPRESSMSGBOXES",
+                        "/NORESTART",
+                        "/DIR=" + str(args.launcher.resolve().parent),
+                        "/LIBRARY=" + str(home),
+                    ],
+                    check=True,
+                )
+                shortcut_script = """
+                $link=Join-Path ([Environment]::GetFolderPath('Programs')) 'ForkCommons/CuePorch.lnk'
+                $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($link)
+                [pscustomobject]@{target=$shortcut.TargetPath; arguments=$shortcut.Arguments}|ConvertTo-Json -Compress
+                """
+                link = json.loads(
+                    subprocess.check_output(
+                        ["powershell.exe", "-NoProfile", "-Command", shortcut_script],
+                        text=True,
+                    )
+                )
+                assert Path(link["target"]).resolve() == args.launcher.resolve(), link[
+                    "target"
+                ]
+                assert link["arguments"] == '--data "' + str(home) + '"', link[
+                    "arguments"
+                ]
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]

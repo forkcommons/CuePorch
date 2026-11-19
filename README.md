@@ -19,3 +19,7 @@ In **Move from Vimeo**, preview the owner account, transfer privately, then load
 Install Python 3.13, Rust, Node.js with npm, the dependencies in requirements.txt, PyInstaller 6.17.0 and imageio-ffmpeg 0.6.0. Run python packaging/build.py build and then python packaging/build.py package on the target OS. Windows uses Inno Setup 6. The release process signs and verifies the native executables and the setup program through Scott Converse’s established Azure signing workflow before distributing them. The v0.1.0 tag preserves the prior runnable source.
 
 CuePorch is licensed under AGPL-3.0-or-later. The bundled FFmpeg binary comes from the platform-specific imageio-ffmpeg 0.6.0 distribution. See the [upstream source and build information](https://github.com/imageio/imageio-ffmpeg/tree/v0.6.0) and the [FFmpeg distribution project](https://github.com/imageio/imageio-ffmpeg/tree/v0.6.0/binaries). Other components retain their respective licenses.
+
+## Documentation and package tests
+
+The [user manual](USER-MANUAL.md) covers station imports, exhibitions, review settings and system architecture. The [operations guide](OPERATIONS.md) covers public deployments and recovery. The [installed test record](evidence/ACCEPTANCE.md) records migration, upgrades and playback for the three native packages. The [Vimeo feature comparison](evidence/vimeo-comparison.md) records remaining gaps.

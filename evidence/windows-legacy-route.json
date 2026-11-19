@@ -1,0 +1,7 @@
+{
+  "baseline": "0.1.0",
+  "unchanged_existing_watch_route": true,
+  "unchanged_peertube_destination": true,
+  "unchanged_operator_keys": true,
+  "decoded_video_width": 320
+}
