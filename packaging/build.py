@@ -60,6 +60,8 @@ def build():
         "http-ece",
         "--copy-metadata",
         "py-vapid",
+        "--collect-all",
+        "tzdata",
         "--add-data",
         str(ROOT / "deploy/compose.yml") + ":deploy",
         "--add-data",
@@ -71,10 +73,14 @@ def build():
         ROOT / "desktop_service.py",
     )
     APP.mkdir(parents=True, exist_ok=True)
+    service = APP / "service"
+    if service.exists():
+        if service.resolve() != ROOT / "dist" / "layout" / "service":
+            raise RuntimeError("Refusing to replace a service layout outside the build directory")
+        shutil.rmtree(service)
     shutil.copytree(
         ROOT / "build/frozen/cueporch-service",
-        APP / "service",
-        dirs_exist_ok=True,
+        service,
         symlinks=True,
     )
     shutil.copy2(

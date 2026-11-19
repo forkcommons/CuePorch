@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Live events · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="live-events" data-public-url="{{ public_url }}">
+  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/record">Record Studio</a></nav>
+  <h1>Live events</h1>
+  <form id="eventsIdentify">
+    <label>Operator credential <input name="credential" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open live events</button>
+  </form>
+  <p role="status" id="eventsStatus"></p>
+  <main id="eventsWorkspace" hidden>
+    <p id="eventsHost" hidden>Connect a live-enabled PeerTube server from CuePorch setup to prepare an encoder.</p>
+    <section aria-labelledby="calendarHeading">
+      <h2 id="calendarHeading">Event calendar</h2>
+      <div class="library-tools">
+        <label>From <input id="calendarFirst" type="date"></label>
+        <label>Through <input id="calendarLast" type="date"></label>
+        <button type="button" id="calendarRefresh">Apply dates</button>
+        <button type="button" id="newEvent">New event</button>
+      </div>
+      <table><thead><tr><th scope="col">Event</th><th scope="col">Local start</th><th scope="col">Delivery</th><th scope="col">Overlap</th><th scope="col">Actions</th></tr></thead>
+        <tbody id="eventCalendarRows"></tbody>
+      </table>
+    </section>
+    <form id="newEventForm" hidden>
+      <h2>New event</h2>
+      <label>Reuse event settings <select id="eventPreset"><option value="">Start from scratch</option></select></label>
+      <label>Event type <select name="type"><option value="live">Live broadcast</option><option value="webinar">Webinar</option><option value="team">Team event</option><option value="learning">Online learning</option><option value="custom">Custom event</option></select></label>
+      <label>Title <input name="title" maxlength="128" required></label>
+      <label>Description <textarea name="description" maxlength="5000"></textarea></label>
+      <label>Link name <input name="slug" maxlength="64" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]"></label>
+      <fieldset>
+        <legend>Schedule</legend>
+        <label>Time zone <input name="timezone" placeholder="America/Denver" required></label>
+        <label>Start <input name="start" type="datetime-local" required></label>
+        <label>End <input name="end" type="datetime-local" required></label>
+        <label>Repeat <select name="repeat"><option value="none">Once</option><option value="days">Daily</option><option value="weeks">Weekly</option><option value="months">Monthly</option></select></label>
+        <div id="recurringFields" hidden>
+          <label>Repeat every <input name="interval" type="number" min="1" max="52" value="1"></label>
+          <fieldset id="eventWeekdays" hidden><legend>Days of the week</legend>
+            <label><input type="checkbox" name="weekday" value="0"> Monday</label><label><input type="checkbox" name="weekday" value="1"> Tuesday</label>
+            <label><input type="checkbox" name="weekday" value="2"> Wednesday</label><label><input type="checkbox" name="weekday" value="3"> Thursday</label>
+            <label><input type="checkbox" name="weekday" value="4"> Friday</label><label><input type="checkbox" name="weekday" value="5"> Saturday</label>
+            <label><input type="checkbox" name="weekday" value="6"> Sunday</label>
+          </fieldset>
+          <label>Last date <input name="until" type="date"></label>
+          <label>Number of occurrences <input name="count" type="number" min="1" max="10000"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Production and viewers</legend>
+        <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
+        <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
+        <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
+      </fieldset>
+      <button type="submit">Save event</button>
+    </form>
+    <section id="eventProduction" aria-labelledby="productionHeading" hidden>
+      <h2 id="productionHeading">External encoder</h2>
+      <p id="productionTitle"></p>
+      <button type="button" id="prepareEncoder">Prepare encoder</button>
+      <button type="button" id="readEventHealth">Refresh stream status</button>
+      <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
+      <p id="eventHealth" role="status"></p>
+      <div id="encoderSettings" hidden>
+        <label>RTMP server <input id="rtmpServer" readonly></label>
+        <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>
+        <label>Stream key <input id="encoderKey" type="password" readonly></label>
+        <button type="button" id="copyEncoderKey">Copy stream key</button>
+      </div>
+      <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
+      <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
+    </section>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/live_events.js') }}"></script>
+</body>
+</html>

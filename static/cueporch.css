@@ -286,3 +286,10 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
   .showcase-page[data-layout="featured"] .showcase-playlist ol { display: block; }
   .showcase-page[data-layout="featured"] .showcase-playlist li { margin-bottom: .45rem; }
 }
+
+.live-events [hidden], .live-event-page [hidden] { display: none; }
+.live-events #eventProduction { margin-top: 2rem; border-top: .2rem solid #367e7e; }
+.live-events #encoderSettings { display: grid; gap: .6rem; max-width: 36rem; }
+.live-events #encoderSettings label { display: grid; }
+.live-event-page .event-description { white-space: pre-wrap; max-width: 58ch; }
+.live-event-page iframe { border: 0; width: 100%; aspect-ratio: 16 / 9; background: #0b2124; }

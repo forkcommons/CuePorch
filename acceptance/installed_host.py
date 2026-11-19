@@ -13,6 +13,7 @@ from installed_versions import check_hosted_versions, generate_replacement
 from installed_migrated_privacy import check_hosted_handoff
 from installed_languages import check_hosted_languages
 from installed_interactivity import check_hosted_chapters
+from installed_events import check_live_delivery
 import psutil
 
 p = argparse.ArgumentParser()
@@ -20,7 +21,9 @@ p.add_argument("launcher", type=Path)
 p.add_argument("origin")
 p.add_argument("report", type=Path)
 p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cable package for review defaults acceptance")
-p.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
+modes = p.add_mutually_exclusive_group()
+modes.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
+modes.add_argument("--live-rtmp-port", type=int, help="Exercise event production on an isolated local RTMP listener")
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
@@ -90,7 +93,7 @@ with tempfile.TemporaryDirectory() as tmp:
             [str(a.launcher.resolve()), "--data", str(home), "--headless"], env=env
         )
         try:
-            for _ in range(300):
+            for _ in range(600):
                 if (home / "desktop-session.json").exists():
                     break
                 if proc.poll() is not None:
@@ -119,7 +122,10 @@ with tempfile.TemporaryDirectory() as tmp:
                 browser.close()
             keys = json.loads((home / "operator.json").read_text())
             evidence = {"real_peertube": True}
-            if not a.station_only:
+            if a.live_rtmp_port:
+                ffmpeg = a.launcher.resolve().parent / "service/_internal/media-tools/ffmpeg.exe"
+                evidence["event_delivery"] = check_live_delivery(base, a.origin, keys, ffmpeg, a.live_rtmp_port)
+            elif not a.station_only:
                 transfer, first = walkthrough(base, keys, started)
                 evidence.update(
                     source="three-item HTTP simulator",
@@ -145,7 +151,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 headers={"Authorization": "Bearer " + url.split("#")[1]},
             )
             response.raise_for_status()
-            proc.wait(timeout=20)
+            assert proc.wait(timeout=20) == 0, "The installed desktop did not exit cleanly"
             a.report.write_text(json.dumps(evidence, indent=2), encoding="utf8")
         finally:
             if proc.poll() is None:

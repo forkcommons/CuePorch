@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ event.title }} · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="live-event-page">
+  <main>
+    <header>
+      <h1>{{ event.title }}</h1>
+      {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
+      {% if occurrence %}<p><time datetime="{{ occurrence.start }}">{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }})</time></p>{% endif %}
+      <p role="status" id="eventStatus">{{ status }}</p>
+    </header>
+    {% if address %}
+      <iframe title="Event video" src="{{ address }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+    {% else %}
+      <button type="button" id="refreshEvent">Check stream status</button>
+    {% endif %}
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
+</body>
+</html>

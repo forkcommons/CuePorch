@@ -10,6 +10,7 @@ from filelock import FileLock, Timeout
 from peertube_destination import PeerTube, SourceReplacementUnavailable
 import library_trash
 import library_peer_handoff
+import library_events
 from library_languages import tracks_for
 from library_actions import sync_edits, title_for
 from library_privacy import manages_sharing
@@ -82,6 +83,7 @@ def start(app, root, db, tx, action, apply_routes):
     def run():
         # One active delivery loop per database across server processes.
         observed = None
+        next_replay_check = 0
         with app.app_context():
             while receipts.is_dir():
                 try:
@@ -96,6 +98,9 @@ def start(app, root, db, tx, action, apply_routes):
                                 observed = stamp
                             process(origin)
                             sync_edits(tx, receipts, origin, root, connect)
+                            if time.monotonic() >= next_replay_check:
+                                library_events.publish_replays(tx, db, origin, connect, action)
+                                next_replay_check = time.monotonic() + 5
                 except Timeout:
                     pass
                 except Exception:
