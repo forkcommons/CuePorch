@@ -1,5 +1,6 @@
 import {setupRegistration} from "./video_registration.js";
 import {ChatState, messageAction, renderChat} from "./event_chat.js";
+import {setupProducerEngagement} from "./event_engagement.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -91,6 +92,20 @@ function mediaPath(suffix: string) {
   return `${root}/${active!.event.id}/${active!.instance.id}/${suffix}`;
 }
 
+async function downloadCsv(path: string, filename: string) {
+  const response = await fetch(path, {headers: {Authorization: "Bearer " + credential.value}});
+  if (!response.ok) throw new Error("Could not download the event report.");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) =>
+  action(() => downloadCsv(mediaPath(`engagement/${feature}/export`), filename)),
+);
+
 const registrationEditor = element<HTMLFormElement>("registrationEditor");
 const openRegistration = setupRegistration(
   (suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body),
@@ -113,6 +128,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
     registrationEvent = undefined;
   }
   active = {event, instance};
+  closeEngagement();
   chatPanel.open = false;
   chatMessages.replaceChildren();
   delete chatMessages.dataset.revision;
@@ -382,15 +398,7 @@ chatForm.onsubmit = (event) => {
   event.preventDefault();
   void updateChat("PUT", {enabled: chatEnabled.checked, interval: Number(chatInterval.value)}, true);
 };
-button("exportEventChat").onclick = () => void action(async () => {
-  const response = await fetch(mediaPath("chat/export"), {headers: {Authorization: "Bearer " + credential.value}});
-  if (!response.ok) throw new Error("Could not download the chat history.");
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(await response.blob());
-  link.download = "cueporch-event-chat.csv";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-});
+button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 
 button("readEventHealth").onclick = () => void action(async () => {
   const result = await request<{state: string; viewers?: number}>(mediaPath("health"));

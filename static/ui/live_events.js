@@ -1,5 +1,6 @@
 import { setupRegistration } from "./video_registration.js";
 import { messageAction, renderChat } from "./event_chat.js";
+import { setupProducerEngagement } from "./event_engagement.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -65,6 +66,17 @@ async function action(work, message = "") {
 function mediaPath(suffix) {
     return `${root}/${active.event.id}/${active.instance.id}/${suffix}`;
 }
+async function downloadCsv(path, filename) {
+    const response = await fetch(path, { headers: { Authorization: "Bearer " + credential.value } });
+    if (!response.ok)
+        throw new Error("Could not download the event report.");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+const closeEngagement = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadCsv(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
 const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
     const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
@@ -84,6 +96,7 @@ function choose(event, instance) {
         registrationEvent = undefined;
     }
     active = { event, instance };
+    closeEngagement();
     chatPanel.open = false;
     chatMessages.replaceChildren();
     delete chatMessages.dataset.revision;
@@ -370,16 +383,7 @@ chatForm.onsubmit = (event) => {
     event.preventDefault();
     void updateChat("PUT", { enabled: chatEnabled.checked, interval: Number(chatInterval.value) }, true);
 };
-button("exportEventChat").onclick = () => void action(async () => {
-    const response = await fetch(mediaPath("chat/export"), { headers: { Authorization: "Bearer " + credential.value } });
-    if (!response.ok)
-        throw new Error("Could not download the chat history.");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-event-chat.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-});
+button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
     health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");

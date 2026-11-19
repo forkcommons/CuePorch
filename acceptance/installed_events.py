@@ -558,6 +558,119 @@ def check_event_chat(page, browser, base, auth):
         reader.context.close()
 
 
+def check_event_engagement(page, browser, base, auth):
+    now = datetime.now(timezone.utc)
+    as_field = lambda moment: moment.strftime("%Y-%m-%dT%H:%M")
+    event = dict(title="Audience questions and quiz", slug="audience-questions-quiz", visibility="public", type="webinar",
+                 latency="standard", save_replay=False, schedule=dict(timezone="UTC", repeat="none",
+                 start=as_field(now - timedelta(minutes=1)), end=as_field(now + timedelta(minutes=15))))
+    created = requests.post(base + "/api/live-events", headers=auth, json=event, timeout=15)
+    created.raise_for_status()
+    entry = created.json()
+    (slot,) = entry["occurrences"]
+    producer_url = f"{base}/api/live-events/{entry['id']}/{slot['id']}/engagement"
+    audience_url = f"{base}/events/{entry['slug']}/{slot['id']}/engagement"
+    watch = f"{base}{entry['watch']}?occurrence={slot['id']}"
+    assert requests.get(producer_url, timeout=10).status_code == 403
+    assert requests.post(audience_url, json={"feature": "poll"}, timeout=10).status_code == 403
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="Open production for Audience questions and quiz", exact=False).click()
+    page.get_by_text("Q&A and polls", exact=True).click()
+    producer = page.locator("#operatorEngagement")
+    policy = producer.locator("#eventQASettings")
+    enabled = policy.get_by_label("Enable audience Q&A")
+    review = policy.get_by_label("Approve questions before publishing")
+
+    def save_policy():
+        with page.expect_response(lambda response: response.url == producer_url and response.request.method == "PUT") as saved:
+            policy.get_by_role("button", name="Save Q&A settings").click()
+        assert saved.value.ok
+
+    expect(review).not_to_be_checked()
+    enabled.check()
+    save_policy()
+    author = browser.new_page()
+    viewer = browser.new_page()
+    try:
+        author.goto(watch)
+        viewer.goto(watch)
+        form = author.locator("#askQuestion")
+        form.get_by_label("Display name").fill("Acadia")
+        form.get_by_label("Question", exact=True).fill("How was the film restored?")
+        form.get_by_role("button", name="Submit question").click()
+        visible = viewer.locator("#viewerQuestions li").filter(has_text="How was the film restored?")
+        expect(visible).to_be_visible(timeout=10000)
+        visible.get_by_role("button", name="Upvote question").click()
+        expect(visible.get_by_text("1 votes", exact=False)).to_be_visible()
+        primary = producer.locator("#operatorQuestions li").filter(has_text="How was the film restored?")
+        primary.get_by_role("button", name="Pin question").click()
+        expect(visible.get_by_text("Pinned", exact=False)).to_be_visible(timeout=10000)
+        primary.get_by_role("button", name="Reply").click()
+        answer = producer.locator("#eventAnswerQuestion")
+        answer.get_by_label("Reply", exact=True).fill("From the preserved camera negative.")
+        answer.get_by_role("button", name="Mark answered").click()
+        expect(visible.get_by_text("From the preserved camera negative.")).to_be_visible(timeout=10000)
+
+        review.check()
+        policy.get_by_label("Allow anonymous questions").check()
+        save_policy()
+        form.get_by_label("Ask anonymously").check()
+        form.get_by_label("Question", exact=True).fill("Will the captions be posted?")
+        form.get_by_role("button", name="Submit question").click()
+        pending = author.locator("#viewerQuestions li").filter(has_text="Will the captions be posted?")
+        expect(pending.get_by_text("Awaiting approval", exact=False)).to_be_visible()
+        second = viewer.locator("#viewerQuestions li").filter(has_text="Will the captions be posted?")
+        expect(second).to_have_count(0)
+        review.uncheck()
+        save_policy()
+        expect(second.get_by_text("Anonymous", exact=False)).to_be_visible(timeout=10000)
+        operator_second = producer.locator("#operatorQuestions li").filter(has_text="Will the captions be posted?")
+        operator_second.get_by_role("button", name="Archive question").click()
+        expect(second).to_have_count(0, timeout=10000)
+        operator_second.get_by_role("button", name="Restore question").click()
+        expect(second).to_be_visible(timeout=10000)
+
+        poll = producer.locator("#eventPollEditor")
+
+        def stage(question, correct=""):
+            poll.get_by_label("Poll question").fill(question)
+            poll.get_by_label("Option 1", exact=True).fill("16 mm")
+            poll.get_by_label("Option 2", exact=True).fill("35 mm")
+            poll.get_by_label("Correct answer").select_option(correct)
+            with page.expect_response(lambda response: response.url == producer_url and response.request.method == "POST") as saved:
+                poll.get_by_role("button", name="Save poll draft").click()
+            assert saved.value.ok
+
+        stage("What was the camera format?", "1")
+        stage("Which format should we program next?")
+        assert not requests.get(audience_url, timeout=10).json()["polls"]
+        quiz = producer.locator("#operatorPolls > li").filter(has_text="What was the camera format?")
+        quiz.get_by_role("button", name="Open poll").click()
+        guest_poll = viewer.locator("#viewerPoll")
+        expect(guest_poll).to_be_visible(timeout=10000)
+        assert requests.get(audience_url, timeout=10).json()["polls"][0]["correct"] is None
+        assert requests.get(audience_url, timeout=10).json()["polls"][0]["counts"] is None
+        other = producer.locator("#operatorPolls > li").filter(has_text="Which format should we program next?")
+        other.get_by_role("button", name="Open poll").click()
+        expect(producer.locator("#operatorEngagementStatus")).to_have_text("Publish the current poll's results before opening another.")
+        guest_poll.get_by_role("button", name="35 mm").click()
+        expect(guest_poll.get_by_role("button", name="35 mm (your vote)")).to_be_disabled()
+        quiz.get_by_role("button", name="Publish results").click()
+        expect(guest_poll.get_by_text("35 mm · 1 votes (100%) · Correct answer")).to_be_visible(timeout=10000)
+        quiz.get_by_role("button", name="Archive poll").click()
+        expect(guest_poll).not_to_be_visible(timeout=10000)
+        exports = [requests.get(f"{producer_url}/{feature}/export", headers=auth, timeout=10) for feature in ("qa", "poll")]
+        assert all(response.ok for response in exports)
+        assert "From the preserved camera negative." in exports[0].text and "35 mm,1,Yes,archived" in exports[1].text
+        assert requests.get(f"{producer_url}/poll/export", timeout=10).status_code == 403
+        return dict(questions_automatic_by_default=True, optional_review_and_release=True, anonymous_questions=True,
+                    reply_pin_vote_archive_and_restore=True, draft_poll_private=True, open_poll_exclusive=True,
+                    results_and_correct_answer_after_publish=True, one_vote_per_session=True, authenticated_exports=True)
+    finally:
+        author.context.close()
+        viewer.context.close()
+
+
 def check_program_delivery(base, keys, ffmpeg, scratch):
     auth = {"Authorization": "Bearer " + keys["operator"]}
     portal = base + "/api/live-events"

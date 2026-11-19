@@ -39,9 +39,31 @@
         <p id="chatStatus" role="status"></p>
       </section>
     {% endif %}
+    {% if engagement_endpoint %}
+      <section id="viewerEngagement" data-endpoint="{{ engagement_endpoint }}" data-embed="{{ 'yes' if embed else 'no' }}" hidden>
+        <section id="viewerPoll" aria-labelledby="audiencePollHeading" hidden>
+          <h2 id="audiencePollHeading">Poll</h2>
+          <p id="audiencePollQuestion"></p>
+          <ul id="audiencePollOptions"></ul>
+        </section>
+        <section id="viewerQA" aria-labelledby="audienceQAHeading" hidden>
+          <h2 id="audienceQAHeading">Q&amp;A</h2>
+          <form id="askQuestion">
+            <label>Question <textarea name="question" maxlength="240" required></textarea></label>
+            <label id="qaViewerName">Display name <input name="name" maxlength="60" required></label>
+            <label id="qaViewerAnonymous" hidden><input type="checkbox" name="anonymous"> Ask anonymously</label>
+            <button type="submit">Submit question</button>
+          </form>
+          <label>Sort questions <select id="questionOrder"><option value="recent">Recent</option><option value="popular">Popular</option></select></label>
+          <ol id="viewerQuestions"></ol>
+        </section>
+        <p id="engagementStatus" role="status"></p>
+      </section>
+    {% endif %}
   </main>
   {% if protected and viewer_grant %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
   <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
   {% if chat_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_chat.js') }}"></script>{% endif %}
+  {% if engagement_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_engagement.js') }}"></script>{% endif %}
 </body>
 </html>

@@ -169,3 +169,5 @@ def register(app, tx, staff, signing_key, operator_access, audience_access):
                     abort(422, "Choose a chat action.")
             payload = list_chat(con, uid, opens, viewer)
             return dict(payload, session=token, active=active)
+
+    return session
