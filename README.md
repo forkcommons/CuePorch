@@ -3,6 +3,10 @@ Version 0.2.0 · Windows, macOS and Linux
 
 CuePorch preserves and publishes video for public media stations and arts institutions. TypeScript drives the operator, creator and screening interfaces. Python owns the institutional service, Vimeo importer, grants and publication queue. The Rust desktop launcher starts the bundled service and opens your browser. PeerTube provides public hosting. CivicCast is optional.
 
+## Release baseline
+
+The installation and usage instructions below describe the public 0.2.0 release. This branch contains later development work.
+
 ## Windows installation
 Double-click the signed Setup EXE, check the publisher is Scott Converse, and follow the wizard. Keep the suggested video library folder for a new institution. Open CuePorch from the Start menu. Enter your institution name and select **Save setup**, then **Open operator console**. To publish online, enter the HTTPS address and publishing credentials of an existing PeerTube host. Local library and exhibition workflows can start before a host is connected. A Windows desktop installation includes Python and FFmpeg. To provision a local video host, start a Docker-compatible Linux container engine and select **Set up a local video host**. Public hosting requires institution-controlled domains and HTTPS.
 
