@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Player and page appearance · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  <h1 id="appearanceTitle">Player and page appearance</h1>
+  <form id="identify">
+    <label>Operator credential <input id="appearanceKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open appearance settings</button>
+  </form>
+  <p id="appearanceMessage" role="status"></p>
+  <main id="appearanceEditor" hidden>
+    <label>Player surface <select id="appearanceSurface"><option value="watch">Video page</option><option value="embed">Embed</option></select></label>
+    <div class="video-workspace">
+      <form id="appearanceForm">
+        <label>Saved preset <select id="selectedPreset"></select></label>
+        <button type="button" id="removePreset" disabled>Remove selected preset</button>
+        <fieldset>
+          <legend>Branding</legend>
+          <div class="palette">
+            <label>Primary color <input type="color" name="primary"></label>
+            <label>Accent color <input type="color" name="accent"></label>
+            <label>Icons <input type="color" name="icon"></label>
+            <label>Text <input type="color" name="text"></label>
+            <label>Background <input type="color" name="background"></label>
+          </div>
+          <label>Logo image <input type="file" name="logo_file" accept="image/png,image/jpeg,image/webp"></label>
+          <button type="button" id="clearLogo" hidden>Clear logo</button>
+        </fieldset>
+        <fieldset>
+          <legend>Theme</legend>
+          <label>Color theme <select name="theme"><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          <label>Title font <select name="font"><option value="serif">Serif</option><option value="sans">Sans-serif</option><option value="mono">Monospace</option></select></label>
+          <label><input type="checkbox" name="show_title"> Show video title</label>
+          <label data-watch-only><input type="checkbox" name="show_chrome"> Show catalog header</label>
+          <label><input type="checkbox" name="ambient"> Ambient backlight</label>
+          <label><input type="checkbox" name="crop"> Fill the video frame</label>
+        </fieldset>
+        <fieldset data-watch-only>
+          <legend>Video details</legend>
+          <label><input type="checkbox" name="description"> Description</label>
+          <label><input type="checkbox" name="credits"> Credits</label>
+          <label><input type="checkbox" name="tags"> Tags</label>
+          <label><input type="checkbox" name="categories"> Categories</label>
+          <label><input type="checkbox" name="license"> Copyright license</label>
+        </fieldset>
+        <fieldset>
+          <legend>Controls and playback</legend>
+          <label>Play button <select name="play_position"><option value="auto">Auto</option><option value="bottom">Bottom</option><option value="center">Center</option></select></label>
+          <label><input type="checkbox" name="progress"> Progress</label>
+          <label><input type="checkbox" name="volume"> Volume</label>
+          <label><input type="checkbox" name="captions"> Captions</label>
+          <label><input type="checkbox" name="speed"> Speed</label>
+          <label><input type="checkbox" name="fullscreen"> Fullscreen</label>
+          <label><input type="checkbox" name="pip"> Picture in picture</label>
+          <label><input type="checkbox" name="allow_seek"> Allow viewers to skip ahead</label>
+          <label><input type="checkbox" name="right_click"> Allow the browser’s context menu</label>
+          <label><input type="checkbox" name="autoplay"> Autoplay</label>
+          <label><input type="checkbox" name="muted"> Start muted</label>
+          <label><input type="checkbox" name="loop"> Loop video</label>
+        </fieldset>
+        <label>Save as a named preset <input name="preset_name" maxlength="80"></label>
+        <label data-watch-only><input type="checkbox" name="apply_page_to_library"> Apply this theme to all existing videos</label>
+        <button type="submit">Save appearance</button>
+        <button type="button" id="resetAppearance">Use CuePorch defaults</button>
+      </form>
+      <aside aria-labelledby="appearancePreview">
+        <h2 id="appearancePreview">Live preview</h2>
+        <div class="appearance-preview">
+          <p id="previewCatalog">Video catalog</p>
+          <img id="previewLogo" alt="Publisher logo" hidden>
+          <h2 id="previewTitle"></h2>
+          <div id="previewFrame" class="appearance-preview-media">
+            <video id="appearanceVideo" muted playsinline preload="metadata" controls hidden aria-label="Video preview"></video>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="/static/ui/video_appearance.js"></script>
+</body>
+</html>

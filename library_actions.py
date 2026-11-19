@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import abort, request, send_file
 
 import library_details
+import library_appearance
 import library_thumbnail
 import library_versions
 import library_privacy
@@ -76,6 +77,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits):
         return work
 
     library_thumbnail.register(app, tx, staff, get_work, root)
+    library_appearance.register(app, tx, staff, get_work, read_works, title_for)
     library_details.register(app, tx, staff, root, get_work, title_for, save_title)
     library_share.register(
         app, tx, staff, get_work,

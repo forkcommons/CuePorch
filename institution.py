@@ -35,6 +35,7 @@ from waitress import serve
 
 from cueporch import verify
 import library_actions
+import library_appearance
 import library_details
 import library_embed
 import library_folder_privacy
@@ -105,6 +106,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_share.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
+        + library_appearance.SCHEMA
         + library_details.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
@@ -1263,6 +1265,10 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/videos/<uuid:work>")
     def operator_video(work):
         return render_template("video_details.html", work=str(work), public_url=os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+
+    @app.get("/operator/videos/<uuid:work>/appearance")
+    def operator_appearance(work):
+        return render_template("video_appearance.html", work=str(work))
 
     @app.get("/player.js")
     def player_sdk():

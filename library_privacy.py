@@ -16,6 +16,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import library_peer_handoff
 import library_share
 import library_embed
+import library_appearance
 from library_trash import hidden
 
 SCHEMA = """
@@ -404,6 +405,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             token = None if locked else serializer.dumps(payload)
             title = "Protected video" if locked else title_for(con, work)
             details = details_for(con, work) if not locked and not embed else None
+            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if not locked else None
+            logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
+            options = library_embed.options(request.args if embed else {}, appearance)
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
             duration = work.get("duration_seconds")
@@ -414,7 +418,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             token=token, tracks=captions(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
-                            options=library_embed.options(request.args) if embed else {}),
+                            options=options, appearance=appearance, logo=logo),
             401 if locked and request.method == "POST" else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"

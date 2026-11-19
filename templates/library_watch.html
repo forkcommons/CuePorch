@@ -6,9 +6,28 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>{{ title }} · CuePorch</title>
 </head>
-<body>
-  {% if not embed %}<h1>{{ title }}</h1>{% endif %}
+<body{% if appearance %}
+      class="themed-video-page" data-surface="{{ 'embed' if embed else 'watch' }}"
+      data-theme="{{ appearance.theme }}" data-font="{{ appearance.font }}"
+      style="--viewer-background:{{ appearance.background }};--viewer-text:{{ appearance.text }};--viewer-primary:{{ appearance.primary }};--viewer-accent:{{ appearance.accent }};--viewer-icon:{{ appearance.icon }}"
+      {% endif %}>
+  {% if not embed %}
+    {% if appearance and appearance.show_chrome %}<nav aria-label="Video catalog"><a href="{{ url_for('catalog') }}">Video catalog</a></nav>{% endif %}
+    <h1{% if appearance and not appearance.show_title %} class="visually-hidden"{% endif %}>{{ title }}</h1>
+  {% endif %}
   {% if token %}
+    {% if appearance %}
+      <div class="archive-player" data-play-position="{{ appearance.play_position }}"
+           data-start="{{ start }}"
+           data-crop="{{ 'yes' if appearance.crop else 'no' }}" data-ambient="{{ 'yes' if appearance.ambient else 'no' }}"
+           data-seek="{{ 'yes' if appearance.allow_seek else 'no' }}" data-context="{{ 'yes' if appearance.right_click else 'no' }}">
+        {% if logo or (embed and appearance.show_title) %}
+        <p class="player-brand">
+          {% if logo %}<img alt="Publisher logo" src="{{ logo }}">{% endif %}
+          {% if embed and appearance.show_title %}<span>{{ title }}</span>{% endif %}
+        </p>
+        {% endif %}
+    {% endif %}
     <video controls playsinline preload="metadata" aria-label="{{ title }}"
            {% if options.autoplay %}autoplay{% endif %}{% if options.muted %} muted{% endif %}{% if options.loop %} loop{% endif %}
            {% if not download %}controlslist="nodownload"{% endif %}
@@ -19,22 +38,27 @@
              src="{{ url_for('shared_video', token=token, track=loop.index0) }}">
       {% endfor %}
     </video>
+    {% if appearance %}
+      {% include "archive_player_controls.html" %}
+      </div>
+      <script type="module" src="/static/ui/archive_playback.js"></script>
+    {% endif %}
     {% if options.api %}<script type="module" src="/static/ui/embedded_video.js"></script>{% endif %}
     {% if download %}<p><a href="{{ url_for('shared_video', token=token, download=1) }}">Download video</a></p>{% endif %}
     {% if details %}
-      {% if details.description %}<p>{{ details.description }}</p>{% endif %}
+      {% if details.description and (not appearance or appearance.description) %}<p>{{ details.description }}</p>{% endif %}
       {% if details.rating == 'mature' %}
         {% set content_labels = {'language': 'Profanity', 'drugs': 'Drug or alcohol use', 'violence': 'Violence', 'nudity': 'Nudity'} %}
         <p>Mature audiences{% for descriptor in details.content %} · {{ content_labels[descriptor] }}{% endfor %}</p>
       {% endif %}
       {% if details.advertisement %}<p>Contains advertisement</p>{% endif %}
       {% if details.realistic_ai %}<p>Includes realistic AI-generated content</p>{% endif %}
-      {% if details.credits %}<dl>{% for credit in details.credits %}
+      {% if details.credits and (not appearance or appearance.credits) %}<dl>{% for credit in details.credits %}
         <dt>{{ credit.name }}</dt>{% if credit.role %}<dd>{{ credit.role }}</dd>{% endif %}
       {% endfor %}</dl>{% endif %}
-      {% if details.tags %}<p>{{ details.tags | join(' · ') }}</p>{% endif %}
-      {% if details.categories %}<p>{{ details.categories | join(' · ') }}</p>{% endif %}
-      {% if details.license %}<p>{{ 'CC0 Public Domain Dedication' if details.license == 'cc0' else 'Creative Commons ' ~ details.license | upper }}</p>{% endif %}
+      {% if details.tags and (not appearance or appearance.tags) %}<p>{{ details.tags | join(' · ') }}</p>{% endif %}
+      {% if details.categories and (not appearance or appearance.categories) %}<p>{{ details.categories | join(' · ') }}</p>{% endif %}
+      {% if details.license and (not appearance or appearance.license) %}<p>{{ 'CC0 Public Domain Dedication' if details.license == 'cc0' else 'Creative Commons ' ~ details.license | upper }}</p>{% endif %}
     {% endif %}
   {% else %}
     <form method="post">

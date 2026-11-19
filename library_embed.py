@@ -3,8 +3,12 @@
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
-def options(args):
-    return {name: args.get(name) in {"1", "true"} for name in ("autoplay", "muted", "loop", "api")}
+def options(args, saved=None):
+    values = {name: (saved or {}).get(name, False) for name in ("autoplay", "muted", "loop", "api")}
+    for name in values:
+        if args.get(name) in {"1", "true", "0", "false"}:
+            values[name] = args[name] in {"1", "true"}
+    return values
 
 
 def peertube_address(destination, args):

@@ -37,6 +37,9 @@ const commands: Record<string, (value: unknown) => unknown> = {
   pause: () => video.pause(),
   getCurrentTime: () => video.currentTime,
   setCurrentTime: async (value) => {
+    if (video.closest<HTMLElement>(".archive-player")?.dataset.seek === "no") {
+      throw new Error("Seeking is disabled for this player.");
+    }
     await metadata();
     video.currentTime = bounded(value, video.duration);
     return video.currentTime;
