@@ -5,6 +5,7 @@ import json
 import shutil
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,7 +32,17 @@ def cut_chapters(work):
     return work.get("chapter_edits", {}).get(video_version_key(work), work.get("chapters", []))
 
 
-def update_video_version(root, uid, expected, replacement=None, restore_key=None):
+@dataclass
+class VideoReplacement:
+    original: Path
+    screening: Path
+    duration: float | None
+    captions: tuple = ()
+    chapters: list | None = None
+    original_language: str | None = None
+
+
+def update_video_version(root, uid, expected, replacement=None, restore_key=None, guard=None):
     """Commit an exact media version while retaining all previous screening objects."""
     with FileLock(str(root / ".catalog.lock"), timeout=30):
         path = root / "manifest.json"
@@ -39,10 +50,11 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
         work = next(item for item in manifest["works"] if item["id"] == uid)
         if video_version_key(work) != expected:
             raise ValueError("The video changed. Reload and choose the version again.")
+        if guard is not None:
+            guard(work)
         if replacement is not None:
-            original, screening, duration = replacement
             files = []
-            for role, source in (("original", original), ("playback", screening)):
+            for role, source in (("original", replacement.original), ("playback", replacement.screening)):
                 digest = checksum(source)
                 size = source.stat().st_size
                 target = root / "objects" / digest
@@ -55,12 +67,15 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
                     "bytes": size,
                 })
             files.extend(f for f in work["files"] if f["role"] == "poster")
+            files.extend(replacement.captions)
             version = {
                 "files": files,
-                "duration_seconds": duration,
+                "duration_seconds": replacement.duration,
                 "disposition": "original recovered",
                 "version_saved_at": datetime.now(timezone.utc).isoformat(),
             }
+            if replacement.chapters is not None:
+                version["chapters"] = replacement.chapters
         else:
             version = next(
                 (v for v in reversed(work.get("versions_history", []))
@@ -87,6 +102,10 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
                 else "playback copy only"
             )
         work["files"] = version["files"]
+        if replacement is not None and replacement.original_language:
+            key = video_version_key(work)
+            edits = work.setdefault("language_edits", {}).setdefault(key, {})
+            edits.setdefault("original_language", replacement.original_language)
         work["versions_history"] = history
         work["version_saved_at"] = version.get("version_saved_at") or datetime.now(timezone.utc).isoformat()
         work["library_version_changed"] = datetime.now(timezone.utc).isoformat()

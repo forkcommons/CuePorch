@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import abort, request
 
-from catalog import update_video_version, video_version_key
+from catalog import VideoReplacement, update_video_version, video_version_key
 from media_tools import prepare_screening
 
 
@@ -79,7 +79,7 @@ def register(app, tx, staff, get_work, root, remember_work):
                 duration = prepare_screening(source, target)
             except ValueError as error:
                 abort(422, str(error))
-            return apply(uid, previous, guard, replacement=(source, target, duration))
+            return apply(uid, previous, guard, replacement=VideoReplacement(source, target, duration))
 
     @app.post("/api/library/work/<uid>/versions")
     def replace_work_video(uid):

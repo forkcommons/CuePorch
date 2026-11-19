@@ -5,19 +5,26 @@ import subprocess
 from functools import lru_cache
 
 
-def prepare_screening(source, target, input_format=None):
+LOCAL_FFMPEG = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,pipe"]
+
+
+def prepare_screening(source, target, input_format=None, *, interval=None, full_resolution=False):
     decoder = ["-f", input_format] if input_format else []
+    clip = []
+    if interval is not None:
+        start, end = interval
+        decoder.extend(["-ss", f"{start:.3f}"])
+        clip = ["-t", f"{end - start:.3f}"]
+    width = "iw" if full_resolution else "min(1280,iw)"
     result = subprocess.run(
         [
-            "ffmpeg",
-            "-nostdin",
+            *LOCAL_FFMPEG,
             "-v",
             "error",
-            "-protocol_whitelist",
-            "file,pipe",
             *decoder,
             "-i",
             str(source),
+            *clip,
             "-map",
             "0:V:0",
             "-map",
@@ -25,7 +32,7 @@ def prepare_screening(source, target, input_format=None):
             "-map_metadata",
             "-1",
             "-vf",
-            "scale=w='min(1280,iw)':h=-2",
+            f"scale=w='trunc({width}/2)*2':h=-2" if full_resolution else "scale=w='min(1280,iw)':h=-2",
             "-c:v",
             "libx264",
             "-threads",
@@ -34,6 +41,7 @@ def prepare_screening(source, target, input_format=None):
             "23",
             "-c:a",
             "aac",
+            *(["-pix_fmt", "yuv420p"] if interval is not None else []),
             "-movflags",
             "+faststart",
             "-progress",
@@ -53,17 +61,32 @@ def prepare_screening(source, target, input_format=None):
     return duration[-1] / 1_000_000 if duration else None
 
 
+def make_gif(source, target, start, end):
+    result = subprocess.run(
+        [
+            *LOCAL_FFMPEG,
+            "-v", "error", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source),
+            "-filter_complex_threads", "1",
+            "-filter_complex",
+            "[0:V:0]fps=12,scale=w='min(480,iw)':h=-2:flags=lanczos,split[a][b];"
+            "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer",
+            "-an", "-t", f"{end - start:.3f}", "-loop", "0", str(target),
+        ],
+        capture_output=True,
+        timeout=180,
+    )
+    if result.returncode or not target.is_file() or not target.stat().st_size:
+        raise ValueError("Unable to make an animated GIF from this selection.")
+
+
 @lru_cache(maxsize=256)
 def video_properties(path):
     """Read dimensions and nominal frame rate from the packaged FFmpeg."""
     try:
         result = subprocess.run(
             [
-                "ffmpeg",
-                "-nostdin",
+                *LOCAL_FFMPEG,
                 "-hide_banner",
-                "-protocol_whitelist",
-                "file,pipe",
                 "-i",
                 str(path),
             ],
@@ -76,6 +99,7 @@ def video_properties(path):
         return {}
     audio = re.search(r"Audio: ([^,\r\n]+)(?:, (\d+ Hz), ([^,\r\n]+))?", result.stderr)
     audio_info = ", ".join(part for part in audio.groups() if part) if audio else None
+    duration = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
     for line in result.stderr.splitlines():
         if "Video:" not in line or "(attached pic)" in line:
             continue
@@ -86,5 +110,6 @@ def video_properties(path):
             "height": int(size[2]) if size else None,
             "fps": float(rate[1]) if rate else None,
             "audio": audio_info,
+            "duration": (int(duration[1]) * 3600 + int(duration[2]) * 60 + float(duration[3])) if duration else None,
         }
     return {}

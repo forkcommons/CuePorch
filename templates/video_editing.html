@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Edit video · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator">
+    <a href="/operator/videos/{{ work }}">Video details</a>
+    <a href="/operator/library?work={{ work }}&amp;action=versions">Versions</a>
+  </nav>
+  <h1 id="editorTitle">Edit video</h1>
+  <form id="identify">
+    <label>Operator credential <input id="editKey" type="password" autocomplete="current-password" required></label>
+    <button>Open editor</button>
+  </form>
+  <p id="editStatus" role="status"></p>
+  <main id="videoEditor" hidden>
+    <video id="editPreview" aria-label="Edit preview" controls playsinline preload="metadata"></video>
+    <form id="trimSelection">
+      <fieldset id="editActions">
+        <legend>Keep this selection</legend>
+        <p>Trimming saves a new version. You can restore earlier cuts from Versions.</p>
+        <label>Timeline <input id="trimPosition" type="range" min="0" step="0.001" value="0"></label>
+        <span id="trimTime"></span>
+        <div class="video-work-actions">
+          <label>Start (seconds) <input id="trimStart" type="number" min="0" step="0.001" required></label>
+          <button type="button" id="timeToStart">Start at preview time</button>
+        </div>
+        <div class="video-work-actions">
+          <label>End (seconds) <input id="trimEnd" type="number" min="0.1" step="0.001" required></label>
+          <button type="button" id="timeToEnd">End at preview time</button>
+        </div>
+        <button type="button" id="playSelection">Play selection</button>
+        <button type="submit" value="trim">Save as new version</button>
+        <button type="submit" value="gif">Download GIF</button>
+        <p>Select up to six seconds for a GIF.</p>
+      </fieldset>
+    </form>
+    <section id="trimTranscript" aria-labelledby="transcriptHeading" hidden>
+      <h2 id="transcriptHeading">Trim by transcript</h2>
+      <label>Subtitle track <select id="editLanguage"></select></label>
+      <label>Find in transcript <input id="editSearch" type="search"></label>
+      <ul id="editCues" class="trim-cues"></ul>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/video_editing.js"></script>
+</body>
+</html>

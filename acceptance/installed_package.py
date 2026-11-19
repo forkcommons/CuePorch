@@ -26,6 +26,7 @@ from installed_presentation import check_presentation
 from installed_ratings import check_ratings
 from installed_registration import check_registration
 from installed_analytics import check_analytics
+from installed_editing import check_editing, fixture as editor_fixture
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -181,6 +182,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
+    editor_master = root / "editor-master.mp4"
+    editor_fixture(editor_master)
     review_update = generate_replacement(root / "review-update.mp4", width=192)
     caption_video = speech_video(args.caption_speech, root / "caption-speech.mp4") if args.caption_speech else None
     src = build_server(root / "fixture")
@@ -355,6 +358,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     ratings = check_ratings(page, browser, base, auth, replacement)
                     registration = check_registration(page, browser, base, auth, museum, venue, replacement)
                     analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
+                    editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -385,6 +389,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             languages=languages, generated_captions=generated, chapters=chapters,
                             presentation=presentation, ratings=ratings, registration=registration,
                             analytics=analytics,
+                            editing=editing,
                         )
                     )
                 quit_response = requests.post(

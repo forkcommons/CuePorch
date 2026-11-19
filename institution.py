@@ -1289,6 +1289,10 @@ def create_app(root, database, operator, institution, simulation=None):
     def operator_analytics(work):
         return render_template("video_analytics.html", work=str(work))
 
+    @app.get("/operator/videos/<uuid:work>/editing")
+    def operator_editing(work):
+        return render_template("video_editing.html", work=str(work))
+
     @app.get("/player.js")
     def player_sdk():
         response = app.send_static_file("ui/embed_player.js")

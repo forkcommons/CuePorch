@@ -12,6 +12,11 @@ main { max-width: 65rem; }
 .video-workspace aside nav, .video-work-actions details[open] { display: grid; gap: .4rem; }
 .video-workspace aside input:not([type=checkbox]), .video-workspace aside textarea { width: 100%; }
 .video-workspace video { max-height: 36rem; }
+#videoEditor video { max-height: 30rem; }
+#trimPosition { width: min(100%, 32rem); }
+.trim-cues { list-style: none; padding: 0; max-height: 24rem; overflow: auto; }
+.trim-cues li { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .4rem 0; }
+.trim-cues span { flex: 1 1 16rem; overflow-wrap: anywhere; }
 #videoDetails [hidden], #identify[hidden] { display: none; }
 .video-work-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: .7rem 1rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
