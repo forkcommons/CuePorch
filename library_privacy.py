@@ -118,6 +118,22 @@ def get_privacy(con, uid):
     return con.execute("SELECT * FROM library_privacy WHERE work=?", (uid,)).fetchone()
 
 
+def try_password(con, operator, uid, value, password_hash):
+    if not value or len(value) > 256:
+        return False
+    visitor = hmac.new(operator.encode(), (request.remote_addr or "").encode(), hashlib.sha256).hexdigest()
+    now = time.time()
+    con.execute("DELETE FROM library_privacy_attempt WHERE since<=?", (now - 60,))
+    attempt = con.execute(
+        "SELECT attempts FROM library_privacy_attempt WHERE work=? AND visitor=?", (uid, visitor)
+    ).fetchone()
+    if attempt and attempt["attempts"] >= 8:
+        abort(429, "Wait a minute before trying again.")
+    con.execute("""INSERT INTO library_privacy_attempt VALUES(?,?,?,1) ON CONFLICT(work,visitor)
+                   DO UPDATE SET attempts=attempts+1""", (uid, visitor, now))
+    return check_password_hash(password_hash, value)
+
+
 def manages_sharing(con, uid):
     return con.execute(
         "SELECT 1 FROM library_privacy WHERE work=? UNION ALL "
@@ -341,24 +357,6 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             pending=json.loads(pending["settings"]) if pending else None,
         )
 
-    def try_password(con, uid, value, password_hash):
-        if not value or len(value) > 256:
-            return False
-        visitor = hmac.new(operator.encode(), (request.remote_addr or "").encode(), hashlib.sha256).hexdigest()
-        now = time.time()
-        con.execute("DELETE FROM library_privacy_attempt WHERE since<=?", (now - 60,))
-        attempt = con.execute(
-            "SELECT attempts FROM library_privacy_attempt WHERE work=? AND visitor=?", (uid, visitor)
-        ).fetchone()
-        if attempt and attempt["attempts"] >= 8:
-            abort(429, "Wait a minute before trying again.")
-        con.execute(
-            """INSERT INTO library_privacy_attempt VALUES(?,?,?,1) ON CONFLICT(work,visitor)
-               DO UPDATE SET attempts=attempts+1""",
-            (uid, visitor, now),
-        )
-        return check_password_hash(password_hash, value)
-
     def watch(uid, embed, frame, alias_slug=None):
         with tx() as con:
             alias = library_share.resolve(con, alias_slug) if alias_slug is not None else None
@@ -416,7 +414,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                     abort(403, "Open the registration form again.")
             locked = mode == "password" and not (
                 enrollment or (request.method == "POST"
-                               and try_password(con, uid, request.form.get("password", ""), row["password_hash"]))
+                               and try_password(con, operator, uid, request.form.get("password", ""), row["password_hash"]))
             )
             form_error = None
             if enrollment:

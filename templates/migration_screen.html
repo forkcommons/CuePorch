@@ -3,4 +3,8 @@
         <label>Vimeo account owner token <input type="password" id="source"></label>
         <button type="button" id="inventory">Preview transfer</button><button type="button" id="transfer">Transfer privately</button>
         </form><p role="status" id="status"></p><table><thead><tr><th>Work</th><th>Source ID</th><th>Recovery</th><th>Viewing permission</th>
-        </tr></thead><tbody id="rows"></tbody></table></main><script type="module" src="/static/ui/migration_screen.js"></script></html>
+        </tr></thead><tbody id="rows"></tbody></table>
+        <section id="showcaseInventory" hidden aria-labelledby="showcaseInventoryTitle">
+        <h2 id="showcaseInventoryTitle">Showcases</h2><p id="showcaseInventoryIssue"></p>
+        <table><thead><tr><th scope="col">Showcase</th><th scope="col">Original visibility</th><th scope="col">Videos in inventory</th><th scope="col">Outside account inventory</th><th scope="col">CuePorch</th></tr></thead>
+        <tbody id="showcaseInventoryRows"></tbody></table></section></main><script type="module" src="/static/ui/migration_screen.js"></script></html>

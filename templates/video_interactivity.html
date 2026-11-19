@@ -81,38 +81,7 @@
       </section>
       <p id="ratingStatus" role="status"></p>
     </form>
-    <form id="registrationEditor" hidden>
-      <h2>Registration</h2>
-      <p id="registrationProtected" hidden>This video is a designated public record and remains open for viewing.</p>
-      <label>Saved registration preset <select name="preset"><option value="">Choose a preset</option></select></label>
-      <label><input type="checkbox" name="enabled"> Require registration before playback</label>
-      <label>Form heading <input name="heading" maxlength="80" required></label>
-      <label>Form description <textarea name="description" maxlength="1000" rows="3"></textarea></label>
-      <label>Privacy policy URL <input type="url" name="privacy_url" maxlength="2048"></label>
-      <label>Form layout <select name="layout"><option value="single">One step</option><option value="steps">Two steps</option></select></label>
-      <label>First name field <select name="first_name">
-        <option value="off">Off</option><option value="optional">Optional</option><option value="required">Required</option>
-      </select></label>
-      <label>Last name field <select name="last_name">
-        <option value="off">Off</option><option value="optional">Optional</option><option value="required">Required</option>
-      </select></label>
-      <label><input type="checkbox" name="collect_utm"> Save UTM campaign fields</label>
-      <fieldset>
-        <legend>Custom fields</legend>
-        <ol id="registrationFields"></ol>
-        <button type="button" id="addRegistrationField">Add field</button>
-      </fieldset>
-      <label>Save as registration preset <input name="preset_name" maxlength="80"></label>
-      <button type="submit">Save registration</button>
-      <p id="registrationStatus" role="status"></p>
-      <section aria-labelledby="registrantHeading">
-        <h3 id="registrantHeading">Recent registrants</h3>
-        <table><thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th></tr></thead>
-          <tbody id="registrantRows"></tbody>
-        </table>
-        <button type="button" id="registrationExport">Download registrants CSV</button>
-      </section>
-    </form>
+    {% include 'registration_editor.html' %}
   </main>
   <template id="chapterRow">
     <li>
@@ -120,18 +89,6 @@
       <label>Start time <input name="timecode" inputmode="numeric" placeholder="00:00:00" required></label>
       <button type="button" data-chapter-action="preview">Preview time</button>
       <button type="button" data-chapter-action="remove">Remove chapter</button>
-    </li>
-  </template>
-  <template id="registrationField">
-    <li>
-      <label>Field type <select name="kind">
-        <option value="text">Text</option><option value="select">Dropdown</option>
-        <option value="checkbox">Checkbox</option><option value="description">Description</option>
-      </select></label>
-      <label>Field label <input name="label" maxlength="240" required></label>
-      <label data-field-options hidden>Choices, one per line <textarea name="options" rows="3"></textarea></label>
-      <label data-field-required><input type="checkbox" name="required"> Required field</label>
-      <button type="button" data-remove-field>Remove field</button>
     </li>
   </template>
   <template id="cardRow">

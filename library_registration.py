@@ -139,6 +139,50 @@ def csv_cell(value):
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text[:1] in ("\t", "\r") else text
 
 
+def operator_form(con, kind, uid, protected_public=False):
+    revision, config = read_form(con, kind, uid)
+    if request.method == "PUT":
+        body = request.get_json()
+        if not isinstance(body, dict) or body.get("revision") != revision:
+            abort(409, "The registration form changed. Reopen the editor.")
+        updated = validation(body.get("settings"))
+        if updated["enabled"] and protected_public:
+            abort(409, "Registration cannot gate a designated public record.")
+        name = text_field(body.get("preset_name", ""), "a registration preset name", 80)
+        if name:
+            con.execute("""INSERT INTO viewer_form_preset VALUES(?,?) ON CONFLICT(name) DO UPDATE SET
+                           settings=excluded.settings""", (name, json.dumps(updated)))
+        if config != updated:
+            revision = uuid.uuid4().hex
+            config = updated
+            con.execute("""INSERT INTO viewer_form VALUES(?,?,?,?) ON CONFLICT(kind,subject) DO UPDATE SET
+                           revision=excluded.revision,settings=excluded.settings""", (kind, uid, revision, json.dumps(config)))
+    return dict(revision=revision, settings=config, protected_public=protected_public,
+                presets={row["name"]: DEFAULT | json.loads(row["settings"]) for row in con.execute(
+                    "SELECT name,settings FROM viewer_form_preset ORDER BY name"
+                )},
+                registrants=[dict(email=row["email"], registered=row["registered"], answers=json.loads(row["answers"]))
+                             for row in registrant_rows(con, kind, uid, limit=100)])
+
+
+def export(con, kind, uid):
+    entries = [(row["email"], row["registered"], json.loads(row["answers"]))
+               for row in registrant_rows(con, kind, uid)]
+    keys = ["first_name", "last_name", *UTM_FIELDS]
+    keys += sorted({key for _, _, values in entries for key in values if key.startswith("field_")})
+    output = StringIO()
+    csv_data = csv.writer(output)
+    csv_data.writerow(["email", "registration_date_utc", *keys])
+    for email, registered, answers in entries:
+        row = [email, datetime.fromtimestamp(registered, timezone.utc).isoformat()]
+        row += [answers.get(key, "") for key in keys]
+        csv_data.writerow(csv_cell(value) for value in row)
+    return Response(output.getvalue(), mimetype="text/csv", headers={
+        "Cache-Control": "no-store",
+        "Content-Disposition": "attachment; filename=cueporch-registrants.csv",
+    })
+
+
 def register(app, tx, staff, get_work, protected_public):
     @app.route("/api/library/work/<uid>/registration", methods=["GET", "PUT"])
     def video_registration(uid):
@@ -147,51 +191,11 @@ def register(app, tx, staff, get_work, protected_public):
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
-            revision, config = read_form(con, "video", uid)
-            if request.method == "PUT":
-                body = request.get_json()
-                if not isinstance(body, dict) or body.get("revision") != revision:
-                    abort(409, "The registration form changed. Reopen the editor.")
-                updated = validation(body.get("settings"))
-                if updated["enabled"] and protected_public(con, uid):
-                    abort(409, "Registration cannot gate a designated public record.")
-                name = text_field(body.get("preset_name", ""), "a registration preset name", 80)
-                if name:
-                    con.execute("""INSERT INTO viewer_form_preset VALUES(?,?) ON CONFLICT(name) DO UPDATE SET
-                                   settings=excluded.settings""", (name, json.dumps(updated)))
-                if config != updated:
-                    revision = uuid.uuid4().hex
-                    config = updated
-                    con.execute("""INSERT INTO viewer_form VALUES('video',?,?,?)
-                                   ON CONFLICT(kind,subject) DO UPDATE SET
-                                   revision=excluded.revision,settings=excluded.settings""",
-                                (uid, revision, json.dumps(config)))
-            return dict(revision=revision, settings=config,
-                        protected_public=protected_public(con, uid),
-                        presets={row["name"]: DEFAULT | json.loads(row["settings"]) for row in con.execute(
-                            "SELECT name,settings FROM viewer_form_preset ORDER BY name"
-                        )},
-                        registrants=[dict(email=row["email"], registered=row["registered"],
-                                          answers=json.loads(row["answers"]))
-                                     for row in registrant_rows(con, "video", uid, limit=100)])
+            return operator_form(con, "video", uid, protected_public(con, uid))
 
     @app.get("/api/library/work/<uid>/registration/export")
     def export_registration(uid):
         staff()
         with tx() as con:
             get_work(con, uid)
-            entries = [(row["email"], row["registered"], json.loads(row["answers"]))
-                       for row in registrant_rows(con, "video", uid)]
-        keys = ["first_name", "last_name", *UTM_FIELDS]
-        keys += sorted({key for _, _, values in entries for key in values if key.startswith("field_")})
-        output = StringIO()
-        csv_data = csv.writer(output)
-        csv_data.writerow(["email", "registration_date_utc", *keys])
-        for email, registered, answers in entries:
-            row = [email, datetime.fromtimestamp(registered, timezone.utc).isoformat()]
-            row += [answers.get(key, "") for key in keys]
-            csv_data.writerow(csv_cell(value) for value in row)
-        return Response(output.getvalue(), mimetype="text/csv", headers={
-            "Cache-Control": "no-store",
-            "Content-Disposition": "attachment; filename=cueporch-registrants.csv",
-        })
+            return export(con, "video", uid)

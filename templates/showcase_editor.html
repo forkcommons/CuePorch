@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Showcases · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="showcase-operator" data-public-url="{{ public_url }}">
+  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/analytics">Analytics</a></nav>
+  <h1>Showcases</h1>
+  <form id="showcaseIdentify">
+    <label>Operator credential <input type="password" name="credential" autocomplete="current-password" required></label>
+    <button type="submit">Open showcases</button>
+  </form>
+  <p id="showcaseStatus" role="status"></p>
+  <main id="showcaseWorkspace" hidden>
+    <div class="library-tools">
+      <label>Showcase <select id="showcaseList"></select></label>
+      <button type="button" id="showcaseNew" data-showcase-action>New showcase</button>
+    </div>
+    <section id="showcaseSetup" aria-label="Showcase editor" hidden>
+      <div class="library-tools">
+        <button type="button" id="showcaseDuplicate" data-showcase-action>Make a copy</button>
+        <button type="button" id="showcaseDelete" data-showcase-action>Delete showcase</button>
+        <button type="button" id="showcaseRegistration" data-showcase-action>Registration</button>
+        <button type="button" id="showcasePreview" data-showcase-action>Preview saved showcase</button>
+      </div>
+      <div id="showcaseSharing" class="library-tools" hidden>
+        <label>Share link <input id="showcaseLink" readonly></label>
+        <label>Embed code <input id="showcaseCode" readonly></label>
+      </div>
+      {% include 'registration_editor.html' %}
+      <div class="video-workspace">
+        <form id="showcaseEdit">
+          <fieldset>
+            <legend>Details and access</legend>
+            <label>Title <input name="title" maxlength="128" required></label>
+            <label>Description <textarea name="description" maxlength="5000"></textarea></label>
+            <label>Link name <input name="slug" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]" maxlength="64" required></label>
+            <label>Visibility <select name="visibility"><option value="private">Private</option><option value="password">Password</option><option value="public">Public</option><option value="embed_only">Embed only</option></select></label>
+            <label id="showcasePassword">Showcase password <input name="password" type="password" autocomplete="new-password" maxlength="256"></label>
+            <label id="showcaseDomains">Allowed embed sites <textarea name="domains" placeholder="One domain per line"></textarea></label>
+          </fieldset>
+          <fieldset>
+            <legend>Videos</legend>
+            <div class="library-tools">
+              <label>Add a video <select id="showcaseVideo"></select></label>
+              <button type="button" id="showcaseAdd">Add to showcase</button>
+            </div>
+            <ol id="showcaseMembers"></ol>
+          </fieldset>
+          <fieldset>
+            <legend>Brand and layout</legend>
+            <label>Logo image <input type="file" name="logo_file" accept="image/png,image/jpeg,image/webp"></label>
+            <button type="button" id="showcaseClearLogo">Remove logo</button>
+            <label>Accent color <input type="color" name="accent"></label>
+            <label><input type="checkbox" name="dark"> Dark background</label>
+            <label for="showcaseLayout">Layout</label><select id="showcaseLayout" name="layout"><option value="grid">Gallery grid</option><option value="featured">Player and playlist</option></select>
+            <label>Playlist card size <select name="size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option><option value="extra-large">Extra large</option></select></label>
+            <label>Featured title <input name="headline" maxlength="140"></label>
+            <label>Featured description <textarea name="summary" maxlength="2000"></textarea></label>
+            <label>Featured link text <input name="button_label" maxlength="100"></label>
+            <label>Featured link URL <input type="url" name="button_url" maxlength="2048"></label>
+          </fieldset>
+          <fieldset>
+            <legend>Playback and discovery</legend>
+            <label><input type="checkbox" name="search"> Show search</label>
+            <label><input type="checkbox" name="copy_link"> Show copy link</label>
+            <label><input type="checkbox" name="next_video"> Play the next video</label>
+            <label><input type="checkbox" name="loop"> Loop the playlist</label>
+            <label><input type="checkbox" name="indexable"> Allow search engines to index the public page</label>
+            <label>Search title <input name="seo_title" maxlength="140"></label>
+            <label>Search description <textarea name="seo_description" maxlength="200"></textarea></label>
+            <label>Search keywords <input name="seo_keywords" maxlength="500"></label>
+          </fieldset>
+          <button type="submit">Save showcase</button>
+        </form>
+        <aside aria-label="Showcase preview">
+          <label>Preview width <select id="showcaseViewport"><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label>
+          <iframe title="Showcase preview" id="showcaseFrame" class="showcase-preview" data-width="desktop" hidden></iframe>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/showcase_editor.js') }}"></script>
+</body>
+</html>

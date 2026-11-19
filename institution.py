@@ -46,6 +46,7 @@ import library_languages
 import library_interactivity
 import library_ratings
 import library_registration
+import library_showcases
 import library_analytics
 import library_peer_handoff
 import library_privacy
@@ -121,6 +122,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_interactivity.SCHEMA
         + library_ratings.SCHEMA
         + library_registration.SCHEMA
+        + library_showcases.SCHEMA
         + library_analytics.SCHEMA
         + library_timeline.SCHEMA
         + timeline_jobs.SCHEMA
@@ -244,7 +246,7 @@ def create_app(root, database, operator, institution, simulation=None):
     def cache(response):
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers.setdefault("Referrer-Policy", "same-origin")
         return response
 
     @app.get("/operator")
@@ -315,6 +317,8 @@ def create_app(root, database, operator, institution, simulation=None):
                         from catalog import merge_collection
 
                         works.update(merge_collection(transfer_directory, root))
+                        with tx() as con:
+                            library_showcases.import_showcases(con, data.get("showcases", []))
                         if os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
                             with tx() as con:
                                 for item in data["works"]:
@@ -344,6 +348,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     transfer_status.update(
                         state="inventoried" if dry else "transferred",
                         works=data["works"],
+                        showcases=data.get("showcases", []),
+                        showcase_issue=data.get("showcase_issue"),
                     )
                 except (ValueError, OSError, KeyError) as exc:
                     transfer_status.update(
@@ -1116,6 +1122,10 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
+    library_showcases.register(
+        app, tx, staff, read_library_works, library_actions.title_for, root, operator,
+        vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
+    )
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(

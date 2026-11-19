@@ -1,0 +1,205 @@
+import { setupRegistration } from "./video_registration.js";
+const identify = document.querySelector("#showcaseIdentify");
+const credential = identify.elements.namedItem("credential");
+const workspace = document.querySelector("#showcaseWorkspace");
+const editor = document.querySelector("#showcaseSetup");
+const form = document.querySelector("#showcaseEdit");
+const field = (name) => form.elements.namedItem(name);
+const save = form.querySelector("[type=submit]");
+const message = document.querySelector("#showcaseStatus");
+const picker = document.querySelector("#showcaseList");
+const video = document.querySelector("#showcaseVideo");
+const members = document.querySelector("#showcaseMembers");
+const add = document.querySelector("#showcaseAdd");
+const frame = document.querySelector("#showcaseFrame");
+const sharing = document.querySelector("#showcaseSharing");
+const link = document.querySelector("#showcaseLink");
+const code = document.querySelector("#showcaseCode");
+const logoInput = field("logo_file");
+const clear = document.querySelector("#showcaseClearLogo");
+const base = document.body.dataset.publicUrl || location.origin;
+let current;
+let showcases = [];
+let library = [];
+let selected = [];
+let logo = null;
+let busy = false;
+credential.value = sessionStorage.getItem("cueporchOperator") || "";
+async function fetchResult(path, method = "GET", body) {
+    const headers = { Authorization: "Bearer " + credential.value };
+    const payload = body instanceof FormData ? body : body ? JSON.stringify(body) : undefined;
+    if (body && !(body instanceof FormData))
+        headers["Content-Type"] = "application/json";
+    const response = await fetch(path, { method, headers, body: payload });
+    if (!response.ok) {
+        const explanation = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p");
+        throw new Error(explanation?.textContent || `Request failed (${response.status})`);
+    }
+    return response;
+}
+async function request(path, method = "GET", body) {
+    const response = await fetchResult(path, method, body);
+    return response.status === 204 ? undefined : response.json();
+}
+function endpoint() { return "/api/showcases/" + encodeURIComponent(current.id); }
+const registration = document.querySelector("#registrationEditor");
+const openRegistration = setupRegistration((suffix, method, values) => request(endpoint() + suffix, method, values), async () => {
+    const result = await fetchResult(endpoint() + "/registration/export");
+    const url = URL.createObjectURL(await result.blob());
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = "cueporch-showcase-registrants.csv";
+    download.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+function membership() {
+    const included = new Set(selected);
+    const titles = new Map(library.map((work) => [work.id, work.title]));
+    video.replaceChildren(...library.filter((work) => !included.has(work.id)).map((work) => new Option(work.title, work.id)));
+    add.disabled = video.options.length === 0;
+    members.replaceChildren(...selected.map((id, index) => {
+        const row = document.createElement("li");
+        const title = titles.get(id) || "Unavailable video";
+        row.append(document.createTextNode(title + " "));
+        function button(text, disabled, handle) {
+            const control = document.createElement("button");
+            control.type = "button";
+            control.textContent = text;
+            control.setAttribute("aria-label", text + " " + title);
+            control.disabled = disabled;
+            control.onclick = () => { handle(); membership(); };
+            row.append(control);
+        }
+        button("Move up", index === 0, () => { selected.splice(index, 1); selected.splice(index - 1, 0, id); });
+        button("Move down", index === selected.length - 1, () => { selected.splice(index, 1); selected.splice(index + 1, 0, id); });
+        button("Remove", false, () => { selected.splice(index, 1); });
+        return row;
+    }));
+}
+function visibility() {
+    const mode = field("visibility").value;
+    document.querySelector("#showcasePassword").hidden = mode !== "password";
+    document.querySelector("#showcaseDomains").hidden = mode === "private";
+}
+function select(value) {
+    if (current?.id !== value.id)
+        registration.hidden = true;
+    current = value;
+    picker.value = value.id;
+    for (const [name, setting] of Object.entries(value.settings)) {
+        const input = field(name);
+        if (!input)
+            continue;
+        if (typeof setting === "boolean")
+            input.checked = setting;
+        else
+            input.value = Array.isArray(setting) ? setting.join("\n") : setting || "";
+    }
+    field("slug").value = value.slug;
+    field("password").value = "";
+    field("password").placeholder = value.has_password ? "Keep current password" : "";
+    logoInput.value = "";
+    logo = value.settings.logo;
+    clear.hidden = !logo;
+    selected = [...value.settings.videos];
+    frame.hidden = true;
+    frame.removeAttribute("src");
+    sharing.hidden = !value.watch && !value.embed;
+    link.value = value.watch ? new URL(value.watch, base).href : "";
+    code.value = value.embed ? `<iframe src="${new URL(value.embed, base).href}" title="Video showcase" width="960" height="640" allowfullscreen></iframe>` : "";
+    link.parentElement.hidden = !value.watch;
+    code.parentElement.hidden = !value.embed;
+    visibility();
+    membership();
+    editor.hidden = false;
+}
+function updateList(focus) {
+    picker.replaceChildren(...showcases.map((value) => new Option(value.settings.title, value.id)));
+    const value = showcases.find((entry) => entry.id === focus) || showcases[0];
+    if (value)
+        select(value);
+    else
+        editor.hidden = true;
+}
+async function action(work, success = "") {
+    if (busy)
+        return;
+    busy = true;
+    message.textContent = "";
+    picker.disabled = save.disabled = true;
+    const actions = Array.from(document.querySelectorAll("[data-showcase-action]"));
+    for (const button of actions)
+        button.disabled = true;
+    try {
+        await work();
+        message.textContent = success;
+    }
+    catch (error) {
+        message.textContent = error instanceof Error ? error.message : String(error);
+    }
+    finally {
+        busy = picker.disabled = save.disabled = false;
+        for (const button of actions)
+            button.disabled = false;
+    }
+}
+async function signIn() {
+    showcases = await request("/api/showcases");
+    library = (await request("/api/library")).filter((work) => work.asset_type === "video");
+    sessionStorage.setItem("cueporchOperator", credential.value);
+    updateList(new URLSearchParams(location.search).get("select") || undefined);
+    workspace.hidden = false;
+    identify.hidden = true;
+}
+identify.onsubmit = (event) => { event.preventDefault(); void action(signIn); };
+if (credential.value)
+    void action(signIn);
+picker.onchange = () => updateList(picker.value);
+field("visibility").onchange = visibility;
+add.onclick = () => { selected.push(video.value); membership(); };
+logoInput.onchange = () => { clear.hidden = !logo && !logoInput.files?.length; };
+clear.onclick = () => { logo = null; logoInput.value = ""; clear.hidden = true; };
+const on = (id, work, success = "") => {
+    document.querySelector("#" + id).onclick = () => void action(work, success);
+};
+async function addShowcase(path) {
+    const value = await request(path, "POST");
+    showcases.unshift(value);
+    updateList(value.id);
+}
+on("showcaseNew", () => addShowcase("/api/showcases"), "Showcase created.");
+on("showcaseDuplicate", () => addShowcase(endpoint()), "A private copy was created.");
+on("showcaseDelete", async () => {
+    await request(endpoint(), "DELETE");
+    showcases = showcases.filter((value) => value.id !== current.id);
+    updateList();
+}, "Showcase deleted. Its videos remain in the library.");
+on("showcaseRegistration", openRegistration);
+on("showcasePreview", async () => {
+    const value = await request(endpoint() + "/preview", "POST");
+    frame.hidden = false;
+    frame.src = value.preview;
+});
+const viewport = document.querySelector("#showcaseViewport");
+viewport.onchange = () => { frame.dataset.width = viewport.value; };
+form.onsubmit = (event) => {
+    event.preventDefault();
+    void action(async () => {
+        if (logoInput.files?.length) {
+            const file = new FormData();
+            file.set("logo", logoInput.files[0]);
+            logo = (await request("/api/review-logos", "POST", file)).logo;
+        }
+        const settings = { ...current.settings, logo, videos: selected, domains: field("domains").value.split(/\s+/).filter(Boolean) };
+        for (const [name, old] of Object.entries(settings)) {
+            if (name === "domains" || name === "videos" || name === "logo")
+                continue;
+            const control = field(name);
+            settings[name] = typeof old === "boolean" ? control.checked : control.value;
+        }
+        const updated = await request(endpoint(), "PUT", { revision: current.revision, slug: field("slug").value,
+            settings, password: field("password").value });
+        showcases = showcases.map((value) => value.id === updated.id ? updated : value);
+        updateList(updated.id);
+    }, "Showcase saved.");
+};

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ 'Protected showcase' if locked else settings.seo_title or settings.title }} · CuePorch</title>
+  {% if not locked and not internal and not embed and settings.visibility == 'public' and settings.indexable %}
+    {% if settings.seo_description %}<meta name="description" content="{{ settings.seo_description }}">{% endif %}
+    {% if settings.seo_keywords %}<meta name="keywords" content="{{ settings.seo_keywords }}">{% endif %}
+  {% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="showcase-page" data-theme="{{ 'dark' if settings.dark else 'light' }}"
+      data-layout="{{ settings.layout }}" data-size="{{ settings.size }}"
+      data-next="{{ 'yes' if settings.next_video else 'no' }}" data-loop="{{ 'yes' if settings.loop else 'no' }}"
+      style="--showcase-accent:{{ settings.accent }}">
+  <main>
+    {% if locked %}
+    <h1>Protected showcase</h1>
+    <form method="post" class="showcase-access">
+      {% if unlock_token %}<input type="hidden" name="frame" value="{{ unlock_token }}">{% endif %}
+      {% if wrong %}<p role="alert">That password did not match.</p>{% endif %}
+      <label>Showcase password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <button type="submit">Unlock showcase</button>
+    </form>
+    {% else %}
+    <header class="showcase-header">
+      {% if internal %}<p class="showcase-note">Private operator preview</p>{% endif %}
+      {% if logo %}<img src="{{ logo }}" alt="Publisher logo">{% endif %}
+      <h1>{{ settings.title }}</h1>
+      {% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
+    </header>
+    {% if enrollment %}
+      <div class="showcase-access">{% include 'viewer_registration.html' %}</div>
+    {% else %}
+      {% if settings.headline or settings.summary or settings.button_url %}
+      <section class="showcase-feature" aria-label="Featured information">
+        {% if settings.headline %}<h2>{{ settings.headline }}</h2>{% endif %}
+        {% if settings.summary %}<p>{{ settings.summary }}</p>{% endif %}
+        {% if settings.button_url %}<a href="{{ settings.button_url }}" rel="noopener noreferrer">{{ settings.button_label }}</a>{% endif %}
+      </section>
+      {% endif %}
+      {% if entries %}
+      <div class="showcase-watch">
+        <section class="showcase-screen" aria-labelledby="nowPlaying">
+          <h2 id="nowPlaying" aria-live="polite">{{ entries[0].title }}</h2>
+          <video controls playsinline preload="metadata" controlslist="nodownload" aria-labelledby="nowPlaying"
+                 src="{{ entries[0].media }}" {% if entries[0].poster %}poster="{{ entries[0].poster }}"{% endif %}>
+            {% for track in entries[0].captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}" src="{{ track.url }}">{% endfor %}
+          </video>
+        </section>
+        <section aria-label="Playlist" class="showcase-playlist">
+          {% if settings.search %}<label>Search videos <input type="search" id="showcaseSearch"></label>{% endif %}
+          <ol>
+            {% for item in entries %}
+            <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.first %} aria-current="true"{% endif %}>
+              {% if item.poster %}<img alt="" src="{{ item.poster }}" loading="lazy">{% endif %}
+              <span>{{ item.title }}</span>
+            </button></li>
+            {% endfor %}
+          </ol>
+          <p id="showcaseNoMatches" hidden>No videos match your search.</p>
+        </section>
+      </div>
+      <script type="application/json" id="showcaseContents">{{ entries | tojson }}</script>
+      {% else %}<p>No videos are available in this showcase.</p>{% endif %}
+    {% endif %}
+    {% if settings.copy_link and not internal and not embed %}
+    <button type="button" id="showcaseCopy">Copy showcase link</button>
+    <span id="showcaseCopyStatus" role="status"></span>
+    {% endif %}
+    <script type="module" src="{{ url_for('static', filename='ui/showcase_view.js') }}"></script>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -203,6 +203,56 @@ def original_url(video, vid):
     return fallback
 
 
+def showcase_inventory(institution, source, account, video_ids):
+    path = account + "/albums"
+    try:
+        albums = list(source.pages(path))
+    except SourceFailure as exc:
+        if exc.status in (403, 404):
+            return [], f"Showcase inventory returned HTTP {exc.status}. Check the account's showcase access."
+        raise
+    result = []
+    seen = set()
+    for item in albums:
+        identity = re.fullmatch(r"(?:/users/[0-9]+)?/albums/([0-9]+)", item.get("uri", ""))
+        if not identity:
+            raise ValueError("Invalid showcase identity")
+        identifier = identity.group(1)
+        if identifier in seen:
+            raise ValueError("Duplicate showcase identity")
+        seen.add(identifier)
+        canonical = path + "/" + identifier
+        issues = []
+        try:
+            members = list(source.pages(canonical + "/videos"))
+        except SourceFailure as exc:
+            if exc.status not in (403, 404):
+                raise
+            members = []
+            issues.append(f"Video list returned HTTP {exc.status}.")
+        ids = []
+        for member in members:
+            uri = re.fullmatch(r"/videos/([0-9]+)", member.get("uri", ""))
+            if not uri:
+                raise ValueError("Invalid showcase member identity")
+            ids.append(uri.group(1))
+        missing = [vid for vid in ids if vid not in video_ids]
+        recovered = [work_id(institution, "vimeo", vid) for vid in ids if vid in video_ids]
+        visibility = item.get("privacy", "")
+        if isinstance(visibility, dict):
+            visibility = visibility.get("view", "")
+        if visibility not in ("anybody", "public", "nobody", "private", "password", "embed_only"):
+            visibility = "unknown"
+        title, description = item.get("name"), item.get("description")
+        result.append(dict(id=work_id(institution, "vimeo-showcase", canonical),
+                           uri=canonical, source_id=identifier, source_url=f"https://vimeo.com/showcase/{identifier}",
+                           title=(title.strip()[:128] if isinstance(title, str) else "") or "Untitled showcase",
+                           description=description.strip()[:5000] if isinstance(description, str) else "",
+                           source_visibility=visibility, members=list(dict.fromkeys(recovered)),
+                           missing=list(dict.fromkeys(missing)), issues=issues))
+    return result, None
+
+
 def migrate(institution, root, source, dry_run=False):
     from filelock import FileLock
 
@@ -234,6 +284,8 @@ def _migrate(institution, root, source, dry_run, refresh):
     if job.exists() and json.loads(job.read_text(encoding="utf8")) != binding:
         raise ValueError("Source and destination do not match the previous migration")
     dump(job, binding)
+    showcases, showcase_issue = showcase_inventory(institution, source, account,
+                                                   {uri.split("/")[-1] for uri in resource_ids})
     (root / "objects").mkdir(exist_ok=True)
     (root / "checkpoints").mkdir(exist_ok=True)
     works = []
@@ -372,7 +424,7 @@ def _migrate(institution, root, source, dry_run, refresh):
                     ),
                 )
         works.append(record)
-    manifest = dict(schema=1, institution=institution, works=works)
+    manifest = dict(schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue)
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:
         verify(root)

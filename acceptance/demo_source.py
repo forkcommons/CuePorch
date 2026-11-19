@@ -5,7 +5,7 @@ import json
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 def build_server(directory, port=0):
@@ -61,7 +61,18 @@ def build_server(directory, port=0):
                     self.end_headers()
                     self.wfile.write(data)
                     return
-                if path == "/me/videos":
+                following = None
+                total = None
+                if path == "/users/10/albums":
+                    values = [dict(uri="/users/10/albums/805", name="Station and Gallery",
+                                   description="Local programming and an artist screening", privacy="password")]
+                elif path == "/users/10/albums/805/videos":
+                    page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
+                    subset = ["72", "71"] if page == "1" else ["999"]
+                    following = path + "?per_page=100&page=2" if page == "1" else None
+                    total = 3
+                    values = [{"uri": "/videos/" + uid} for uid in subset]
+                elif path == "/me/videos":
                     values = [
                         dict(
                             uri="/videos/71",
@@ -153,7 +164,7 @@ def build_server(directory, port=0):
                 else:
                     return self.send_error(404)
                 data = json.dumps(
-                    dict(data=values, total=len(values), paging=dict(next=None))
+                    dict(data=values, total=len(values) if total is None else total, paging=dict(next=following))
                 ).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(data)))
