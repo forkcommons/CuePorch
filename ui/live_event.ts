@@ -1,10 +1,12 @@
 import {setupLiveCaptions} from "./live_caption_player.js";
+import {measureEventPlayback} from "./event_playback.js";
 
 const lobby = document.querySelector<HTMLElement>("#eventLobby")!;
 const eventStatus = document.querySelector<HTMLElement>("#eventStatus")!;
 const player = document.querySelector<HTMLElement>("#eventPlayer")!;
 let checking = false;
 let hls: {destroy(): void} | undefined;
+let stopMeasuring: (() => void) | undefined;
 interface HlsClient {
   readonly playingDate: Date | null;
   loadSource(url: string): void;
@@ -17,7 +19,8 @@ const viewer = lobby.dataset.viewerGrant || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
 const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
 
-function renderVideo(address: string, phase: string, video?: HTMLVideoElement) {
+function renderVideo(address: string, phase: string, analytics: string, video?: HTMLVideoElement) {
+  stopMeasuring?.();
   player.dataset.address = address;
   player.dataset.phase = phase;
   hls?.destroy();
@@ -29,6 +32,7 @@ function renderVideo(address: string, phase: string, video?: HTMLVideoElement) {
     video.setAttribute("aria-label", "Event video");
     player.replaceChildren(video);
   }
+  stopMeasuring = measureEventPlayback(video, analytics);
   if (Hls?.isSupported()) {
     const session = new Hls({
       enableWorker: true,
@@ -49,6 +53,8 @@ function renderVideo(address: string, phase: string, video?: HTMLVideoElement) {
 }
 
 function closePlayer() {
+  stopMeasuring?.();
+  stopMeasuring = undefined;
   captions.bind();
   captions.select("");
   hls?.destroy();
@@ -72,15 +78,15 @@ async function checkStatus() {
       return;
     }
     if (!response.ok) return;
-    const {status: next, address: src, native_video: native, captions: captionPath}: {
-      status: string; address: string | null; native_video: boolean; captions: string | null;
+    const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics}: {
+      status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
     } = await response.json();
     const current = player.querySelector("iframe");
     if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
       closePlayer();
       stopChecking();
     } else if (src && native) {
-      if (!player.querySelector("video") || player.dataset.phase !== next) renderVideo(src, next);
+      if (!player.querySelector("video") || player.dataset.phase !== next) renderVideo(src, next, analytics || "");
     } else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
       const frame = document.createElement("iframe");
       frame.title = "Event video";
@@ -111,7 +117,8 @@ function stopChecking() { window.clearInterval(timer); }
 lobby.addEventListener("click", (event) => {
   if ((event.target as HTMLElement).id === "refreshEvent") void checkStatus();
 });
-if (["Replay", "This occurrence was withdrawn"].includes(eventStatus.textContent || "")) stopChecking();
 if (!viewer && document.querySelector('[name="enrollment"]')) stopChecking();
 const initial = player.querySelector("video");
-if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "", initial);
+if (eventStatus.textContent === "This occurrence was withdrawn" || (!initial && eventStatus.textContent === "Replay")) stopChecking();
+if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "",
+  player.dataset.analytics || "", initial);

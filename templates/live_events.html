@@ -75,6 +75,18 @@
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
       <p id="eventHealthDetails"></p>
+      <details id="eventAnalytics">
+        <summary>Audience analytics</summary>
+        <table>
+          <caption>Playback in CuePorch players, counted by browser session</caption>
+          <thead><tr><th scope="col">Phase</th><th scope="col">Watching</th><th scope="col">Peak</th>
+            <th scope="col">Player loads</th><th scope="col">Plays</th><th scope="col">Time watched</th>
+            <th scope="col">Average per load</th></tr></thead>
+          <tbody id="eventAnalyticsRows"></tbody>
+        </table>
+        <p id="eventAnalyticsStatus" role="status"></p>
+        <button type="button" id="refreshEventAnalytics">Refresh analytics</button>
+      </details>
       <details id="eventCaptionSettings">
         <summary>Live captions</summary>
         <form id="productionCaptions">

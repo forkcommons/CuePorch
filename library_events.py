@@ -13,6 +13,7 @@ import requests
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
+import event_analytics
 import event_chat
 import event_captions
 import event_engagement
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
-""" + event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA + event_speakers.SCHEMA + event_captions.SCHEMA
+""" + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
+       + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -196,6 +198,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
+    measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
 
     def locked(uid):
         if not re.fullmatch(r"[a-f0-9]{32}", uid):
@@ -518,6 +521,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             _, event = read(con, uid)
             selected_open(event, opens)
             target = occurrence(con, uid, opens)
+            managed = event.get("cueporch_delivery") or library_registration.active(con, "event", uid)
         local = studio.health(uid, opens)
         if request.args.get("source") == "relay":
             return dict(encoder=local)
@@ -528,6 +532,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 result = event_peer.observe(host, target["remote"])
                 if result["state"] in ("live", "waiting_for_encoder"):
                     result["delivery_settings"] = event_peer.live_settings(host, target["remote"])
+                if managed:
+                    phase = result["state"]
+                    if phase == "live" or (phase == "replay" and target["delivery"] == "replay"):
+                        with tx() as con:
+                            result["viewers"] = event_analytics.current(con, uid, opens, phase)
+                    else:
+                        result["viewers"] = 0
                 return dict(result, encoder=local)
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "Could not read stream health from the connected video host.")
@@ -565,6 +576,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409, "Another operation is preparing this event.")
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "The CuePorch player is closed. Retry to withdraw the copy from the video host.")
+
+    @app.get("/api/live-events/<uid>/<int:opens>/analytics")
+    def event_audience_analytics(uid, opens):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            selected_open(event, opens)
+            target = occurrence(con, uid, opens)
+            phase = {"ready": "live", "replay": "replay"}.get(target["delivery"]) if target else None
+            return event_analytics.summarize(con, uid, opens, phase)
 
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
@@ -610,6 +631,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if not grant and not json_status:
                     enrollment = forms.dumps(scope)
         address = None
+        analytics_token = None
         protected = bool(form)
         host_private = protected or event.get("cueporch_delivery", False)
         native_video = host_private or captioned
@@ -632,6 +654,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
                         session = files.dumps(scope + [delivery["remote"], gateway, observed["state"] == "replay"])
                         address = url_for("event_media_file", token=session, filename=filename)
+                        if event_analytics.permitted():
+                            analytics_token = measurement.dumps(
+                                scope + [delivery["remote"], observed["state"] == "replay", uuid.uuid4().hex]
+                            )
                         status = "Live" if observed["state"] == "live" else "Replay"
                 else:
                     observed = event_peer.public_status(delivery["origin"], delivery["remote"])
@@ -648,11 +674,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 status = "The stream is unavailable"
         caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"]) if can_participate else None
         view = (dict(status=status, address=address, protected=protected, native_video=native_video,
-                     captions=caption_endpoint if captioned else None)
+                     captions=caption_endpoint if captioned else None, analytics_token=analytics_token)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint if captioned else None,
+                                     analytics_token=analytics_token,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
@@ -674,6 +701,31 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def event_embed(slug):
         return viewer(slug, True)
 
+    def delivered(con, uid, revision, opens, form_revision, remote, replay):
+        row, event = read(con, uid)
+        delivery = occurrence(con, uid, opens)
+        form = library_registration.active(con, "event", uid)
+        if (row["revision"] != revision or publication(con, row, event) != "eligible" or
+                not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
+                replay != (delivery["delivery"] == "replay") or
+                (form["revision"] if form else None) != form_revision):
+            abort(404)
+        return delivery
+
+    @app.post("/api/event-playback")
+    def event_playback_sample():
+        try:
+            uid, revision, opens, form_revision, _, remote, replay, nonce = measurement.loads(
+                request.headers.get("X-CuePorch-Playback", ""), max_age=12 * 3600
+            )
+        except (BadSignature, ValueError):
+            abort(404)
+        if event_analytics.permitted():
+            with tx() as con:
+                delivered(con, uid, revision, opens, form_revision, remote, replay)
+                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, request.get_json())
+        return "", 204
+
     @app.get("/event-media/<token>/<filename>")
     def event_media_file(token, filename):
         try:
@@ -683,14 +735,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
         with tx() as con:
-            row, event = read(con, uid)
-            delivery = occurrence(con, uid, opens)
-            form = library_registration.active(con, "event", uid)
-            if (row["revision"] != revision or publication(con, row, event) != "eligible" or
-                    not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
-                    replay != (delivery["delivery"] == "replay") or
-                    (form["revision"] if form else None) != form_revision):
-                abort(404)
+            delivery = delivered(con, uid, revision, opens, form_revision, remote, replay)
         try:
             return media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
         except (ValueError, requests.RequestException):

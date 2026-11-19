@@ -1,14 +1,17 @@
 import { setupLiveCaptions } from "./live_caption_player.js";
+import { measureEventPlayback } from "./event_playback.js";
 const lobby = document.querySelector("#eventLobby");
 const eventStatus = document.querySelector("#eventStatus");
 const player = document.querySelector("#eventPlayer");
 let checking = false;
 let hls;
+let stopMeasuring;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
 const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
-function renderVideo(address, phase, video) {
+function renderVideo(address, phase, analytics, video) {
+    stopMeasuring?.();
     player.dataset.address = address;
     player.dataset.phase = phase;
     hls?.destroy();
@@ -20,6 +23,7 @@ function renderVideo(address, phase, video) {
         video.setAttribute("aria-label", "Event video");
         player.replaceChildren(video);
     }
+    stopMeasuring = measureEventPlayback(video, analytics);
     if (Hls?.isSupported()) {
         const session = new Hls({
             enableWorker: true,
@@ -41,6 +45,8 @@ function renderVideo(address, phase, video) {
     }
 }
 function closePlayer() {
+    stopMeasuring?.();
+    stopMeasuring = undefined;
     captions.bind();
     captions.select("");
     hls?.destroy();
@@ -66,7 +72,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath } = await response.json();
+        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics } = await response.json();
         const current = player.querySelector("iframe");
         if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
             closePlayer();
@@ -74,7 +80,7 @@ async function checkStatus() {
         }
         else if (src && native) {
             if (!player.querySelector("video") || player.dataset.phase !== next)
-                renderVideo(src, next);
+                renderVideo(src, next, analytics || "");
         }
         else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
             const frame = document.createElement("iframe");
@@ -111,10 +117,10 @@ lobby.addEventListener("click", (event) => {
     if (event.target.id === "refreshEvent")
         void checkStatus();
 });
-if (["Replay", "This occurrence was withdrawn"].includes(eventStatus.textContent || ""))
-    stopChecking();
 if (!viewer && document.querySelector('[name="enrollment"]'))
     stopChecking();
 const initial = player.querySelector("video");
+if (eventStatus.textContent === "This occurrence was withdrawn" || (!initial && eventStatus.textContent === "Replay"))
+    stopChecking();
 if (initial && player.dataset.address)
-    renderVideo(player.dataset.address, eventStatus.textContent || "", initial);
+    renderVideo(player.dataset.address, eventStatus.textContent || "", player.dataset.analytics || "", initial);

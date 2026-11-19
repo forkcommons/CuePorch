@@ -154,8 +154,18 @@ def check_live_delivery(base, origin, keys, home, ffmpeg, port):
     assert entry["publication"] == "eligible"
     (session,) = entry["occurrences"]
     production = f"{base}/api/live-events/{entry['id']}/{session['id']}"
+    metrics_url = production + "/analytics"
+    observation_url = base + "/api/event-playback"
     assert requests.post(production + "/encoder", timeout=10).status_code == 403
     assert requests.get(production + "/health", timeout=10).status_code == 403
+    assert requests.get(metrics_url, timeout=10).status_code == 403
+    assert requests.post(observation_url, json={}, timeout=10).status_code == 404
+
+    def metrics():
+        response = requests.get(metrics_url, headers=auth, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
     with sync_playwright() as pw:
         browser = chromium(pw)
         try:
@@ -170,6 +180,7 @@ def check_live_delivery(base, origin, keys, home, ffmpeg, port):
                 prepare.click()
             assert prepared.value.ok, f"Encoder setup returned HTTP {prepared.value.status}"
             expect(operator.locator("#encoderSettings")).to_be_visible()
+            expect(operator.get_by_role("button", name="Withdraw this occurrence")).to_be_enabled()
             key = operator.locator("#encoderKey").input_value()
             server = operator.locator("#rtmpServer").input_value().rstrip("/")
             endpoint = urlsplit(server)
@@ -189,21 +200,47 @@ def check_live_delivery(base, origin, keys, home, ffmpeg, port):
             expect(guest.locator("#eventStatus")).to_have_text("Waiting for the encoder")
             assert key not in guest.content()
             assert guest.locator("#eventPlayer video").count() == 0
+            operator.get_by_text("Audience analytics", exact=True).click()
+            stats_rows = operator.locator("#eventAnalyticsRows tr")
+            expect(stats_rows.first.locator("td")).to_have_text(["0", "0", "0", "0", "0 s", "0 s"])
             gate = base + "/api/policy/replay"
             requests.put(gate, json={"required": True}, headers=auth, timeout=10).raise_for_status()
-            with send_signal(ffmpeg, server, key, 65) as encoder:
+            with send_signal(ffmpeg, server, key, 95) as encoder:
                 wait_for_delivery(production, auth, "live", 45, encoder)
-                live, live_width, _ = play_event(guest, stable, "Live")
+                expect(guest.locator("#eventStatus")).to_have_text("Live", timeout=30000)
+                live, live_width, _ = play_event(guest, stable, "Live", navigate=False)
                 assert live.startswith(base + "/event-media/")
                 assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
                 embed_url = base + entry["embed"] + f"?occurrence={session['id']}"
                 guest_embed = browser.new_page()
-                _, embedded_width, _ = play_event(guest_embed, embed_url, "Live")
+                guest_embed.goto(embed_url)
+                expect(stats_rows.first.locator("td").nth(2)).to_have_text("2", timeout=15000)
+                assert metrics()["live"]["plays"] == 1, "Loading a second player counted as playback"
+                _, embedded_width, _ = play_event(guest_embed, embed_url, "Live", navigate=False)
+                try:
+                    expect(stats_rows.first.locator("td").nth(0)).to_have_text("2", timeout=15000)
+                except AssertionError as error:
+                    state = [page.locator("#eventPlayer video").evaluate("""v => ({
+                        paused: v.paused, time: v.currentTime, ready: v.readyState, hidden: document.hidden
+                    })""") for page in (guest, guest_embed)]
+                    raise AssertionError(f"Expected two live viewers, got {metrics()['live']}; players {state}") from error
+                health = requests.get(production + "/health", headers=auth, timeout=10)
+                assert health.ok and health.json()["viewers"] == 2
+                guest_embed.locator("#eventPlayer video").evaluate("video => video.pause()")
+                expect(stats_rows.first.locator("td").nth(0)).to_have_text("1", timeout=15000)
+                assert metrics()["live"]["peak"] == 2
                 guest_embed.close()
+                untracked = browser.new_page(extra_http_headers={"DNT": "1"})
+                with untracked.expect_response(lambda result: result.url == stable) as guest_page:
+                    play_event(untracked, stable, "Live")
+                assert guest_page.value.ok and untracked.locator("#eventPlayer").get_attribute("data-analytics") == ""
+                untracked.close()
+                assert metrics()["live"]["loads"] == 2
                 assert encoder.poll() is None, "Playback started after the live encoder ended"
                 assert key not in guest.content()
-                print(f"Guest decoded live video at {live_width}px", flush=True)
-                assert encoder.wait(timeout=75) == 0, "The installed encoder stream failed"
+                print(f"Guest decoded {live_width}px live video. A second viewer raised current and peak to two; "
+                      "pausing reduced current to one; the opted-out viewer played without adding a load.", flush=True)
+                assert encoder.wait(timeout=100) == 0, "The installed encoder stream failed"
             action = f"{base}/api/actions/live-replay-{entry['id']}-{session['id']}"
             # PeerTube waits five minutes after RTMP disconnect before turning the live into a replay.
             replay_deadline = time.monotonic() + 420
@@ -228,8 +265,11 @@ def check_live_delivery(base, origin, keys, home, ffmpeg, port):
                 time.sleep(2)
             else:
                 raise AssertionError("CuePorch did not publish the recorded replay")
-            replay, replay_width, duration = play_event(guest, stable, "Replay")
-            assert replay.startswith(base + "/event-media/") and 50 <= duration <= 75
+            replay_token = response.json()["analytics_token"]
+            assert replay_token
+            expect(guest.locator("#eventStatus")).to_have_text("Replay", timeout=20000)
+            replay, replay_width, duration = play_event(guest, stable, "Replay", navigate=False)
+            assert replay.startswith(base + "/event-media/") and 80 <= duration <= 105
             assert requests.get(live, timeout=10).status_code == 404
             old_token_replay = live.rsplit("/", 1)[0] + "/" + replay.rsplit("/", 1)[-1]
             assert requests.get(old_token_replay, timeout=10).status_code == 404
@@ -238,23 +278,32 @@ def check_live_delivery(base, origin, keys, home, ffmpeg, port):
                                         (entry["id"], session["id"])).fetchone() == (uid, "replay")
             assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
             print(f"Released stable-link replay decoded at {replay_width}px for {duration:.2f}s, with the old live token denied.", flush=True)
-            operator.reload()
-            operator.get_by_role("button", name="Open production for Installed studio signal", exact=False).click()
+            expect(stats_rows.nth(1).locator("td").nth(0)).to_have_text("1", timeout=15000)
+            report = metrics()
+            assert report["live"]["current"] == 0 and report["live"]["peak"] == 2 and report["live"]["plays"] == 2
+            assert report["live"]["loads"] == 2 and report["live"]["watched_seconds"] > 0
+            assert report["replay"]["loads"] == 1 and report["replay"]["plays"] == 1, report["replay"]
             withdraw = operator.get_by_role("button", name="Withdraw this occurrence")
             with operator.expect_response(lambda result: result.url == production + "/delivery", timeout=45000) as removed:
                 withdraw.click()
             assert removed.value.status == 204, f"Withdrawal returned HTTP {removed.value.status}"
             expect(operator.locator("#eventsStatus")).to_have_text("Occurrence withdrawn.")
-            guest.goto(stable)
-            expect(guest.locator("#eventPlayer video")).to_have_count(0)
+            expect(guest.locator("#eventPlayer video")).to_have_count(0, timeout=15000)
             assert requests.get(replay, timeout=10).status_code == 404
+            assert requests.post(observation_url, headers={"X-CuePorch-Playback": replay_token}, json={},
+                                 timeout=10).status_code == 404
+            assert metrics()["replay"]["current"] == 0
             return dict(repeat_prepare_same_stream=True, credentials_require_operator=True, live_width=live_width,
                         displayed_encoder_endpoint_accepts_stream=True, embed_live_width=embedded_width,
                         replay_width=replay_width, replay_seconds=round(duration, 2),
                         opt_in_gate_holds_private_recording_and_releases_original=True,
                         original_event_and_hosted_video_reused=True, peer_copy_kept_private=True,
                         old_live_token_cannot_read_replay=True,
-                        withdrawal_revokes_existing_replay_manifest=True)
+                        withdrawal_revokes_existing_replay_manifest=True,
+                        audience_analytics_requires_operator=True, separate_live_and_replay_metrics=report,
+                        do_not_track_honored=True, paused_player_removed_from_current_but_peak_retained=True,
+                        withdrawal_revokes_playback_telemetry=True,
+                        withdraw_label_updates_on_original_production_panel=True)
         finally:
             browser.close()
 

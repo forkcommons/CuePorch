@@ -15,6 +15,9 @@ const preset = element("eventPreset");
 const output = element("eventProduction");
 const health = element("eventHealth");
 const measurements = element("eventHealthDetails");
+const analytics = element("eventAnalytics");
+const analyticsRows = element("eventAnalyticsRows");
+const analyticsStatus = element("eventAnalyticsStatus");
 const captionSettings = element("eventCaptionSettings");
 const captionForm = element("productionCaptions");
 const captionEnabled = captionForm.elements.namedItem("enabled");
@@ -118,6 +121,9 @@ function choose(event, instance) {
     input("srtPassphrase").value = "";
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
     measurements.textContent = "";
+    analytics.open = false;
+    analyticsRows.replaceChildren();
+    analyticsStatus.textContent = "";
     captionSettings.open = false;
     captionStatus.textContent = "";
     button("editEvent").disabled = !event.editable;
@@ -264,6 +270,7 @@ button("prepareEncoder").onclick = () => void action(async () => {
     element("secureEncoder").hidden = !connection.secure_server;
     key.value = connection.key;
     encoder.hidden = false;
+    button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
     health.textContent = "Waiting for the encoder.";
 });
@@ -277,6 +284,7 @@ button("prepareSrt").onclick = () => void action(async () => {
     input("srtServer").value = result.server;
     input("srtPassphrase").value = result.passphrase;
     element("srtSettings").hidden = false;
+    button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
 }, "SRT listener is ready for the encoder.");
 button("stopSrt").onclick = () => void action(async () => {
@@ -403,6 +411,9 @@ button("readEventHealth").onclick = () => void action(async () => {
     const lines = [result.state.replaceAll("_", " ")];
     if (typeof result.viewers === "number")
         lines.push(`${result.viewers} viewers`);
+    if (["live", "waiting_for_encoder", "preparing_replay", "replay", "ended"].includes(result.state)) {
+        button("withdrawEvent").textContent = "Withdraw this occurrence";
+    }
     if (settings?.latency)
         lines.push(`${settings.latency} latency mode`);
     if (typeof settings?.dvr_seconds === "number")
@@ -410,6 +421,46 @@ button("readEventHealth").onclick = () => void action(async () => {
     health.textContent = lines.join(" · ");
     measurements.textContent = relaySummary(result, result.state === "live" ? "Encoder measurements unavailable from this host." : "");
 });
+let analyticsPending = false;
+async function refreshAnalytics() {
+    if (!active || analyticsPending)
+        return;
+    const selection = active;
+    analyticsPending = true;
+    try {
+        const stats = await request(mediaPath("analytics"));
+        if (selection !== active)
+            return;
+        analyticsRows.replaceChildren();
+        for (const phase of ["live", "replay"]) {
+            const metrics = stats[phase];
+            const row = analyticsRows.insertRow();
+            const title = document.createElement("th");
+            title.scope = "row";
+            title.textContent = phase === "live" ? "Live" : "Replay";
+            row.append(title);
+            for (const count of [metrics.current, metrics.peak, metrics.loads, metrics.plays]) {
+                row.insertCell().textContent = count.toLocaleString();
+            }
+            for (const seconds of [metrics.watched_seconds, metrics.average_seconds_per_load]) {
+                row.insertCell().textContent = `${seconds.toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
+            }
+        }
+        analyticsStatus.textContent = "";
+    }
+    catch (error) {
+        if (selection === active)
+            analyticsStatus.textContent = error instanceof Error ? error.message : String(error);
+    }
+    finally {
+        analyticsPending = false;
+    }
+}
+analytics.ontoggle = () => { if (analytics.open)
+    void refreshAnalytics(); };
+button("refreshEventAnalytics").onclick = () => void refreshAnalytics();
+window.setInterval(() => { if (analytics.open && !document.hidden)
+    void refreshAnalytics(); }, 5000);
 async function updateCaptionSettings(update = false) {
     const value = { enabled: captionEnabled.checked, language: captionLanguage.value };
     const result = await request(mediaPath("captions"), update ? "PUT" : "GET", update ? value : undefined);
