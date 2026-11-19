@@ -13,7 +13,10 @@ import requests
 from event_media import Gateway, HLS_PREFIXES, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
+import event_program
 import event_schedule
+from catalog import video_version_key
+from library_actions import title_for
 from library_interactivity import text_field
 import library_registration
 
@@ -25,7 +28,7 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
-"""
+""" + event_program.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -133,7 +136,9 @@ def summary(con, row, event, first, last):
     sessions = []
     for upcoming in event_schedule.occurrences(event["schedule"], first, last):
         target = occurrence(con, row["id"], upcoming["id"])
+        program = event_program.program(con, row["id"], upcoming["id"])
         upcoming["delivery"] = target["delivery"] if target else "scheduled"
+        upcoming["program"] = program["state"] if program else None
         sessions.append(upcoming)
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
                 publication=visible, occurrences=sessions,
@@ -166,10 +171,16 @@ def overlapping(entries):
     return sorted(conflicts)
 
 
-def register(app, tx, staff, action, database, public_url, signing_key):
+def register(app, tx, staff, action, database, public_url, signing_key, root, read_works):
     media = Gateway()
     studio = Studio(database)
-    app.extensions["stop_event_capture"] = studio.close
+    programs = event_program.Programs(app, tx, root, database, read_works, studio)
+
+    def stop():
+        programs.close()
+        studio.close()
+
+    app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
@@ -231,6 +242,11 @@ def register(app, tx, staff, action, database, public_url, signing_key):
                 con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
                             (uuid.uuid4().hex, json.dumps(changed), approval, uid))
                 row, _ = read(con, uid)
+                if prior["schedule"] != changed["schedule"]:
+                    for program in con.execute("SELECT * FROM live_program WHERE event=?", (uid,)).fetchall():
+                        if find_open(changed, program["opens"]) is None:
+                            con.execute("DELETE FROM live_program WHERE revision=?", (program["revision"],))
+                            programs.clean(program)
                 return summary(con, row, changed, first, last)
         except Timeout:
             abort(409, "Another operation is preparing this event.")
@@ -258,64 +274,122 @@ def register(app, tx, staff, action, database, public_url, signing_key):
             read(con, uid)
             return library_registration.export(con, "event", uid)
 
-    def selected_open(event, opens):
+    def find_open(event, opens):
         try:
             instant = datetime.fromtimestamp(opens, timezone.utc)
         except (ValueError, OverflowError, OSError):
-            abort(404)
-        candidate = next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
-                          if value["id"] == opens), None)
+            return None
+        return next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
+                     if value["id"] == opens), None)
+
+    def selected_open(event, opens):
+        candidate = find_open(event, opens)
         if not candidate:
             abort(404)
         return candidate
 
-    @app.post("/api/live-events/<uid>/<int:opens>/encoder")
-    def provision_event(uid, opens, browser=False):
-        staff()
+    def provision_event(uid, opens, browser=False, automatic=False):
         try:
-            with locked(uid):
-                with tx() as con:
-                    row, event = read(con, uid)
-                    shift = selected_open(event, opens)
-                    if datetime.fromisoformat(shift["end"]) <= datetime.now(timezone.utc):
-                        abort(409, "This event has ended.")
-                    visible = publication(con, row, event)
-                    if visible in ("waiting", "rejected"):
-                        abort(409, "This event's publication is waiting for approval or was declined.")
-                    saved = occurrence(con, uid, opens)
-                    registered = library_registration.active(con, "event", uid) is not None
-                    state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
-                    if state in ("withdrawing", "withdrawn"):
-                        abort(409, "This occurrence is being withdrawn or has been withdrawn.")
-                    if state == "replay":
-                        abort(409, "This occurrence already has a finished recording.")
-                with event_peer.connected_host(expected) as host:
-                    broadcast = visible == "eligible" and not registered
-                    if saved:
-                        remote = saved["remote"]
-                    else:
-                        remote = event_peer.stage_remote(host, f"CuePorch event {uid} {opens}", event)
-                        with tx() as con:
-                            con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)",
-                                        (uid, opens, host.origin, remote, "staged"))
-                    if state != "ready":
-                        event_peer.release_remote(host, remote, event, broadcast)
-                        with tx() as con:
-                            con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
-                                        (uid, opens))
-                    if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
-                        abort(409, "This event already has a live or finished signal.")
-                    return dict(event_peer.encoder(host, remote), public=broadcast)
-        except Timeout:
-            abort(409, "Another operation is preparing this event.")
+            with tx() as con:
+                row, event = read(con, uid)
+                shift = selected_open(event, opens)
+                if datetime.fromisoformat(shift["end"]) <= datetime.now(timezone.utc):
+                    abort(409, "This event has ended.")
+                if not automatic and event_program.program(con, uid, opens):
+                    abort(409, "Use the scheduled program controls for this occurrence.")
+                visible = publication(con, row, event)
+                if visible in ("waiting", "rejected"):
+                    abort(409, "This event's publication is waiting for approval or was declined.")
+                saved = occurrence(con, uid, opens)
+                registered = library_registration.active(con, "event", uid) is not None
+                state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
+                if state in ("withdrawing", "withdrawn"):
+                    abort(409, "This occurrence is being withdrawn or has been withdrawn.")
+                if state == "replay":
+                    abort(409, "This occurrence already has a finished recording.")
+            with event_peer.connected_host(expected) as host:
+                broadcast = visible == "eligible" and not registered
+                if saved:
+                    remote = saved["remote"]
+                else:
+                    remote = event_peer.stage_remote(host, f"CuePorch event {uid} {opens}", event)
+                    with tx() as con:
+                        con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)",
+                                    (uid, opens, host.origin, remote, "staged"))
+                if state != "ready":
+                    event_peer.release_remote(host, remote, event, broadcast)
+                    with tx() as con:
+                        con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
+                                    (uid, opens))
+                if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
+                    abort(409, "This event already has a live or finished signal.")
+                return dict(event_peer.encoder(host, remote), public=broadcast)
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "Could not prepare the event on the connected video host.")
 
+    @app.post("/api/live-events/<uid>/<int:opens>/encoder")
+    def prepare_external_encoder(uid, opens):
+        staff()
+        try:
+            with locked(uid):
+                return provision_event(uid, opens)
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/program", methods=["GET", "PUT"])
+    def event_program_settings(uid, opens):
+        staff()
+        previous = None
+        try:
+            with locked(uid), tx() as con:
+                _, event = read(con, uid)
+                selected_open(event, opens)
+                record = event_program.program(con, uid, opens)
+                editable_program = opens > datetime.now(timezone.utc).timestamp() and occurrence(con, uid, opens) is None
+                if request.method == "PUT":
+                    if not editable_program:
+                        abort(409, "Choose a future occurrence without a prepared encoder.")
+                    body = request.get_json()
+                    if not isinstance(body, dict):
+                        abort(422, "Choose the program videos.")
+                    state, previous = programs.save(con, uid, opens, body.get("revision"), body.get("sources"), event["visibility"])
+                else:
+                    state = event_program.export(record)
+                selected = {(item["work"], item["cut"]) for item in state["sources"]}
+                choices = []
+                for work in read_works():
+                    if not event_program.permitted(con, work, event["visibility"]):
+                        continue
+                    name = title_for(con, work)
+                    choices.append(dict(work=work["id"], cut=video_version_key(work), title=name))
+                    for cut in work.get("versions_history", []):
+                        key = video_version_key(cut)
+                        if (work["id"], key) in selected:
+                            choices.append(dict(work=work["id"], cut=key, title=name + " (retained cut)"))
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except ValueError as error:
+            abort(422, str(error))
+        if previous:
+            programs.clean(previous)
+        return dict(state, editable=editable_program, choices=sorted(choices, key=lambda entry: entry["title"].casefold()))
+
+    def qualify_program(con, uid, opens):
+        row, event = read(con, uid)
+        selected_open(event, opens)
+        return publication(con, row, event) in ("private", "eligible") and event_peer.host_available()
+
+    programs.start(locked, qualify_program, provision_event)
+
     @app.post("/api/live-events/<uid>/<int:opens>/browser")
     def start_event_capture(uid, opens):
-        connection = provision_event(uid, opens, browser=True)
+        staff()
         try:
-            return dict(token=studio.start(uid, opens, connection)), 201
+            with locked(uid):
+                connection = provision_event(uid, opens, browser=True)
+                return dict(token=studio.start(uid, opens, connection)), 201
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
         except BusyError as error:
             abort(409, str(error))
         except (OSError, ValueError):
@@ -359,12 +433,15 @@ def register(app, tx, staff, action, database, public_url, signing_key):
             endpoint = srt_endpoint(body.get("interface"), body.get("port"))
         except ValueError as error:
             abort(422, str(error))
-        prior = studio.srt_credentials(uid, opens, endpoint)
-        if prior:
-            return prior
-        connection = provision_event(uid, opens, browser=True)
         try:
-            return studio.srt(uid, opens, connection, endpoint)
+            with locked(uid):
+                prior = studio.srt_credentials(uid, opens, endpoint)
+                if prior:
+                    return prior
+                connection = provision_event(uid, opens, browser=True)
+                return studio.srt(uid, opens, connection, endpoint)
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
         except BusyError as error:
             abort(409, str(error))
         except (OSError, ValueError):
@@ -394,6 +471,10 @@ def register(app, tx, staff, action, database, public_url, signing_key):
                     _, event = read(con, uid)
                     selected_open(event, opens)
                     target = occurrence(con, uid, opens)
+                    current_program = event_program.program(con, uid, opens)
+                    if current_program and current_program["state"] in (*event_program.PENDING, *event_program.ACTIVE):
+                        con.execute("UPDATE live_program SET state='cancelled' WHERE revision=?", (current_program["revision"],))
+                        programs.clean(current_program)
                     if target is None:
                         con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,'withdrawn')", (uid, opens, "", ""))
                         return "", 204

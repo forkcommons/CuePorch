@@ -63,7 +63,7 @@
       <button type="button" id="closeEventEditor">Close editor</button>
     </form>
     <section id="eventProduction" aria-labelledby="productionHeading" hidden>
-      <h2 id="productionHeading">External encoder</h2>
+      <h2 id="productionHeading">Event production</h2>
       <p id="productionTitle"></p>
       <button type="button" id="editEvent">Edit event</button>
       <button type="button" id="configureEventRegistration">Registration</button>
@@ -90,6 +90,16 @@
           <button type="button" id="copySrtPassphrase">Copy SRT passphrase</button>
           <p>Use caller mode with MPEG-TS and a 128-bit encryption key.</p>
         </div>
+      </details>
+      <details id="eventProgramPanel">
+        <summary>Prerecorded event</summary>
+        <p id="eventProgramStatus" role="status"></p>
+        <ol id="eventProgramSources"></ol>
+        <label>Library video <select id="programChoice"></select></label>
+        <button type="button" id="addProgramVideo">Add video</button>
+        <button type="button" id="saveEventProgram">Schedule playback</button>
+        <button type="button" id="clearEventProgram">Switch to manual production</button>
+        <button type="button" id="refreshEventProgram">Refresh program</button>
       </details>
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>

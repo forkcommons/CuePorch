@@ -1,4 +1,4 @@
-"""Bounded browser media intake into a connected event's RTMP relay."""
+"""Local production sources for a connected event's RTMP relay."""
 
 from contextlib import suppress
 from hashlib import sha256
@@ -136,32 +136,19 @@ def srt_endpoint(address, port):
     return f"srt://{'[' + str(host) + ']' if host.version == 6 else host}:{port}"
 
 
-class SrtRelay:
-    def __init__(self, encoder, endpoint, lease):
-        self.endpoint = endpoint
-        self.passphrase = secrets.token_hex(16)
+class Relay:
+    def __init__(self, args, lease):
         self.stop = Event()
         self.done = Event()
         self.lease = lease
-        listener = endpoint + "?" + urlencode({
-            "mode": "listener", "passphrase": self.passphrase, "enforced_encryption": 1,
-            "listen_timeout": 300_000_000, "timeout": 15_000_000,
-        })
-        self.process = relay_process(
-            ["-fflags", "+genpts", "-protocol_whitelist", "srt,udp", "-f", "mpegts", "-i", listener,
-             *output_arguments(encoder)],
-            subprocess.DEVNULL,
-        )
+        self.process = relay_process(args, subprocess.DEVNULL)
         try:
             self.process.wait(timeout=0.4)
         except subprocess.TimeoutExpired:
             pass
         else:
-            raise ValueError("The SRT listener did not bind to the receiving interface.")
-        Thread(target=self.monitor, name="CuePorch SRT encoder", daemon=True).start()
-
-    def credentials(self):
-        return dict(server=self.endpoint, passphrase=self.passphrase, key_bytes=16)
+            raise ValueError("The encoder stopped before transmitting.")
+        Thread(target=self.monitor, name="CuePorch event encoder", daemon=True).start()
 
     def monitor(self):
         try:
@@ -179,6 +166,23 @@ class SrtRelay:
         finally:
             self.lease.release()
             self.done.set()
+
+
+class SrtRelay(Relay):
+    def __init__(self, encoder, endpoint, lease):
+        self.endpoint = endpoint
+        self.passphrase = secrets.token_hex(16)
+        listener = endpoint + "?" + urlencode({
+            "mode": "listener", "passphrase": self.passphrase, "enforced_encryption": 1,
+            "listen_timeout": 300_000_000, "timeout": 15_000_000,
+        })
+        super().__init__(
+            ["-fflags", "+genpts", "-protocol_whitelist", "srt,udp", "-f", "mpegts", "-i", listener,
+             *output_arguments(encoder)], lease,
+        )
+
+    def credentials(self):
+        return dict(server=self.endpoint, passphrase=self.passphrase, key_bytes=16)
 
 
 class Studio:
@@ -214,6 +218,11 @@ class Studio:
 
     def srt(self, uid, opens, encoder, endpoint):
         return self.prepare(uid, opens, lambda lease: SrtRelay(encoder, endpoint, lease), endpoint).credentials()
+
+    def program(self, uid, opens, encoder, source):
+        args = ["-re", "-protocol_whitelist", "file", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
+                "-c", "copy", "-rw_timeout", "10000000", "-f", "flv", ingest_address(encoder)]
+        return self.prepare(uid, opens, lambda lease: Relay(args, lease))
 
     def srt_credentials(self, uid, opens, endpoint):
         with self.lock:

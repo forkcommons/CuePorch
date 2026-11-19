@@ -7,6 +7,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import uuid
 from urllib.parse import urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -482,5 +483,108 @@ def check_srt_delivery(base, keys, ffmpeg):
                 expect(operator.locator("#srtSettings")).not_to_be_visible()
             return dict(srt_listener_operator_only=True, supplied_endpoint_works=True, encrypted_sender_played_width=width,
                         unencrypted_sender_rejected=True, retry_preserved_passphrase=True, listener_stopped=True)
+        finally:
+            browser.close()
+
+
+def check_program_delivery(base, keys, ffmpeg, scratch):
+    auth = {"Authorization": "Bearer " + keys["operator"]}
+    portal = base + "/api/live-events"
+    privacy = {"visibility": "public", "embed": "anywhere", "domains": [], "download": False}
+
+    def upload(name, color, audio, visible=True):
+        path = scratch / (name + ".mp4")
+        sound = ["-f", "lavfi", "-i", "sine=frequency=262:duration=32", "-c:a", "aac"] if audio else []
+        subprocess.run([str(ffmpeg), "-v", "error", "-f", "lavfi", "-i", f"color={color}:s=320x180:r=24:d=32",
+                        *sound, "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True,
+                       capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        with path.open("rb") as file:
+            params = {"upload_id": str(uuid.uuid4())}
+            if visible:
+                params["privacy"] = json.dumps(privacy)
+            result = requests.post(base + "/api/library/uploads", headers=auth, timeout=30, data=params,
+                                   files={"file": (path.name, file, "video/mp4")})
+        result.raise_for_status()
+        return result.json()["id"]
+
+    upload("Opening red", "red", True)
+    upload("Closing green", "lime", False)
+    hidden = upload("Private fixture", "blue", False, False)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    start = now + timedelta(minutes=2)
+    end = start + timedelta(minutes=10)
+    event = dict(title="Scheduled film program", slug="scheduled-film-program", visibility="public",
+                 type="live", latency="low", save_replay=False,
+                 schedule=dict(timezone="UTC", start=start.strftime("%Y-%m-%dT%H:%M"),
+                               end=end.strftime("%Y-%m-%dT%H:%M"), repeat="none"))
+    created = requests.post(portal, headers=auth, json=event, timeout=10)
+    created.raise_for_status()
+    entry = created.json()
+    (slot,) = entry["occurrences"]
+    production = f"{portal}/{entry['id']}/{slot['id']}"
+    watch = f"{base}{entry['watch']}?occurrence={slot['id']}"
+    resource = production + "/program"
+
+    def status():
+        response = requests.get(resource, headers=auth, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    assert requests.get(resource, timeout=10).status_code == 403
+    assert hidden not in {item["work"] for item in status()["choices"]}
+    with sync_playwright() as pw:
+        browser = chromium(pw)
+        try:
+            operator = browser.new_page()
+            operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(keys['operator'])})")
+            operator.goto(base + "/operator/live-events")
+            operator.get_by_role("button", name="Open production for Scheduled film program", exact=False).click()
+            operator.get_by_text("Prerecorded event", exact=True).click()
+            picker = operator.get_by_label("Library video")
+            expect(picker).to_be_enabled()
+            for title in ("Closing green", "Opening red"):
+                picker.select_option(label=title)
+                operator.get_by_role("button", name="Add video").click()
+            operator.get_by_role("button", name="Move up Opening red").click()
+            with operator.expect_response(lambda response: response.url == resource and response.request.method == "PUT") as saved:
+                operator.get_by_role("button", name="Schedule playback").click()
+            assert saved.value.ok, f"Scheduled program returned HTTP {saved.value.status}"
+            assigned = saved.value.json()
+            assert len(assigned["sources"]) == 2
+            assert requests.post(production + "/encoder", headers=auth, timeout=10).status_code == 409
+            assert requests.put(resource, headers=auth, json={"revision": None, "sources": []}, timeout=10).status_code == 422
+            operator.close()
+            page = browser.new_page()
+            page.goto(watch)
+            expect(page.locator("#eventStatus")).not_to_have_text("Live")
+            timeout = max(1000, round((start.timestamp() - time.time() + 45) * 1000))
+            expect(page.locator("#eventStatus")).to_have_text("Live", timeout=timeout)
+            _, width, _ = play_event(page, watch, "Live", navigate=False)
+            video = page.frame_locator('iframe[title="Event video"]').locator("video").first
+            colors = video.evaluate("""async video => {
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 1;
+                const context = canvas.getContext('2d', {willReadFrequently: true});
+                const observed = [];
+                const until = performance.now() + 55000;
+                while (observed.length < 2 && performance.now() < until) {
+                    context.drawImage(video, video.videoWidth / 2, video.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+                    const [red, green] = context.getImageData(0, 0, 1, 1).data;
+                    const color = red > 140 && green < 80 ? 'red' : green > 140 && red < 80 ? 'green' : null;
+                    if (color && color !== observed.at(-1)) observed.push(color);
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                }
+                return observed;
+            }""")
+            assert colors == ["red", "green"], f"Guest watched the wrong program order {colors}"
+            finish = time.monotonic() + 45
+            state = status()["state"]
+            while state == "broadcasting" and time.monotonic() < finish:
+                time.sleep(1)
+                state = status()["state"]
+            assert state == "finished", f"Expected the program to finish automatically, saw {state}"
+            return dict(opening_then_closing=colors, guest_playback_width=width, no_operator_at_airtime=True,
+                        anonymous_edit_denied=True, private_source_excluded=True, manual_encoder_denied=True,
+                        automatically_finished=True)
         finally:
             browser.close()

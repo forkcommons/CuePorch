@@ -14,6 +14,8 @@ const health = element("eventHealth");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
+const programPanel = element("eventProgramPanel");
+const programChoice = element("programChoice");
 const root = "/api/live-events";
 const publicBase = document.body.dataset.publicUrl || location.origin;
 let calendar;
@@ -21,6 +23,8 @@ let active;
 let editing;
 let registrationEvent;
 let pending = false;
+let program;
+let programSources = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function request(path, method = "GET", body) {
     const headers = { Authorization: "Bearer " + credential.value };
@@ -73,6 +77,10 @@ function choose(event, instance) {
         registrationEvent = undefined;
     }
     active = { event, instance };
+    programPanel.open = false;
+    program = undefined;
+    programSources = [];
+    renderProgram();
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
@@ -111,7 +119,8 @@ function readCalendar(value) {
         timestamp.dateTime = instance.start;
         timestamp.textContent = instance.local.replace("T", " ") + " " + event.event.schedule.timezone;
         row.insertCell().append(timestamp);
-        row.insertCell().textContent = event.publication === "waiting" ? "Waiting for publication approval" : instance.delivery.replaceAll("_", " ");
+        row.insertCell().textContent = event.publication === "waiting" ? "Waiting for publication approval" :
+            instance.program ? "Program " + instance.program.replaceAll("_", " ") : instance.delivery.replaceAll("_", " ");
         row.insertCell().textContent = value.overlaps.includes(event.id) ? "Overlapping time" : "";
         const control = document.createElement("button");
         control.type = "button";
@@ -242,6 +251,61 @@ button("stopSrt").onclick = () => void action(async () => {
 button("copySrtPassphrase").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(input("srtPassphrase").value);
 }, "SRT passphrase copied.");
+function renderProgram() {
+    const controls = element("eventProgramSources");
+    controls.replaceChildren();
+    const editable = program?.editable ?? false;
+    const choices = program?.choices || [];
+    for (const [position, source] of programSources.entries()) {
+        const item = document.createElement("li");
+        const title = choices.find((choice) => choice.work === source.work && choice.cut === source.cut)?.title || "Unavailable video";
+        item.append(title + " ");
+        for (const [label, step] of [["Move up", -1], ["Move down", 1], ["Remove", 0]]) {
+            const control = document.createElement("button");
+            control.type = "button";
+            control.textContent = label;
+            control.setAttribute("aria-label", `${label} ${title}`);
+            control.disabled = !editable || position + step < 0 || position + step >= programSources.length;
+            control.onclick = () => {
+                programSources.splice(position, 1);
+                if (step)
+                    programSources.splice(position + step, 0, source);
+                renderProgram();
+            };
+            item.append(control);
+        }
+        controls.append(item);
+    }
+    programChoice.replaceChildren(...choices.map((choice, index) => new Option(choice.title, String(index))));
+    programChoice.disabled = !editable || !choices.length;
+    button("addProgramVideo").disabled = programChoice.disabled || programSources.length >= 20;
+    button("saveEventProgram").disabled = !editable || !programSources.length;
+    button("clearEventProgram").disabled = !editable || !program?.revision;
+    const state = program?.state.replaceAll("_", " ");
+    element("eventProgramStatus").textContent = program ? (program.error || `Program ${state}.`) : "";
+}
+async function loadProgram() {
+    program = await request(mediaPath("program"));
+    programSources = [...program.sources];
+    renderProgram();
+}
+async function writeProgram(sources) {
+    program = await request(mediaPath("program"), "PUT", { revision: program?.revision ?? null, sources });
+    programSources = [...program.sources];
+    renderProgram();
+}
+programPanel.ontoggle = () => { if (programPanel.open)
+    void action(loadProgram); };
+button("refreshEventProgram").onclick = () => void action(loadProgram);
+button("addProgramVideo").onclick = () => {
+    const choice = program?.choices[Number(programChoice.value)];
+    if (!choice || programSources.length >= 20)
+        return;
+    programSources.push({ work: choice.work, cut: choice.cut });
+    renderProgram();
+};
+button("saveEventProgram").onclick = () => void action(() => writeProgram(programSources), "Program queued for the scheduled occurrence.");
+button("clearEventProgram").onclick = () => void action(() => writeProgram([]), "Manual production selected.");
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
     health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");
