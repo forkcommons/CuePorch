@@ -1,8 +1,10 @@
 import {gather, speakerRequest, SpeakerRequestError} from "./speaker_connection.js";
 import {speakerChat} from "./speaker_chat.js";
+import {readStudioImage, type SlideProgram} from "./live_slides.js";
 
 interface GuestState {
   name: string; admitted: boolean; on_air: boolean; revision: string | null; answer: string | null; ice: RTCIceServer[];
+  slides: SlideProgram | null;
 }
 const endpoint = document.body.dataset.speakerEndpoint!;
 const button = (id: string) => document.getElementById(id) as HTMLButtonElement;
@@ -10,6 +12,14 @@ const join = button("joinSpeaker"), camera = button("toggleSpeakerCamera"), mic 
 const preview = document.querySelector<HTMLVideoElement>("#guestSpeakerPreview")!;
 const status = document.querySelector<HTMLElement>("#guestSpeakerStatus")!;
 const name = document.querySelector<HTMLElement>("#guestSpeakerName")!;
+const presentation = document.querySelector<HTMLDetailsElement>("#guestPresentation")!;
+const slideProgram = document.querySelector<HTMLElement>("#guestSlideProgram")!;
+const slidePreview = document.querySelector<HTMLImageElement>("#guestSlidePreview")!;
+const slideNumber = document.querySelector<HTMLElement>("#guestSlideNumber")!;
+const slideUpload = document.querySelector<HTMLFormElement>("#guestSlideUpload")!;
+const uploadStatus = document.querySelector<HTMLElement>("#guestSlideUploadStatus")!;
+const previousSlide = button("previousGuestSlide"), nextSlide = button("nextGuestSlide");
+const slidesPath = `${endpoint}/slides`;
 const invite = location.hash.substring(1);
 const storageKey = `cueporch-speaker:${endpoint}`;
 let token = sessionStorage.getItem(storageKey) || "";
@@ -19,6 +29,10 @@ let revision: string | null = null;
 let setup = false;
 let timer = 0;
 let disconnectedAt = 0;
+let shownSlide: SlideProgram | null = null;
+let currentImage = "";
+let imageRequest: AbortController | undefined;
+let movingSlide = false;
 const chat = speakerChat(endpoint, () => token);
 
 function stop() {
@@ -31,9 +45,86 @@ function stop() {
   preview.srcObject = null;
   preview.hidden = camera.hidden = mic.hidden = leave.hidden = true;
   chat.show(false);
+  presentation.hidden = true;
+  showSlides(null);
 }
 
 function message(error: unknown) { status.textContent = error instanceof Error ? error.message : String(error); }
+
+function releaseSlideImage() {
+  imageRequest?.abort();
+  if (currentImage) URL.revokeObjectURL(currentImage);
+  currentImage = "";
+  slidePreview.removeAttribute("src");
+  slidePreview.hidden = true;
+}
+
+function showSlides(next: SlideProgram | null) {
+  if (!next || next.id !== shownSlide?.id) releaseSlideImage();
+  else if (next.revision < shownSlide.revision) return;
+  else if (next.revision === shownSlide.revision && (currentImage || imageRequest)) return;
+  shownSlide = next;
+  slideProgram.hidden = !next;
+  if (!next) return;
+  previousSlide.disabled = next.page === 0;
+  nextSlide.disabled = next.page + 1 >= next.pages;
+  slideNumber.textContent = `Slide ${next.page + 1} of ${next.pages}`;
+  imageRequest?.abort();
+  const pending = new AbortController();
+  imageRequest = pending;
+  void readStudioImage(`${slidesPath}/${next.id}/${next.revision}`, token,
+    AbortSignal.any([pending.signal, AbortSignal.timeout(6000)])).then(({url}) => {
+    if (imageRequest !== pending || shownSlide !== next) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    if (currentImage) URL.revokeObjectURL(currentImage);
+    currentImage = url;
+    slidePreview.src = url;
+    slidePreview.hidden = false;
+  }).catch(() => {
+    if (imageRequest === pending) releaseSlideImage();
+  }).finally(() => { if (imageRequest === pending) imageRequest = undefined; });
+}
+
+async function turnSlide(direction: number) {
+  if (!shownSlide || movingSlide) return;
+  const {id, revision} = shownSlide;
+  movingSlide = true;
+  try {
+    const next = await speakerRequest<SlideProgram>(slidesPath, token, "PUT", {id, revision, direction});
+    if (shownSlide?.id === id) showSlides(next);
+  } catch (error) {
+    if (error instanceof SpeakerRequestError && error.status === 404) {
+      if (shownSlide?.id === id) showSlides(null);
+    } else {
+      slideNumber.textContent = String(error);
+    }
+  } finally { movingSlide = false; }
+}
+
+previousSlide.onclick = () => void turnSlide(-1);
+nextSlide.onclick = () => void turnSlide(1);
+slideUpload.onsubmit = async event => {
+  event.preventDefault();
+  const submit = slideUpload.querySelector("button")!;
+  if (submit.disabled) return;
+  submit.disabled = true;
+  uploadStatus.textContent = "Preparing the presentation…";
+  try {
+    const response = await fetch(slidesPath, {method: "POST", headers: {Authorization: `Bearer ${token}`},
+      body: new FormData(slideUpload), signal: AbortSignal.timeout(145000)});
+    if (!response.ok) {
+      const detail = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p")?.textContent;
+      throw new Error(detail || "The presentation could not be shared.");
+    }
+    const {title}: {title: string} = await response.json();
+    slideUpload.reset();
+    uploadStatus.textContent = `Shared ${title} with the producer.`;
+  } catch (error) {
+    uploadStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally { submit.disabled = false; }
+};
 
 async function makeOffer(state: GuestState, media: MediaStream) {
   connection?.close();
@@ -61,6 +152,8 @@ async function update() {
     name.textContent = state.name;
     name.hidden = false;
     chat.show(state.admitted);
+    presentation.hidden = !state.admitted;
+    showSlides(state.slides);
     if (!state.admitted) {
       status.textContent = "Waiting for the producer to admit you.";
       return;

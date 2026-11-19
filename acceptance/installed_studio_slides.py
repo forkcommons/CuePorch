@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 import requests
@@ -29,7 +30,7 @@ def check_studio_slides(base, keys):
     watch_url = f"{base}{event['watch']}?occurrence={slot['id']}"
 
     with sync_playwright() as pw:
-        browser = chromium(pw)
+        browser = chromium(pw, ["--autoplay-policy=no-user-gesture-required"])
         try:
             operator = browser.new_page()
             operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(keys['operator'])})")
@@ -83,6 +84,44 @@ def check_studio_slides(base, keys):
             operator.reload()
             open_scenes()
             operator.get_by_role("button", name="Connect camera and microphone").click()
+            speakers = operator.locator("#studioSpeakers")
+            speakers.get_by_text("Speakers", exact=True).click()
+            expect(speakers.get_by_label("Approve invited speakers before they connect")).not_to_be_checked()
+            speakers.get_by_label("Speaker name").fill("Guest presenter")
+            roster_url = f"{base}/api/live-events/{suffix}/speakers"
+            with operator.expect_response(lambda result: result.url == roster_url and result.request.method == "POST") as issued:
+                speakers.get_by_role("button", name="Create invitation").click()
+            assert issued.value.status == 201
+            address = speakers.get_by_label("Speaker invitation link").input_value()
+            guest = browser.new_page()
+            guest.add_init_script(MEDIA_FIXTURE + '("#ff00ff", 550)')
+            guest.goto(address)
+            guest.get_by_role("button", name="Join with camera and mic").click()
+            expect(guest.locator("#guestSpeakerStatus")).to_contain_text("Your feed is off air", timeout=30000)
+            guest_slides = guest.locator("#guestPresentation")
+            guest_slides.get_by_text("Presentation", exact=True).click()
+            guest_program = guest_slides.locator("#guestSlideProgram")
+            guest_number = guest_program.locator("#guestSlideNumber")
+            expect(guest_program).to_be_hidden()
+            guest_endpoint = "/api" + urlsplit(address).path
+            guest_url = base + guest_endpoint + "/slides"
+            guest_token = guest.evaluate("key => sessionStorage.getItem(key)", f"cueporch-speaker:{guest_endpoint}")
+            guest_auth = {"Authorization": "Bearer " + guest_token}
+            assert requests.put(guest_url, timeout=10, json={}).status_code == 404
+            file = Path(__file__).with_name("fixtures") / "studio-slides.pptx"
+            guest_slides.get_by_label("Presentation file").set_input_files(dict(
+                name="guest-program.pptx", mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                buffer=file.read_bytes()))
+            with guest.expect_response(lambda result: result.url == guest_url and result.request.method == "POST", timeout=145000) as shared:
+                guest_slides.get_by_role("button", name="Share slides with producer").click()
+            assert shared.value.status == 201, shared.value.text()
+            guest_deck = shared.value.json()
+            expect(guest_slides.locator("#guestSlideUploadStatus")).to_have_text("Shared guest-program with the producer.")
+            scenes.get_by_role("button", name="Presentation and camera", exact=True).click()
+            choice = scenes.get_by_label("Slide presentation")
+            expect(choice.locator(f"option[value='{guest_deck['id']}']")).to_have_count(1, timeout=12000)
+            choice.select_option(guest_deck["id"])
+            save("Save scene")
             slide_number = scenes.locator("#studioSlideNumber")
             previous = scenes.get_by_role("button", name="Previous slide")
             next_slide = scenes.get_by_role("button", name="Next slide")
@@ -114,17 +153,44 @@ def check_studio_slides(base, keys):
             see_slide(red)
             print(f"Audience decoded both PDF slides and reverse navigation at {width}px.", flush=True)
 
-            take("Presentation and camera")
+            with operator.expect_response(lambda result: result.url == settings_url + "/slides/program"
+                                          and result.request.method == "POST") as taken:
+                take("Presentation and camera")
+            program = taken.value.json()
+            first_page = f"{guest_url}/{program['id']}/0"
+            advance_request = dict(id=program["id"], revision=0, direction=1)
+            assert requests.get(first_page, headers=guest_auth, timeout=10).status_code == 404
+            assert requests.put(guest_url, headers=guest_auth, timeout=10, json=advance_request).status_code == 404
             see_slide(orange)
             wait_broadcast_pixel(player, .83, .82, green)
-            advance()
+
+            speakers.get_by_role("button", name="Put on air · Guest presenter").click()
+            expect(guest.locator("#guestSpeakerStatus")).to_have_text("You are on air.")
+            expect(guest_number).to_have_text("Slide 1 of 2")
+            expect(guest_program.get_by_role("img", name="Current slide")).to_be_visible()
+            assert requests.get(first_page, timeout=10).status_code == 404
+            assert requests.get(first_page, headers=guest_auth, timeout=10).ok
+            wait_broadcast_pixel(player, .83, .82, [255, 0, 255])
+            guest_program.get_by_role("button", name="Next slide").click()
+            expect(guest_number).to_have_text("Slide 2 of 2")
+            expect(slide_number).to_have_text("Slide 2 of 2")
             see_slide(purple)
-            wait_broadcast_pixel(player, .83, .82, green)
-            print("Audience decoded both PowerPoint slides with the camera inset.", flush=True)
+            stale_turn = requests.put(guest_url, headers=guest_auth, timeout=10, json=dict(advance_request, direction=-1))
+            assert stale_turn.ok and stale_turn.json()["page"] == 1
+            second_page = f"{guest_url}/{program['id']}/1"
+            assert requests.get(second_page, headers=guest_auth, timeout=10).ok
+            speakers.get_by_role("button", name="Take off air · Guest presenter").click()
+            expect(guest_program).to_be_hidden()
+            assert requests.get(second_page, headers=guest_auth, timeout=10).status_code == 404
+            assert requests.put(guest_url, headers=guest_auth, timeout=10,
+                                json=dict(advance_request, revision=1, direction=-1)).status_code == 404
+            print("Audience decoded both guest-uploaded PowerPoint slides, the guest inset and a guest-triggered slide turn.", flush=True)
             operator.get_by_role("button", name="Stop", exact=True).click()
             expect(operator.locator("#recordStatus")).to_contain_text("Recording ready.", timeout=25000)
             return dict(width=width, pdf_slides_decoded=2, powerpoint_slides_decoded=2, reverse_navigation=True,
                         camera_inset_decoded=True, scene_and_deck_persist_after_reload=True,
-                        slide_assets_private=True, invalid_slide_rejected=True)
+                        slide_assets_private=True, invalid_slide_rejected=True, guest_uploaded_powerpoint=True,
+                        guest_admitted_automatically=True, guest_camera_inset_decoded=True, guest_turn_decoded=True,
+                        backstage_preview_and_control_denied=True, stale_turn_did_not_move_slide=True)
         finally:
             browser.close()

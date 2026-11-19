@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from flask import abort, make_response, render_template, request, url_for
 
+import event_slide_decks as slides
 from library_interactivity import text_field
 
 
@@ -88,11 +89,20 @@ def chat(con, event, opens, author):
     return confidential(dict(messages=[dict(row) for row in reversed(rows)]))
 
 
-def register(app, tx, staff, slot_access):
+def register(app, tx, staff, slot_access, database):
+    slide_storage = database.parent / "live-slide-decks"
+
     def current(con, guest, event=None, opens=None):
         row = con.execute("SELECT * FROM live_speaker WHERE id=?", (guest,)).fetchone()
         if not row or row["expires"] <= time() or (event and (event, opens) != (row["event"], row["opens"])):
             abort(404)
+        return row
+
+    def admitted(con, guest, presented):
+        row = current(con, guest)
+        if not hmac.compare_digest(row["session"] or "", presented) or not row["admitted"]:
+            abort(404)
+        slot_access(con, row["event"], row["opens"])
         return row
 
     @app.route("/api/live-events/<event>/<int:opens>/speakers/chat", methods=["GET", "POST"])
@@ -106,11 +116,37 @@ def register(app, tx, staff, slot_access):
     def guest_speaker_chat(guest):
         presented = credential()
         with tx() as con:
-            row = current(con, guest)
-            slot_access(con, row["event"], row["opens"])
-            if not hmac.compare_digest(row["session"] or "", presented) or not row["admitted"]:
-                abort(404)
+            row = admitted(con, guest, presented)
             return chat(con, row["event"], row["opens"], row["name"])
+
+    @app.route("/api/guest-speaker/<guest>/slides", methods=("POST", "PUT"))
+    def guest_speaker_slides(guest):
+        presented = credential()
+
+        def authorize(con):
+            return admitted(con, guest, presented)
+
+        with tx() as con:
+            row = authorize(con)
+            event, opens = row["event"], row["opens"]
+            if request.method == "PUT":
+                if not row["on_air"]:
+                    abort(404)
+                program = slides.program(con, event, opens)
+                changed = slides.step_program(con, event, opens, program, request.get_json())
+                return confidential(slides.program_view(changed))
+        item, status = slides.import_deck(tx, slide_storage, event, authorize)
+        return confidential(item, status)
+
+    @app.get("/api/guest-speaker/<guest>/slides/<stage>/<int:revision>")
+    def guest_speaker_slide_image(guest, stage, revision):
+        presented = credential()
+        with tx() as con:
+            row = admitted(con, guest, presented)
+            shown = slides.program(con, row["event"], row["opens"]) if row["on_air"] else None
+            if not shown or shown["id"] != stage or shown["revision"] != revision:
+                abort(404)
+        return slides.slide_image(slide_storage, shown["deck"], shown["page"])
 
     @app.route("/api/live-events/<event>/<int:opens>/speakers", methods=["GET", "POST", "PUT"])
     def event_speakers(event, opens):
@@ -212,5 +248,7 @@ def register(app, tx, staff, slot_access):
                 if revision != row["revision"]:
                     con.execute("UPDATE live_speaker SET revision=?, offer=?, answer=NULL, on_air=0 WHERE id=?", (revision, offer, guest))
                 return confidential(dict(revision=revision))
+            shown = slides.program(con, row["event"], row["opens"]) if row["admitted"] and row["on_air"] else None
             return confidential(dict(name=row["name"], admitted=bool(row["admitted"]), on_air=bool(row["on_air"]),
-                                     revision=row["revision"], answer=row["answer"], ice=ice(guest, row["expires"])))
+                                     revision=row["revision"], answer=row["answer"], ice=ice(guest, row["expires"]),
+                                     slides=slides.program_view(shown)))

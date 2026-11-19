@@ -1,4 +1,6 @@
 import {drawRecording, type Composition} from "./recording_composition.js";
+import {readStudioImage, type SlideProgram} from "./live_slides.js";
+import {speakerRequest} from "./speaker_connection.js";
 
 type Layout = Composition["layout"] | "title";
 interface Scene {
@@ -13,6 +15,7 @@ interface Deck {revision: string | null; brand: Brand; scenes: Scene[]; template
 interface ShownSlide {presentation: Presentation; page: number; image: HTMLImageElement;}
 interface SceneFrame {
   scene: Scene; brand: Brand; image?: HTMLImageElement; logo?: HTMLImageElement; video?: HTMLVideoElement; slide?: ShownSlide;
+  program?: SlideProgram;
 }
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -76,6 +79,10 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   let previewSlide: ShownSlide | undefined;
   let lowerThird = false;
   let working = false;
+  let following = false;
+  let lastSlideLibrarySync = 0;
+  const presentationPath = `${path}/slides`;
+  const programPath = `${presentationPath}/program`;
 
   async function request(body?: object) {
     const headers: Record<string, string> = {Authorization: "Bearer " + credential()};
@@ -99,6 +106,14 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   function choosePresentations(items: Presentation[]) {
     presentationChoice.replaceChildren(new Option("None", ""),
       ...items.map((item) => new Option(`${item.title} (${item.format.toUpperCase()}, ${item.pages} slides)`, item.id)));
+  }
+
+  function updatePresentations(items: Presentation[]) {
+    if (!deck || deck.presentations.map(item => item.id).join() === items.map(item => item.id).join()) return;
+    const choice = presentationChoice.value;
+    deck.presentations = items;
+    choosePresentations(items);
+    presentationChoice.value = choice;
   }
 
   function showDeck(value: Deck) {
@@ -155,28 +170,19 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     void asset(value.brand.logo).catch(() => {});
   }
 
-  async function readImage(address: string) {
-    const response = await fetch(address, {headers: {Authorization: "Bearer " + credential()}});
-    if (!response.ok) throw new Error("A selected image or slide is unavailable.");
-    const url = URL.createObjectURL(await response.blob());
-    const image = new Image();
-    image.src = url;
-    try { await image.decode(); } catch { URL.revokeObjectURL(url); throw new Error("A selected image could not be decoded."); }
-    return {image, url};
-  }
-
   async function asset(uid: string | null) {
     if (!uid) return undefined;
     const current = previews.get(uid);
     if (current) return current.image;
-    const {image, url} = await readImage(`${path}/image/${encodeURIComponent(uid)}`);
+    const {image, url} = await readStudioImage(`${path}/image/${encodeURIComponent(uid)}`, credential());
     if (previews.has(uid)) URL.revokeObjectURL(url);
     else previews.set(uid, {image, url});
     return previews.get(uid)!.image;
   }
 
   async function loadSlide(presentation: Presentation, page: number): Promise<ShownSlide> {
-    const {image, url} = await readImage(`${path}/slides/${encodeURIComponent(presentation.id)}/${page}`);
+    const {image, url} = await readStudioImage(`${presentationPath}/${encodeURIComponent(presentation.id)}/${page}`,
+      credential(), AbortSignal.timeout(8000));
     URL.revokeObjectURL(url);
     return {presentation, page, image};
   }
@@ -252,6 +258,42 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     changed();
   }
 
+  async function followProgram(frame: SceneFrame, state: SlideProgram) {
+    if (!frame.slide || frame !== current || frame.program?.id !== state.id || state.revision <= frame.program.revision) return;
+    const slide = await loadSlide(frame.slide.presentation, state.page);
+    if (frame !== current || frame.program?.id !== state.id || state.revision <= frame.program.revision) return;
+    frame.slide = slide;
+    frame.program = state;
+    controls();
+  }
+
+  function dismissProgram(program?: SlideProgram) {
+    if (!program) return;
+    void fetch(programPath, {method: "DELETE", keepalive: true,
+      headers: {Authorization: "Bearer " + credential(), "Content-Type": "application/json"},
+      body: JSON.stringify({id: program.id})}).catch(() => {});
+  }
+
+  async function syncSlides() {
+    if (following || !deck) return;
+    following = true;
+    try {
+      const frame = current;
+      if (frame?.program) {
+        const state = await speakerRequest<SlideProgram>(programPath, credential(), "PUT", {id: frame.program.id});
+        await followProgram(frame, state);
+      }
+      if (panel.open && !working && performance.now() - lastSlideLibrarySync > 3500) {
+        lastSlideLibrarySync = performance.now();
+        const before = deck;
+        const {presentations} = await speakerRequest<Pick<Deck, "presentations">>(presentationPath, credential());
+        if (!working && before === deck) updatePresentations(presentations);
+      }
+    } catch { /* Retry on the next Studio update. */ }
+    finally { following = false; }
+  }
+  const slidesTimer = window.setInterval(() => void syncSlides(), 1400);
+
   form.onsubmit = (event) => {
     event.preventDefault();
     run(async () => {
@@ -271,7 +313,7 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
     event.preventDefault();
     run(async () => {
       report.textContent = "Preparing the presentation…";
-      const response = await fetch(`${path}/slides`, {
+      const response = await fetch(presentationPath, {
         method: "POST", headers: {Authorization: "Bearer " + credential()}, body: new FormData(uploadForm),
       });
       if (!response.ok) {
@@ -279,11 +321,7 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
         throw new Error(detail || "The presentation could not be imported.");
       }
       const item = await response.json() as Presentation;
-      const chosen = presentationChoice.value;
-      deck!.presentations.push(item);
-      deck!.presentations.sort((left, right) => left.title.localeCompare(right.title));
-      choosePresentations(deck!.presentations);
-      presentationChoice.value = chosen;
+      updatePresentations([...deck!.presentations, item].sort((left, right) => left.title.localeCompare(right.title)));
       uploadForm.reset();
       report.textContent = `Imported ${item.title}. Choose it under Slide presentation.`;
     });
@@ -315,8 +353,10 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
       asset(scene.image), asset(brand.logo), loadClip(scene.clip),
       presentation ? loadSlide(presentation, 0) : undefined,
     ]);
+    const program = slide ? await speakerRequest<SlideProgram>(programPath, credential(), "POST", {deck: slide.presentation.id}) : undefined;
+    if (!program) dismissProgram(current?.program);
     releaseClip();
-    current = {scene, brand, image, logo, video, slide};
+    current = {scene, brand, image, logo, video, slide, program};
     if (video) {
       useAudio(video);
       video.onended = controls;
@@ -328,6 +368,7 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   });
   button("hideStudioGraphic").onclick = () => { lowerThird = !lowerThird; controls(); };
   button("clearStudioScene").onclick = () => {
+    dismissProgram(current?.program);
     releaseClip(); current = undefined; lowerThird = false; controls(); report.textContent = "Camera and screen on stage.";
   };
   button("toggleStudioClip").onclick = () => run(async () => {
@@ -347,12 +388,10 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
   function turnSlide(delta: number) {
     run(async () => {
       const frame = current;
-      if (!frame?.slide) return;
-      const {presentation, page} = frame.slide;
-      const next = page + delta;
-      if (next < 0 || next >= presentation.pages) return;
-      frame.slide = await loadSlide(presentation, next);
-      controls();
+      if (!frame?.program) return;
+      const {id, revision} = frame.program;
+      const state = await speakerRequest<SlideProgram>(programPath, credential(), "PUT", {id, revision, direction: delta});
+      await followProgram(frame, state);
     });
   }
   button("previousStudioSlide").onclick = () => turnSlide(-1);
@@ -382,6 +421,12 @@ export function setupSceneDeck(path: string, credential: () => string, changed: 
       if (current) paint(context, current, camera, screen, lowerThird && !engagement);
       return Boolean(current);
     },
-    close() { releaseClip(); for (const item of previews.values()) URL.revokeObjectURL(item.url); previews.clear(); },
+    close() {
+      window.clearInterval(slidesTimer);
+      dismissProgram(current?.program);
+      releaseClip();
+      for (const item of previews.values()) URL.revokeObjectURL(item.url);
+      previews.clear();
+    },
   };
 }

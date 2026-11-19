@@ -156,6 +156,8 @@ Open **Speakers** in Live Studio to invite a guest. Enter their name and send th
 
 Guests join the speaker room automatically unless you turn on **Approve invited speakers before they connect**. Use **Admit** for a waiting guest, or turn off approval to admit everyone already waiting. Preview the guest's feed before placing it on air. Incoming speaker audio joins the program when that speaker is on air. Use **Take off air** to move the speaker backstage, or **Remove** to end their access. An admitted guest can post in **Speaker chat**. The audience never receives the speaker messages.
 
+An admitted guest can open **Presentation** and use **Share slides with producer** to send a PDF or PowerPoint deck into the event's slide picker. The producer chooses the deck, saves the scene and takes it to air. Speakers on air can see the current slide in their guest browser and use **Previous slide** or **Next slide**. The producer and guest share the same slide position. Taking a speaker off air removes their preview and slide controls.
+
 The speaker roster shows incoming video frame rate, bitrate and round-trip time when the browser reports them. Round-trip time measures the link between the producer and the speaker.
 
 Guest links need a reachable HTTPS CuePorch address outside localhost. For guest networks that require a relay, the self-hosted service accepts `CUEPORCH_STUN_URL`, `CUEPORCH_TURN_URL` and `CUEPORCH_TURN_SECRET` for a configured STUN or coturn deployment. Set `CUEPORCH_TURN_SECRET` on the service to your TURN server's shared authentication secret. CuePorch issues temporary credentials for the guest session.

@@ -18,6 +18,22 @@
       <button type="button" id="leaveSpeaker" hidden>Leave speaker room</button>
     </div>
     <video id="guestSpeakerPreview" muted playsinline autoplay hidden aria-label="My camera preview"></video>
+    <details id="guestPresentation" hidden>
+      <summary>Presentation</summary>
+      <form id="guestSlideUpload">
+        <label>Presentation file <input name="deck" type="file" accept=".pdf,.pptx" required></label>
+        <button type="submit">Share slides with producer</button>
+      </form>
+      <p id="guestSlideUploadStatus" role="status"></p>
+      <div id="guestSlideProgram" hidden>
+        <img id="guestSlidePreview" alt="Current slide" hidden>
+        <div class="video-work-actions">
+          <button type="button" id="previousGuestSlide">Previous slide</button>
+          <button type="button" id="nextGuestSlide">Next slide</button>
+        </div>
+        <p id="guestSlideNumber" role="status"></p>
+      </div>
+    </details>
     {% include 'speaker_chat.html' %}
   </main>
   <script type="module" src="/static/ui/event_speaker.js"></script>

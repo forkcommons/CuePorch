@@ -401,7 +401,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
-    event_speakers.register(app, tx, staff, speaker_access)
+    event_speakers.register(app, tx, staff, speaker_access, database)
     event_captions.register(app, tx, staff, operator_chat, audience_chat)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
     event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
