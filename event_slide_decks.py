@@ -73,9 +73,11 @@ def convert_powerpoint(source, scratch):
     command = libreoffice()
     if not command:
         raise ValueError("Install LibreOffice Impress on the CuePorch computer to import PowerPoint. You can also upload PDF.")
-    result = run_media([command, "-env:UserInstallation=" + (scratch / "office").as_uri(),
-                        "--headless", "--nologo", "--nodefault", "--norestore",
-                        "--convert-to", "pdf:impress_pdf_Export", "--outdir", str(scratch), str(source)], timeout=120)
+    # Impress creates a deeply nested user profile. Keep it off the chosen library path.
+    with TemporaryDirectory(prefix="cueporch-impress-") as profile:
+        result = run_media([command, "-env:UserInstallation=" + Path(profile).as_uri(),
+                            "--headless", "--nologo", "--nodefault", "--norestore",
+                            "--convert-to", "pdf:impress_pdf_Export", "--outdir", str(scratch), str(source)], timeout=120)
     converted = scratch / "source.pdf"
     if result.returncode or not converted.is_file():
         raise ValueError("LibreOffice could not open this PowerPoint deck.")

@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cueporch import checksum, dump, verify
+from live_slide_recovery import copy_decks, has_table
 
 
 def compose(host, *args, **kwargs):
@@ -85,6 +86,10 @@ def backup(host, collection, db, destination):
                     closing(sqlite3.connect(output / "institution.sqlite")) as target,
                 ):
                     source.backup(target)
+                    copy_decks(target, db.parent, output)
+                    if has_table(target, "live_slide_program"):
+                        with target:
+                            target.execute("DELETE FROM live_slide_program")
             if db:
                 keyfile = db.parent / "operator.json"
                 if keyfile.exists():
@@ -149,6 +154,8 @@ def restore(snapshot, host, port, rtmp):
     verify(host / "collection")
     if (snapshot / "institution.sqlite").exists():
         shutil.copy2(snapshot / "institution.sqlite", host / "institution.sqlite")
+        with closing(sqlite3.connect((host / "institution.sqlite").resolve().as_uri() + "?mode=ro", uri=True)) as database:
+            copy_decks(database, snapshot, host, verified=hashes)
     if (snapshot / "operator.json").exists():
         shutil.copy2(snapshot / "operator.json", host / "operator.json")
     if (snapshot / "institution-receipts").exists():

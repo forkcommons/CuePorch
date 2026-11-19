@@ -26,7 +26,7 @@ For CivicCast-produced WebVTT on MPEG-TS HLS, station_caption_clock.py aligns ze
 
 ## Recover and exit
 
-Preserve the collection manifest and objects, CuePorch institution.sqlite, destination receipts, operator credentials, PeerTube database, data/config volumes and host .env. Keep backups off the serving host. Pause publishing jobs and stop the institutional service for an offline snapshot. The backup command temporarily stops PeerTube, captures it and restarts it. An existing snapshot path is protected from overwrite. Treat the snapshot as private because it contains instance secrets and rights agreements.
+Preserve the collection manifest and objects, CuePorch institution.sqlite, destination receipts, operator credentials, PeerTube database, data/config volumes and host .env. Backing up with `--database` includes the original and rendered files for saved Live Studio presentations. Keep backups off the serving host. Pause publishing jobs and stop the institutional service for an offline snapshot. The backup command temporarily stops PeerTube, captures it and restarts it. An existing snapshot path is protected from overwrite. Treat the snapshot as private because it contains instance secrets, rights agreements and unpublished presentations.
 
 ```sh
 python deploy/recovery.py backup /private/station/host /private/station/collection /backup/station-snapshot --database /private/station/institution.sqlite
@@ -43,6 +43,6 @@ Check failed or waiting jobs in the operator library and approval queue. Retryin
 
 Use the versions in requirements.txt for the product. Browser cases additionally need Playwright and a headless Chromium browser. The Windows rehearsal used Edge. The station integration tests use CivicCast's Python package and, for captions, its built portal-public bundle at revision 0b8ab5accac4fc6ebbc6886d5d3d9006bdc0c65f. Run the exact commands in the acceptance record. Run separate copies for different institutions and migrations. A customer Vimeo account is optional.
 
-For a portable exit, pause institutional writes and run `python export_institution.py COLLECTION DATABASE NEW_DIRECTORY`. Store this export privately. It includes the media, hashes, screening agreements, case history and routes. Use the full offline snapshot to preserve credentials and resume service.
+For a portable exit, pause institutional writes and run `python export_institution.py COLLECTION DATABASE NEW_DIRECTORY`. Store this export privately. It includes the media, hashes, screening agreements, case history, routes and saved slide presentations. The presentation records identify the original files and PNGs for reuse. Use the full offline snapshot to preserve credentials and resume service.
 
 Configure named editorial contacts with CUEPORCH_OPERATOR_KEYS and publish CUEPORCH_SUPPORT_CONTACT, CUEPORCH_SUPPORT_HOURS, CUEPORCH_ESCALATION_CONTACT and CUEPORCH_RECOVERY_CONTACT. The institution owns these contacts and monitors the case inbox.

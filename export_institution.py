@@ -9,6 +9,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 from cueporch import checksum, dump, verify
+from live_slide_recovery import copy_decks, has_table
 
 
 def export(collection, database, target):
@@ -95,6 +96,12 @@ def export(collection, database, target):
                     images[digest] = {"path": file.relative_to(root).as_posix(), "mime": item["mime"]}
             if images:
                 record["interactivity_artwork"] = images
+            presentations = copy_decks(db, database.parent, root)
+            if presentations:
+                record["live_slide_decks"] = presentations
+                if has_table(db, "live_scene_deck"):
+                    record["live_scene_decks"] = [dict(event=event, settings=json.loads(settings))
+                                                  for event, settings in db.execute("SELECT event,settings FROM live_scene_deck")]
         dump(root / "rights-and-routes.json", record)
         dump(
             root / "SHA256.json",
