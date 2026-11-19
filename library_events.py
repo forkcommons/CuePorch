@@ -17,6 +17,7 @@ import event_analytics
 import event_chat
 import event_captions
 import event_engagement
+import event_library_recordings
 import event_program
 import event_replay_captions
 import event_schedule
@@ -38,7 +39,7 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
-       + event_replay_captions.SCHEMA + event_simulcast.SCHEMA)
+       + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -143,6 +144,8 @@ def edit(raw):
     replay = raw.get("save_replay", False)
     if type(replay) is not bool:
         abort(422, "Choose whether to record a replay.")
+    if "archive_replay" in raw and type(raw["archive_replay"]) is not bool:
+        abort(422, "Choose whether to retain the replay in the Library.")
     dvr = raw.get("dvr_seconds")
     if dvr is not None and (type(dvr) is not int or not 0 <= dvr <= 14400):
         abort(422, "Set a DVR window of up to four hours in seconds, or enter 0 to disable it.")
@@ -154,6 +157,8 @@ def edit(raw):
                 visibility=visibility, save_replay=replay, schedule=schedule)
     if dvr is not None:
         value["dvr_seconds"] = dvr
+    if "archive_replay" in raw:
+        value["archive_replay"] = raw["archive_replay"]
     return value
 
 
@@ -197,10 +202,11 @@ def overlapping(entries):
     return sorted(conflicts)
 
 
-def register(app, tx, staff, action, database, public_url, signing_key, root, read_works):
+def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work):
     media = Gateway()
     studio = Studio(database)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
+    recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
 
     def stop():
         outputs.close()
@@ -208,6 +214,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         studio.close()
         captions.close()
         replay_captions.close()
+        recordings.close()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
@@ -245,6 +252,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available())
             body = request.get_json()
             event = edit(body)
+            event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
             uid = uuid.uuid4().hex
             slug = body.get("slug") or uid
@@ -271,6 +279,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     abort(409, "This event changed. Open it again before saving.")
                 if prior.get("cueporch_delivery"):
                     changed["cueporch_delivery"] = True
+                if "archive_replay" in prior:
+                    changed.setdefault("archive_replay", prior["archive_replay"])
                 if changed == prior:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):
@@ -329,6 +339,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def operator_chat(con, uid, opens):
         _, event = read(con, uid)
         selected_open(event, opens)
+
+    def library_recording_access(con, uid, opens):
+        _, event = read(con, uid)
+        selected_open(event, opens)
+        return event, occurrence(con, uid, opens)
+
+    event_library_recordings.register(app, tx, staff, library_recording_access)
 
     def speaker_access(con, uid, opens):
         _, event = read(con, uid)

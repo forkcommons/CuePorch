@@ -10,7 +10,7 @@ interface Schedule {
 }
 interface EventSettings {
   title: string; description: string; type: string; visibility: string;
-  latency: string; save_replay: boolean; dvr_seconds?: number; schedule: Schedule;
+  latency: string; save_replay: boolean; archive_replay?: boolean; dvr_seconds?: number; schedule: Schedule;
 }
 interface Occurrence {id: number; start: string; end: string; local: string; delivery: string; program: string | null;}
 interface LiveEvent {
@@ -29,6 +29,7 @@ interface AudienceMetrics {
 }
 interface ProductionCaptions {enabled: boolean; language: string; status: string; cue_count: number;}
 interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
+interface LibraryRecording {state: string; work: string | null; error: string | null;}
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
@@ -63,6 +64,10 @@ const captionStatus = element("productionCaptionStatus");
 const replayCaptions = element<HTMLDetailsElement>("eventReplayCaptions");
 const replayCaptionForm = element<HTMLFormElement>("replaceReplayCaptions");
 const replayCaptionStatus = element("replayCaptionStatus");
+const libraryRecording = element<HTMLDetailsElement>("eventLibraryRecording");
+const libraryRecordingStatus = element("libraryRecordingStatus");
+const libraryRecordingLink = element<HTMLAnchorElement>("libraryRecordingLink");
+const saveLibraryRecording = button("saveLibraryRecording");
 let replayCaptionRevision = "";
 const destinations = element<HTMLDetailsElement>("eventDestinations");
 const destinationList = element("destinationList");
@@ -183,6 +188,9 @@ function choose(event: LiveEvent, instance: Occurrence) {
   replayCaptionForm.reset();
   replayCaptionStatus.textContent = replayCaptionRevision = "";
   button("downloadReplayCaptions").disabled = button("saveReplayCaptions").disabled = true;
+  libraryRecording.open = false;
+  libraryRecordingStatus.textContent = "";
+  libraryRecordingLink.hidden = saveLibraryRecording.disabled = true;
   destinations.open = false;
   destinationForm.reset();
   destinationList.replaceChildren();
@@ -255,6 +263,7 @@ function openEditor(current?: LiveEvent) {
   if (values) {
     for (const name of ["title", "description", "type", "visibility", "latency"] as const) field(name).value = values[name];
     field("save_replay").checked = values.save_replay;
+    field("archive_replay").checked = Boolean(values.archive_replay);
     field("dvr_seconds").value = values.dvr_seconds?.toString() ?? "";
     const schedule = values.schedule;
     for (const name of ["timezone", "start", "end", "repeat"] as const) field(name).value = schedule[name];
@@ -269,6 +278,7 @@ function openEditor(current?: LiveEvent) {
     field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   }
   recurrence();
+  syncArchiveOption();
   form.hidden = false;
   field("title").focus();
 }
@@ -276,6 +286,10 @@ function openEditor(current?: LiveEvent) {
 function recurrence() {
   element("recurringFields").hidden = field("repeat").value === "none";
   element("eventWeekdays").hidden = field("repeat").value !== "weeks";
+}
+
+function syncArchiveOption() {
+  field("archive_replay").disabled = !field("save_replay").checked;
 }
 
 button("newEvent").onclick = () => openEditor();
@@ -288,11 +302,14 @@ button("configureEventRegistration").onclick = () => void action(async () => {
 });
 button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
+field("save_replay").onchange = syncArchiveOption;
 preset.onchange = () => {
   const value = calendar.events.find((entry) => entry.id === preset.value)?.event;
   if (!value) return;
   for (const name of ["type", "description", "latency"] as const) field(name).value = value[name];
   field("save_replay").checked = value.save_replay;
+  field("archive_replay").checked = value.archive_replay ?? true;
+  syncArchiveOption();
   field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
   field("timezone").value = value.schedule.timezone;
 };
@@ -312,6 +329,7 @@ form.onsubmit = (event) => {
       slug: field("slug").value, title: field("title").value, description: field("description").value,
       type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
       save_replay: field("save_replay").checked,
+      archive_replay: field("archive_replay").checked,
       dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,
     });
     form.hidden = true;
@@ -601,6 +619,27 @@ replayCaptionForm.onsubmit = event => {
     (replayCaptionForm.elements.namedItem("track") as HTMLInputElement).value = "";
   });
 };
+
+async function updateLibraryRecording(save = false) {
+  const result = await request<LibraryRecording>(mediaPath("library-recording"), save ? "POST" : "GET");
+  const states: Record<string, string> = {
+    available: "You can keep a private Library copy when recording finishes.",
+    unavailable: "Prepare an occurrence with replay recording enabled to save a Library copy.",
+    waiting: "Waiting for the hosted replay.",
+    preparing: "Copying the finished recording.",
+    failed: result.error || "Could not save the recording.",
+    ready: "Saved privately in the Library.",
+  };
+  libraryRecordingStatus.textContent = states[result.state];
+  saveLibraryRecording.disabled = !["available", "failed"].includes(result.state);
+  saveLibraryRecording.textContent = result.state === "failed" ? "Retry saving to Library" : "Save to Library";
+  libraryRecordingLink.hidden = !result.work;
+  if (result.work) libraryRecordingLink.href = "/operator/videos/" + result.work;
+}
+
+libraryRecording.ontoggle = () => { if (libraryRecording.open) void action(() => updateLibraryRecording()); };
+button("refreshLibraryRecording").onclick = () => void action(() => updateLibraryRecording());
+saveLibraryRecording.onclick = () => void action(() => updateLibraryRecording(true));
 
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;

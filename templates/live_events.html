@@ -60,6 +60,7 @@
         <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
         <small id="eventDvrHelp">Leave blank for the host default. Enter 0 to turn DVR off. The host sets the maximum.</small>
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
+        <label><input name="archive_replay" type="checkbox" checked> Keep a private copy in the Library</label>
       </fieldset>
       <button type="submit">Save event</button>
       <button type="button" id="closeEventEditor">Close editor</button>
@@ -100,6 +101,13 @@
           <button type="button" id="refreshLiveCaptions">Refresh caption status</button>
         </form>
         <p id="productionCaptionStatus" role="status"></p>
+      </details>
+      <details id="eventLibraryRecording">
+        <summary>Library recording</summary>
+        <p id="libraryRecordingStatus" role="status"></p>
+        <button type="button" id="saveLibraryRecording" disabled>Save to Library</button>
+        <button type="button" id="refreshLibraryRecording">Refresh Library recording</button>
+        <a id="libraryRecordingLink" hidden>Open Library recording</a>
       </details>
       <details id="eventReplayCaptions">
         <summary>Replay captions</summary>
