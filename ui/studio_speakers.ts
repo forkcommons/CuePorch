@@ -7,7 +7,11 @@ interface Speaker {
   on_air: boolean; connected: boolean; needs_answer: boolean;
 }
 interface Room {review: boolean; speakers: Speaker[];}
-interface Feed {revision: string; pc: RTCPeerConnection; stream: MediaStream; preview: HTMLVideoElement | null;}
+interface Feed {
+  revision: string; pc: RTCPeerConnection; stream: MediaStream; preview: HTMLVideoElement | null;
+  health?: HTMLParagraphElement; measuring?: boolean;
+  previousVideo?: Pick<RTCInboundRtpStreamStats, "id" | "timestamp" | "bytesReceived">;
+}
 
 export function setupSpeakers(path: string, credential: () => string, onChange: () => void) {
   const panel = document.querySelector<HTMLDetailsElement>("#studioSpeakers")!;
@@ -42,13 +46,17 @@ export function setupSpeakers(path: string, credential: () => string, onChange: 
     if (feed.preview) feed.preview.srcObject = null;
   }
 
-  function activeFeeds() {
+  function connectedFeeds() {
     return (room?.speakers || []).flatMap(speaker => {
       const feed = feeds.get(speaker.id);
-      return feed && speaker.on_air && feed.pc.connectionState === "connected" && feed.stream.getTracks().length
-        ? [{id: speaker.id, name: speaker.name, stream: feed.stream, preview: feed.preview}]
+      return feed && feed.pc.connectionState === "connected" && feed.stream.getTracks().length
+        ? [{id: speaker.id, name: speaker.name, stream: feed.stream, preview: feed.preview, onAir: speaker.on_air}]
         : [];
     });
+  }
+
+  function activeFeeds() {
+    return connectedFeeds().filter(feed => feed.onAir);
   }
 
   function action(label: string, when: () => Promise<void>, disabled = false) {
@@ -86,6 +94,15 @@ export function setupSpeakers(path: string, credential: () => string, onChange: 
         row.append(feed.preview);
         void feed.preview.play().catch(() => {});
       }
+      if (feed) {
+        feed.health = undefined;
+        if (ready) {
+          feed.health = document.createElement("p");
+          feed.health.setAttribute("aria-label", speaker.name + " connection measurements");
+          feed.health.textContent = "Measuring speaker connection…";
+          row.append(feed.health);
+        }
+      }
       const endpoint = "/" + speaker.id;
       if (speaker.joined && !speaker.admitted) row.append(action("Admit " + speaker.name, () => api(endpoint, "PUT", {admit: true})));
       if (speaker.admitted) row.append(action(`${speaker.on_air ? "Take off air" : "Put on air"} · ${speaker.name}`,
@@ -115,6 +132,7 @@ export function setupSpeakers(path: string, credential: () => string, onChange: 
       pc.ontrack = ({track}) => {
         if (feeds.get(speaker.id) !== into) return;
         into.stream.addTrack(track);
+        track.addEventListener("ended", onChange, {once: true});
         into.preview ??= mediaPreview(into.stream);
         render();
         onChange();
@@ -164,6 +182,43 @@ export function setupSpeakers(path: string, credential: () => string, onChange: 
     } finally { refreshBusy = false; }
   }
 
+  async function measure(feed: Feed) {
+    if (!feed.health || feed.measuring || feed.pc.connectionState !== "connected") return;
+    feed.measuring = true;
+    try {
+      const stats = await feed.pc.getStats();
+      const values: string[] = [];
+      stats.forEach((entry: RTCStats) => {
+        if (entry.type === "inbound-rtp") {
+          const video = entry as RTCInboundRtpStreamStats;
+          if (video.kind !== "video") return;
+          if (typeof video.framesPerSecond === "number") values.push(Math.round(video.framesPerSecond) + " fps");
+          const previous = feed.previousVideo;
+          if (previous?.id === video.id && typeof previous.bytesReceived === "number" &&
+              typeof video.bytesReceived === "number" && video.timestamp > previous.timestamp) {
+            const rate = 8 * (video.bytesReceived - previous.bytesReceived) / (video.timestamp - previous.timestamp);
+            if (rate >= 0) values.push(rate.toFixed(1) + " kbps video");
+          }
+          feed.previousVideo = video;
+        }
+        if (entry.type === "transport") {
+          const transport = entry as RTCTransportStats;
+          const pair = transport.selectedCandidatePairId
+            ? stats.get(transport.selectedCandidatePairId) as RTCIceCandidatePairStats | undefined
+            : undefined;
+          if (typeof pair?.currentRoundTripTime === "number") {
+            values.push(Math.round(1000 * pair.currentRoundTripTime) + " ms round trip");
+          }
+        }
+      });
+      if (feed.health) feed.health.textContent = values.join(" · ") || "Speaker connection measurements unavailable.";
+    } catch {
+      if (feed.health) feed.health.textContent = "Speaker connection measurements unavailable.";
+    } finally {
+      feed.measuring = false;
+    }
+  }
+
   async function edit(work: () => Promise<void>) {
     if (editBusy) return;
     editBusy = true;
@@ -183,6 +238,9 @@ export function setupSpeakers(path: string, credential: () => string, onChange: 
   };
   review.onchange = () => void edit(() => api("", "PUT", {review: review.checked}));
   panel.ontoggle = () => { if (panel.open) void refresh(); else chat.show(false); };
-  const timer = window.setInterval(() => { if (panel.open || room || feeds.size) void refresh(); }, 1500);
-  return {activeFeeds, close() { closed = true; chat.close(); window.clearInterval(timer); for (const id of feeds.keys()) remove(id); }};
+  const timer = window.setInterval(() => {
+    if (panel.open || room || feeds.size) void refresh();
+    if (panel.open && !document.hidden) for (const feed of feeds.values()) void measure(feed);
+  }, 1500);
+  return {activeFeeds, connectedFeeds, close() { closed = true; chat.close(); window.clearInterval(timer); for (const id of feeds.keys()) remove(id); }};
 }

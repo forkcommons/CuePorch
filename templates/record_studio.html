@@ -94,12 +94,15 @@
           <label for="micDevice">Microphone device</label>
           <select id="micDevice"><option value="">Default</option></select>
           <button id="enableDevices" type="button">Connect camera and microphone</button>
-          <label for="recordLevel">Microphone level</label>
-          <meter id="recordLevel" max="1" value="0"></meter>
           <label><input id="recordSystemAudio" type="checkbox"> Request shared-screen audio</label>
           <button id="enableScreen" type="button">Share screen</button>
           <button id="releaseScreen" type="button" hidden>Stop sharing screen</button>
         </fieldset>
+        <details id="studioAudio">
+          <summary>Audio mixer</summary>
+          <p id="studioAudioEmpty">Connect an audio source to see its controls.</p>
+          <div id="studioAudioInputs"></div>
+        </details>
         <fieldset id="recordFormat">
           <legend>Canvas</legend>
           <label>Aspect ratio <select id="recordRatio">

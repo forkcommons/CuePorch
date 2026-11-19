@@ -4,6 +4,7 @@ import { uploadLibraryFile } from "./library_upload.js";
 import { BrowserBroadcast } from "./event_broadcast.js";
 import { setupSceneDeck } from "./event_scenes.js";
 import { relaySummary } from "./event_health.js";
+import { StudioAudio } from "./studio_audio.js";
 import { setupSpeakers } from "./studio_speakers.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
@@ -14,7 +15,7 @@ const identity = element("recordIdentity");
 const key = input("recordKey");
 const canvas = element("recordCanvas");
 const context = canvas.getContext("2d", { alpha: false });
-const level = element("recordLevel");
+const audioPanel = element("studioAudio");
 const film = element("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
@@ -37,11 +38,7 @@ let active = null;
 let take = null;
 let storage = null;
 let audio = null;
-let analyser = null;
-let mix = null;
-let audioSources = [];
 let studioClip;
-let clipSource;
 let busy = false;
 let pictureStream = null;
 let lastPaint = performance.now();
@@ -127,44 +124,36 @@ async function listDevices() {
     }
 }
 function wireAudio() {
-    audioSources.forEach(node => node.disconnect());
-    audioSources = [];
-    if (!audio || !analyser || !mix)
+    if (!audio)
         return;
-    const mic = camera?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-    const shared = screen?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-    const guests = speakers?.activeFeeds().flatMap(feed => feed.stream.getAudioTracks().filter(track => track.readyState === "live")) || [];
-    for (const track of [...mic, ...shared, ...guests]) {
-        const node = audio.createMediaStreamSource(new MediaStream([track]));
-        node.connect(mix);
-        if (mic.includes(track))
-            node.connect(analyser);
-        audioSources.push(node);
+    const sources = [
+        { id: "mic", name: "Microphone", stream: camera?.stream, onAir: true },
+        { id: "screen", name: "Shared screen", stream: screen?.stream, onAir: true },
+        ...(speakers?.connectedFeeds().map(feed => ({ ...feed, id: "speaker-" + feed.id })) || []),
+    ];
+    const inputs = [];
+    for (const { id, name, stream, onAir } of sources) {
+        const tracks = stream?.getAudioTracks().filter(track => track.readyState === "live");
+        if (tracks?.length)
+            inputs.push({ id, name, media: tracks, onAir });
     }
+    if (studioClip)
+        inputs.push({ id: "clip", name: "Scene clip", media: studioClip, onAir: true });
+    audio.reconcile(inputs);
 }
 function selectClipAudio(video) {
-    if (studioClip !== video) {
-        clipSource?.disconnect();
-        clipSource = undefined;
-        studioClip = video;
-    }
-    if (video && audio && mix && !clipSource) {
-        clipSource = audio.createMediaElementSource(video);
-        clipSource.connect(mix);
-        video.muted = false;
-    }
+    studioClip = video;
+    wireAudio();
 }
 async function sound() {
-    if (!audio) {
-        audio = new AudioContext();
-        analyser = audio.createAnalyser();
-        analyser.fftSize = 256;
-        mix = audio.createMediaStreamDestination();
-    }
+    audio ??= new StudioAudio(element("studioAudioInputs"), element("studioAudioEmpty"));
     wireAudio();
-    selectClipAudio(studioClip);
-    await audio.resume();
+    await audio.context.resume();
 }
+audioPanel.querySelector("summary")?.addEventListener("click", () => {
+    if (!audioPanel.open)
+        run(sound);
+});
 function draw(now) {
     requestAnimationFrame(draw);
     if (now - lastPaint < 28)
@@ -181,14 +170,7 @@ function draw(now) {
     else if (!painted) {
         drawRecording(context, options, presenter, screen?.preview || null);
     }
-    if (analyser && audioSources.length) {
-        analyser.getByteTimeDomainData(audioSamples);
-        const total = audioSamples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0);
-        level.value = Math.min(1, 3 * Math.sqrt(total / audioSamples.length));
-    }
-    else {
-        level.value = 0;
-    }
+    audio?.updateMeters();
     if (active) {
         const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
         liveText.textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
@@ -199,7 +181,6 @@ function draw(now) {
     }
     lastPaint = now;
 }
-const audioSamples = new Uint8Array(256);
 function resize() {
     const size = recordingSize(Number(select("recordQuality").value), select("recordRatio").value);
     canvas.width = size.width;
@@ -242,6 +223,7 @@ async function shareScreen() {
     });
     closeScreen();
     screen = { stream, preview: mediaPreview(stream) };
+    stream.getAudioTracks().forEach(track => track.addEventListener("ended", wireAudio, { once: true }));
     stream.getVideoTracks()[0]?.addEventListener("ended", () => {
         if (screen?.stream !== stream)
             return;
@@ -334,8 +316,8 @@ async function start() {
         }
         await sound();
         stream = canvasStream();
-        if ((audioSources.length || scenes) && mix) {
-            const track = mix.stream.getAudioTracks()[0];
+        if (audio && (audio.hasProgramInput || scenes)) {
+            const track = audio.output.stream.getAudioTracks()[0];
             if (track)
                 stream.addTrack(track.clone());
         }
@@ -572,5 +554,5 @@ window.addEventListener("pagehide", () => {
     void active?.broadcast?.close();
     if (take)
         URL.revokeObjectURL(take.url);
-    void audio?.close();
+    void audio?.context.close();
 });

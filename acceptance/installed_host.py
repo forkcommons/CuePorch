@@ -24,6 +24,7 @@ p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("origin")
 p.add_argument("report", type=Path)
+p.add_argument("--setup-timeout", type=int, default=45000, help="Browser setup response timeout in milliseconds")
 p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cable package for review defaults acceptance")
 modes = p.add_mutually_exclusive_group()
 modes.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
@@ -136,7 +137,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 pg.get_by_label("Password", exact=True).fill(password)
                 with pg.expect_response(
                     lambda response: response.url == base + "/desktop/api/setup" and response.request.method == "POST",
-                    timeout=45000,
+                    timeout=a.setup_timeout,
                 ) as setup:
                     pg.get_by_role("button", name="Save setup").click()
                 assert setup.value.ok, f"Installed host setup returned HTTP {setup.value.status}"

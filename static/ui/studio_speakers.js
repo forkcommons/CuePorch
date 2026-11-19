@@ -32,13 +32,16 @@ export function setupSpeakers(path, credential, onChange) {
         if (feed.preview)
             feed.preview.srcObject = null;
     }
-    function activeFeeds() {
+    function connectedFeeds() {
         return (room?.speakers || []).flatMap(speaker => {
             const feed = feeds.get(speaker.id);
-            return feed && speaker.on_air && feed.pc.connectionState === "connected" && feed.stream.getTracks().length
-                ? [{ id: speaker.id, name: speaker.name, stream: feed.stream, preview: feed.preview }]
+            return feed && feed.pc.connectionState === "connected" && feed.stream.getTracks().length
+                ? [{ id: speaker.id, name: speaker.name, stream: feed.stream, preview: feed.preview, onAir: speaker.on_air }]
                 : [];
         });
+    }
+    function activeFeeds() {
+        return connectedFeeds().filter(feed => feed.onAir);
     }
     function action(label, when, disabled = false) {
         const button = document.createElement("button");
@@ -75,6 +78,15 @@ export function setupSpeakers(path, credential, onChange) {
                 row.append(feed.preview);
                 void feed.preview.play().catch(() => { });
             }
+            if (feed) {
+                feed.health = undefined;
+                if (ready) {
+                    feed.health = document.createElement("p");
+                    feed.health.setAttribute("aria-label", speaker.name + " connection measurements");
+                    feed.health.textContent = "Measuring speaker connection…";
+                    row.append(feed.health);
+                }
+            }
             const endpoint = "/" + speaker.id;
             if (speaker.joined && !speaker.admitted)
                 row.append(action("Admit " + speaker.name, () => api(endpoint, "PUT", { admit: true })));
@@ -106,6 +118,7 @@ export function setupSpeakers(path, credential, onChange) {
                 if (feeds.get(speaker.id) !== into)
                     return;
                 into.stream.addTrack(track);
+                track.addEventListener("ended", onChange, { once: true });
                 into.preview ??= mediaPreview(into.stream);
                 render();
                 onChange();
@@ -170,6 +183,50 @@ export function setupSpeakers(path, credential, onChange) {
             refreshBusy = false;
         }
     }
+    async function measure(feed) {
+        if (!feed.health || feed.measuring || feed.pc.connectionState !== "connected")
+            return;
+        feed.measuring = true;
+        try {
+            const stats = await feed.pc.getStats();
+            const values = [];
+            stats.forEach((entry) => {
+                if (entry.type === "inbound-rtp") {
+                    const video = entry;
+                    if (video.kind !== "video")
+                        return;
+                    if (typeof video.framesPerSecond === "number")
+                        values.push(Math.round(video.framesPerSecond) + " fps");
+                    const previous = feed.previousVideo;
+                    if (previous?.id === video.id && typeof previous.bytesReceived === "number" &&
+                        typeof video.bytesReceived === "number" && video.timestamp > previous.timestamp) {
+                        const rate = 8 * (video.bytesReceived - previous.bytesReceived) / (video.timestamp - previous.timestamp);
+                        if (rate >= 0)
+                            values.push(rate.toFixed(1) + " kbps video");
+                    }
+                    feed.previousVideo = video;
+                }
+                if (entry.type === "transport") {
+                    const transport = entry;
+                    const pair = transport.selectedCandidatePairId
+                        ? stats.get(transport.selectedCandidatePairId)
+                        : undefined;
+                    if (typeof pair?.currentRoundTripTime === "number") {
+                        values.push(Math.round(1000 * pair.currentRoundTripTime) + " ms round trip");
+                    }
+                }
+            });
+            if (feed.health)
+                feed.health.textContent = values.join(" · ") || "Speaker connection measurements unavailable.";
+        }
+        catch {
+            if (feed.health)
+                feed.health.textContent = "Speaker connection measurements unavailable.";
+        }
+        finally {
+            feed.measuring = false;
+        }
+    }
     async function edit(work) {
         if (editBusy)
             return;
@@ -200,8 +257,13 @@ export function setupSpeakers(path, credential, onChange) {
         void refresh();
     else
         chat.show(false); };
-    const timer = window.setInterval(() => { if (panel.open || room || feeds.size)
-        void refresh(); }, 1500);
-    return { activeFeeds, close() { closed = true; chat.close(); window.clearInterval(timer); for (const id of feeds.keys())
+    const timer = window.setInterval(() => {
+        if (panel.open || room || feeds.size)
+            void refresh();
+        if (panel.open && !document.hidden)
+            for (const feed of feeds.values())
+                void measure(feed);
+    }, 1500);
+    return { activeFeeds, connectedFeeds, close() { closed = true; chat.close(); window.clearInterval(timer); for (const id of feeds.keys())
             remove(id); } };
 }

@@ -4,6 +4,7 @@ import {uploadLibraryFile} from "./library_upload.js";
 import {BrowserBroadcast} from "./event_broadcast.js";
 import {setupSceneDeck} from "./event_scenes.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
+import {StudioAudio, type StudioInput} from "./studio_audio.js";
 import {setupSpeakers} from "./studio_speakers.js";
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -15,7 +16,7 @@ const identity = element<HTMLFormElement>("recordIdentity");
 const key = input("recordKey");
 const canvas = element<HTMLCanvasElement>("recordCanvas");
 const context = canvas.getContext("2d", {alpha: false})!;
-const level = element<HTMLMeterElement>("recordLevel");
+const audioPanel = element<HTMLDetailsElement>("studioAudio");
 const film = element<HTMLVideoElement>("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
@@ -57,12 +58,8 @@ let screen: Source | null = null;
 let active: Session | null = null;
 let take: Take | null = null;
 let storage: Awaited<ReturnType<typeof openRecordingStorage>> | null = null;
-let audio: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
-let mix: MediaStreamAudioDestinationNode | null = null;
-let audioSources: MediaStreamAudioSourceNode[] = [];
+let audio: StudioAudio | null = null;
 let studioClip: HTMLVideoElement | undefined;
-let clipSource: MediaElementAudioSourceNode | undefined;
 let busy = false;
 let pictureStream: MediaStream | null = null;
 let lastPaint = performance.now();
@@ -147,44 +144,35 @@ async function listDevices() {
 }
 
 function wireAudio() {
-  audioSources.forEach(node => node.disconnect());
-  audioSources = [];
-  if (!audio || !analyser || !mix) return;
-  const mic = camera?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-  const shared = screen?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-  const guests = speakers?.activeFeeds().flatMap(feed => feed.stream.getAudioTracks().filter(track => track.readyState === "live")) || [];
-  for (const track of [...mic, ...shared, ...guests]) {
-    const node = audio.createMediaStreamSource(new MediaStream([track]));
-    node.connect(mix);
-    if (mic.includes(track)) node.connect(analyser);
-    audioSources.push(node);
+  if (!audio) return;
+  const sources = [
+    {id: "mic", name: "Microphone", stream: camera?.stream, onAir: true},
+    {id: "screen", name: "Shared screen", stream: screen?.stream, onAir: true},
+    ...(speakers?.connectedFeeds().map(feed => ({...feed, id: "speaker-" + feed.id})) || []),
+  ];
+  const inputs: StudioInput[] = [];
+  for (const {id, name, stream, onAir} of sources) {
+    const tracks = stream?.getAudioTracks().filter(track => track.readyState === "live");
+    if (tracks?.length) inputs.push({id, name, media: tracks, onAir});
   }
+  if (studioClip) inputs.push({id: "clip", name: "Scene clip", media: studioClip, onAir: true});
+  audio.reconcile(inputs);
 }
 
 function selectClipAudio(video?: HTMLVideoElement) {
-  if (studioClip !== video) {
-    clipSource?.disconnect();
-    clipSource = undefined;
-    studioClip = video;
-  }
-  if (video && audio && mix && !clipSource) {
-    clipSource = audio.createMediaElementSource(video);
-    clipSource.connect(mix);
-    video.muted = false;
-  }
+  studioClip = video;
+  wireAudio();
 }
 
 async function sound() {
-  if (!audio) {
-    audio = new AudioContext();
-    analyser = audio.createAnalyser();
-    analyser.fftSize = 256;
-    mix = audio.createMediaStreamDestination();
-  }
+  audio ??= new StudioAudio(element("studioAudioInputs"), element("studioAudioEmpty"));
   wireAudio();
-  selectClipAudio(studioClip);
-  await audio.resume();
+  await audio.context.resume();
 }
+
+audioPanel.querySelector("summary")?.addEventListener("click", () => {
+  if (!audioPanel.open) run(sound);
+});
 
 function draw(now: number) {
   requestAnimationFrame(draw);
@@ -200,13 +188,7 @@ function draw(now: number) {
   } else if (!painted) {
     drawRecording(context, options, presenter, screen?.preview || null);
   }
-  if (analyser && audioSources.length) {
-    analyser.getByteTimeDomainData(audioSamples);
-    const total = audioSamples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0);
-    level.value = Math.min(1, 3 * Math.sqrt(total / audioSamples.length));
-  } else {
-    level.value = 0;
-  }
+  audio?.updateMeters();
   if (active) {
     const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
     liveText.textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
@@ -217,7 +199,6 @@ function draw(now: number) {
   }
   lastPaint = now;
 }
-const audioSamples = new Uint8Array(256);
 
 function resize() {
   const size = recordingSize(Number(select("recordQuality").value), select("recordRatio").value);
@@ -262,6 +243,7 @@ async function shareScreen() {
   });
   closeScreen();
   screen = {stream, preview: mediaPreview(stream)};
+  stream.getAudioTracks().forEach(track => track.addEventListener("ended", wireAudio, {once: true}));
   stream.getVideoTracks()[0]?.addEventListener("ended", () => {
     if (screen?.stream !== stream) return;
     closeScreen();
@@ -347,8 +329,8 @@ async function start() {
     }
     await sound();
     stream = canvasStream();
-    if ((audioSources.length || scenes) && mix) {
-      const track = mix.stream.getAudioTracks()[0];
+    if (audio && (audio.hasProgramInput || scenes)) {
+      const track = audio.output.stream.getAudioTracks()[0];
       if (track) stream.addTrack(track.clone());
     }
     const mime = recordingMime();
@@ -549,5 +531,5 @@ window.addEventListener("pagehide", () => {
   active?.output.getTracks().forEach(track => track.stop());
   void active?.broadcast?.close();
   if (take) URL.revokeObjectURL(take.url);
-  void audio?.close();
+  void audio?.context.close();
 });
