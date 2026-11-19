@@ -11,14 +11,16 @@ import uuid
 import requests
 from playwright.sync_api import expect
 
+from installed_versions import generate_replacement
+
 
 def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
     endpoint = base + "/api/analytics/video-report"
     today = datetime.now(timezone.utc).date().isoformat()
     title_a, title_b = "Advanced report station", "Advanced report festival"
 
-    def upload(title):
-        with clip.open("rb") as stream:
+    def upload(title, video):
+        with video.open("rb") as stream:
             response = requests.post(
                 base + "/api/library/uploads", headers=auth, timeout=30,
                 files={"file": (title + ".mp4", stream, "video/mp4")},
@@ -29,13 +31,33 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
         response.raise_for_status()
         return response.json()["id"]
 
-    a, b = upload(title_a), upload(title_b)
+    longer = generate_replacement(clip.with_name(f"longer-report-{uuid.uuid4().hex}.mp4"), seconds=4)
+    a, b = upload(title_a, clip), upload(title_b, longer)
+
+    def configure_rating(uid, mode):
+        url = f"{base}/api/library/work/{uid}/rating"
+        settings = requests.get(url, headers=auth, timeout=10)
+        settings.raise_for_status()
+        previous = settings.json()
+        requests.put(url, headers=auth, timeout=10, json={
+            "previous": previous["settings"], "version": previous["version"], "mode": mode,
+            "prompt": "Rate this screening", "start": 0,
+        }).raise_for_status()
+
+    configure_rating(a, "thumbs")
+    configure_rating(b, "stars")
     assert requests.post(endpoint, json={}, timeout=10).status_code == 403
     filters = {"from": today, "to": today, "group": "video", "breakdown": "device", "videos": [a, b]}
     assert requests.post(endpoint, headers=auth, json=filters | {"breakdown": "video"}, timeout=10).status_code == 422
 
     def report(**overrides):
         response = requests.post(endpoint, headers=auth, timeout=10, json=filters | overrides)
+        response.raise_for_status()
+        return response.json()
+
+    def additional_report(kind, **overrides):
+        response = requests.post(f"{base}/api/analytics/{kind}-report", headers=auth, timeout=10,
+                                 json=filters | overrides)
         response.raise_for_status()
         return response.json()
 
@@ -52,6 +74,10 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
         watch = play_a.locator("video")
         for video in (embedded, watch):
             assert video.evaluate("async v=>{v.muted=true;await v.play();return v.videoWidth}") == 256
+        for surface, label in ((play_a, "Thumbs up"), (play_b.frame_locator("iframe"), "4 stars")):
+            widget = surface.locator(".video-rating")
+            widget.get_by_role("button", name=label, exact=True).click()
+            expect(widget.locator("[data-rating-message]")).to_have_text("Rating recorded.")
         deadline = time.monotonic() + 15
         result = report()
         while result["totals"]["finishes"] < 2 and time.monotonic() < deadline:
@@ -67,6 +93,21 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
         assert report(videos=[a], surface="embed")["totals"]["views"] == 0
         monthly = report(period="month")["overview"]
         assert len(monthly) == 1 and monthly[0]["period"] == date.fromisoformat(today).replace(day=1).isoformat()
+
+        engagement = additional_report("engagement")
+        totals = engagement["totals"]
+        assert totals["views"] == totals["measured"] == totals["finishes"] == 2
+        assert totals["completion"] == 1 and totals["points"]["50"] == totals["points"]["100"] == 2
+        assert len(engagement["retention"]) == 101 and engagement["retention"][50] == engagement["retention"][100] == 2
+        assert {row["title"] for row in engagement["rows"]} == {title_a, title_b}
+        assert additional_report("engagement", device="Phone")["totals"]["views"] == 1
+        ratings = additional_report("rating")
+        assert {row["mode"]: (row["votes"], row["average"], row["scores"]) for row in ratings["totals"]} == {
+            "thumbs": (1, 1, [0, 1]), "stars": (1, 4, [0, 0, 0, 1, 0]),
+        }
+        assert [row["video"] for row in additional_report("rating", videos=[b])["rows"]] == [b]
+        for kind in ("rating", "engagement"):
+            assert requests.post(f"{base}/api/analytics/{kind}-report", json=filters, timeout=10).status_code == 403
 
         page.goto(f"{base}/operator/videos/{a}/analytics")
         page.get_by_role("link", name="Advanced report").click()
@@ -89,9 +130,65 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
         assert {(row["device"], row["video"], row["video_id"]) for row in csv_rows} == {
             ("Desktop", title_a, a), ("Phone", title_b, b),
         }
+        kinds = page.get_by_label("Report type")
+        kinds.select_option("engagement")
+        expect(page.locator("#engagementReport")).to_be_visible()
+        expect(page.locator("#videoReport")).to_be_hidden()
+        expect(page.locator("#engagementRows > tr")).to_have_count(3)
+        expect(page.locator("#engagementRows > tr").first.get_by_role("cell").last).to_have_text("2")
+        with page.expect_download() as downloaded:
+            page.get_by_role("button", name="Download CSV").click()
+        rows = list(csv.DictReader(StringIO(downloaded.value.path().read_text(encoding="utf8"))))
+        assert {row["video"]: row["views_at_50_percent"] for row in rows} == {"Total": "2", title_a: "1", title_b: "1"}
+
+        kinds.select_option("rating")
+        expect(page.locator("#ratingReport")).to_be_visible()
+        expect(page.locator('input[name="source"]')).to_be_hidden()
+        expect(page.locator("#ratingRows > tr")).to_have_count(4)
+        expect(page.locator("#ratingRows")).to_contain_text("4 stars 1")
+        with page.expect_download() as downloaded:
+            page.get_by_role("button", name="Download CSV").click()
+        rows = list(csv.DictReader(StringIO(downloaded.value.path().read_text(encoding="utf8"))))
+        assert {(row["video_id"], row["rating_type"], row["votes"]) for row in rows if row["video_id"]} == {
+            (a, "thumbs", "1"), (b, "stars", "1"),
+        }
+
+        dropoff = desktop.new_page()
+        dropoff.goto(f"{base}/watch/work/{b}")
+        stop = dropoff.locator("video").evaluate("""async v => {
+            v.muted = true;
+            await v.play();
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('No playing video frames arrived.')), 8000);
+                function sample() {
+                    if (v.currentTime < 1.1 && !v.ended) {
+                        v.requestVideoFrameCallback(sample);
+                        return;
+                    }
+                    clearTimeout(timeout);
+                    v.pause();
+                    resolve(v.currentTime);
+                }
+                v.requestVideoFrameCallback(sample);
+            });
+        }""")
+        assert 1.1 <= stop < 2
+        deadline = time.monotonic() + 12
+        engagement = additional_report("engagement")
+        totals = engagement["totals"]
+        while totals["points"]["25"] != 3 and time.monotonic() < deadline:
+            time.sleep(.15)
+            engagement = additional_report("engagement")
+            totals = engagement["totals"]
+        assert totals["views"] == 3 and totals["finishes"] == 2
+        assert totals["completion"] == 2 / 3
+        assert engagement["retention"][25] == 3 and engagement["retention"][50] == 2
     finally:
         museum.embed = former_embed
         phone.close()
         desktop.close()
     return dict(real_watched_views=2, aggregate_library_and_video_picker=True, device_and_referring_origin=True,
-                watch_and_embed_filters=True, daily_weekly_monthly_trends=True, second_dimension_and_csv=True)
+                watch_and_embed_filters=True, daily_weekly_monthly_trends=True, second_dimension_and_csv=True,
+                engagement_curve_and_milestones=True, compared_two_durations=True,
+                partial_playback_seconds=round(stop, 3), retention_at_25_percent=3, retention_at_50_percent=2,
+                captured_two_browser_votes=True, reports_filter_and_export=True)

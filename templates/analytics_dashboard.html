@@ -16,6 +16,9 @@
   <p id="reportStatus" role="status"></p>
   <main id="analyticsDashboard" hidden>
     <form id="reportControls">
+      <label>Report type <select id="reportType">
+        <option value="video">Video</option><option value="engagement">Engagement</option><option value="rating">Video ratings</option>
+      </select></label>
       <fieldset>
         <legend>Filters</legend>
         <div class="library-tools">
@@ -25,14 +28,14 @@
           </select></label>
           <label>From (UTC) <input type="date" name="from" required></label>
           <label>To (UTC) <input type="date" name="to" required></label>
-          <label>Playback surface <select name="surface">
+          <label data-playback-filter>Playback surface <select name="surface">
             <option value="">All</option><option value="watch">Watch page</option><option value="embed">Embed</option>
           </select></label>
-          <label>Device <select name="device">
+          <label data-playback-filter>Device <select name="device">
             <option value="">All</option><option>Desktop</option><option>Phone</option><option>Tablet</option>
             <option>TV</option><option>Unknown</option>
           </select></label>
-          <label>Referring site <input name="source" maxlength="270" placeholder="https://example.org"></label>
+          <label data-playback-filter>Referring site <input name="source" maxlength="270" placeholder="https://example.org"></label>
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
@@ -46,9 +49,9 @@
       <fieldset>
         <legend>Report</legend>
         <div class="library-tools">
-          <label>Group by <select name="group"></select></label>
-          <label>Break down by <select name="breakdown"></select></label>
-          <label>Time scale <select name="period">
+          <label data-video-filter>Group by <select name="group"></select></label>
+          <label data-video-filter>Break down by <select name="breakdown"></select></label>
+          <label data-video-filter>Time scale <select name="period">
             <option value="day">Day</option><option value="week">Week</option>
             <option value="month">Month</option><option value="year">Year</option>
           </select></label>
@@ -57,6 +60,7 @@
         </div>
       </fieldset>
     </form>
+    <div id="videoReport">
     <dl id="reportTotals" class="analytics-counts"></dl>
     <section aria-labelledby="trendHeading">
       <h2 id="trendHeading">Overview over time</h2>
@@ -71,6 +75,27 @@
       <p id="reportEmpty" hidden>No playback observations match these filters.</p>
       <div class="analytics-table">
         <table><thead><tr id="reportColumns"></tr></thead><tbody id="reportRows"></tbody></table>
+      </div>
+    </section>
+    </div>
+    <section id="engagementReport" aria-labelledby="engagementHeading" hidden>
+      <h2 id="engagementHeading">Audience retention</h2>
+      <p>Playback sessions reaching each point in the selected videos.</p>
+      <canvas id="engagementCurve" width="720" height="200" role="img" aria-label="Playback sessions by percentage watched"></canvas>
+      <p id="engagementCoverage" role="status" hidden></p>
+      <div class="analytics-table">
+        <table><thead><tr><th scope="col">Video</th><th scope="col">Views</th><th scope="col">Average watched</th>
+          <th scope="col">Completion rate</th><th scope="col">1%</th><th scope="col">25%</th>
+          <th scope="col">50%</th><th scope="col">75%</th><th scope="col">100%</th></tr></thead>
+          <tbody id="engagementRows"></tbody></table>
+      </div>
+    </section>
+    <section id="ratingReport" aria-labelledby="ratingsHeading" hidden>
+      <h2 id="ratingsHeading">Video ratings</h2>
+      <div class="analytics-table">
+        <table><thead><tr><th scope="col">Video</th><th scope="col">Rating type</th><th scope="col">Votes</th>
+          <th scope="col">Positive rate or average stars</th><th scope="col">Vote breakdown</th></tr></thead>
+          <tbody id="ratingRows"></tbody></table>
       </div>
     </section>
   </main>

@@ -2,11 +2,13 @@
 
 import csv
 from io import StringIO
+from itertools import accumulate
 import json
 import re
 
 from flask import Response, abort, request
 
+from catalog import video_version_key
 from library_analytics import COUNTS, DEVICES, SURFACES, bounds, metrics
 from library_registration import csv_cell
 
@@ -25,6 +27,10 @@ PERIODS = {
     "year": "strftime('%Y-01-01',s.created,'unixepoch')",
 }
 METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds")
+MILESTONES = (1, 25, 50, 75, 100)
+PLAYBACK_TABLES = """ FROM video_analytics_session s
+    LEFT JOIN video_analytics_context c ON c.session=s.id
+    LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"""
 
 
 def row_metrics(row):
@@ -63,10 +69,7 @@ def filter_settings(options):
 
 def summarize(con, options, catalog):
     filters, clause, params = filter_settings(options)
-    tables = """ FROM video_analytics_session s
-        LEFT JOIN video_analytics_context c ON c.session=s.id
-        LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"""
-    scope = tables + clause
+    scope = PLAYBACK_TABLES + clause
     period = PERIODS[filters["period"]]
     primary, secondary = filters["group"], filters["breakdown"]
     group = DIMENSIONS[primary] or period
@@ -89,41 +92,147 @@ def summarize(con, options, catalog):
     return dict(filters=filters, totals=row_metrics(totals), overview=overview, rows=items)
 
 
+def durations(works):
+    result = {}
+    for work in works:
+        for version in (work, *work.get("versions_history", ())):
+            seconds = version.get("duration_seconds")
+            if isinstance(seconds, (int, float)) and 0 < seconds <= 1_000_000_000:
+                result[work["id"], video_version_key(version)] = max(1, round(1000 * seconds))
+    return result
+
+
+def engagement(con, options, catalog, lengths):
+    _, clause, params = filter_settings(options)
+    rows = con.execute("SELECT s.work,s.version,s.watched,s.completed,s.intervals" + PLAYBACK_TABLES +
+                       clause + " AND s.played=1", params)
+    curve = [0] * 101
+    by_video = {}
+    for row in rows:
+        uid = row["work"]
+        stats = by_video.setdefault(uid, dict(views=0, measured=0, finishes=0, fraction_watched=0.0,
+                                             points=dict.fromkeys(MILESTONES, 0)))
+        stats["views"] += 1
+        duration = lengths.get((uid, row["version"]))
+        intervals = json.loads(row["intervals"])
+        if row["completed"] or (duration and intervals and intervals[-1][1] >= duration - 2000):
+            stats["finishes"] += 1
+        stats["points"][100] += row["completed"]
+        curve[100] += row["completed"]
+        if not duration:
+            continue
+        stats["measured"] += 1
+        stats["fraction_watched"] += row["watched"] / duration
+        for first, last in intervals:
+            start = min(100, (first * 100 + duration - 1) // duration)
+            stop = min(100, (last * 100 + duration - 1) // duration)
+            curve[start] += 1
+            curve[stop] -= 1
+            for point in MILESTONES[:-1]:
+                if start <= point < stop:
+                    stats["points"][point] += 1
+
+    def summary(stats):
+        views, measured, finishes = (stats[name] for name in ("views", "measured", "finishes"))
+        return dict(views=views, measured=measured, finishes=finishes, points=stats["points"],
+                    average_watched=stats["fraction_watched"] / measured if measured else None,
+                    completion=finishes / views if views else 0)
+
+    totals = {name: sum(row[name] for row in by_video.values())
+              for name in ("views", "measured", "finishes", "fraction_watched")}
+    totals["points"] = {point: sum(row["points"][point] for row in by_video.values()) for point in MILESTONES}
+    return dict(totals=summary(totals), retention=list(accumulate(curve)), rows=[
+        dict(video=uid, title=catalog.get(uid, uid), **summary(stats))
+        for uid, stats in sorted(by_video.items(), key=lambda item: (-item[1]["views"], catalog.get(item[0], item[0])))
+    ])
+
+
+def rating_summary(con, options, catalog):
+    if any(options.get(name) for name in ("surface", "source", "device")):
+        abort(422, "Rating reports filter by video and date.")
+    _, clause, params = filter_settings(options)
+    rows = con.execute("""SELECT s.work,s.mode,s.score,count(*) AS votes FROM video_rating s
+                       LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work""" + clause +
+                       " GROUP BY s.work,s.mode,s.score ORDER BY s.work,s.mode,s.score", params)
+    by_video = {}
+    totals = {"thumbs": [0, 0], "stars": [0] * 5}
+    for row in rows:
+        uid, mode, score, votes = (row[name] for name in ("work", "mode", "score", "votes"))
+        counts = by_video.setdefault((uid, mode), [0] * len(totals[mode]))
+        index = score if mode == "thumbs" else score - 1
+        counts[index] = votes
+        totals[mode][index] += votes
+
+    def summary(mode, counts):
+        responses = sum(counts)
+        average = sum((index if mode == "thumbs" else index + 1) * value for index, value in enumerate(counts))
+        return dict(mode=mode, votes=responses, scores=counts, average=average / responses if responses else None)
+
+    return dict(totals=[summary(mode, counts) for mode, counts in totals.items()], rows=[
+        dict(video=uid, title=catalog.get(uid, uid), **summary(mode, counts))
+        for (uid, mode), counts in sorted(by_video.items(), key=lambda item: (catalog.get(item[0][0], item[0][0]), item[0][1]))
+    ])
+
+
+def csv_download(name, headings, rows):
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(headings)
+    writer.writerows(rows)
+    return Response(output.getvalue(), mimetype="text/csv", headers={
+        "Content-Disposition": f"attachment; filename=cueporch-{name}-report.csv", "Cache-Control": "no-store",
+    })
+
+
 def register(app, tx, staff, read_works):
-    def catalog(con):
+    def catalog(con, works):
         renamed = dict(con.execute("SELECT work,title FROM library_title"))
         hidden = {row[0] for row in con.execute("SELECT item FROM library_deleted_item WHERE kind='work'")}
-        return {work["id"]: renamed.get(work["id"], work["title"]) for work in read_works()
+        return {work["id"]: renamed.get(work["id"], work["title"]) for work in works
                 if work.get("asset_type", "video") == "video" and work["id"] not in hidden}
 
     @app.get("/api/analytics/videos")
     def analytics_videos():
         staff()
         with tx() as con:
-            works = catalog(con)
+            works = catalog(con, read_works())
         return [dict(id=uid, title=title) for uid, title in
                 sorted(works.items(), key=lambda item: (item[1].casefold(), item[0]))]
 
-    @app.post("/api/analytics/video-report")
-    def video_report():
+    @app.post("/api/analytics/<any(video,engagement,rating):kind>-report")
+    def report_view(kind):
         staff()
         request.max_content_length = 512 * 1024
         options = request.get_json()
         if not isinstance(options, dict):
             abort(422, "Enter valid report filters.")
         with tx() as con:
-            result = summarize(con, options, catalog(con))
+            works = read_works()
+            titles = catalog(con, works)
+            if kind == "video":
+                result = summarize(con, options, titles)
+            elif kind == "engagement":
+                result = engagement(con, options, titles, durations(works))
+            else:
+                result = rating_summary(con, options, titles)
         if request.args.get("format") != "csv":
             return result
-        output = StringIO()
-        writer = csv.writer(output)
+        if kind == "engagement":
+            return csv_download(kind, ("video", "video_id", "views", "known_duration_views", "finishes", "completion_rate",
+                                       "average_watched_fraction", *(f"views_at_{point}_percent" for point in MILESTONES)), (
+                (csv_cell(row["title"]), row["video"], row["views"], row["measured"], row["finishes"], row["completion"],
+                 row["average_watched"], *(row["points"][point] for point in MILESTONES))
+                for row in [dict(result["totals"], title="Total", video=""), *result["rows"]]
+            ))
+        if kind == "rating":
+            return csv_download(kind, ("video", "video_id", "rating_type", "votes", "thumbs_up_rate_or_average_stars",
+                                       "thumbs_down", "thumbs_up", "1_star", "2_stars", "3_stars", "4_stars", "5_stars"), (
+                (csv_cell(row["title"]), row["video"], row["mode"], row["votes"], row["average"],
+                 *(row["scores"] + [None] * 5 if row["mode"] == "thumbs" else [None, None] + row["scores"]))
+                for row in [*(dict(total, title="Total", video="") for total in result["totals"]), *result["rows"]]
+            ))
         filters = result["filters"]
-        writer.writerow((filters["group"], filters["breakdown"] or "breakdown", "video_id", *METRICS))
-        writer.writerows([
-            csv_cell(row["category"]), csv_cell(row["breakdown"]), row["video"] or "",
-            *(row[field] for field in METRICS),
-        ] for row in result["rows"])
-        return Response(output.getvalue(), mimetype="text/csv", headers={
-            "Content-Disposition": "attachment; filename=cueporch-video-report.csv",
-            "Cache-Control": "no-store",
-        })
+        return csv_download(kind, (filters["group"], filters["breakdown"] or "breakdown", "video_id", *METRICS), (
+            (csv_cell(row["category"]), csv_cell(row["breakdown"]), row["video"] or "", *(row[field] for field in METRICS))
+            for row in result["rows"]
+        ))

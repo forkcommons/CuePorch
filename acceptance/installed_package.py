@@ -51,6 +51,7 @@ p.add_argument(
 )
 p.add_argument("--only", choices=("fresh", "0.1.0", "0.2.0"),
                help="Run just one available installation case")
+p.add_argument("--analytics-only", action="store_true", help="Test migration and the analytics reports on the installed package")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
@@ -62,6 +63,13 @@ results = []
 def serve(server):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return f"http://127.0.0.1:{server.server_port}"
+
+
+def shut_down(proc, base, desktop, home):
+    response = requests.post(base + "/desktop/api/quit", timeout=10,
+                             headers={"Authorization": "Bearer " + desktop.split("#")[1]})
+    response.raise_for_status()
+    assert proc.wait(timeout=20) == 0, f"{home.name}: CuePorch reported a shutdown error"
 
 
 def install_windows(setup, home):
@@ -194,11 +202,12 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
-    editor_master = root / "editor-master.mp4"
-    editor_fixture(editor_master)
-    timeline_green, timeline_music = timeline_fixtures(root)
-    review_update = generate_replacement(root / "review-update.mp4", width=192)
-    caption_video = speech_video(args.caption_speech, root / "caption-speech.mp4") if args.caption_speech else None
+    if not args.analytics_only:
+        editor_master = root / "editor-master.mp4"
+        editor_fixture(editor_master)
+        timeline_green, timeline_music = timeline_fixtures(root)
+        review_update = generate_replacement(root / "review-update.mp4", width=192)
+        caption_video = speech_video(args.caption_speech, root / "caption-speech.mp4") if args.caption_speech else None
     src = build_server(root / "fixture")
     source = serve(src)
     museum = ThreadingHTTPServer(("127.0.0.1", 0), Museum)
@@ -255,11 +264,14 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     browser = chromium(pw)
                     page = browser.new_page()
                     page.goto(desktop)
+                    setup_seconds = None
                     if not upgrade:
                         page.get_by_label("Institution name").fill("New station")
+                        started = time.monotonic()
                         with page.expect_response(lambda event: event.url.endswith("/desktop/api/setup")) as setup_result:
                             page.get_by_role("button", name="Save setup").click()
                         response = setup_result.value
+                        setup_seconds = round(time.monotonic() - started, 3)
                         if not response.ok:
                             service_log = (home / "service.log").read_text(encoding="utf8", errors="replace")
                             frames = [line for line in service_log.splitlines() if line.startswith(("  File ", "AssertionError", "Traceback"))]
@@ -344,6 +356,16 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    if args.analytics_only:
+                        advanced = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
+                        results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
+                                            missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
+                                            playback_width=width, setup_seconds=setup_seconds,
+                                            advanced_analytics=advanced))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        continue
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
@@ -426,12 +448,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             event_engagement=event_engagement,
                         )
                     )
-                quit_response = requests.post(
-                    base + "/desktop/api/quit",
-                    headers={"Authorization": "Bearer " + desktop.split("#")[1]},
-                )
-                quit_response.raise_for_status()
-                assert proc.wait(timeout=20) == 0, f"{home.name}: CuePorch reported a shutdown error"
+                shut_down(proc, base, desktop, home)
                 args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
             finally:
                 if proc.poll() is None:

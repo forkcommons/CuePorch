@@ -12,6 +12,12 @@ const identity = document.querySelector("#reportIdentity");
 const key = document.querySelector("#reportKey");
 const panel = document.querySelector("#analyticsDashboard");
 const controls = document.querySelector("#reportControls");
+const reportType = document.querySelector("#reportType");
+const reportPanels = {
+    video: document.querySelector("#videoReport"),
+    engagement: document.querySelector("#engagementReport"),
+    rating: document.querySelector("#ratingReport"),
+};
 const message = document.querySelector("#reportStatus");
 const search = document.querySelector("#reportSearch");
 const videos = document.querySelector("#reportVideos");
@@ -126,7 +132,7 @@ function videoLink(cell, title, uid) {
     link.textContent = title;
     cell.append(link);
 }
-function render(report) {
+function renderVideo(report) {
     const { group, breakdown } = report.filters;
     const totals = document.querySelector("#reportTotals");
     totals.replaceChildren();
@@ -162,20 +168,104 @@ function render(report) {
     }
     document.querySelector("#reportEmpty").hidden = report.rows.length > 0;
 }
+function renderCurve(values) {
+    const canvas = document.querySelector("#engagementCurve");
+    const chart = canvas.getContext("2d");
+    if (!chart)
+        return;
+    const margin = 52;
+    const top = 18;
+    const bottom = canvas.height - 34;
+    const width = canvas.width - margin - 25;
+    const max = Math.max(1, ...values);
+    chart.clearRect(0, 0, canvas.width, canvas.height);
+    chart.fillStyle = "#ffffff";
+    chart.fillRect(0, 0, canvas.width, canvas.height);
+    chart.strokeStyle = "#a5b6bb";
+    chart.lineWidth = 1;
+    chart.fillStyle = "#152e33";
+    chart.font = "13px sans-serif";
+    chart.textAlign = "center";
+    for (const mark of [0, 25, 50, 75, 100]) {
+        const x = margin + width * mark / 100;
+        chart.beginPath();
+        chart.moveTo(x, top);
+        chart.lineTo(x, bottom);
+        chart.stroke();
+        chart.fillText(`${mark}%`, x, bottom + 20);
+    }
+    chart.textAlign = "right";
+    chart.fillText("0", margin - 8, bottom + 3);
+    chart.fillText(count.format(max), margin - 8, top + 5);
+    chart.strokeStyle = "#166273";
+    chart.lineWidth = 2.5;
+    chart.beginPath();
+    values.forEach((value, index) => chart.lineTo(margin + width * index / 100, bottom - (bottom - top) * value / max));
+    chart.stroke();
+}
+function renderEngagement(report) {
+    const { totals } = report;
+    const table = document.querySelector("#engagementRows");
+    table.replaceChildren();
+    for (const entry of [{ ...totals, title: "Total", video: null }, ...report.rows]) {
+        const row = table.insertRow();
+        videoLink(row.insertCell(), entry.title, entry.video);
+        const fields = [count.format(entry.views), entry.average_watched === null ? "—" : percent.format(entry.average_watched),
+            percent.format(entry.completion), ...[1, 25, 50, 75, 100].map(point => count.format(entry.points[point]))];
+        for (const field of fields)
+            row.insertCell().textContent = field;
+    }
+    const coverage = document.querySelector("#engagementCoverage");
+    coverage.hidden = totals.measured === totals.views;
+    coverage.textContent = `Duration is available for ${count.format(totals.measured)} of ${count.format(totals.views)} views.`;
+    renderCurve(report.retention);
+}
+function renderRatings(report) {
+    const table = document.querySelector("#ratingRows");
+    table.replaceChildren();
+    for (const entry of [...report.totals.map(total => ({ ...total, title: "Total", video: null })), ...report.rows]) {
+        const row = table.insertRow();
+        videoLink(row.insertCell(), entry.title, entry.video);
+        const thumbs = entry.mode === "thumbs";
+        row.insertCell().textContent = thumbs ? "Thumbs" : "Stars";
+        row.insertCell().textContent = count.format(entry.votes);
+        row.insertCell().textContent = entry.average === null ? "—" : (thumbs ? percent : count).format(entry.average);
+        const labels = thumbs ? ["Down", "Up"] : ["1 star", "2 stars", "3 stars", "4 stars", "5 stars"];
+        row.insertCell().textContent = entry.scores.map((votes, index) => `${labels[index]} ${count.format(votes)}`).join(", ");
+    }
+}
+function syncReportFilters(kind) {
+    for (const label of controls.querySelectorAll("[data-video-filter], [data-playback-filter]")) {
+        const field = label.querySelector("input,select");
+        field.disabled = label.hasAttribute("data-video-filter") ? kind !== "video" : kind === "rating";
+        label.hidden = field.disabled;
+    }
+}
 function filters() {
     const data = Object.fromEntries(new FormData(controls));
     delete data.dates;
-    data.source = String(data.source).trim();
+    if (data.source)
+        data.source = String(data.source).trim();
     return { ...data, videos: [...chosen] };
 }
 async function apply() {
     const request = ++requestNumber;
+    const kind = reportType.value;
+    syncReportFilters(kind);
     if (!controls.reportValidity())
         return;
     message.textContent = "";
-    const report = await (await call("video-report", filters())).json();
-    if (request === requestNumber)
-        render(report);
+    const report = await (await call(`${kind}-report`, filters())).json();
+    if (request !== requestNumber)
+        return;
+    if (kind === "video")
+        renderVideo(report);
+    else if (kind === "engagement")
+        renderEngagement(report);
+    else
+        renderRatings(report);
+    for (const [name, section] of Object.entries(reportPanels))
+        section.hidden = name !== kind;
 }
 function showError(error) {
     message.textContent = error instanceof Error ? error.message : String(error);
@@ -194,15 +284,17 @@ async function open() {
 }
 identity.onsubmit = (event) => { event.preventDefault(); void open().catch(showError); };
 controls.onsubmit = (event) => { event.preventDefault(); void apply().catch(showError); };
+reportType.onchange = () => { void apply().catch(showError); };
 document.querySelector("#downloadReport").onclick = async () => {
     if (!controls.reportValidity())
         return;
     try {
-        const response = await call("video-report?format=csv", filters());
+        const kind = reportType.value;
+        const response = await call(`${kind}-report?format=csv`, filters());
         const object = URL.createObjectURL(await response.blob());
         const link = document.createElement("a");
         link.href = object;
-        link.download = "cueporch-video-report.csv";
+        link.download = `cueporch-${kind}-report.csv`;
         link.click();
         setTimeout(() => URL.revokeObjectURL(object), 1000);
     }

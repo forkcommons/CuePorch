@@ -16,7 +16,7 @@ import sqlite3
 import time
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
@@ -106,40 +106,37 @@ def create_app(root, database, operator, institution, simulation=None):
     if manifest["institution"] != institution:
         raise ValueError("Collection does not belong to this institution")
     works = {work["id"]: work for work in manifest["works"]}
-    db = sqlite3.connect(database)
-    db.executescript(
-        SCHEMA
-        + library_worker.SCHEMA
-        + library_folders.SCHEMA
-        + library_folder_privacy.SCHEMA
-        + library_peer_handoff.SCHEMA
-        + library_privacy.SCHEMA
-        + library_share.SCHEMA
-        + library_trash.SCHEMA
-        + library_actions.SCHEMA
-        + library_appearance.SCHEMA
-        + library_caption_jobs.SCHEMA
-        + library_details.SCHEMA
-        + library_interactivity.SCHEMA
-        + library_ratings.SCHEMA
-        + library_registration.SCHEMA
-        + library_events.SCHEMA
-        + library_showcases.SCHEMA
-        + library_analytics.SCHEMA
-        + library_timeline.SCHEMA
-        + timeline_jobs.SCHEMA
-        + library_thumbnail.SCHEMA
-        + review_links.SCHEMA
-    )
-    db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
-    db.execute("BEGIN IMMEDIATE")
-    existing = db.execute("SELECT institution FROM owner").fetchone()
-    if existing and existing[0] != institution:
-        db.close()
-        raise ValueError("Policy database belongs to another institution")
-    db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
-    db.commit()
-    db.close()
+    with closing(sqlite3.connect(database, timeout=30)) as db, db:
+        db.executescript(
+            "BEGIN IMMEDIATE;\n"
+            + SCHEMA
+            + library_worker.SCHEMA
+            + library_folders.SCHEMA
+            + library_folder_privacy.SCHEMA
+            + library_peer_handoff.SCHEMA
+            + library_privacy.SCHEMA
+            + library_share.SCHEMA
+            + library_trash.SCHEMA
+            + library_actions.SCHEMA
+            + library_appearance.SCHEMA
+            + library_caption_jobs.SCHEMA
+            + library_details.SCHEMA
+            + library_interactivity.SCHEMA
+            + library_ratings.SCHEMA
+            + library_registration.SCHEMA
+            + library_events.SCHEMA
+            + library_showcases.SCHEMA
+            + library_analytics.SCHEMA
+            + library_timeline.SCHEMA
+            + timeline_jobs.SCHEMA
+            + library_thumbnail.SCHEMA
+            + review_links.SCHEMA
+            + "CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY);"
+        )
+        existing = db.execute("SELECT institution FROM owner").fetchone()
+        if existing and existing[0] != institution:
+            raise ValueError("Policy database belongs to another institution")
+        db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 65536
 

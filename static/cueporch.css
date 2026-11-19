@@ -116,6 +116,8 @@ main { max-width: 65rem; }
 .analytics-counts div { min-width: 8rem; padding: .6rem 1rem; border: 1px solid #becac7; }
 .analytics-counts dd { margin: 0; font-size: 1.45rem; font-weight: 650; }
 .analytics-table { overflow-x: auto; }
+#reportControls label[hidden] { display: none; }
+#engagementCurve { display: block; width: min(100%, 45rem); height: auto; }
 .retention-player { position: relative; max-width: 48rem; }
 .retention-player video { display: block; }
 .retention-player video[hidden] { display: none; }
