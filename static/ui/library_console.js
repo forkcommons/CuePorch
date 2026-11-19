@@ -322,6 +322,7 @@ function cardMenu(work) {
         ],
         ["Rename", () => editTitle(work, false)],
         ["Create a copy", () => editTitle(work, true)],
+        ["Change thumbnail", () => thumbnailDialog(work)],
         ["Video info", () => infoDialog(work, false)],
         ["Download", () => infoDialog(work, true)],
     ];
@@ -399,6 +400,95 @@ async function mediaTicket(work, sha256) {
     const urls = await response.json();
     return urls;
 }
+let thumbnailUrl;
+async function thumbnailDialog(work) {
+    const info = await getWorkInfo(work);
+    const endpoint = workEndpoint(work) + "/thumbnail";
+    const existing = info.thumbnail ? await request(endpoint) : null;
+    const blob = existing?.ok ? await existing.blob() : null;
+    openWorkDialog("Change thumbnail");
+    if (blob) {
+        thumbnailUrl = URL.createObjectURL(blob);
+        const current = document.createElement("img");
+        current.alt = "Current thumbnail";
+        current.src = thumbnailUrl;
+        current.className = "thumbnail-preview";
+        workDialogBody.append(current);
+    }
+    const save = async (response) => {
+        try {
+            await completed(response);
+            workDialog.close();
+            result.textContent = "Thumbnail saved.";
+        }
+        catch (error) {
+            workDialogStatus.textContent = String(error);
+        }
+    };
+    const uploadLabel = document.createElement("label");
+    const upload = document.createElement("input");
+    upload.type = "file";
+    upload.accept = "image/jpeg,image/png,image/webp";
+    uploadLabel.textContent = "Upload thumbnail";
+    uploadLabel.append(upload);
+    const uploadButton = document.createElement("button");
+    uploadButton.textContent = "Use uploaded image";
+    action(uploadButton, async () => {
+        const image = upload.files?.[0];
+        if (!image) {
+            workDialogStatus.textContent = "Choose a thumbnail image.";
+            return;
+        }
+        const data = new FormData();
+        data.append("image", image);
+        await save(await fetch(endpoint, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + key.value },
+            body: data,
+        }));
+    });
+    workDialogBody.append(uploadLabel, uploadButton);
+    if (info.preview) {
+        const hash = info.preview;
+        const video = document.createElement("video");
+        video.muted = true;
+        video.preload = "metadata";
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "0";
+        slider.step = "0.01";
+        slider.value = "0";
+        slider.disabled = true;
+        const at = document.createElement("output");
+        const label = document.createElement("label");
+        label.textContent = "Frame time";
+        label.append(slider, at);
+        const frameButton = document.createElement("button");
+        frameButton.textContent = "Use selected frame";
+        frameButton.disabled = true;
+        slider.oninput = () => {
+            video.currentTime = Number(slider.value);
+            at.textContent = slider.value + " seconds";
+        };
+        video.onloadedmetadata = () => {
+            if (!Number.isFinite(video.duration) || video.duration <= 0)
+                return;
+            slider.max = Math.max(0, video.duration - 0.1).toFixed(2);
+            slider.value = "0";
+            slider.disabled = false;
+            frameButton.disabled = false;
+            at.textContent = "0 seconds";
+        };
+        action(frameButton, async () => {
+            await save(await request(endpoint, "POST", {
+                seconds: Number(slider.value),
+                media: hash,
+            }));
+        });
+        workDialogBody.append(video, label, frameButton);
+        video.src = (await mediaTicket(work, hash)).preview;
+    }
+}
 async function infoDialog(work, download) {
     const info = await getWorkInfo(work);
     openWorkDialog(download ? "Download " + info.title : "Video info");
@@ -473,7 +563,12 @@ async function infoDialog(work, download) {
     else
         workDialogBody.append("No video file is available.");
 }
-workDialog.onclose = () => workDialogBody.replaceChildren();
+workDialog.onclose = () => {
+    workDialogBody.replaceChildren();
+    if (thumbnailUrl)
+        URL.revokeObjectURL(thumbnailUrl);
+    thumbnailUrl = undefined;
+};
 async function saveForLater(work) {
     await completed(await request(workEndpoint(work) + "/watch-later", "PUT", {
         saved: !work.watch_later,

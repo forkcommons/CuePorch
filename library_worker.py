@@ -9,7 +9,8 @@ import time
 from filelock import FileLock, Timeout
 from peertube_destination import PeerTube
 import library_trash
-from library_actions import sync_titles, title_for
+from library_actions import sync_edits, title_for
+from library_thumbnail import selected_thumbnail
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS publication_job(
@@ -67,7 +68,7 @@ def start(app, root, db, tx, action, apply_routes):
                         library_trash.process(tx, receipts, origin, root)
                         if origin:
                             process(origin)
-                            sync_titles(tx, receipts, origin)
+                            sync_edits(tx, receipts, origin, root)
                 except Timeout:
                     pass
                 except Exception:
@@ -121,6 +122,7 @@ def start(app, root, db, tx, action, apply_routes):
                     ):
                         continue
                     label = title_for(con, work)
+                    thumbnail = selected_thumbnail(con, work)
                     status = "processing"
                     for step in steps:
                         result = action(
@@ -151,6 +153,7 @@ def start(app, root, db, tx, action, apply_routes):
                     dict(work, title=label),
                     receipts / (work["id"] + ".json"),
                     bool(job["want_public"]),
+                    thumbnail=thumbnail,
                 )
                 with tx() as con:
                     if job["want_public"]:

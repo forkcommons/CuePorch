@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flask import abort, request, send_file
 
+import library_thumbnail
 from catalog import copy_work
 from library_trash import hidden
 from peertube_destination import PeerTube
@@ -45,6 +46,8 @@ def register(app, tx, staff, read_works, root):
             abort(404)
         return work
 
+    library_thumbnail.register(app, tx, staff, get_work, root)
+
     @app.get("/api/library/work/<uid>")
     def work_info(uid):
         staff()
@@ -56,6 +59,7 @@ def register(app, tx, staff, read_works, root):
                 (uid,),
             ).fetchone()
             title = title_for(con, work)
+            thumbnail = library_thumbnail.selected_thumbnail(con, work)
         files = [
             {
                 k: f[k]
@@ -77,6 +81,7 @@ def register(app, tx, staff, read_works, root):
             "disposition": work["disposition"],
             "watch": f"/watch/{route['kind']}/{uid}" if route else None,
             "embed": f"/embed/{route['kind']}/{uid}" if route else None,
+            "thumbnail": thumbnail is not None,
             "preview": next(
                 (
                     f["sha256"]
@@ -207,16 +212,23 @@ def register(app, tx, staff, read_works, root):
         return response
 
 
-def sync_titles(tx, receipts, origin):
-    """Update only the title of a managed video, preserving its remote identity."""
+def sync_edits(tx, receipts, origin, root):
+    """Synchronize editorial metadata while preserving the remote video identity."""
     with tx() as con:
         pending = con.execute(
-            """SELECT * FROM library_title t WHERE synced=0 AND attempted<=?
-               AND NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=t.work)""",
+            """WITH edits AS (
+                 SELECT 'title' AS kind,work,title AS value,changed,synced,attempted FROM library_title
+                 UNION ALL
+                 SELECT 'thumbnail',work,object,changed,synced,attempted FROM library_thumbnail
+               )
+               SELECT * FROM edits t WHERE synced=0 AND attempted<=?
+                 AND NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=t.work)""",
             (time.time() - 15,),
         ).fetchall()
     peer = None
     for row in pending:
+        is_title = row["kind"] == "title"
+        table = "library_title" if is_title else "library_thumbnail"
         path = Path(receipts) / (row["work"] + ".json")
         if not path.is_file():
             continue
@@ -234,20 +246,20 @@ def sync_titles(tx, receipts, origin):
                 )
             if state["account"] != peer.user["id"]:
                 raise ValueError("Connect the original publishing account")
-            peer.call(
-                "PUT",
-                "/api/v1/videos/" + state["video"],
-                json={"name": row["title"][:120]},
+            peer.update_metadata(
+                state["video"],
+                {"name": row["value"][:120]} if is_title else {},
+                None if is_title else root / "objects" / row["value"],
             )
         except (OSError, ValueError, KeyError) as exc:
             with tx() as con:
                 con.execute(
-                    "UPDATE library_title SET attempted=?,error=? WHERE work=? AND changed=?",
+                    f"UPDATE {table} SET attempted=?,error=? WHERE work=? AND changed=?",
                     (time.time(), type(exc).__name__, row["work"], row["changed"]),
                 )
         else:
             with tx() as con:
                 con.execute(
-                    "UPDATE library_title SET synced=1,error=NULL WHERE work=? AND changed=?",
+                    f"UPDATE {table} SET synced=1,error=NULL WHERE work=? AND changed=?",
                     (row["work"], row["changed"]),
                 )

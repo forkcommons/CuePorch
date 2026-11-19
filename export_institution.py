@@ -53,6 +53,7 @@ def export(collection, database, target):
                 "library_placement",
                 "library_star",
                 "library_title",
+                "library_thumbnail",
                 "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
@@ -64,6 +65,10 @@ def export(collection, database, target):
                     tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
+            for row in record.get("library_thumbnail", []):
+                digest = row["object"]
+                if checksum(root / "collection" / "objects" / digest) != digest:
+                    raise ValueError("Thumbnail verification failed for " + row["work"])
         dump(root / "rights-and-routes.json", record)
         dump(
             root / "SHA256.json",

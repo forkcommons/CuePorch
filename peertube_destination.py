@@ -57,6 +57,28 @@ class PeerTube:
             "PUT", "/api/v1/videos/" + video_id, json={"privacy": 1 if public else 3}
         )
 
+    def update_metadata(self, video_id, metadata, thumbnail=None):
+        path = "/api/v1/videos/" + video_id
+        if thumbnail is None:
+            self.call("PUT", path, json=metadata)
+            return
+        with thumbnail.open("rb") as stream:
+            header = stream.read(16)
+            stream.seek(0)
+            kind = (
+                "png"
+                if header.startswith(b"\x89PNG")
+                else "webp"
+                if header[8:12] == b"WEBP"
+                else "jpeg"
+            )
+            self.call(
+                "PUT",
+                path,
+                data=metadata,
+                files={"thumbnailfile": ("poster." + kind, stream, "image/" + kind)},
+            )
+
     def upload(self, root, work, media, state, receipt):
         size = media["bytes"]
         replacing = state.get("video") is not None
@@ -166,7 +188,7 @@ class PeerTube:
             state.pop("incoming_media", None)
             dump(receipt, state)
 
-    def publish(self, root, work, receipt, public=False):
+    def publish(self, root, work, receipt, public=False, thumbnail=None):
         media = next(f for f in work["files"] if f["role"] in ("original", "playback"))
         identity = dict(
             work=work["id"],
@@ -206,28 +228,12 @@ class PeerTube:
             description = (description + "\n\nCredits: " + credits).strip()
         if description:
             metadata["description"] = description[:10000]
-        poster = next((f for f in work["files"] if f["role"] == "poster"), None)
-        if poster:
-            with (root / "objects" / poster["sha256"]).open("rb") as stream:
-                header = stream.read(16)
-                stream.seek(0)
-                kind = (
-                    "png"
-                    if header.startswith(b"\x89PNG")
-                    else "webp"
-                    if header[8:12] == b"WEBP"
-                    else "jpeg"
-                )
-                self.call(
-                    "PUT",
-                    path,
-                    data=metadata,
-                    files={
-                        "thumbnailfile": ("poster." + kind, stream, "image/" + kind)
-                    },
-                )
-        else:
-            self.call("PUT", path, json=metadata)
+        if thumbnail is None:
+            poster = next((f for f in work["files"] if f["role"] == "poster"), None)
+            thumbnail = poster["sha256"] if poster else None
+        self.update_metadata(
+            state["video"], metadata, root / "objects" / thumbnail if thumbnail else None
+        )
         captions = [f for f in work["files"] if f["role"] == "caption"]
         supported = (
             self.call("GET", "/api/v1/videos/languages").json() if captions else {}

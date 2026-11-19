@@ -65,3 +65,4 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .library-dialog dd { margin-inline-start: 0; overflow-wrap: anywhere; }
 .library-dialog dt { font-weight: 600; }
 .library-dialog video { margin-block: .5rem; }
+.library-dialog .thumbnail-preview { width: min(320px, 100%); height: auto; display: block; }

@@ -37,6 +37,7 @@ from waitress import serve
 from cueporch import verify
 import library_actions
 import library_folders
+import library_thumbnail
 import library_trash
 import library_worker
 
@@ -90,6 +91,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_folders.SCHEMA
         + library_trash.SCHEMA
         + library_actions.SCHEMA
+        + library_thumbnail.SCHEMA
     )
     db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
     db.execute("BEGIN IMMEDIATE")

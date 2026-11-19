@@ -3,7 +3,9 @@
 import hashlib
 import sqlite3
 import time
+from base64 import b64decode
 from contextlib import closing
+from urllib.parse import urljoin
 
 import requests
 from browser import chromium
@@ -16,6 +18,64 @@ def select_action(page, title, action):
     )
     menu.locator("summary").click()
     menu.get_by_role("button", name=action, exact=True).click()
+
+
+def upload_thumbnail(page, title):
+    select_action(page, title, "Change thumbnail")
+    sample = page.evaluate("""() => {
+        const sample = document.createElement('canvas');
+        sample.width = 320;
+        sample.height = 180;
+        const context = sample.getContext('2d');
+        context.fillStyle = '#1cdada';
+        context.fillRect(0, 0, sample.width, sample.height);
+        return sample.toDataURL('image/png').split(',')[1];
+    }""")
+    page.get_by_label("Upload thumbnail").set_input_files(
+        {
+            "name": "cover.png",
+            "mimeType": "image/png",
+            "buffer": b64decode(sample),
+        }
+    )
+    page.get_by_role("button", name="Use uploaded image").click()
+    expect(page.locator("#workDialog")).to_be_hidden()
+    expect(page.locator("#result")).to_have_text("Thumbnail saved.")
+
+
+def check_thumbnail(page, auth, title, endpoint, media_hash):
+    target = endpoint + "/thumbnail"
+    assert requests.get(target, timeout=10).status_code == 403
+    response = requests.post(
+        target, headers=auth, json={"media": "0" * 64, "seconds": 1}, timeout=10
+    )
+    assert response.status_code == 409
+    upload_thumbnail(page, title)
+    uploaded = requests.get(target, headers=auth, timeout=10)
+    uploaded.raise_for_status()
+    assert uploaded.headers["Content-Type"] == "image/jpeg"
+    select_action(page, title, "Change thumbnail")
+    dialog = page.locator("#workDialog")
+    assert (
+        dialog.get_by_role("img", name="Current thumbnail").evaluate(
+            "async image => {await image.decode();return image.naturalWidth}"
+        )
+        == 320
+    )
+    slider = dialog.get_by_role("slider", name="Frame time")
+    expect(slider).to_be_enabled()
+    slider.evaluate("el => {el.value = '1.3'; el.dispatchEvent(new Event('input'))}")
+    expect(dialog.get_by_text("1.3 seconds")).to_be_visible()
+    dialog.get_by_role("button", name="Use selected frame").click()
+    expect(dialog).to_be_hidden()
+    expect(page.locator("#result")).to_have_text("Thumbnail saved.")
+    frame = requests.get(target, headers=auth, timeout=10)
+    frame.raise_for_status()
+    assert frame.content != uploaded.content
+    assert frame.content[:2] == b"\xff\xd8"
+    assert (
+        requests.get(endpoint, headers=auth, timeout=10).json()["preview"] == media_hash
+    )
 
 
 def check_cards(page, base, auth, database, work):
@@ -95,6 +155,7 @@ def check_cards(page, base, auth, database, work):
         db.execute("UPDATE library_download SET expires=0")
     assert requests.get(target, timeout=10).status_code == 404
 
+    check_thumbnail(page, auth, renamed, endpoint, media_hash)
     select_action(page, renamed, "Create a copy")
     page.locator("#workTitle").fill("Meeting archive duplicate")
     page.get_by_role("button", name="Create copy", exact=True).click()
@@ -121,6 +182,7 @@ def check_cards(page, base, auth, database, work):
         "native_download_matches_archive": True,
         "download_authorization_expiry_and_range": True,
         "preview_width": width,
+        "thumbnail_upload_and_frame_keep_media": True,
     }, base + live_ticket.json()["download"]
 
 
@@ -168,6 +230,27 @@ def check_hosted_cards(base, origin, keys):
             if time.monotonic() >= deadline:
                 raise AssertionError("PeerTube title did not synchronize")
             time.sleep(0.5)
+        old_image = requests.get(
+            urljoin(origin, remote.json()["thumbnailPath"]), timeout=10
+        )
+        old_image.raise_for_status()
+        upload_thumbnail(page, renamed)
+        deadline = time.monotonic() + 45
+        while True:
+            remote = requests.get(host, timeout=10)
+            remote.raise_for_status()
+            image = requests.get(
+                urljoin(origin, remote.json()["thumbnailPath"])
+                + "?validation="
+                + str(time.time()),
+                timeout=10,
+            )
+            if image.ok and image.content != old_image.content:
+                assert image.headers["Content-Type"].startswith("image/")
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("PeerTube thumbnail did not synchronize")
+            time.sleep(0.5)
         after = requests.get(jobs_url, headers=auth, timeout=10).json()
         assert {(job["id"], job["remote"]) for job in jobs} == {
             (job["id"], job["remote"]) for job in after
@@ -189,5 +272,6 @@ def check_hosted_cards(base, origin, keys):
     return {
         "watch_and_embed_copied_to_clipboard": True,
         "same_peertube_video_and_cueporch_route_after_rename": True,
+        "hosted_thumbnail_changed_in_place": True,
         "renamed_hosted_playback_width": width,
     }
