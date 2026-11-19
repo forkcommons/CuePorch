@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Video analytics · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  <h1 id="analyticsTitle">Video analytics</h1>
+  <form id="identify">
+    <label>Operator credential <input id="analyticsKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open analytics</button>
+  </form>
+  <p id="analyticsStatus" role="status"></p>
+  <main id="analytics" hidden>
+    <form id="analyticsRange">
+      <label>From (UTC) <input type="date" name="from" required></label>
+      <label>To (UTC) <input type="date" name="to" required></label>
+      <label>Playback surface <select name="surface">
+        <option value="">All surfaces</option><option value="watch">Watch page</option><option value="embed">Embed</option>
+      </select></label>
+      <button type="submit">Apply filters</button>
+    </form>
+    <dl class="analytics-counts">
+      <div><dt>Impressions</dt><dd id="impressions"></dd></div>
+      <div><dt>Views</dt><dd id="views"></dd></div>
+      <div><dt>View rate</dt><dd id="viewRate"></dd></div>
+      <div><dt>Finishes</dt><dd id="finishes"></dd></div>
+      <div><dt>Time watched</dt><dd id="timeWatched"></dd></div>
+    </dl>
+    <section aria-labelledby="retentionHeading">
+      <h2 id="retentionHeading">Viewer retention for the current cut</h2>
+      <div class="retention-player">
+        <video id="retentionPreview" controls playsinline preload="metadata" aria-label="Video preview" hidden></video>
+        <canvas id="retentionPlot" width="1200" height="120" aria-hidden="true"></canvas>
+      </div>
+      <details>
+        <summary>Retention data</summary>
+        <table><thead><tr><th scope="col">Position</th><th scope="col">Percent of viewing sessions</th></tr></thead>
+          <tbody id="retentionRows"></tbody></table>
+      </details>
+    </section>
+    <section aria-labelledby="dailyHeading">
+      <h2 id="dailyHeading">Daily report</h2>
+      <button type="button" id="exportAnalytics">Download CSV</button>
+      <div class="analytics-table">
+        <table>
+          <thead><tr><th scope="col">Day (UTC)</th><th scope="col">Surface</th><th scope="col">Impressions</th>
+            <th scope="col">Views</th><th scope="col">View rate</th><th scope="col">Finishes</th>
+            <th scope="col">Time watched</th></tr></thead>
+          <tbody id="dailyRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/video_analytics.js"></script>
+</body>
+</html>

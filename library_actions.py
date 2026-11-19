@@ -16,6 +16,7 @@ import library_caption_jobs
 import library_interactivity
 import library_ratings
 import library_registration
+import library_analytics
 import library_thumbnail
 import library_versions
 import library_privacy
@@ -87,6 +88,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action):
     library_interactivity.register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits)
     library_ratings.register(app, tx, staff, get_work)
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)
+    library_analytics.register(app, tx, staff, get_work, title_for)
     library_caption_jobs.register(app, tx, staff, get_work, action)
     library_languages.register(
         app, tx, staff, get_work, root, remember_work, title_for,

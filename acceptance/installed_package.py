@@ -25,6 +25,7 @@ from installed_interactivity import check_chapters
 from installed_presentation import check_presentation
 from installed_ratings import check_ratings
 from installed_registration import check_registration
+from installed_analytics import check_analytics
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -353,6 +354,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     presentation = check_presentation(page, browser, base, auth, museum, venue, replacement)
                     ratings = check_ratings(page, browser, base, auth, replacement)
                     registration = check_registration(page, browser, base, auth, museum, venue, replacement)
+                    analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -382,6 +384,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             video_details=details, workspace=workspace, embed_builder=embed_builder, appearance=appearance,
                             languages=languages, generated_captions=generated, chapters=chapters,
                             presentation=presentation, ratings=ratings, registration=registration,
+                            analytics=analytics,
                         )
                     )
                 quit_response = requests.post(

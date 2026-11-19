@@ -22,6 +22,7 @@ from library_languages import tracks_for
 import library_interactivity
 import library_ratings
 import library_registration
+import library_analytics
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
 from library_trash import hidden
@@ -273,6 +274,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
     registration_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-registration")
+    analytics_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-analytics")
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
@@ -447,6 +449,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 rating["session"] = rating_serializer.dumps(
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
+            analytics = analytics_serializer.dumps(
+                [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18)]
+            ) if can_watch else None
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
             duration = work.get("duration_seconds")
@@ -459,7 +464,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
-                            presentation=presentation, poster=poster, rating=rating,
+                            presentation=presentation, poster=poster, rating=rating, analytics=analytics,
                             share=share_paths(uid, row)["watch"], registration=form if form_token else None,
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
@@ -467,7 +472,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        if rating or form:
+        if analytics or form:
             response.cache_control.private = True
             response.cache_control.no_store = True
         return response
@@ -563,5 +568,19 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if video_version_key(work) != version:
                 abort(404)
             return library_ratings.rate(con, work, nonce, mode, body.get("score"))
+
+    @app.post("/viewer-analytics/<session>")
+    def viewer_analytics(session):
+        try:
+            token, version, surface, nonce = analytics_serializer.loads(session, max_age=4 * 3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        body = request.get_json()
+        with tx() as con:
+            work, _, _ = authorized_playback(con, token)
+            if video_version_key(work) != version:
+                abort(404)
+            library_analytics.record(con, work, nonce, surface, body)
+        return "", 204
 
     return watch

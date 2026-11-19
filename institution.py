@@ -45,6 +45,7 @@ import library_languages
 import library_interactivity
 import library_ratings
 import library_registration
+import library_analytics
 import library_peer_handoff
 import library_privacy
 import library_share
@@ -117,6 +118,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_interactivity.SCHEMA
         + library_ratings.SCHEMA
         + library_registration.SCHEMA
+        + library_analytics.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
     )
@@ -1282,6 +1284,10 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/videos/<uuid:work>/interactivity")
     def operator_interactivity(work):
         return render_template("video_interactivity.html", work=str(work))
+
+    @app.get("/operator/videos/<uuid:work>/analytics")
+    def operator_analytics(work):
+        return render_template("video_analytics.html", work=str(work))
 
     @app.get("/player.js")
     def player_sdk():

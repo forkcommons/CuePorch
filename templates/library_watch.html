@@ -31,6 +31,7 @@
     {% set interactive = rating or (presentation and (presentation.cards or presentation.ending.mode not in ('default', 'loop'))) %}
     {% if interactive %}<div class="interactive-player">{% endif %}
     <video controls playsinline preload="metadata" aria-label="{{ title }}"
+           {% if analytics %}data-analytics="{{ url_for('viewer_analytics', session=analytics) }}"{% endif %}
            {% if options.autoplay %}autoplay{% endif %}{% if options.muted %} muted{% endif %}{% if options.loop %} loop{% endif %}
            {% if poster %}poster="{{ url_for('shared_poster', token=token) }}"{% endif %}
            {% if not download %}controlslist="nodownload"{% endif %}
@@ -41,6 +42,7 @@
              src="{{ url_for('shared_video', token=token, track=loop.index0) }}">
       {% endfor %}
     </video>
+    {% if analytics %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}
     {% if interactive %}
       {% include "playback_interactivity.html" %}
       {% if rating %}{% include "playback_rating.html" %}{% endif %}
