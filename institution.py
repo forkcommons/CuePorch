@@ -35,6 +35,7 @@ from waitress import serve
 
 from cueporch import verify
 import library_folders
+import library_trash
 import library_worker
 
 STEPS = (
@@ -81,7 +82,9 @@ def create_app(root, database, operator, institution, simulation=None):
         raise ValueError("Collection does not belong to this institution")
     works = {work["id"]: work for work in manifest["works"]}
     db = sqlite3.connect(database)
-    db.executescript(SCHEMA + library_worker.SCHEMA + library_folders.SCHEMA)
+    db.executescript(
+        SCHEMA + library_worker.SCHEMA + library_folders.SCHEMA + library_trash.SCHEMA
+    )
     db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
     db.execute("BEGIN IMMEDIATE")
     existing = db.execute("SELECT institution FROM owner").fetchone()
@@ -161,6 +164,8 @@ def create_app(root, database, operator, institution, simulation=None):
         pending = con.execute("""SELECT p.*,a.payload FROM pending_route p JOIN action a
             ON a.id=p.action_id WHERE a.status='eligible'""").fetchall()
         for row in pending:
+            if library_trash.hidden(con, "work", row["slug"]):
+                continue
             data = json.loads(row["payload"])
             con.execute(
                 """INSERT INTO route VALUES(?,?,?,?,?,?)
@@ -614,9 +619,17 @@ def create_app(root, database, operator, institution, simulation=None):
         staff()
         catalog = json.loads((root / "manifest.json").read_text(encoding="utf8"))
         works.update({w["id"]: w for w in catalog["works"]})
+        with tx() as con:
+            deleted = {
+                row[0]
+                for row in con.execute(
+                    "SELECT item FROM library_deleted_item WHERE kind='work'"
+                )
+            }
         return [
             dict(work=w["id"], version=f["sha256"], title=w["title"])
             for w in catalog["works"]
+            if w["id"] not in deleted
             for f in w["files"]
             if f["role"] == "playback" and f["format"] == "mp4"
         ]
@@ -677,6 +690,8 @@ def create_app(root, database, operator, institution, simulation=None):
         uid = secrets.token_urlsafe(20)
         secret = secrets.token_urlsafe(32)
         with tx() as con:
+            if library_trash.hidden(con, "work", work["id"]):
+                abort(404)
             state = action(con, uid, "grant", data)
             con.execute(
                 "INSERT INTO grant_access VALUES(?,?,?,?,?,?,?,?,?,0)",
@@ -709,7 +724,8 @@ def create_app(root, database, operator, institution, simulation=None):
         row = con.execute(
             """SELECT grant_access.* FROM grant_access JOIN action USING(id)
         WHERE id=? AND revoked=0 AND starts<=? AND ends>? AND status='eligible'
-        AND NOT EXISTS(SELECT 1 FROM case_hold h WHERE h.work=grant_access.work AND h.active=1)""",
+        AND NOT EXISTS(SELECT 1 FROM case_hold h WHERE h.work=grant_access.work AND h.active=1)
+        AND NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=grant_access.work)""",
             (uid, now, now),
         ).fetchone()
         if not row:
@@ -808,7 +824,8 @@ def create_app(root, database, operator, institution, simulation=None):
                             allowed = con.execute(
                                 """SELECT 1 FROM screening_session s JOIN grant_access g
                             ON g.id=s.grant_id WHERE s.token_hash=? AND g.revoked=0 AND s.expires>? AND g.ends>?
-                            AND NOT EXISTS(SELECT 1 FROM case_hold h WHERE h.work=g.work AND h.active=1)""",
+                            AND NOT EXISTS(SELECT 1 FROM case_hold h WHERE h.work=g.work AND h.active=1)
+                            AND NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=g.work)""",
                                 (digest(token), time.time(), time.time()),
                             ).fetchone()
                         if not allowed:
@@ -882,6 +899,15 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(400)
         step = "replay" if kind == "meeting" else "publication"
         with tx() as con:
+            if (
+                library_trash.hidden(con, "work", slug)
+                or con.execute(
+                    """SELECT 1 FROM route r JOIN library_deleted_item d ON d.kind='work' AND d.item=r.slug
+                   WHERE r.destination=?""",
+                    (dest,),
+                ).fetchone()
+            ):
+                abort(404)
             key = digest(json.dumps([kind, slug, revision]))
             previous = con.execute(
                 "SELECT status FROM action WHERE id=?", (key,)
@@ -901,7 +927,9 @@ def create_app(root, database, operator, institution, simulation=None):
     def catalog():
         with tx() as con:
             routes = con.execute(
-                "SELECT kind,slug,description FROM route ORDER BY description,slug"
+                """SELECT kind,slug,description FROM route
+                   WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)
+                   ORDER BY description,slug"""
             ).fetchall()
         return render_template("catalog.html", name=institution, rows=routes)
 
@@ -910,7 +938,9 @@ def create_app(root, database, operator, institution, simulation=None):
     def watch(kind, slug):
         with tx() as con:
             row = con.execute(
-                "SELECT * FROM route WHERE kind=? AND slug=?", (kind, slug)
+                """SELECT * FROM route WHERE kind=? AND slug=?
+                   AND NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)""",
+                (kind, slug),
             ).fetchone()
         if not row:
             abort(404)
@@ -1028,6 +1058,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
 
     library_folders.register(app, tx, staff, read_library_works)
+    library_trash.register(app, tx, staff, read_library_works)
 
     @app.get("/api/library")
     def library():
@@ -1038,10 +1069,17 @@ def create_app(root, database, operator, institution, simulation=None):
                 "SELECT j.work,j.status,j.remote,j.error,r.kind AS route_kind FROM publication_job j LEFT JOIN route r ON r.slug=j.work AND r.kind=j.kind ORDER BY j.rowid"
             ).fetchall()
             placement = dict(con.execute("SELECT work,folder FROM library_placement"))
+            deleted = {
+                row[0]
+                for row in con.execute(
+                    "SELECT item FROM library_deleted_item WHERE kind='work'"
+                )
+            }
             starred = {
                 row[0]
                 for row in con.execute(
-                    "SELECT item FROM library_star WHERE kind='work' AND actor=?", (actor,)
+                    "SELECT item FROM library_star WHERE kind='work' AND actor=?",
+                    (actor,),
                 )
             }
         latest = {r["work"]: dict(r) for r in jobs}
@@ -1065,6 +1103,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 delivery=latest.get(w["id"]),
             )
             for w in data
+            if w["id"] not in deleted
         ]
 
     @app.get("/api/embed-map.csv")
@@ -1073,7 +1112,11 @@ def create_app(root, database, operator, institution, simulation=None):
         data = json.loads((root / "manifest.json").read_text(encoding="utf8"))
         with tx() as con:
             routes = {
-                r["slug"]: r["kind"] for r in con.execute("SELECT kind,slug FROM route")
+                r["slug"]: r["kind"]
+                for r in con.execute(
+                    """SELECT kind,slug FROM route WHERE NOT EXISTS
+                       (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)"""
+                )
             }
         buf = io.StringIO(newline="")
         csvout = csv.writer(buf)
@@ -1139,6 +1182,8 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(503, "Configure the PeerTube destination")
         try:
             with tx() as con:
+                if library_trash.hidden(con, "work", work_id):
+                    abort(404)
                 public = request.json.get("public", False)
                 scheduled = request.json.get("scheduled", 0)
                 kind = request.json.get("kind", "work")
@@ -1167,6 +1212,7 @@ def create_app(root, database, operator, institution, simulation=None):
             for item in manifest["works"]:
                 if (
                     item["provider"] != "vimeo"
+                    or library_trash.hidden(con, "work", item["id"])
                     or item.get("source_privacy") not in ("public", "anybody")
                     or item.get("source_embed_policy") not in ("public", "anywhere")
                     or item.get("transfer_issues")

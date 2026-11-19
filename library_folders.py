@@ -4,13 +4,13 @@ import re
 import uuid
 
 from flask import abort, request
+from library_trash import hidden
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_folder(
  id TEXT PRIMARY KEY, parent TEXT REFERENCES library_folder(id),
  name TEXT NOT NULL, color TEXT NOT NULL);
-CREATE UNIQUE INDEX IF NOT EXISTS library_folder_sibling
- ON library_folder(COALESCE(parent, ''), name COLLATE NOCASE);
+DROP INDEX IF EXISTS library_folder_sibling;
 CREATE TABLE IF NOT EXISTS library_placement(
  work TEXT PRIMARY KEY, folder TEXT REFERENCES library_folder(id));
 CREATE TABLE IF NOT EXISTS library_star(
@@ -35,10 +35,13 @@ def register(app, tx, staff, read_works):
                 exists = any(work["id"] == item for work in read_works())
             else:
                 abort(404)
-            if not exists:
+            if not exists or hidden(con, kind, item):
                 abort(404)
             if body["starred"]:
-                con.execute("INSERT OR IGNORE INTO library_star VALUES(?,?,?)", (actor, kind, item))
+                con.execute(
+                    "INSERT OR IGNORE INTO library_star VALUES(?,?,?)",
+                    (actor, kind, item),
+                )
             else:
                 con.execute(
                     "DELETE FROM library_star WHERE actor=? AND kind=? AND item=?",
@@ -56,6 +59,7 @@ def register(app, tx, staff, read_works):
                     """SELECT f.*, s.item IS NOT NULL AS starred
                        FROM library_folder f LEFT JOIN library_star s
                        ON s.kind='folder' AND s.item=f.id AND s.actor=?
+                       WHERE NOT EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
                        ORDER BY f.name COLLATE NOCASE, f.id""",
                     (actor,),
                 )
@@ -78,9 +82,12 @@ def register(app, tx, staff, read_works):
             abort(400)
         uid = folder or uuid.uuid4().hex
         with tx() as con:
-            if folder and not con.execute(
-                "SELECT 1 FROM library_folder WHERE id=?", (folder,)
-            ).fetchone():
+            if folder and (
+                hidden(con, "folder", folder)
+                or not con.execute(
+                    "SELECT 1 FROM library_folder WHERE id=?", (folder,)
+                ).fetchone()
+            ):
                 abort(404)
             ancestor = parent
             while ancestor is not None:
@@ -89,11 +96,15 @@ def register(app, tx, staff, read_works):
                 row = con.execute(
                     "SELECT parent FROM library_folder WHERE id=?", (ancestor,)
                 ).fetchone()
-                if row is None:
+                if row is None or hidden(con, "folder", ancestor):
                     abort(404, "The selected folder no longer exists.")
                 ancestor = row["parent"]
             if con.execute(
-                "SELECT 1 FROM library_folder WHERE parent IS ? AND name = ? COLLATE NOCASE AND id <> ?",
+                """SELECT 1 FROM library_folder f
+                   LEFT JOIN library_deleted_item d ON d.kind='folder' AND d.item=f.id
+                   LEFT JOIN library_deletion trash ON trash.id=d.deletion
+                   WHERE f.parent IS ? AND f.name = ? COLLATE NOCASE AND f.id <> ?
+                   AND (d.item IS NULL OR trash.state='restoring')""",
                 (parent, name, uid),
             ).fetchone():
                 abort(409, "A folder with this name already exists here.")
@@ -103,7 +114,9 @@ def register(app, tx, staff, read_works):
                    name=excluded.name,color=excluded.color""",
                 (uid, parent, name, color),
             )
-        return dict(id=uid, parent=parent, name=name, color=color), 200 if folder else 201
+        return dict(
+            id=uid, parent=parent, name=name, color=color
+        ), 200 if folder else 201
 
     @app.put("/api/library/placement")
     def move_library_works():
@@ -120,11 +133,16 @@ def register(app, tx, staff, read_works):
         ):
             abort(400)
         with tx() as con:
-            if folder is not None and not con.execute(
-                "SELECT 1 FROM library_folder WHERE id=?", (folder,)
-            ).fetchone():
+            if folder is not None and (
+                hidden(con, "folder", folder)
+                or not con.execute(
+                    "SELECT 1 FROM library_folder WHERE id=?", (folder,)
+                ).fetchone()
+            ):
                 abort(404, "The selected folder no longer exists.")
-            if not set(works) <= {work["id"] for work in read_works()}:
+            if not set(works) <= {work["id"] for work in read_works()} or any(
+                hidden(con, "work", item) for item in works
+            ):
                 abort(404, "A selected work no longer exists.")
             con.executemany(
                 """INSERT INTO library_placement(work,folder) VALUES(?,?)

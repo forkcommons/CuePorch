@@ -52,6 +52,11 @@ class PeerTube:
                 raise ValueError("Unexpected API redirect")
         return response
 
+    def set_public(self, video_id, public):
+        self.call(
+            "PUT", "/api/v1/videos/" + video_id, json={"privacy": 1 if public else 3}
+        )
+
     def upload(self, root, work, media, state, receipt):
         size = media["bytes"]
         replacing = state.get("video") is not None

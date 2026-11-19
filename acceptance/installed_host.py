@@ -7,6 +7,7 @@ from playwright.sync_api import sync_playwright
 from browser import chromium
 from demo_source import build_server
 from operator_walkthrough import walkthrough
+from installed_trash import check_hosted
 import psutil
 
 p = argparse.ArgumentParser()
@@ -59,6 +60,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 browser.close()
             keys = json.loads((home / "operator.json").read_text())
             transfer, first = walkthrough(base, keys, started)
+            trash_result = check_hosted(base, a.origin, keys)
             response = requests.post(
                 base + "/desktop/api/quit",
                 headers={"Authorization": "Bearer " + url.split("#")[1]},
@@ -76,6 +78,7 @@ with tempfile.TemporaryDirectory() as tmp:
                         first_embed_seconds=round(first, 2),
                         transfer_seconds=round(transfer, 2),
                         repeat_preserved_job_and_video_ids=True,
+                        recently_deleted=trash_result,
                     ),
                     indent=2,
                 )

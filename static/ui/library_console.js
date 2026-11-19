@@ -1,4 +1,13 @@
 const key = document.querySelector("#key");
+const deleteFolder = document.querySelector("#deleteFolder");
+const deleteWorks = document.querySelector("#deleteWorks");
+const workBrowse = document.querySelector("#workBrowse");
+const trashBrowse = document.querySelector("#trashBrowse");
+const trashType = document.querySelector("#trashType");
+const trashActor = document.querySelector("#trashActor");
+const trashItems = document.querySelector("#trashItems");
+const trashEmpty = document.querySelector("#trashEmpty");
+const trashTable = document.querySelector("#trashTable");
 const result = document.querySelector("#result");
 const creator = document.querySelector("#creator");
 const creators = document.querySelector("#creators");
@@ -29,6 +38,9 @@ let folders = [];
 let current = null;
 let editing;
 let showStarred = false;
+let showTrash = false;
+let deletions = [];
+let trashTimer;
 const selected = new Set();
 function request(path, method = "GET", body) {
     return fetch(path, {
@@ -78,7 +90,7 @@ function folderOptions(select) {
 }
 function updateMove() {
     destination.disabled = !selected.size;
-    move.disabled = !selected.size;
+    deleteWorks.disabled = move.disabled = !selected.size;
 }
 function renderTree() {
     function branch(parent) {
@@ -98,11 +110,17 @@ function renderTree() {
     if (showStarred)
         starredButton.setAttribute("aria-current", "true");
     starredButton.onclick = () => {
+        const leavingTrash = showTrash;
+        showTrash = false;
         showStarred = true;
         current = null;
         selected.clear();
         renderTree();
         renderWorks();
+        if (leavingTrash)
+            void load().catch((error) => {
+                result.textContent = String(error);
+            });
         tree.querySelector('[aria-current="true"]')?.focus();
     };
     const starredFolders = document.createElement("ul");
@@ -113,13 +131,33 @@ function renderTree() {
             starredFolders.append(item);
         }
     }
-    tree.replaceChildren(folderButton("Library", null), branch(null), starredButton, starredFolders);
+    const trashButton = document.createElement("button");
+    trashButton.textContent = "Recently deleted";
+    if (showTrash)
+        trashButton.setAttribute("aria-current", "true");
+    action(trashButton, async () => {
+        showTrash = true;
+        showStarred = false;
+        current = null;
+        selected.clear();
+        renderTree();
+        tree.querySelector('[aria-current="true"]')?.focus();
+        await loadTrash();
+    });
+    tree.replaceChildren(folderButton("Library", null), branch(null), starredButton, starredFolders, trashButton);
+    workBrowse.hidden = showTrash;
+    trashBrowse.hidden = !showTrash;
     const folder = folders.find((entry) => entry.id === current);
-    heading.textContent = showStarred ? "Starred" : folder?.name || "Library";
-    editFolder.hidden = starFolder.hidden = !folder;
+    heading.textContent = showTrash
+        ? "Recently deleted"
+        : showStarred
+            ? "Starred"
+            : folder?.name || "Library";
+    deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
         action(starFolder, () => setStar("folder", folder.id, !folder.starred));
+        action(deleteFolder, () => removeItems("folder", [folder.id]));
     }
     folderOptions(destination);
     destination.value = current || "";
@@ -127,7 +165,7 @@ function renderTree() {
 function folderButton(label, id, color) {
     const button = document.createElement("button");
     button.textContent = label;
-    if (!showStarred && id === current)
+    if (!showTrash && !showStarred && id === current)
         button.setAttribute("aria-current", "true");
     if (color) {
         const dot = document.createElement("span");
@@ -137,11 +175,17 @@ function folderButton(label, id, color) {
         button.prepend(dot);
     }
     button.onclick = () => {
+        const leavingTrash = showTrash;
+        showTrash = false;
         showStarred = false;
         current = id;
         selected.clear();
         renderTree();
         renderWorks();
+        if (leavingTrash)
+            void load().catch((error) => {
+                result.textContent = String(error);
+            });
         const buttons = Array.from(tree.querySelectorAll("button"));
         buttons.find((entry) => entry.hasAttribute("aria-current"))?.focus();
     };
@@ -241,6 +285,11 @@ function renderWorks() {
         star.setAttribute("aria-label", (work.starred ? "Unstar " : "Star ") + work.title);
         action(star, () => setStar("work", work.id, !work.starred));
         actions.append(star);
+        const remove = document.createElement("button");
+        remove.textContent = "Delete work";
+        remove.setAttribute("aria-label", "Delete " + work.title);
+        action(remove, () => removeItems("work", [work.id]));
+        actions.append(remove);
         for (const pub of work.public_eligible ? [false, true] : [false]) {
             const button = document.createElement("button");
             button.textContent = pub ? "Publish publicly" : "Deliver privately";
@@ -259,7 +308,70 @@ function renderWorks() {
     }
     updateMove();
 }
-async function load() {
+const trashPath = "/api/library/recently-deleted";
+function renderTrash() {
+    const actor = trashActor.value.trim().toLocaleLowerCase();
+    const visible = deletions.filter((item) => (!trashType.value || item.kind === trashType.value) &&
+        item.actor.toLocaleLowerCase().includes(actor));
+    trashItems.replaceChildren();
+    trashEmpty.hidden = !!visible.length;
+    trashTable.hidden = !visible.length;
+    for (const item of visible) {
+        const row = trashItems.insertRow();
+        row.insertCell().textContent = item.title;
+        row.insertCell().textContent = item.kind === "work" ? "Work" : "Folder";
+        row.insertCell().textContent = item.actor;
+        row.insertCell().textContent = new Date(item.deleted_at * 1000).toLocaleString();
+        row.insertCell().textContent = item.error
+            ? "Waiting for the original video host. Retrying."
+            : {
+                withdrawing: "Withdrawing",
+                restoring: "Restoring",
+                deleted: "Ready to restore",
+            }[item.state];
+        const actions = row.insertCell();
+        if (item.state === "deleted") {
+            const button = document.createElement("button");
+            button.textContent = "Restore";
+            button.setAttribute("aria-label", "Restore " + item.title);
+            action(button, async () => {
+                await completed(await request(trashPath + "/" + item.id + "/restore", "POST"));
+                result.textContent = "Restoration queued.";
+                await loadTrash();
+            });
+            actions.append(button);
+        }
+    }
+}
+async function loadTrash() {
+    window.clearTimeout(trashTimer);
+    const previous = deletions;
+    deletions = await (await completed(await request(trashPath))).json();
+    if (!showTrash)
+        return;
+    const currentIds = new Set(deletions.map((item) => item.id));
+    if (previous.some((item) => !currentIds.has(item.id)))
+        await load(false);
+    renderTrash();
+    if (deletions.some((item) => item.state !== "deleted")) {
+        trashTimer = window.setTimeout(() => {
+            if (showTrash)
+                void loadTrash().catch((error) => {
+                    result.textContent = String(error);
+                });
+        }, 1200);
+    }
+}
+async function removeItems(kind, ids) {
+    await completed(await request(trashPath, "POST", { kind, items: ids }));
+    result.textContent =
+        "Items moved to Recently deleted. Hosted withdrawal may still be in progress.";
+    await load();
+}
+action(deleteWorks, () => removeItems("work", [...selected]));
+action(document.querySelector("#refreshTrash"), loadTrash);
+trashType.onchange = trashActor.oninput = renderTrash;
+async function load(refreshTrash = true) {
     const [libraryResponse, folderResponse] = await Promise.all([
         request("/api/library").then(completed),
         request("/api/library/folders").then(completed),
@@ -282,6 +394,8 @@ async function load() {
     library.hidden = false;
     renderTree();
     renderWorks();
+    if (showTrash && refreshTrash)
+        await loadTrash();
 }
 function openEditor(folder) {
     editing = folder;

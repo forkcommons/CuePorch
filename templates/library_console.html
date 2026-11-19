@@ -23,9 +23,11 @@
       <button type="button" id="newFolder">New folder</button>
       <button type="button" id="editFolder" hidden>Edit folder</button>
       <button type="button" id="starFolder" hidden>Star folder</button>
+      <button type="button" id="deleteFolder" hidden>Delete folder</button>
     </aside>
     <section aria-labelledby="folderTitle">
       <h2 id="folderTitle">Library</h2>
+      <div id="workBrowse">
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
         <label>Source privacy <select id="privacy"><option value="">All</option></select></label>
@@ -42,6 +44,7 @@
       <div class="library-tools">
         <label>Destination <select id="destination" disabled></select></label>
         <button type="button" id="move" disabled>Move selected</button>
+        <button type="button" id="deleteWorks" disabled>Delete selected</button>
       </div>
       <p id="empty" hidden>No works in this view.</p>
       <table id="workTable">
@@ -49,6 +52,21 @@
         <th scope="col">Recovery</th><th scope="col">Delivery</th><th scope="col">Actions</th></tr></thead>
         <tbody id="items"></tbody>
       </table>
+      </div>
+      <div id="trashBrowse" hidden>
+        <p>Items can be restored for 30 days.</p>
+        <div class="library-tools">
+          <label>Type <select id="trashType"><option value="">All</option><option value="work">Works</option><option value="folder">Folders</option></select></label>
+          <label>Deleted by <input id="trashActor" type="search"></label>
+          <button type="button" id="refreshTrash">Refresh</button>
+        </div>
+        <p id="trashEmpty" hidden>No recently deleted items match.</p>
+        <table id="trashTable">
+          <thead><tr><th scope="col">Item</th><th scope="col">Type</th><th scope="col">Deleted by</th>
+          <th scope="col">Deleted on</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+          <tbody id="trashItems"></tbody>
+        </table>
+      </div>
     </section>
   </div>
 

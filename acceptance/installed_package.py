@@ -8,6 +8,7 @@ from playwright.sync_api import sync_playwright
 from demo_source import build_server
 from browser import chromium
 from installed_library import check_folders
+from installed_trash import check_private
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -294,6 +295,9 @@ with tempfile.TemporaryDirectory() as tmp:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    trash_result = check_private(
+                        page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed
+                    )
                     browser.close()
                     results.append(
                         dict(
@@ -305,6 +309,7 @@ with tempfile.TemporaryDirectory() as tmp:
                             playback_width=width,
                             anonymous_denied=True,
                             library=library_result,
+                            recently_deleted=trash_result,
                         )
                     )
                 quit_response = requests.post(

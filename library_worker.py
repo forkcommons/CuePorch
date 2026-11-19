@@ -8,6 +8,7 @@ import time
 
 from filelock import FileLock, Timeout
 from peertube_destination import PeerTube
+import library_trash
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS publication_job(
@@ -52,19 +53,19 @@ def enqueue(con, work, public, scheduled=0, kind="work"):
 
 
 def start(app, root, db, tx, action, apply_routes):
-    origin = os.environ.get("CUEPORCH_PEERTUBE_ORIGIN")
-    if not origin:
-        return
     receipts = db.parent / (db.stem + "-receipts")
     receipts.mkdir(exist_ok=True)
 
     def run():
         # One active delivery loop per database across server processes.
         with app.app_context():
-            while True:
+            while receipts.is_dir():
                 try:
                     with FileLock(str(receipts / "worker.lock"), timeout=0):
-                        process()
+                        origin = os.environ.get("CUEPORCH_PEERTUBE_ORIGIN")
+                        library_trash.process(tx, receipts, origin, root)
+                        if origin:
+                            process(origin)
                 except Timeout:
                     pass
                 except Exception:
@@ -73,10 +74,12 @@ def start(app, root, db, tx, action, apply_routes):
                     )
                 time.sleep(1)
 
-    def process():
+    def process(origin):
         with tx() as con:
             jobs = con.execute(
-                "SELECT * FROM publication_job WHERE status IN ('queued','waiting','processing') AND scheduled<=? ORDER BY rowid",
+                """SELECT * FROM publication_job WHERE status IN ('queued','waiting','processing') AND scheduled<=?
+                   AND NOT EXISTS(SELECT 1 FROM library_deleted_item d
+                                  WHERE d.kind='work' AND d.item=publication_job.work) ORDER BY rowid""",
                 (time.time(),),
             ).fetchall()
         if not jobs:
@@ -106,6 +109,8 @@ def start(app, root, db, tx, action, apply_routes):
                 if job["want_public"]:
                     steps.append("catalog")
                 with tx() as con:
+                    if library_trash.hidden(con, "work", work["id"]):
+                        continue
                     if (
                         con.execute(
                             "SELECT status FROM publication_job WHERE id=?", (uid,)
