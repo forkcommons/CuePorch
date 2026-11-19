@@ -96,6 +96,16 @@
           <button type="button" id="captureTime" hidden>Use preview time</button>
           <label>Viewer link <input id="workspaceWatch" readonly></label>
           <button type="button" id="copyWatch">Copy link</button>
+          <fieldset id="embedOptions" hidden>
+            <legend>Embed options</legend>
+            <label><input type="checkbox" name="responsive"> Responsive sizing</label>
+            <label>Width <input type="number" name="width" value="640" min="50" max="3840" required></label>
+            <label>Height <input type="number" name="height" value="360" min="50" max="2160" required></label>
+            <label><input type="checkbox" name="autoplay"> Autoplay</label>
+            <label><input type="checkbox" name="muted"> Start muted</label>
+            <label><input type="checkbox" name="loop"> Loop video</label>
+            <label id="embedApiOption"><input type="checkbox" name="api"> Include player API script</label>
+          </fieldset>
           <label id="workspaceEmbedLabel" hidden>Embed code <textarea id="workspaceEmbed" rows="3" readonly></textarea></label>
           <button type="button" id="copyEmbed" hidden>Copy embed code</button>
         </div>

@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_peer_handoff
 import library_share
+import library_embed
 from library_trash import hidden
 
 SCHEMA = """
@@ -412,7 +413,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             token=token, tracks=captions(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
-                            unlock_token=unlock_token, details=details, start=start),
+                            unlock_token=unlock_token, details=details, start=start,
+                            options=library_embed.options(request.args) if embed else {}),
             401 if locked and request.method == "POST" else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"

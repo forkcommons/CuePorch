@@ -1,3 +1,4 @@
+import { embedBuilder } from "./embed_builder.js";
 const identify = document.querySelector("#identify");
 const key = document.querySelector("#operatorKey");
 const status = document.querySelector("#detailsStatus");
@@ -17,7 +18,6 @@ const links = document.querySelector("#workspaceLinks");
 const start = document.querySelector("#shareStart");
 const capture = document.querySelector("#captureTime");
 const viewerLink = document.querySelector("#workspaceWatch");
-const embedLabel = document.querySelector("#workspaceEmbedLabel");
 const embedCode = document.querySelector("#workspaceEmbed");
 const copyEmbed = document.querySelector("#copyEmbed");
 const reviewLink = document.querySelector("#workspaceReview");
@@ -28,6 +28,7 @@ const clearCustom = document.querySelector("#clearCustom");
 const sharingMessage = document.querySelector("#sharingMessage");
 const privacy = document.querySelector("#editVideoPrivacy");
 const sourcePrivacy = document.querySelector("#restoreSourcePrivacy");
+const builder = embedBuilder();
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 let info;
@@ -109,8 +110,7 @@ function renderLinks() {
     start.parentElement.hidden = !sharing.watch;
     document.querySelector("#copyWatch").hidden = !target;
     capture.hidden = !sharing.watch || preview.hidden;
-    copyEmbed.hidden = embedLabel.hidden = !embed;
-    embedCode.value = embed ? `<iframe src="${address(embed).href}" width="640" height="360" allowfullscreen></iframe>` : "";
+    builder.show(embed ? address(embed) : null, heading.textContent || "Video player", Boolean(sharing.embed_url));
     custom.hidden = !sharing.watch;
     const alias = sharing.alias;
     clearCustom.hidden = !alias;
@@ -252,4 +252,3 @@ clearCustom.onclick = async () => {
 };
 if (key.value)
     void load();
-export {};

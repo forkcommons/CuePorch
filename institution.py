@@ -36,6 +36,7 @@ from waitress import serve
 from cueporch import verify
 import library_actions
 import library_details
+import library_embed
 import library_folder_privacy
 import library_folders
 import library_peer_handoff
@@ -979,7 +980,7 @@ def create_app(root, database, operator, institution, simulation=None):
         if request.method == "POST":
             abort(405)
         if embed:
-            return redirect(row["destination"], code=302)
+            return redirect(library_embed.peertube_address(row["destination"], request.args), code=302)
         return render_template(
             "watch.html",
             title=row["description"] or row["slug"],
@@ -1262,6 +1263,12 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/videos/<uuid:work>")
     def operator_video(work):
         return render_template("video_details.html", work=str(work), public_url=os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+
+    @app.get("/player.js")
+    def player_sdk():
+        response = app.send_static_file("ui/embed_player.js")
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
 
     @app.get("/api/delivery")
     def delivery_jobs():
