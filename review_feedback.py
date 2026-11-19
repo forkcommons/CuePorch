@@ -10,6 +10,7 @@ import uuid
 from flask import Response, abort, request
 
 import review_notifications
+import review_push
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_feedback_permission(
@@ -204,6 +205,7 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             review_notifications.record(
                 con, uid, version, comment, reviewer_actor(), parent, targets
             )
+            review_push.enqueue(con, uid, version, comment)
         return confidential(({"id": comment}, 201))
 
     @app.put("/review/<uid>/feedback/<version>/notices")
@@ -223,6 +225,24 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 con, uid, version, reviewer_actor(), rights["allow_resolved"]
             )
         return confidential(result)
+
+    @app.route(
+        "/review/<uid>/feedback/<version>/push", methods=["GET", "PUT", "DELETE"]
+    )
+    def review_push_settings(uid, version):
+        with tx() as con:
+            scoped_access(con, uid, version)
+            actor = reviewer_actor()
+            if request.method == "GET":
+                return confidential(review_push.settings(con, uid, actor))
+            if not actor:
+                abort(403)
+            if request.method == "PUT":
+                request.max_content_length = 8192
+                review_push.subscribe(con, uid, actor, request.get_json())
+            else:
+                review_push.unsubscribe(con, uid, actor)
+        return confidential(("", 204))
 
     @app.put("/review/<uid>/feedback/<version>/<comment>/reaction")
     def set_review_reaction(uid, version, comment):

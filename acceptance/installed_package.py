@@ -1,6 +1,7 @@
 """Exercise the actual installed launcher on a new institution and on 0.1.0 data."""
 
 import argparse, hashlib, json, os, socket, subprocess, sys, tempfile, threading, time
+from contextlib import ExitStack
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
@@ -17,6 +18,7 @@ p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("baseline", type=Path)
 p.add_argument("report", type=Path)
+p.add_argument("--review-push", action="store_true", help="Use the local encrypted review push receiver")
 p.add_argument(
     "--windows-setup",
     type=Path,
@@ -157,8 +159,13 @@ class Museum(BaseHTTPRequestHandler):
         pass
 
 
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
     root = Path(tmp)
+    push_fixture = None
+    if args.review_push:
+        from installed_review_push import check_review_push, push_receiver
+
+        push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
     review_update = generate_replacement(root / "review-update.mp4", width=192)
     src = build_server(root / "fixture")
@@ -206,7 +213,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     CUEPORCH_DESKTOP_PORT=str(port),
                     CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
                     CUEPORCH_SIMULATOR=source,
-                ),
+                ) | (push_fixture["env"] if push_fixture else {}),
             )
             try:
                 desktop = wait_for_desktop(proc, home)
@@ -303,6 +310,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     review_result.update(check_review_defaults(
                         page, base, auth, copy, keys["creator"], replacement,
                     ))
+                    if push_fixture:
+                        review_result["device_push"] = check_review_push(browser, base, auth, copy["work"], push_fixture)
                     card_result, download_url = check_cards(
                         page, base, auth, home / "institution.sqlite",
                         next(w for w in works if w["title"] == "Station meeting"),

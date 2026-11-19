@@ -47,7 +47,7 @@ jobs:
           ln -s "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" "$RUNNER_TEMP/fixture-tools/ffmpeg"
           echo "$RUNNER_TEMP/fixture-tools" >> "$GITHUB_PATH"
       - name: Test fresh and upgraded installed application
-        run: python acceptance/installed_package.py "$LAUNCHER" "$RUNNER_TEMP/base" dist/installed-tests.json
+        run: python acceptance/installed_package.py "$LAUNCHER" "$RUNNER_TEMP/base" dist/installed-tests.json --review-push
       - name: Provision disposable PeerTube host
         shell: bash
         run: bash acceptance/ci-host.sh

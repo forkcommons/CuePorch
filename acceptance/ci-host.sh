@@ -44,6 +44,9 @@ secrets:
 transcoding:
   enabled: true
   threads: 2
+video_file:
+  update:
+    enabled: true
 EOF
   NODE_ENV=production PT_INITIAL_ROOT_PASSWORD="$secret" node dist/server > "$RUNNER_TEMP/peer.log" 2>&1 &
 fi

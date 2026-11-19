@@ -1,4 +1,5 @@
 import { renderCommentText } from "./review_comment_text.js";
+import { configureReviewPush } from "./review_push.js";
 const endpoint = document.querySelector("#reviewFeedback").dataset.feedback;
 const upload = document.querySelector("#uploadReviewVersion");
 if (upload) {
@@ -360,6 +361,7 @@ decision.onsubmit = async (event) => {
     }
 };
 load().then(focusComment).catch((error) => { feedbackMessage.textContent = String(error); });
+configureReviewPush(endpoint, feedbackMessage).catch((error) => { feedbackMessage.textContent = String(error); });
 window.setInterval(async () => {
     if (!data)
         return;

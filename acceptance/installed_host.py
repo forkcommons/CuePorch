@@ -3,7 +3,7 @@
 import argparse, json, os, socket, subprocess, tempfile, threading, time
 from pathlib import Path
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from browser import chromium
 from demo_source import build_server
 from operator_walkthrough import walkthrough
@@ -16,7 +16,53 @@ p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("origin")
 p.add_argument("report", type=Path)
+p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cable package for review defaults acceptance")
 a = p.parse_args()
+
+
+def check_station_review(base, keys, package):
+    operator = {"Authorization": "Bearer " + keys["operator"]}
+    station = {
+        "Authorization": "Bearer " + keys["station"],
+        "Content-Type": "application/zip",
+    }
+    defaults = requests.put(
+        base + "/api/review-defaults", headers=operator, timeout=10,
+        json={"auto_create": True, "dark": True, "password": ""},
+    )
+    defaults.raise_for_status()
+
+    def send():
+        with package.open("rb") as content:
+            response = requests.post(
+                base + "/api/station-packages", headers=station, data=content,
+                params={"kind": "meeting", "public": "false"}, timeout=20,
+            )
+        response.raise_for_status()
+        return response.json()
+
+    received = send()
+    assert send()["work"] == received["work"]
+    links = requests.get(
+        f"{base}/api/library/work/{received['work']}/review-links", headers=operator, timeout=10,
+    )
+    links.raise_for_status()
+    (review,) = links.json()
+    assert review["dark"] and not review["password"]
+    with sync_playwright() as pw:
+        browser = chromium(pw)
+        try:
+            guest = browser.new_page()
+            guest.goto(base + review["path"])
+            expect(guest.locator("body")).to_have_class("review-dark")
+            width = guest.locator("video").evaluate("async v => {v.muted = true; await v.play(); return v.videoWidth;}")
+            assert width == 256
+            expect(guest.locator("video track[kind=captions]")).to_have_count(1)
+        finally:
+            browser.close()
+    return {"civiccast_intake_uses_saved_review_defaults": True, "repeat_does_not_duplicate_link": True, "guest_playback_width": width}
+
+
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     home = root / "data"
@@ -67,6 +113,7 @@ with tempfile.TemporaryDirectory() as tmp:
             versions_result = check_hosted_versions(
                 base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
             )
+            station_result = check_station_review(base, keys, a.station_package) if a.station_package else None
             response = requests.post(
                 base + "/desktop/api/quit",
                 headers={"Authorization": "Bearer " + url.split("#")[1]},
@@ -87,6 +134,7 @@ with tempfile.TemporaryDirectory() as tmp:
                         recently_deleted=trash_result,
                         card_actions=card_result,
                         video_versions=versions_result,
+                        station_review=station_result,
                     ),
                     indent=2,
                 )

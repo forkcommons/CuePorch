@@ -3,14 +3,16 @@
 import hashlib
 import math
 import os
+import re
 import secrets
 import time
 
-from flask import Response, abort, render_template, request, send_file
+from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import review_feedback
 import review_notifications
+import review_push
 import review_settings
 from catalog import video_version_key
 from media_tools import video_properties
@@ -31,6 +33,7 @@ CREATE TABLE IF NOT EXISTS review_unlock_limit(
 """
     + review_feedback.SCHEMA
     + review_notifications.SCHEMA
+    + review_push.SCHEMA
     + review_settings.SCHEMA
 )
 
@@ -222,6 +225,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 (uid,),
             )
             review_notifications.forget(con, uid)
+            review_push.forget(con, uid)
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 
@@ -375,9 +379,20 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         return match[0], review_feedback.settings(con, uid)
 
     review_feedback.register(
-        app, tx, scoped_feedback_access, operator_feedback_access, confidential, session_digest
+        app,
+        tx,
+        scoped_feedback_access,
+        operator_feedback_access,
+        confidential,
+        session_digest,
     )
     review_settings.register(app, tx, staff)
+
+    @app.get("/review/notifications-worker.js")
+    def review_notification_worker():
+        if not review_push.contact():
+            abort(404)
+        return confidential(app.send_static_file("ui/review_notification_worker.js"))
 
     @app.get("/review/<uid>")
     def review_page(uid):
@@ -385,7 +400,12 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             row, work = active(con, uid)
             if not authorized(con, row):
                 return confidential(
-                    render_template("review.html", locked=True, uid=uid)
+                    render_template(
+                        "review.html",
+                        locked=True,
+                        uid=uid,
+                        unlock_version=request.args.get("version", ""),
+                    )
                 )
             versions = playable_versions(work, row)
             title = title_for(con, work)
@@ -512,6 +532,8 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
     def unlock(uid):
         request.max_content_length = 8192
         password = request.form.get("password", "")
+        version = request.form.get("version", "")
+        fragment = request.form.get("comment", "")
         if len(password) > 256:
             abort(400)
         now = time.time()
@@ -536,7 +558,17 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             )
         if not check_password_hash(password_hash, password):
             return confidential(
-                (render_template("review.html", locked=True, uid=uid, error=True), 403)
+                (
+                    render_template(
+                        "review.html",
+                        locked=True,
+                        uid=uid,
+                        error=True,
+                        unlock_version=version,
+                        unlock_comment=fragment,
+                    ),
+                    403,
+                )
             )
         token = secrets.token_urlsafe(32)
         with tx() as con:
@@ -550,8 +582,12 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 (session_digest(token), uid, expires),
             )
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
+        query = {"version": version} if re.fullmatch(r"[a-f0-9]{64}", version) else {}
+        path = url_for("review_page", uid=uid, **query)
+        if re.fullmatch(r"comment-[a-f0-9]{32}", fragment):
+            path += "#" + fragment
         return set_review_cookie(
-            confidential(("", 303, {"Location": "/review/" + uid})),
+            confidential(("", 303, {"Location": path})),
             "cueporch_review",
             token,
             uid,

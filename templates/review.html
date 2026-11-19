@@ -13,10 +13,13 @@
     {% if operator_preview %}<p class="review-preview-notice">You are previewing the recipient’s review page.</p>{% endif %}
     {% if locked %}
     <form action="{{ url_for('unlock', uid=uid) }}" method="post">
+      <input type="hidden" name="version" value="{{ unlock_version or '' }}">
+      <input type="hidden" name="comment" id="reviewUnlockComment" value="{{ unlock_comment or '' }}">
       <label>Review password <input type="password" name="password" required maxlength="256" autocomplete="current-password"></label>
       <button>Open review</button>
       {% if error %}<p role="alert">That password did not open the review.</p>{% endif %}
     </form>
+    <script type="module" src="/static/ui/review_unlock.js"></script>
     {% elif selected %}
     {% if operator_preview %}
     <form id="uploadReviewVersion" action="{{ url_for('replace_review_video', uid=uid) }}" method="post" enctype="multipart/form-data" data-token="{{ replacement_token }}">
@@ -92,6 +95,7 @@
         <summary id="reviewNoticeCount">Notifications</summary>
         <label>Comment notifications <select id="reviewNoticeMode"><option value="all">All comments</option><option value="mentions" selected>Mentions and replies</option><option value="off">Off</option></select></label>
         <ul id="reviewNoticeList"></ul>
+        <button type="button" id="reviewPushToggle" hidden>Enable device notifications</button>
       </details>
       <ol id="reviewComments"></ol>
       <p id="feedbackMessage" role="status"></p>

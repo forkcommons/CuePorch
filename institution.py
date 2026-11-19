@@ -40,6 +40,7 @@ import library_thumbnail
 import library_trash
 import library_worker
 import review_links
+import review_push
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
@@ -1252,6 +1253,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return {"queued": queued}, 202
 
     library_worker.start(app, root, database, tx, action, apply_routes)
+    review_push.start(app, tx, database)
     return app
 
 
