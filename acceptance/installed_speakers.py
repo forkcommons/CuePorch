@@ -127,7 +127,7 @@ def check_speaker_delivery(base, keys, ffmpeg):
             expect(operator.locator("#recordStatus")).to_contain_text("Sending the live broadcast", timeout=45000)
             expect(audience.locator("#eventStatus")).to_have_text("Live", timeout=65000)
             _, width, _ = play_event(audience, watch, "Live", navigate=False)
-            player = audience.frame_locator('iframe[title="Event video"]').locator("video").first
+            player = audience.locator("#eventPlayer video")
             wait_color(player, [0, 255, 0])
             panel.get_by_role("button", name="Remove Visiting artist").click()
             expect(first.locator("#guestSpeakerStatus")).to_contain_text("expired or was removed", timeout=12000)

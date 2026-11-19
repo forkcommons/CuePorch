@@ -139,7 +139,7 @@ def check_event_calendar(page, base, auth):
                 event_registration_preset_editor=True, authorized_csv_and_utm=True)
 
 
-def check_live_delivery(base, origin, keys, ffmpeg, port):
+def check_live_delivery(base, origin, keys, home, ffmpeg, port):
     assert urlsplit(origin).hostname in ("localhost", "127.0.0.1")
     assert ffmpeg.is_file(), "Bundled encoder is missing"
     now = datetime.now(timezone.utc)
@@ -178,24 +178,32 @@ def check_live_delivery(base, origin, keys, ffmpeg, port):
             repeated = requests.post(production + "/encoder", headers=auth, timeout=25)
             repeated.raise_for_status()
             assert repeated.json()["key"] == key, "Retry prepared a different stream"
+            with closing(sqlite3.connect(home / "institution.sqlite")) as database:
+                (uid,) = database.execute("SELECT remote FROM live_occurrence WHERE event=? AND opens=?",
+                                          (entry["id"], session["id"])).fetchone()
+            remote_api = f"{origin}/api/v1/videos/{uid}"
             stable = operator.locator("#eventWatch").get_attribute("href")
             assert stable and stable.startswith(base + "/events/")
             guest = browser.new_page()
             guest.goto(stable)
             expect(guest.locator("#eventStatus")).to_have_text("Waiting for the encoder")
             assert key not in guest.content()
-            assert guest.locator('iframe[title="Event video"]').count() == 0
+            assert guest.locator("#eventPlayer video").count() == 0
             gate = base + "/api/policy/replay"
             requests.put(gate, json={"required": True}, headers=auth, timeout=10).raise_for_status()
             with send_signal(ffmpeg, server, key, 65) as encoder:
                 wait_for_delivery(production, auth, "live", 45, encoder)
-                hosted, live_width, _ = play_event(guest, stable, "Live")
+                live, live_width, _ = play_event(guest, stable, "Live")
+                assert live.startswith(base + "/event-media/")
+                assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
+                embed_url = base + entry["embed"] + f"?occurrence={session['id']}"
+                guest_embed = browser.new_page()
+                _, embedded_width, _ = play_event(guest_embed, embed_url, "Live")
+                guest_embed.close()
                 assert encoder.poll() is None, "Playback started after the live encoder ended"
                 assert key not in guest.content()
                 print(f"Guest decoded live video at {live_width}px", flush=True)
                 assert encoder.wait(timeout=75) == 0, "The installed encoder stream failed"
-            uid = urlsplit(hosted).path.rsplit("/", 1)[-1]
-            remote_api = f"{origin}/api/v1/videos/{uid}"
             action = f"{base}/api/actions/live-replay-{entry['id']}-{session['id']}"
             # PeerTube waits five minutes after RTMP disconnect before turning the live into a replay.
             replay_deadline = time.monotonic() + 420
@@ -209,34 +217,44 @@ def check_live_delivery(base, origin, keys, ffmpeg, port):
                 raise AssertionError("The opt-in replay gate did not hold the recorded video")
             assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
             guest.goto(stable)
-            expect(guest.locator('iframe[title="Event video"]')).to_have_count(0)
+            expect(guest.locator("#eventPlayer video")).to_have_count(0)
             print("Finished recording remains private under opt-in replay approval", flush=True)
             requests.put(gate, json={"required": False}, headers=auth, timeout=10).raise_for_status()
             replay_deadline = time.monotonic() + 150
             while time.monotonic() < replay_deadline:
-                response = requests.get(remote_api, timeout=10)
-                if response.ok:
-                    video = response.json()
-                    if not video["isLive"] and video["state"]["id"] == 1 and video["duration"] >= 50:
-                        break
+                response = requests.get(stable, headers={"Accept": "application/json"}, timeout=10)
+                if response.ok and response.json()["status"] == "Replay":
+                    break
                 time.sleep(2)
             else:
-                raise AssertionError("PeerTube did not publish the recorded replay")
+                raise AssertionError("CuePorch did not publish the recorded replay")
             replay, replay_width, duration = play_event(guest, stable, "Replay")
-            assert replay == hosted and 50 <= duration <= 75, "Stable event did not play its completed live recording"
+            assert replay.startswith(base + "/event-media/") and 50 <= duration <= 75
+            assert requests.get(live, timeout=10).status_code == 404
+            old_token_replay = live.rsplit("/", 1)[0] + "/" + replay.rsplit("/", 1)[-1]
+            assert requests.get(old_token_replay, timeout=10).status_code == 404
+            with closing(sqlite3.connect(home / "institution.sqlite")) as database:
+                assert database.execute("SELECT remote,delivery FROM live_occurrence WHERE event=? AND opens=?",
+                                        (entry["id"], session["id"])).fetchone() == (uid, "replay")
+            assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
+            print(f"Released stable-link replay decoded at {replay_width}px for {duration:.2f}s, with the old live token denied.", flush=True)
+            operator.reload()
+            operator.get_by_role("button", name="Open production for Installed studio signal", exact=False).click()
             withdraw = operator.get_by_role("button", name="Withdraw this occurrence")
             with operator.expect_response(lambda result: result.url == production + "/delivery", timeout=45000) as removed:
                 withdraw.click()
             assert removed.value.status == 204, f"Withdrawal returned HTTP {removed.value.status}"
             expect(operator.locator("#eventsStatus")).to_have_text("Occurrence withdrawn.")
             guest.goto(stable)
-            expect(guest.locator('iframe[title="Event video"]')).to_have_count(0)
-            assert requests.get(remote_api, timeout=10).status_code in (401, 403, 404)
+            expect(guest.locator("#eventPlayer video")).to_have_count(0)
+            assert requests.get(replay, timeout=10).status_code == 404
             return dict(repeat_prepare_same_stream=True, credentials_require_operator=True, live_width=live_width,
-                        displayed_encoder_endpoint_accepts_stream=True,
+                        displayed_encoder_endpoint_accepts_stream=True, embed_live_width=embedded_width,
                         replay_width=replay_width, replay_seconds=round(duration, 2),
                         opt_in_gate_holds_private_recording_and_releases_original=True,
-                        original_event_and_hosted_video_reused=True, withdrawal_denies_guest_host_access=True)
+                        original_event_and_hosted_video_reused=True, peer_copy_kept_private=True,
+                        old_live_token_cannot_read_replay=True,
+                        withdrawal_revokes_existing_replay_manifest=True)
         finally:
             browser.close()
 
@@ -260,18 +278,14 @@ def play_event(page, stable, status, navigate=True):
     if navigate:
         page.goto(stable)
     expect(page.locator("#eventStatus")).to_have_text(status)
-    selector = 'iframe[title="Event video"]'
-    address = urljoin(stable, page.locator(selector).get_attribute("src"))
-    player = page.frame_locator(selector)
-    player.get_by_role("button", name="Play Video", exact=True).click(timeout=20000)
-    video = player.locator("video").first
-    video.wait_for(state="visible")
+    address = urljoin(stable, page.locator("#eventPlayer").get_attribute("data-address"))
+    video = page.locator("#eventPlayer video")
+    page.wait_for_function("document.querySelector('#eventPlayer video')?.readyState >= 2", timeout=30000)
     width, duration = video.evaluate(
         """async v => {
-            if (!v.videoWidth) await new Promise((resolve, reject) => {
-                v.addEventListener('loadeddata', resolve, {once: true});
-                setTimeout(() => reject(Error('No decoded video frame')), 20000);
-            });
+            v.muted = true;
+            await Promise.race([v.play(), new Promise((_, reject) =>
+                setTimeout(() => reject(Error('No decoded video frame')), 10000))]);
             return [v.videoWidth, Number.isFinite(v.duration) ? v.duration : 0];
         }"""
     )
@@ -438,7 +452,7 @@ def prepare_live_scenes(operator, base, studio, auth, scratch, ffmpeg):
 
 
 def check_broadcast_graphics(guest, panel):
-    video = guest.frame_locator('iframe[title="Event video"]').locator("video").first
+    video = guest.locator("#eventPlayer video")
 
     def pixel(x, y, rgb):
         panel.page.wait_for_function("""({x,y,rgb}) => {
@@ -597,7 +611,7 @@ def check_live_diagnostics(operator, guest, health, auth):
     assert values["fps"] > 0 and values["bitrate"] > 0 and values["drop_frames"] >= 0
     assert requests.get(health, timeout=10).status_code == 403
     assert requests.get(health + "?source=relay", timeout=10).status_code == 403
-    video = guest.frame_locator('iframe[title="Event video"]').locator("video").first
+    video = guest.locator("#eventPlayer video")
     rewind = video.evaluate("""async v => {
         const until = Date.now() + 45000;
         while (Date.now() < until) {
@@ -938,7 +952,7 @@ def check_program_delivery(base, keys, ffmpeg, scratch):
             timeout = max(1000, round((start.timestamp() - time.time() + 45) * 1000))
             expect(page.locator("#eventStatus")).to_have_text("Live", timeout=timeout)
             _, width, _ = play_event(page, watch, "Live", navigate=False)
-            video = page.frame_locator('iframe[title="Event video"]').locator("video").first
+            video = page.locator("#eventPlayer video")
             colors = video.evaluate("""async video => {
                 const canvas = document.createElement('canvas');
                 canvas.width = canvas.height = 1;

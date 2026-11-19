@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 elif a.registered_event:
                     evidence["event_delivery"] = check_registered_live(base, a.origin, keys, home, ffmpeg, a.live_rtmp_port)
                 else:
-                    evidence["event_delivery"] = check_live_delivery(base, a.origin, keys, ffmpeg, a.live_rtmp_port)
+                    evidence["event_delivery"] = check_live_delivery(base, a.origin, keys, home, ffmpeg, a.live_rtmp_port)
             elif not a.station_only:
                 transfer, first = walkthrough(base, keys, started)
                 evidence.update(

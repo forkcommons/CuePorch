@@ -178,11 +178,9 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
                 assert rewind >= 1
                 assert encoder.poll() is None
                 manifest = urljoin(stable, audience.locator("#eventPlayer").get_attribute("data-address"))
+                assert requests.get(production + "/health", headers=auth, timeout=10).json()["public"] is False
                 response = requests.delete(production + "/delivery", headers=auth, timeout=30)
-                if response.status_code == 502 and not registered:
-                    assert "The CuePorch player is closed" in response.text
-                else:
-                    assert response.status_code == 204, response.status_code
+                assert response.status_code == 204, response.status_code
                 withdrawn = True
                 assert requests.get(caption_route, headers=viewer, timeout=10).status_code == 404
                 assert requests.get(manifest, timeout=10).status_code == 404

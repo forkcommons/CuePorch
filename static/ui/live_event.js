@@ -7,6 +7,7 @@ let hls;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
+const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
 function renderVideo(address, phase, video) {
     player.dataset.address = address;
     player.dataset.phase = phase;
@@ -20,7 +21,11 @@ function renderVideo(address, phase, video) {
         player.replaceChildren(video);
     }
     if (Hls?.isSupported()) {
-        const session = new Hls({ enableWorker: true, liveDurationInfinity: true });
+        const session = new Hls({
+            enableWorker: true,
+            liveDurationInfinity: true,
+            liveSyncDurationCount: liveSyncSegments.get(lobby.dataset.latency || "") ?? 5,
+        });
         session.loadSource(address);
         session.attachMedia(video);
         hls = session;

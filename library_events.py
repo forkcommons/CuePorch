@@ -10,7 +10,7 @@ from flask import abort, make_response, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 
-from event_media import Gateway, HLS_PREFIXES, root_path
+from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
 import event_chat
@@ -109,7 +109,7 @@ def publish_replays(tx, database, origin, connect, action):
                     decision = action(con, f"live-replay-{uid}-{opens}", "replay",
                                       dict(title=event["title"], event=uid, occurrence=opens))
                 if decision == "eligible":
-                    if not registered:
+                    if not registered and not event.get("cueporch_delivery"):
                         host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
@@ -226,6 +226,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available())
             body = request.get_json()
             event = edit(body)
+            event["cueporch_delivery"] = True
             uid = uuid.uuid4().hex
             slug = body.get("slug") or uid
             if not isinstance(slug, str) or not SLUG.fullmatch(slug):
@@ -249,6 +250,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 row, prior = read(con, uid)
                 if body.get("revision") != row["revision"]:
                     abort(409, "This event changed. Open it again before saving.")
+                if prior.get("cueporch_delivery"):
+                    changed["cueporch_delivery"] = True
                 if changed == prior:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):
@@ -376,7 +379,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)",
                                     (uid, opens, host.origin, remote, "staged"))
                 if state != "ready":
-                    event_peer.release_remote(host, remote, event, broadcast)
+                    event_peer.release_remote(host, remote, event, broadcast and not event.get("cueporch_delivery"))
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?",
                                     (uid, opens))
@@ -608,7 +611,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     enrollment = forms.dumps(scope)
         address = None
         protected = bool(form)
-        native_video = protected or captioned
+        host_private = protected or event.get("cueporch_delivery", False)
+        native_video = host_private or captioned
         can_participate = shown and not withdrawn and (not protected or grant)
         status = "Scheduled"
         if withdrawn:
@@ -620,13 +624,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if native_video:
                     raw = media.metadata(delivery["origin"], delivery["remote"])
                     observed = event_peer.status(raw)
-                    available = (observed["public"] != protected and (observed["state"] == "live" or
+                    available = (observed["public"] != host_private and (observed["state"] == "live" or
                                  (observed["state"] == "replay" and delivery["delivery"] == "replay")))
                     if available:
                         playlist = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"], protected)
+                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"], host_private)
                         gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
-                        session = files.dumps(scope + [delivery["remote"], gateway])
+                        session = files.dumps(scope + [delivery["remote"], gateway, observed["state"] == "replay"])
                         address = url_for("event_media_file", token=session, filename=filename)
                         status = "Live" if observed["state"] == "live" else "Replay"
                 else:
@@ -638,7 +642,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     status = "Waiting for the encoder"
                 elif observed["state"] in ("preparing_replay", "ended"):
                     status = "Preparing the replay" if event["save_replay"] else "This event has ended"
-                elif protected and observed["state"] == "replay" and not address:
+                elif host_private and observed["state"] == "replay" and not address:
                     status = "The replay is awaiting release"
             except (ValueError, requests.RequestException, KeyError, StopIteration):
                 status = "The stream is unavailable"
@@ -673,8 +677,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.get("/event-media/<token>/<filename>")
     def event_media_file(token, filename):
         try:
-            uid, revision, opens, form_revision, _, remote, gateway = files.loads(token, max_age=12 * 3600)
+            uid, revision, opens, form_revision, _, remote, gateway, replay = files.loads(token, max_age=12 * 3600)
         except (BadSignature, ValueError):
+            abort(404)
+        if not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
         with tx() as con:
             row, event = read(con, uid)
@@ -682,6 +688,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             form = library_registration.active(con, "event", uid)
             if (row["revision"] != revision or publication(con, row, event) != "eligible" or
                     not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
+                    replay != (delivery["delivery"] == "replay") or
                     (form["revision"] if form else None) != form_revision):
                 abort(404)
         try:

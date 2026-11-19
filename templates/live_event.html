@@ -8,7 +8,7 @@
 </head>
 <body class="live-event-page">
   <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
-        data-embed="{{ 'yes' if embed else 'no' }}">
+        data-embed="{{ 'yes' if embed else 'no' }}" data-latency="{{ event.latency }}">
     <header>
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}

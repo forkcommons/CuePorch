@@ -15,6 +15,7 @@ HLS_PREFIXES = (
     "/static/streaming-playlists/hls/",
 )
 HLS_FILE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,250}\.(?:m3u8|m4s|mp4|ts|aac|vtt)")
+LIVE_FILE = re.compile(r"(?:master|\d+)\.m3u8|\d+-\d+\.ts")
 MANIFEST_URI = re.compile(r'\bURI="([^"\r\n]+)"')
 RANGE = re.compile(r"bytes=(?:\d+-\d*|-\d+)")
 FORMATS = {
