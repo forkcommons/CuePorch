@@ -34,6 +34,7 @@ from flask import (
 from waitress import serve
 
 from cueporch import verify
+import analytics_reports
 import library_actions
 import library_appearance
 import library_caption_jobs
@@ -1108,6 +1109,7 @@ def create_app(root, database, operator, institution, simulation=None):
         works[work["id"]] = work
 
     library_actions.register(app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action)
+    analytics_reports.register(app, tx, staff, read_library_works)
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
@@ -1288,6 +1290,10 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/videos/<uuid:work>/analytics")
     def operator_analytics(work):
         return render_template("video_analytics.html", work=str(work))
+
+    @app.get("/operator/analytics")
+    def analytics_dashboard():
+        return render_template("analytics_dashboard.html")
 
     @app.get("/operator/videos/<uuid:work>/editing")
     def operator_editing(work):

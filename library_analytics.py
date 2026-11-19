@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from io import StringIO
 import json
 import math
+from urllib.parse import urlsplit
 
 from flask import Response, abort, request
 
@@ -17,11 +18,49 @@ CREATE TABLE IF NOT EXISTS video_analytics_session(
  created REAL NOT NULL, sequence INTEGER NOT NULL, played INTEGER NOT NULL, completed INTEGER NOT NULL,
  watched INTEGER NOT NULL, intervals TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS video_analytics_work_date ON video_analytics_session(work,created);
+CREATE INDEX IF NOT EXISTS video_analytics_date ON video_analytics_session(created);
+CREATE TABLE IF NOT EXISTS video_analytics_context(
+ session TEXT PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL);
 """
 SURFACES = ("watch", "embed")
+DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
+COUNTS = """count(*) AS impressions, coalesce(sum(played),0) AS views,
+            coalesce(sum(completed),0) AS finishes, coalesce(sum(watched),0) AS watched"""
 
 
-def record(con, work, nonce, surface, body):
+def source_origin(referrer):
+    try:
+        url = urlsplit(referrer or "")
+        if url.scheme not in ("http", "https") or not url.hostname or url.username is not None:
+            return "Unknown"
+        host = url.hostname.rstrip(".").lower()
+        if any(char.isspace() or char == "\\" for char in host) or len(host) > 253:
+            return "Unknown"
+        authority = f"[{host}]" if ":" in host else host
+        default = 443 if url.scheme == "https" else 80
+        if url.port is not None and url.port != default:
+            authority += f":{url.port}"
+        return f"{url.scheme}://{authority}"
+    except ValueError:
+        return "Unknown"
+
+
+def device_type(agent):
+    key = (agent or "").lower()
+    if not key:
+        return "Unknown"
+    if any(marker in key for marker in ("smart-tv", "smarttv", "hbbtv", "tizen", "webos", "appletv", "roku")):
+        return "TV"
+    if "ipad" in key or "tablet" in key or ("android" in key and "mobile" not in key):
+        return "Tablet"
+    if any(marker in key for marker in ("iphone", "android", "mobile")):
+        return "Phone"
+    if any(marker in key for marker in ("windows", "macintosh", "x11", "linux", "chrome", "firefox")):
+        return "Desktop"
+    return "Unknown"
+
+
+def record(con, work, nonce, surface, body, context=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
     seq, played, finished = body.get("sequence"), body.get("played"), body.get("completed")
@@ -51,15 +90,18 @@ def record(con, work, nonce, surface, body):
               intervals=excluded.intervals WHERE excluded.sequence>video_analytics_session.sequence""",
         (nonce, work["id"], video_version_key(work), surface, now, seq, played, finished, watched, json.dumps(edges)),
     )
+    if context:
+        con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, *context))
 
 
-def bounds():
+def bounds(filters=None):
+    filters = request.args if filters is None else filters
     today = datetime.now(timezone.utc).date()
     try:
-        start = date.fromisoformat(request.args["from"]) if "from" in request.args else today - timedelta(days=29)
-        end = date.fromisoformat(request.args["to"]) if "to" in request.args else today
+        start = date.fromisoformat(filters["from"]) if "from" in filters else today - timedelta(days=29)
+        end = date.fromisoformat(filters["to"]) if "to" in filters else today
         end_time = datetime.combine(end + timedelta(days=1), time.min, timezone.utc)
-    except (ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         abort(400, "Enter valid start and end dates.")
     if start > end:
         abort(400, "Choose an end date on or after the start.")
@@ -80,10 +122,9 @@ def summarize(con, work, start, end, surface):
     if surface:
         clause += " AND surface=?"
         params += (surface,)
-    counts = "count(*) AS impressions, coalesce(sum(played),0) AS views, coalesce(sum(completed),0) AS finishes, coalesce(sum(watched),0) AS watched"
-    totals = metrics(con.execute(f"SELECT {counts} FROM video_analytics_session {clause}", params).fetchone())
+    totals = metrics(con.execute(f"SELECT {COUNTS} FROM video_analytics_session {clause}", params).fetchone())
     days = con.execute(
-        f"""SELECT date(created, 'unixepoch') AS day,surface,{counts}
+        f"""SELECT date(created, 'unixepoch') AS day,surface,{COUNTS}
             FROM video_analytics_session {clause} GROUP BY day,surface ORDER BY day,surface""", params,
     )
     daily = [dict(day=row["day"], surface=row["surface"], **metrics(row)) for row in days]

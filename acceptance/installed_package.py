@@ -26,6 +26,7 @@ from installed_presentation import check_presentation
 from installed_ratings import check_ratings
 from installed_registration import check_registration
 from installed_analytics import check_analytics
+from installed_advanced_analytics import check_advanced_analytics
 from installed_editing import check_editing, fixture as editor_fixture
 
 p = argparse.ArgumentParser()
@@ -358,6 +359,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     ratings = check_ratings(page, browser, base, auth, replacement)
                     registration = check_registration(page, browser, base, auth, museum, venue, replacement)
                     analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
+                    advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
@@ -389,6 +391,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             languages=languages, generated_captions=generated, chapters=chapters,
                             presentation=presentation, ratings=ratings, registration=registration,
                             analytics=analytics,
+                            advanced_analytics=advanced_analytics,
                             editing=editing,
                         )
                     )

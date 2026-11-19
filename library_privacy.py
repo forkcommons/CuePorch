@@ -450,7 +450,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
             analytics = analytics_serializer.dumps(
-                [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18)]
+                [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18),
+                 [library_analytics.source_origin(request.referrer),
+                  library_analytics.device_type(request.headers.get("User-Agent"))]]
             ) if can_watch else None
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
@@ -572,7 +574,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     @app.post("/viewer-analytics/<session>")
     def viewer_analytics(session):
         try:
-            token, version, surface, nonce = analytics_serializer.loads(session, max_age=4 * 3600)
+            token, version, surface, nonce, *context = analytics_serializer.loads(session, max_age=4 * 3600)
         except (BadSignature, ValueError):
             abort(404)
         body = request.get_json()
@@ -580,7 +582,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             work, _, _ = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
-            library_analytics.record(con, work, nonce, surface, body)
+            library_analytics.record(con, work, nonce, surface, body, context[0] if context else None)
         return "", 204
 
     return watch
