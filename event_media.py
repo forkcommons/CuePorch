@@ -1,20 +1,18 @@
 """Surface revocable private PeerTube HLS under the CuePorch viewer origin."""
 
-import os
 import re
-from threading import Lock
-import time
 from urllib.parse import urlsplit
 
 from flask import Response
 import requests
 
-from peertube_destination import PeerTube
+import event_peer
 
 
 HLS_PREFIXES = (
     "/static/streaming-playlists/hls/private/",
     "/object-storage-proxy/streaming-playlists/hls/private/",
+    "/static/streaming-playlists/hls/",
 )
 HLS_FILE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,250}\.(?:m3u8|m4s|mp4|ts|aac|vtt)")
 MANIFEST_URI = re.compile(r'\bURI="([^"\r\n]+)"')
@@ -29,13 +27,14 @@ FORMATS = {
 }
 
 
-def root_path(origin, url, remote):
+def root_path(origin, url, remote, protected=True):
     parts = urlsplit(url)
     host = urlsplit(origin)
     if parts.netloc != host.netloc or parts.scheme != host.scheme or parts.query or parts.fragment:
         raise ValueError("A connected host must serve the protected playlist.")
     directory, _, name = parts.path.rpartition("/")
-    if directory + "/" not in {prefix + remote + "/" for prefix in HLS_PREFIXES} or not HLS_FILE.fullmatch(name):
+    prefixes = HLS_PREFIXES[:2] if protected else HLS_PREFIXES[2:]
+    if directory + "/" not in {prefix + remote + "/" for prefix in prefixes} or not HLS_FILE.fullmatch(name):
         raise ValueError("The protected playlist must belong to this occurrence.")
     return directory, name
 
@@ -56,39 +55,15 @@ def manifest_text(payload):
 
 
 class Gateway:
-    def __init__(self):
-        self.lock = Lock()
-        self.credentials = None
-        self.authorization = None
-        self.expires = 0
-
-    def credential(self, origin):
-        settings = (os.environ.get("CUEPORCH_PEERTUBE_ORIGIN", "").rstrip("/"),
-                    os.environ.get("PEERTUBE_USERNAME"), os.environ.get("PEERTUBE_PASSWORD"))
-        if settings[0] != origin or not all(settings):
-            raise ValueError("Connect the protected event's video host.")
-        with self.lock:
-            if self.credentials != settings or time.monotonic() >= self.expires:
-                peer = PeerTube(*settings)
-                try:
-                    self.authorization = peer.session.headers["Authorization"]
-                    self.expires = peer.expires_at
-                    self.credentials = settings
-                finally:
-                    peer.session.close()
-            return self.authorization
-
     def read(self, origin, path, byte_range=None, stream=False):
-        headers = {"Authorization": self.credential(origin), "Accept-Encoding": "identity"}
+        headers = {"Authorization": event_peer.authorization(origin), "Accept-Encoding": "identity"}
         if byte_range:
             if not RANGE.fullmatch(byte_range):
                 raise ValueError("Invalid media byte range.")
             headers["Range"] = byte_range
         response = requests.get(origin + path, headers=headers, allow_redirects=False, timeout=(3, 10), stream=stream)
-        if response.status_code in (401, 403):
-            with self.lock:
-                if self.authorization == headers["Authorization"]:
-                    self.expires = 0
+        if response.status_code == 401:
+            event_peer.expire_authorization(headers["Authorization"])
         if response.status_code not in (200, 206):
             response.close()
             raise ValueError("The protected video resource is unavailable.")
@@ -106,8 +81,8 @@ class Gateway:
         response = self.read(origin, upstream, byte_range if suffix != "m3u8" else None, stream=True)
         if suffix == "m3u8":
             with response:
-                sample = response.raw.read(512 * 1024 + 1)
-                if len(sample) > 512 * 1024:
+                sample = response.raw.read(2 * 1024 * 1024 + 1)
+                if len(sample) > 2 * 1024 * 1024:
                     raise ValueError("The protected playlist is too large.")
                 result = Response(manifest_text(sample), mimetype=FORMATS[suffix])
         else:

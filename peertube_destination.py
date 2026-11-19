@@ -22,7 +22,7 @@ class SourceReplacementUnavailable(ValueError):
 
 
 class PeerTube:
-    def __init__(self, origin, username, password):
+    def __init__(self, origin, username, password, *, access=None):
         self.origin = origin.rstrip("/")
         parts = urlsplit(self.origin)
         if parts.scheme != "https" and not (
@@ -30,6 +30,10 @@ class PeerTube:
         ):
             raise ValueError("PeerTube requires HTTPS or a local test host")
         self.session = requests.Session()
+        if access:
+            authorization, self.expires_at, self.user = access
+            self.session.headers["Authorization"] = authorization
+            return
         client = self.call("GET", "/api/v1/oauth-clients/local").json()
         token = self.call(
             "POST",

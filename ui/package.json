@@ -6,7 +6,7 @@
     "build": "tsc -p tsconfig.json && node build_vendor.mjs"
   },
   "dependencies": {
-    "hls.js": "1.6.16"
+    "hls.js": "1.6.18"
   },
   "devDependencies": {
     "typescript": "5.9.3",

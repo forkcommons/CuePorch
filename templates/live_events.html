@@ -75,6 +75,20 @@
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
       <p id="eventHealthDetails"></p>
+      <details id="eventCaptionSettings">
+        <summary>Live captions</summary>
+        <form id="productionCaptions">
+          <label><input type="checkbox" name="enabled"> Generate automatic live captions</label>
+          <label>Spoken language <select name="language">
+            <option value="en">English</option><option value="de">German</option><option value="fr">French</option>
+            <option value="es">Spanish</option><option value="it">Italian</option><option value="nl">Dutch</option>
+            <option value="pl">Polish</option>
+          </select></label>
+          <button type="submit">Save live caption settings</button>
+          <button type="button" id="refreshLiveCaptions">Refresh caption status</button>
+        </form>
+        <p id="productionCaptionStatus" role="status"></p>
+      </details>
       <div id="encoderSettings" hidden>
         <label>RTMP server <input id="rtmpServer" readonly></label>
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>

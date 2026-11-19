@@ -14,6 +14,7 @@ from event_media import Gateway, HLS_PREFIXES, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, srt_endpoint
 import event_peer
 import event_chat
+import event_captions
 import event_engagement
 import event_program
 import event_schedule
@@ -32,7 +33,7 @@ CREATE TABLE IF NOT EXISTS live_event(
 CREATE TABLE IF NOT EXISTS live_occurrence(
  event TEXT NOT NULL, opens INTEGER NOT NULL, origin TEXT NOT NULL, remote TEXT NOT NULL,
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
-""" + event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA + event_speakers.SCHEMA
+""" + event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA + event_speakers.SCHEMA + event_captions.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -189,6 +190,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def stop():
         programs.close()
         studio.close()
+        captions.close()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
@@ -315,6 +317,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(404)
         return slot
 
+    def caption_access(con, uid, opens):
+        delivery = occurrence(con, uid, opens)
+        if not delivery or delivery["delivery"] != "ready":
+            return False
+        row = con.execute("SELECT settings FROM live_event WHERE id=?", (uid,)).fetchone()
+        slot = find_open(json.loads(row["settings"]), opens) if row else None
+        return bool(slot and datetime.fromisoformat(slot["end"]) > datetime.now(timezone.utc))
+
     def audience_chat(con, slug, opens):
         row, event = read(con, slug, True)
         slot = selected_open(event, opens)
@@ -334,6 +344,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access)
+    event_captions.register(app, tx, staff, operator_chat, audience_chat)
+    captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
 
     def provision_event(uid, opens, browser=False, automatic=False):
         try:
@@ -539,7 +551,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                 (uid, opens))
                 studio.withdraw(uid, opens)
                 with event_peer.connected_host(target["origin"]) as host:
-                    host.set_public(target["remote"], False)
+                    video = host.call("GET", "/api/v1/videos/" + target["remote"]).json()
+                    if video["privacy"]["id"] != 3:
+                        host.set_public(target["remote"], False)
                 with tx() as con:
                     con.execute("UPDATE live_occurrence SET delivery='withdrawn' WHERE event=? AND opens=?",
                                 (uid, opens))
@@ -577,8 +591,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             delivery = occurrence(con, row["id"], shown["id"]) if shown else None
             withdrawn = delivery and delivery["delivery"] in ("withdrawing", "withdrawn")
             form = library_registration.active(con, "event", row["id"]) if shown and not withdrawn else None
+            captioned = bool(shown and not withdrawn and (not delivery or delivery["delivery"] != "replay") and
+                             event_captions.active_track(con, row["id"], shown["id"]))
+            scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             if form:
-                scope = [row["id"], row["revision"], shown["id"], form["revision"], embed]
                 if request.method == "POST":
                     if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
                         abort(403, "Open the registration form again.")
@@ -592,6 +608,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     enrollment = forms.dumps(scope)
         address = None
         protected = bool(form)
+        native_video = protected or captioned
         can_participate = shown and not withdrawn and (not protected or grant)
         status = "Scheduled"
         if withdrawn:
@@ -600,21 +617,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
             try:
-                if protected:
+                if native_video:
                     raw = media.metadata(delivery["origin"], delivery["remote"])
                     observed = event_peer.status(raw)
-                    available = (not observed["public"] and (observed["state"] == "live" or
+                    available = (observed["public"] != protected and (observed["state"] == "live" or
                                  (observed["state"] == "replay" and delivery["delivery"] == "replay")))
                     if available:
                         playlist = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"])
+                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"], protected)
                         gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
                         session = files.dumps(scope + [delivery["remote"], gateway])
                         address = url_for("event_media_file", token=session, filename=filename)
                         status = "Live" if observed["state"] == "live" else "Replay"
                 else:
                     observed = event_peer.public_status(delivery["origin"], delivery["remote"])
-                if not protected and observed["public"] and observed["state"] in ("live", "replay"):
+                if not native_video and observed["public"] and observed["state"] in ("live", "replay"):
                     address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
                     status = "Live" if observed["state"] == "live" else "Replay"
                 elif observed["state"] == "waiting_for_encoder":
@@ -625,10 +642,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     status = "The replay is awaiting release"
             except (ValueError, requests.RequestException, KeyError, StopIteration):
                 status = "The stream is unavailable"
-        view = (dict(status=status, address=address, protected=protected)
+        caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"]) if can_participate else None
+        view = (dict(status=status, address=address, protected=protected, native_video=native_video,
+                     captions=caption_endpoint if captioned else None)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
+                                     native_video=native_video, caption_endpoint=caption_endpoint if captioned else None,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
@@ -662,7 +682,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             form = library_registration.active(con, "event", uid)
             if (row["revision"] != revision or publication(con, row, event) != "eligible" or
                     not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
-                    not form or form["revision"] != form_revision):
+                    (form["revision"] if form else None) != form_revision):
                 abort(404)
         try:
             return media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))

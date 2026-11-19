@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="live-event-page">
-  <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}">
+  <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
+        data-embed="{{ 'yes' if embed else 'no' }}">
     <header>
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
@@ -18,7 +19,7 @@
       {% include 'viewer_registration.html' %}
     {% endif %}
     <div id="eventPlayer" data-address="{{ address or '' }}">
-      {% if address and protected %}
+      {% if address and native_video %}
         <video controls playsinline aria-label="Event video"></video>
       {% elif address %}
         <iframe title="Event video" src="{{ address }}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
@@ -26,6 +27,11 @@
         <button type="button" id="refreshEvent">Check stream status</button>
       {% endif %}
     </div>
+    <section id="eventCaptions" data-endpoint="{{ caption_endpoint or '' }}" aria-label="Live captions" hidden>
+      <button type="button" id="toggleLiveCaptions" aria-pressed="false" disabled>Show live captions</button>
+      <details><summary>Live transcript</summary><ol aria-label="Caption lines"></ol></details>
+      <p role="status"></p>
+    </section>
     {% if chat_endpoint %}
       <section id="audienceChat" data-endpoint="{{ chat_endpoint }}" data-embed="{{ 'yes' if embed else 'no' }}"
                aria-labelledby="chatHeading" hidden>
@@ -61,7 +67,7 @@
       </section>
     {% endif %}
   </main>
-  {% if protected and viewer_grant %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
+  {% if not registration %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
   <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
   {% if chat_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_chat.js') }}"></script>{% endif %}
   {% if engagement_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_engagement.js') }}"></script>{% endif %}

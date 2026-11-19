@@ -68,6 +68,8 @@ def build():
         str(ROOT / "templates") + ":templates",
         "--add-data",
         str(ROOT / "static") + ":static",
+        "--add-data",
+        str(ROOT / "live_caption_worker.py") + ":.",
         "--add-binary",
         str(scratch / ("ffmpeg.exe" if WINDOWS else "ffmpeg")) + ":media-tools",
         ROOT / "desktop_service.py",

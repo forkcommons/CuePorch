@@ -1,3 +1,4 @@
+import { setupLiveCaptions } from "./live_caption_player.js";
 const lobby = document.querySelector("#eventLobby");
 const eventStatus = document.querySelector("#eventStatus");
 const player = document.querySelector("#eventPlayer");
@@ -5,8 +6,10 @@ let checking = false;
 let hls;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
-function renderVideo(address, video) {
+const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
+function renderVideo(address, phase, video) {
     player.dataset.address = address;
+    player.dataset.phase = phase;
     hls?.destroy();
     hls = undefined;
     if (!video) {
@@ -16,23 +19,29 @@ function renderVideo(address, video) {
         video.setAttribute("aria-label", "Event video");
         player.replaceChildren(video);
     }
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = address;
-    }
-    else if (Hls?.isSupported()) {
-        const session = new Hls({ enableWorker: true });
-        session.attachMedia(video);
+    if (Hls?.isSupported()) {
+        const session = new Hls({ enableWorker: true, liveDurationInfinity: true });
         session.loadSource(address);
+        session.attachMedia(video);
         hls = session;
+        captions.bind(video, () => session.playingDate?.getTime() ?? null);
+    }
+    else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = address;
+        const native = video;
+        captions.bind(video, () => (native.getStartDate?.().getTime() ?? Number.NaN) + native.currentTime * 1000);
     }
     else {
         eventStatus.textContent = "This browser cannot play the stream";
     }
 }
 function closePlayer() {
+    captions.bind();
+    captions.select("");
     hls?.destroy();
     hls = undefined;
     player.dataset.address = "";
+    player.dataset.phase = "";
     player.replaceChildren();
 }
 async function checkStatus() {
@@ -52,15 +61,15 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, protected: restricted } = await response.json();
+        const { status: next, address: src, native_video: native, captions: captionPath } = await response.json();
         const current = player.querySelector("iframe");
         if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
             closePlayer();
             stopChecking();
         }
-        else if (src && restricted) {
-            if (!player.querySelector("video") || eventStatus.textContent !== next)
-                renderVideo(src);
+        else if (src && native) {
+            if (!player.querySelector("video") || player.dataset.phase !== next)
+                renderVideo(src, next);
         }
         else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
             const frame = document.createElement("iframe");
@@ -68,6 +77,7 @@ async function checkStatus() {
             frame.src = src;
             frame.allow = "autoplay; fullscreen; picture-in-picture";
             frame.allowFullscreen = true;
+            captions.bind();
             player.replaceChildren(frame);
             if (next === "Replay")
                 stopChecking();
@@ -76,6 +86,7 @@ async function checkStatus() {
             // A live player can coast through a delayed host poll without restarting.
             return;
         }
+        captions.select(captionPath || "");
         if (eventStatus.textContent !== next)
             eventStatus.textContent = next;
     }
@@ -101,5 +112,4 @@ if (!viewer && document.querySelector('[name="enrollment"]'))
     stopChecking();
 const initial = player.querySelector("video");
 if (initial && player.dataset.address)
-    renderVideo(player.dataset.address, initial);
-export {};
+    renderVideo(player.dataset.address, eventStatus.textContent || "", initial);

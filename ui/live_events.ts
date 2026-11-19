@@ -23,6 +23,7 @@ interface EventHealth extends RelayHealth {
   state: string; viewers?: number;
   delivery_settings?: {latency: string | null; dvr_seconds: number | null};
 }
+interface ProductionCaptions {enabled: boolean; language: string; status: string; cue_count: number;}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
 interface ProgramSource {work: string; cut: string;}
 interface ProgramChoice extends ProgramSource {title: string;}
@@ -44,6 +45,11 @@ const preset = element<HTMLSelectElement>("eventPreset");
 const output = element("eventProduction");
 const health = element("eventHealth");
 const measurements = element("eventHealthDetails");
+const captionSettings = element<HTMLDetailsElement>("eventCaptionSettings");
+const captionForm = element<HTMLFormElement>("productionCaptions");
+const captionEnabled = captionForm.elements.namedItem("enabled") as HTMLInputElement;
+const captionLanguage = captionForm.elements.namedItem("language") as HTMLSelectElement;
+const captionStatus = element("productionCaptionStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -149,6 +155,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   input("srtPassphrase").value = "";
   health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
   measurements.textContent = "";
+  captionSettings.open = false;
+  captionStatus.textContent = "";
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -420,6 +428,24 @@ button("readEventHealth").onclick = () => void action(async () => {
   health.textContent = lines.join(" · ");
   measurements.textContent = relaySummary(result, result.state === "live" ? "Encoder measurements unavailable from this host." : "");
 });
+async function updateCaptionSettings(update = false) {
+  const value = {enabled: captionEnabled.checked, language: captionLanguage.value};
+  const result = await request<ProductionCaptions>(mediaPath("captions"), update ? "PUT" : "GET", update ? value : undefined);
+  captionEnabled.checked = result.enabled;
+  captionLanguage.value = result.language;
+  const detail = {
+    waiting_for_stream: "Waiting for the event stream",
+    engine_unavailable: "Connect a local TextFlowKit streaming runtime",
+    listening: "Transcribing the program",
+    media_or_engine_unavailable: "Waiting for usable live audio and a local transcription runtime",
+    stopped: "Captioning stopped",
+  } as Record<string, string>;
+  captionStatus.textContent = result.enabled ? `${detail[result.status] || result.status} · ${result.cue_count} lines generated`
+    : "Automatic captions are off.";
+}
+captionSettings.ontoggle = () => { if (captionSettings.open) void action(() => updateCaptionSettings()); };
+captionForm.onsubmit = event => { event.preventDefault(); void action(() => updateCaptionSettings(true)); };
+button("refreshLiveCaptions").onclick = () => void action(() => updateCaptionSettings());
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;
   key.value = "";

@@ -1,9 +1,12 @@
+import {setupLiveCaptions} from "./live_caption_player.js";
+
 const lobby = document.querySelector<HTMLElement>("#eventLobby")!;
 const eventStatus = document.querySelector<HTMLElement>("#eventStatus")!;
 const player = document.querySelector<HTMLElement>("#eventPlayer")!;
 let checking = false;
 let hls: {destroy(): void} | undefined;
 interface HlsClient {
+  readonly playingDate: Date | null;
   loadSource(url: string): void;
   attachMedia(video: HTMLVideoElement): void;
   destroy(): void;
@@ -11,9 +14,11 @@ interface HlsClient {
 type HlsFactory = {new (config: object): HlsClient; isSupported(): boolean};
 const Hls = (window as Window & {Hls?: HlsFactory}).Hls;
 const viewer = lobby.dataset.viewerGrant || "";
+const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
 
-function renderVideo(address: string, video?: HTMLVideoElement) {
+function renderVideo(address: string, phase: string, video?: HTMLVideoElement) {
   player.dataset.address = address;
+  player.dataset.phase = phase;
   hls?.destroy();
   hls = undefined;
   if (!video) {
@@ -23,22 +28,28 @@ function renderVideo(address: string, video?: HTMLVideoElement) {
     video.setAttribute("aria-label", "Event video");
     player.replaceChildren(video);
   }
-  if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    video.src = address;
-  } else if (Hls?.isSupported()) {
-    const session = new Hls({enableWorker: true});
-    session.attachMedia(video);
+  if (Hls?.isSupported()) {
+    const session = new Hls({enableWorker: true, liveDurationInfinity: true});
     session.loadSource(address);
+    session.attachMedia(video);
     hls = session;
+    captions.bind(video, () => session.playingDate?.getTime() ?? null);
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = address;
+    const native = video as HTMLVideoElement & {getStartDate?(): Date};
+    captions.bind(video, () => (native.getStartDate?.().getTime() ?? Number.NaN) + native.currentTime * 1000);
   } else {
     eventStatus.textContent = "This browser cannot play the stream";
   }
 }
 
 function closePlayer() {
+  captions.bind();
+  captions.select("");
   hls?.destroy();
   hls = undefined;
   player.dataset.address = "";
+  player.dataset.phase = "";
   player.replaceChildren();
 }
 
@@ -56,27 +67,29 @@ async function checkStatus() {
       return;
     }
     if (!response.ok) return;
-    const {status: next, address: src, protected: restricted}: {
-      status: string; address: string | null; protected: boolean;
+    const {status: next, address: src, native_video: native, captions: captionPath}: {
+      status: string; address: string | null; native_video: boolean; captions: string | null;
     } = await response.json();
     const current = player.querySelector("iframe");
     if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
       closePlayer();
       stopChecking();
-    } else if (src && restricted) {
-      if (!player.querySelector("video") || eventStatus.textContent !== next) renderVideo(src);
+    } else if (src && native) {
+      if (!player.querySelector("video") || player.dataset.phase !== next) renderVideo(src, next);
     } else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
       const frame = document.createElement("iframe");
       frame.title = "Event video";
       frame.src = src;
       frame.allow = "autoplay; fullscreen; picture-in-picture";
       frame.allowFullscreen = true;
+      captions.bind();
       player.replaceChildren(frame);
       if (next === "Replay") stopChecking();
     } else if (current && !src && next === "The stream is unavailable") {
       // A live player can coast through a delayed host poll without restarting.
       return;
     }
+    captions.select(captionPath || "");
     if (eventStatus.textContent !== next) eventStatus.textContent = next;
   } catch {
     // Keep the last confirmed state while the connection is unavailable.
@@ -96,4 +109,4 @@ lobby.addEventListener("click", (event) => {
 if (["Replay", "This occurrence was withdrawn"].includes(eventStatus.textContent || "")) stopChecking();
 if (!viewer && document.querySelector('[name="enrollment"]')) stopChecking();
 const initial = player.querySelector("video");
-if (initial && player.dataset.address) renderVideo(player.dataset.address, initial);
+if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "", initial);

@@ -2,6 +2,8 @@
 
 from contextlib import contextmanager
 import os
+from threading import Lock
+from time import monotonic
 import uuid
 
 import requests
@@ -10,6 +12,8 @@ from peertube_destination import PeerTube
 
 
 LATENCY = {"standard": 1, "fail-safe": 2, "low": 3}
+_login_lock = Lock()
+_login = None
 
 
 class UnsupportedDvrWindow(ValueError):
@@ -20,14 +24,44 @@ def host_available():
     return all(os.environ.get(name) for name in ("CUEPORCH_PEERTUBE_ORIGIN", "PEERTUBE_USERNAME", "PEERTUBE_PASSWORD"))
 
 
+def _host_access(expected=None):
+    global _login
+    credentials = (os.environ.get("CUEPORCH_PEERTUBE_ORIGIN", "").rstrip("/"),
+                   os.environ.get("PEERTUBE_USERNAME"), os.environ.get("PEERTUBE_PASSWORD"))
+    if not all(credentials) or (expected and expected != credentials[0]):
+        raise ValueError("Connect the PeerTube host for this occurrence.")
+    with _login_lock:
+        if _login is None or _login[0] != credentials or monotonic() >= _login[1][1]:
+            peer = PeerTube(*credentials)
+            try:
+                access = peer.session.headers["Authorization"], peer.expires_at, peer.user
+                _login = credentials, access
+            finally:
+                peer.session.close()
+        return _login
+
+
+def expire_authorization(authorization):
+    global _login
+    with _login_lock:
+        if _login is not None and _login[1][0] == authorization:
+            _login = None
+
+
+def authorization(expected):
+    return _host_access(expected)[1][0]
+
+
 @contextmanager
 def connected_host(expected=None):
-    origin = os.environ.get("CUEPORCH_PEERTUBE_ORIGIN", "").rstrip("/")
-    if not host_available() or (expected and expected != origin):
-        raise ValueError("Connect the PeerTube host for this occurrence.")
-    host = PeerTube(origin, os.environ["PEERTUBE_USERNAME"], os.environ["PEERTUBE_PASSWORD"])
+    credentials, access = _host_access(expected)
+    host = PeerTube(*credentials, access=access)
     try:
         yield host
+    except requests.HTTPError as error:
+        if error.response is not None and error.response.status_code == 401:
+            expire_authorization(access[0])
+        raise
     finally:
         host.session.close()
 
