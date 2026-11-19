@@ -110,12 +110,23 @@ def check_review_push(browser, base, auth, work, fixture):
         f"{base}/api/library/work/{work}/review-links",
         headers=auth,
         timeout=10,
-        json={"name": "Offline push rehearsal", "password": "", "allow_comment": True},
+        json={
+            "name": "Offline push rehearsal",
+            "password": "fixture-device-passphrase",
+            "allow_comment": True,
+        },
     )
     link_result.raise_for_status()
     link = base + link_result.json()["path"]
     recipient = browser.new_context(permissions=["notifications"])
     sender = browser.new_context()
+
+    def unlock(page, url):
+        page.goto(url)
+        page.get_by_label("Review password").fill("fixture-device-passphrase")
+        page.get_by_role("button", name="Open review").click()
+        expect(page.locator("#reviewFeedback")).to_be_visible()
+
     try:
         recipient.add_init_script(f"""(() => {{
           const subscription = {json.dumps(fixture["subscription"])};
@@ -126,7 +137,7 @@ def check_review_push(browser, base, auth, work, fixture):
           }};
         }})();""")
         page = recipient.new_page()
-        page.goto(link)
+        unlock(page, link)
         endpoint = base + page.locator("#reviewFeedback").get_attribute("data-feedback")
         page.get_by_text("Notifications", exact=True).click()
         mode = page.get_by_label("Comment notifications")
@@ -148,7 +159,7 @@ def check_review_push(browser, base, auth, work, fixture):
         page.close()
 
         poster = sender.new_page()
-        poster.goto(link)
+        unlock(poster, link)
         posted = sender.request.post(
             endpoint, data={"author": "Curator", "body": "Offline push.", "seconds": 0}
         )
@@ -190,8 +201,10 @@ def check_review_push(browser, base, auth, work, fixture):
             worker["title"] == "New CuePorch review feedback"
             and worker["path"] == payload["path"]
         )
+        recipient.clear_cookies(name="cueporch_review")
         again = recipient.new_page()
-        again.goto(base + payload["path"])
+        unlock(again, base + payload["path"])
+        expect(again).to_have_url(base + payload["path"])
         expect(again.locator("#comment-" + comment)).to_be_focused()
         again.get_by_text("Notifications (1)", exact=True).click()
         again.get_by_role(
@@ -214,6 +227,7 @@ def check_review_push(browser, base, auth, work, fixture):
             "signed_encrypted_https_push": True,
             "closed_recipient_tab": True,
             "notification_click_focus": True,
+            "protected_comment_link_survives_unlock": True,
         }
     finally:
         sender.close()

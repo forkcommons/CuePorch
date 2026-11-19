@@ -104,9 +104,14 @@ if (quality) {
     player.src = quality.value;
   };
 }
-const recommendations = document.querySelector<HTMLElement>("#reviewRecommendations");
-player.addEventListener("ended", () => { if (recommendations) recommendations.hidden = false; });
-player.addEventListener("play", () => { if (recommendations) recommendations.hidden = true; });
+const endCard = document.querySelector<HTMLElement>("#reviewEndCard")!;
+const replay = document.querySelector<HTMLButtonElement>("#reviewReplay")!;
+player.addEventListener("ended", () => { endCard.hidden = false; });
+player.addEventListener("play", () => { endCard.hidden = true; });
+replay.onclick = () => {
+  player.currentTime = 0;
+  player.play().catch(() => {});
+};
 const comments = document.querySelector<HTMLOListElement>("#reviewComments")!;
 const editor = document.querySelector<HTMLFormElement>("#writeFeedback")!;
 const author = editor.elements.namedItem("author") as HTMLInputElement;

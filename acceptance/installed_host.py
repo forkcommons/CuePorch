@@ -17,7 +17,10 @@ p.add_argument("launcher", type=Path)
 p.add_argument("origin")
 p.add_argument("report", type=Path)
 p.add_argument("--station-package", type=Path, help="Use an actual CivicCast cable package for review defaults acceptance")
+p.add_argument("--station-only", action="store_true", help="Exercise station review intake on the installed application")
 a = p.parse_args()
+if a.station_only and not a.station_package:
+    p.error("--station-only requires --station-package")
 
 
 def check_station_review(base, keys, package):
@@ -101,44 +104,43 @@ with tempfile.TemporaryDirectory() as tmp:
                 pg.get_by_label("Video host address").fill(a.origin)
                 pg.get_by_label("Publishing account").fill(user)
                 pg.get_by_label("Password", exact=True).fill(password)
-                pg.get_by_role("button", name="Save setup").click()
+                with pg.expect_response(
+                    lambda response: response.url == base + "/desktop/api/setup" and response.request.method == "POST",
+                    timeout=45000,
+                ) as setup:
+                    pg.get_by_role("button", name="Save setup").click()
+                assert setup.value.ok, f"Installed host setup returned HTTP {setup.value.status}"
                 pg.get_by_role("link", name="Open operator console").wait_for(
                     timeout=45000
                 )
                 browser.close()
             keys = json.loads((home / "operator.json").read_text())
-            transfer, first = walkthrough(base, keys, started)
-            trash_result = check_hosted(base, a.origin, keys)
-            card_result = check_hosted_cards(base, a.origin, keys)
-            versions_result = check_hosted_versions(
-                base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
-            )
-            station_result = check_station_review(base, keys, a.station_package) if a.station_package else None
+            evidence = {"real_peertube": True}
+            if not a.station_only:
+                transfer, first = walkthrough(base, keys, started)
+                evidence.update(
+                    source="three-item HTTP simulator",
+                    inventory=3,
+                    private_deliveries=2,
+                    public_eligible=1,
+                    first_embed_seconds=round(first, 2),
+                    transfer_seconds=round(transfer, 2),
+                    repeat_preserved_job_and_video_ids=True,
+                    recently_deleted=check_hosted(base, a.origin, keys),
+                    card_actions=check_hosted_cards(base, a.origin, keys),
+                    video_versions=check_hosted_versions(
+                        base, a.origin, keys, generate_replacement(root / "replacement.mp4"),
+                    ),
+                )
+            if a.station_package:
+                evidence["station_review"] = check_station_review(base, keys, a.station_package)
             response = requests.post(
                 base + "/desktop/api/quit",
                 headers={"Authorization": "Bearer " + url.split("#")[1]},
             )
             response.raise_for_status()
             proc.wait(timeout=20)
-            a.report.write_text(
-                json.dumps(
-                    dict(
-                        real_peertube=True,
-                        source="three-item HTTP simulator",
-                        inventory=3,
-                        private_deliveries=2,
-                        public_eligible=1,
-                        first_embed_seconds=round(first, 2),
-                        transfer_seconds=round(transfer, 2),
-                        repeat_preserved_job_and_video_ids=True,
-                        recently_deleted=trash_result,
-                        card_actions=card_result,
-                        video_versions=versions_result,
-                        station_review=station_result,
-                    ),
-                    indent=2,
-                )
-            )
+            a.report.write_text(json.dumps(evidence, indent=2), encoding="utf8")
         finally:
             if proc.poll() is None:
                 for child in psutil.Process(proc.pid).children(recursive=True):

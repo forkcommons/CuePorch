@@ -64,12 +64,15 @@
       {% endif %}
     </div>
     {% if allow_download %}<a href="{{ url_for('review_media', uid=uid, version=selected, download=1) }}">Download this version</a>{% endif %}
-    {% if recommendations %}
-    <aside id="reviewRecommendations" hidden>
-      <h2>More from this collection</h2>
-      <ul>{% for item in recommendations %}<li><a href="{{ url_for('watch', kind=item.kind, slug=item.slug) }}">{{ item.description or item.slug }}</a></li>{% endfor %}</ul>
+    <aside id="reviewEndCard" aria-label="After playback" hidden>
+      <button type="button" id="reviewReplay">Play again</button>
+      {% if recommendations %}
+      <section id="reviewRecommendations">
+        <h2>More from this collection</h2>
+        <ul>{% for item in recommendations %}<li><a href="{{ url_for('watch', kind=item.kind, slug=item.slug) }}">{{ item.description or item.slug }}</a></li>{% endfor %}</ul>
+      </section>
+      {% endif %}
     </aside>
-    {% endif %}
     <section id="reviewFeedback" data-feedback="{{ url_for('review_feedback', uid=uid, version=selected) }}">
       <h2>Feedback</h2>
       <p id="reviewStatus" role="status"></p>

@@ -161,6 +161,16 @@ def check_review_links(page, base, auth, work, review_update):
         assert player.evaluate("v => v.currentSrc").endswith("rendition=original")
         assert abs(player.evaluate("v => v.currentTime") - 0.75) < 0.1
         expect(visitor.get_by_text("No comments yet.", exact=True)).to_be_visible()
+        replay = visitor.get_by_role("button", name="Play again", exact=True)
+        expect(replay).to_be_hidden()
+        player.evaluate(
+            "async v => { v.currentTime = v.duration - 0.2; await v.play(); }"
+        )
+        expect(replay).to_be_visible()
+        expect(visitor.locator("#reviewRecommendations")).to_have_count(0)
+        replay.click()
+        expect(replay).to_be_hidden()
+        assert player.evaluate("v => !v.paused && v.currentTime < v.duration / 2")
     finally:
         context.close()
 
@@ -301,6 +311,7 @@ def check_review_links(page, base, auth, work, review_update):
         "review_comment_links_safely_rendered": True,
         "review_reactions_persist_across_browser_reload": True,
         "review_mentions_and_notification_preferences": True,
+        "default_review_end_card_replays_without_suggestions": True,
         "new_version_from_operator_review_keeps_same_link_width": new_width,
     }
 
@@ -414,7 +425,14 @@ def check_review_defaults(page, base, auth, work, creator, clip):
             base + "/api/submissions",
             headers={"Authorization": "Bearer " + creator},
             data={"title": "New artwork rehearsal", "terms": "private"},
-            files={"master": (clip.name, source, "video/mp4")},
+            files={
+                "master": (clip.name, source, "video/mp4"),
+                "caption": (
+                    "screening.vtt",
+                    b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nReview caption rehearsal\n",
+                    "text/vtt",
+                ),
+            },
             timeout=25,
         )
     upload.raise_for_status()
@@ -441,6 +459,9 @@ def check_review_defaults(page, base, auth, work, creator, clip):
         recommendation = visitor.get_by_role("link", name="Another public program")
         expect(recommendation).to_be_hidden()
         video = visitor.locator("video")
+        video.evaluate("v => { v.textTracks[0].mode = 'showing'; }")
+        visitor.wait_for_function("document.querySelector('video track').readyState === 2")
+        assert video.evaluate("v => v.textTracks[0].cues[0].text") == "Review caption rehearsal"
         assert (
             video.evaluate(
                 "async v=>{v.muted=true;await v.play();v.currentTime=v.duration-0.15;return v.videoWidth;}"
@@ -453,5 +474,6 @@ def check_review_defaults(page, base, auth, work, creator, clip):
     return {
         "saved_defaults_used_on_private_upload": True,
         "review_dark_mode_and_local_logo_rendered": True,
+        "review_player_decodes_caption_track": True,
         "authorized_suggestion_appears_after_playback": True,
     }

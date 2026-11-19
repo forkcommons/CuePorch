@@ -72,11 +72,14 @@ if (quality) {
         player.src = quality.value;
     };
 }
-const recommendations = document.querySelector("#reviewRecommendations");
-player.addEventListener("ended", () => { if (recommendations)
-    recommendations.hidden = false; });
-player.addEventListener("play", () => { if (recommendations)
-    recommendations.hidden = true; });
+const endCard = document.querySelector("#reviewEndCard");
+const replay = document.querySelector("#reviewReplay");
+player.addEventListener("ended", () => { endCard.hidden = false; });
+player.addEventListener("play", () => { endCard.hidden = true; });
+replay.onclick = () => {
+    player.currentTime = 0;
+    player.play().catch(() => { });
+};
 const comments = document.querySelector("#reviewComments");
 const editor = document.querySelector("#writeFeedback");
 const author = editor.elements.namedItem("author");
