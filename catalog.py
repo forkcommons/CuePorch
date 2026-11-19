@@ -3,11 +3,12 @@
 import json
 import shutil
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from filelock import FileLock
-from cueporch import checksum, dump, import_collection
+from cueporch import checksum, dump, import_collection, work_id
 
 
 def merge_collection(source, destination):
@@ -52,6 +53,43 @@ def merge_collection(source, destination):
         current["works"] = list(works.values())
         dump(destination / "manifest.json", current)
         return works
+
+
+def copy_work(collection, uid, title):
+    """Make a private catalog entry reusing the immutable media objects."""
+    with FileLock(str(collection / ".catalog.lock"), timeout=30):
+        path = collection / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf8"))
+        source = next(item for item in manifest["works"] if item["id"] == uid)
+        identifier = uuid.uuid4().hex
+        identity = work_id(manifest["institution"], "cueporch-copy", identifier)
+        copy = {
+            field: source[field]
+            for field in (
+                "description",
+                "duration_seconds",
+                "files",
+                "disposition",
+                "chapters",
+                "credits",
+            )
+            if field in source
+        }
+        copy.update(
+            id=identity,
+            provider="cueporch-copy",
+            source_id=identifier,
+            source_url="",
+            copied_from=uid,
+            title=title,
+            publication="private",
+            source_privacy="private",
+            source_embed_policy="private",
+            library_added_at=datetime.now(timezone.utc).isoformat(),
+        )
+        manifest["works"].append(copy)
+        dump(path, manifest)
+        return identity
 
 
 def build_intake(

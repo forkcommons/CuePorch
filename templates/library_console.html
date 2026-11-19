@@ -6,7 +6,7 @@
   <title>Library · CuePorch</title>
   <link rel="stylesheet" href="/static/cueporch.css">
 </head>
-<body>
+<body data-public-url="{{ public_url }}">
   <nav aria-label="Operator">
     <a href="/operator">Operator console</a> · <a href="/operator/migration">Move from Vimeo</a>
   </nav>
@@ -78,6 +78,21 @@
       <label>Parent folder <select id="folderParent"></select></label>
       <p id="folderError" role="alert"></p>
       <div><button type="submit" id="saveFolder">Save folder</button><button type="button" id="cancelFolder">Cancel</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="workDialog" class="library-dialog" aria-labelledby="workDialogTitle">
+    <h2 id="workDialogTitle">Video info</h2>
+    <div id="workDialogBody"></div>
+    <p id="workDialogStatus" role="status"></p>
+    <form method="dialog"><button>Close</button></form>
+  </dialog>
+  <dialog id="titleEditor" class="library-dialog" aria-labelledby="titleEditorHeading">
+    <form id="titleForm">
+      <h2 id="titleEditorHeading">Rename work</h2>
+      <label>Title <input id="workTitle" maxlength="128" required></label>
+      <p id="titleError" role="alert"></p>
+      <div><button type="submit" id="saveTitle">Save title</button><button type="button" id="cancelTitle">Cancel</button></div>
     </form>
   </dialog>
 

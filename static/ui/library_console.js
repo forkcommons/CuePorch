@@ -37,8 +37,7 @@ let works = [];
 let folders = [];
 let current = null;
 let editing;
-let showStarred = false;
-let showTrash = false;
+let section = "Library";
 let deletions = [];
 let trashTimer;
 const selected = new Set();
@@ -105,54 +104,20 @@ function renderTree() {
         }
         return list;
     }
-    const starredButton = document.createElement("button");
-    starredButton.textContent = "Starred";
-    if (showStarred)
-        starredButton.setAttribute("aria-current", "true");
-    starredButton.onclick = () => {
-        const leavingTrash = showTrash;
-        showTrash = false;
-        showStarred = true;
-        current = null;
-        selected.clear();
-        renderTree();
-        renderWorks();
-        if (leavingTrash)
-            void load().catch((error) => {
-                result.textContent = String(error);
-            });
-        tree.querySelector('[aria-current="true"]')?.focus();
-    };
     const starredFolders = document.createElement("ul");
-    if (showStarred) {
+    if (section === "Starred") {
         for (const folder of folders.filter((entry) => entry.starred)) {
             const item = document.createElement("li");
             item.append(folderButton(folder.name, folder.id, folder.color));
             starredFolders.append(item);
         }
     }
-    const trashButton = document.createElement("button");
-    trashButton.textContent = "Recently deleted";
-    if (showTrash)
-        trashButton.setAttribute("aria-current", "true");
-    action(trashButton, async () => {
-        showTrash = true;
-        showStarred = false;
-        current = null;
-        selected.clear();
-        renderTree();
-        tree.querySelector('[aria-current="true"]')?.focus();
-        await loadTrash();
-    });
-    tree.replaceChildren(folderButton("Library", null), branch(null), starredButton, starredFolders, trashButton);
-    workBrowse.hidden = showTrash;
-    trashBrowse.hidden = !showTrash;
+    tree.replaceChildren(folderButton("Library", null), branch(null), sectionButton("Starred"), starredFolders, sectionButton("Watch later"), sectionButton("Recently deleted"));
+    workBrowse.hidden = section === "Recently deleted";
+    trashBrowse.hidden = section !== "Recently deleted";
     const folder = folders.find((entry) => entry.id === current);
-    heading.textContent = showTrash
-        ? "Recently deleted"
-        : showStarred
-            ? "Starred"
-            : folder?.name || "Library";
+    heading.textContent =
+        section === "Library" ? folder?.name || "Library" : section;
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
@@ -162,10 +127,31 @@ function renderTree() {
     folderOptions(destination);
     destination.value = current || "";
 }
+async function navigate(next, folder = null) {
+    const leavingTrash = section === "Recently deleted";
+    section = next;
+    current = folder;
+    selected.clear();
+    renderTree();
+    renderWorks();
+    tree.querySelector('[aria-current="true"]')?.focus();
+    if (section === "Recently deleted")
+        await loadTrash();
+    else if (leavingTrash)
+        await load();
+}
+function sectionButton(label) {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (section === label)
+        button.setAttribute("aria-current", "true");
+    action(button, () => navigate(label));
+    return button;
+}
 function folderButton(label, id, color) {
     const button = document.createElement("button");
     button.textContent = label;
-    if (!showTrash && !showStarred && id === current)
+    if (section === "Library" && id === current)
         button.setAttribute("aria-current", "true");
     if (color) {
         const dot = document.createElement("span");
@@ -174,21 +160,7 @@ function folderButton(label, id, color) {
         dot.setAttribute("aria-hidden", "true");
         button.prepend(dot);
     }
-    button.onclick = () => {
-        const leavingTrash = showTrash;
-        showTrash = false;
-        showStarred = false;
-        current = id;
-        selected.clear();
-        renderTree();
-        renderWorks();
-        if (leavingTrash)
-            void load().catch((error) => {
-                result.textContent = String(error);
-            });
-        const buttons = Array.from(tree.querySelectorAll("button"));
-        buttons.find((entry) => entry.hasAttribute("aria-current"))?.focus();
-    };
+    action(button, () => navigate("Library", id));
     return button;
 }
 async function setStar(kind, id, starred) {
@@ -206,7 +178,11 @@ function numericValue(work, order) {
 function renderWorks() {
     const query = search.value.trim().toLocaleLowerCase();
     const author = creator.value.trim().toLocaleLowerCase();
-    const visible = works.filter((work) => (showStarred ? work.starred : work.folder === current) &&
+    const visible = works.filter((work) => (section === "Starred"
+        ? work.starred
+        : section === "Watch later"
+            ? work.watch_later
+            : work.folder === current) &&
         (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
         work.title.toLocaleLowerCase().includes(query) &&
         (!privacy.value || (work.source_privacy || "Unknown") === privacy.value));
@@ -280,6 +256,12 @@ function renderWorks() {
                 .filter(Boolean)
                 .join(" · ") || "Preserved locally";
         const actions = row.insertCell();
+        actions.append(cardMenu(work));
+        if (work.title_sync_error) {
+            const sync = document.createElement("p");
+            sync.textContent = "Syncing title with the original video host.";
+            actions.append(sync);
+        }
         const star = document.createElement("button");
         star.textContent = work.starred ? "Unstar work" : "Star work";
         star.setAttribute("aria-label", (work.starred ? "Unstar " : "Star ") + work.title);
@@ -308,6 +290,235 @@ function renderWorks() {
     }
     updateMove();
 }
+const workDialog = document.querySelector("#workDialog");
+const workDialogTitle = document.querySelector("#workDialogTitle");
+const workDialogBody = document.querySelector("#workDialogBody");
+const workDialogStatus = document.querySelector("#workDialogStatus");
+const titleEditor = document.querySelector("#titleEditor");
+const titleForm = document.querySelector("#titleForm");
+const workTitle = document.querySelector("#workTitle");
+const titleError = document.querySelector("#titleError");
+const saveTitle = document.querySelector("#saveTitle");
+function workEndpoint(work) {
+    return "/api/library/work/" + encodeURIComponent(work.id);
+}
+async function getWorkInfo(work) {
+    return (await completed(await request(workEndpoint(work)))).json();
+}
+function cardMenu(work) {
+    const menu = document.createElement("details");
+    menu.className = "work-menu";
+    const summary = document.createElement("summary");
+    summary.textContent = "Actions";
+    summary.setAttribute("aria-label", "Actions for " + work.title);
+    menu.append(summary);
+    const entries = [
+        ["Share", () => shareDialog(work)],
+        ["Copy link", () => shareDialog(work, "watch")],
+        ["Copy embed code", () => shareDialog(work, "embed")],
+        [
+            work.watch_later ? "Remove from Watch later" : "Watch later",
+            () => saveForLater(work),
+        ],
+        ["Rename", () => editTitle(work, false)],
+        ["Create a copy", () => editTitle(work, true)],
+        ["Video info", () => infoDialog(work, false)],
+        ["Download", () => infoDialog(work, true)],
+    ];
+    for (const [label, run] of entries) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        action(button, async () => {
+            menu.open = false;
+            summary.focus();
+            await run();
+        });
+        menu.append(button);
+    }
+    return menu;
+}
+function openWorkDialog(title) {
+    workDialogTitle.textContent = title;
+    workDialogBody.replaceChildren();
+    workDialogStatus.textContent = "";
+    workDialog.showModal();
+}
+async function copyText(field) {
+    try {
+        await navigator.clipboard.writeText(field.value);
+        workDialogStatus.textContent = "Copied to clipboard.";
+    }
+    catch {
+        field.focus();
+        field.select();
+        workDialogStatus.textContent = "Select and copy the highlighted text.";
+    }
+}
+async function shareDialog(work, copy) {
+    const info = await getWorkInfo(work);
+    openWorkDialog("Share " + info.title);
+    if (!info.watch || !info.embed) {
+        const link = document.createElement("a");
+        link.href = "/operator/exhibitions";
+        link.textContent = "Manage private screening grants";
+        workDialogBody.append("This work has no public link. ", link);
+        return;
+    }
+    const url = document.body.dataset.publicUrl || location.origin;
+    const watch = document.createElement("input");
+    const embed = document.createElement("textarea");
+    watch.value = new URL(info.watch, url).href;
+    const iframe = document.createElement("iframe");
+    iframe.src = new URL(info.embed, url).href;
+    iframe.title = info.title;
+    iframe.width = "640";
+    iframe.height = "360";
+    iframe.allowFullscreen = true;
+    iframe.setAttribute("allow", "autoplay; fullscreen; picture-in-picture");
+    embed.value = iframe.outerHTML;
+    for (const [label, field] of [
+        ["Watch link", watch],
+        ["Embed code", embed],
+    ]) {
+        const labelElement = document.createElement("label");
+        labelElement.textContent = label;
+        field.readOnly = true;
+        field.setAttribute("aria-label", label);
+        labelElement.append(field);
+        const button = document.createElement("button");
+        button.textContent = "Copy " + label.toLowerCase();
+        action(button, () => copyText(field));
+        workDialogBody.append(labelElement, button);
+    }
+    if (copy)
+        await copyText(copy === "watch" ? watch : embed);
+}
+async function mediaTicket(work, sha256) {
+    const response = await completed(await request(workEndpoint(work) + "/ticket", "POST", { sha256 }));
+    const urls = await response.json();
+    return urls;
+}
+async function infoDialog(work, download) {
+    const info = await getWorkInfo(work);
+    openWorkDialog(download ? "Download " + info.title : "Video info");
+    if (!download) {
+        const facts = document.createElement("dl");
+        const fields = {
+            Title: info.title,
+            "Imported title": info.source_title === info.title ? "" : info.source_title,
+            Description: info.description,
+            Creator: info.creator,
+            Source: info.source,
+            "Source privacy": info.source_privacy,
+            Duration: info.duration_seconds === null
+                ? ""
+                : info.duration_seconds + " seconds",
+            Recovery: info.disposition,
+        };
+        for (const [label, value] of Object.entries(fields)) {
+            if (!value)
+                continue;
+            const key = document.createElement("dt");
+            key.textContent = label;
+            const field = document.createElement("dd");
+            field.textContent = value;
+            facts.append(key, field);
+        }
+        workDialogBody.append(facts);
+        if (info.preview) {
+            const hash = info.preview;
+            const preview = document.createElement("button");
+            preview.textContent = "Load video preview";
+            action(preview, async () => {
+                const video = document.createElement("video");
+                video.src = (await mediaTicket(work, hash)).preview;
+                video.controls = true;
+                video.preload = "metadata";
+                preview.replaceWith(video);
+            });
+            workDialogBody.append(preview);
+        }
+    }
+    const list = document.createElement("ul");
+    for (const file of info.files) {
+        const playable = file.role === "original" || file.role === "playback";
+        if (download && !playable)
+            continue;
+        const item = document.createElement("li");
+        item.textContent = [
+            file.role,
+            file.format.toUpperCase(),
+            file.language,
+            file.bytes.toLocaleString() + " bytes",
+        ]
+            .filter(Boolean)
+            .join(" · ");
+        if (playable) {
+            const button = document.createElement("button");
+            button.textContent = "Download " + file.role;
+            action(button, async () => {
+                const link = document.createElement("a");
+                link.href = (await mediaTicket(work, file.sha256)).download;
+                link.download = "";
+                link.referrerPolicy = "no-referrer";
+                link.click();
+            });
+            item.append(" ", button);
+        }
+        list.append(item);
+    }
+    if (list.childElementCount)
+        workDialogBody.append(list);
+    else
+        workDialogBody.append("No video file is available.");
+}
+workDialog.onclose = () => workDialogBody.replaceChildren();
+async function saveForLater(work) {
+    await completed(await request(workEndpoint(work) + "/watch-later", "PUT", {
+        saved: !work.watch_later,
+    }));
+    await load();
+    result.textContent = work.watch_later
+        ? "Removed from Watch later."
+        : "Added to Watch later.";
+}
+function editTitle(work, copy) {
+    document.querySelector("#titleEditorHeading").textContent = copy
+        ? "Create a copy"
+        : "Rename work";
+    workTitle.value = copy ? work.title.slice(0, 121) + " (copy)" : work.title;
+    titleError.textContent = "";
+    saveTitle.textContent = copy ? "Create copy" : "Save title";
+    titleForm.onsubmit = async (event) => {
+        event.preventDefault();
+        saveTitle.disabled = true;
+        try {
+            await completed(await request(workEndpoint(work) + (copy ? "/copy" : "/title"), copy ? "POST" : "PUT", { title: workTitle.value }));
+            titleEditor.close();
+            if (copy) {
+                section = "Library";
+                current = null;
+                search.value = "";
+                creator.value = "";
+                privacy.value = "";
+            }
+            await load();
+            result.textContent = copy
+                ? "Private copy added to Library."
+                : "Title saved.";
+        }
+        catch (error) {
+            (titleEditor.open ? titleError : result).textContent = String(error);
+        }
+        finally {
+            saveTitle.disabled = false;
+        }
+    };
+    titleEditor.showModal();
+    workTitle.select();
+}
+document.querySelector("#cancelTitle").onclick = () => titleEditor.close();
 const trashPath = "/api/library/recently-deleted";
 function renderTrash() {
     const actor = trashActor.value.trim().toLocaleLowerCase();
@@ -347,7 +558,7 @@ async function loadTrash() {
     window.clearTimeout(trashTimer);
     const previous = deletions;
     deletions = await (await completed(await request(trashPath))).json();
-    if (!showTrash)
+    if (section !== "Recently deleted")
         return;
     const currentIds = new Set(deletions.map((item) => item.id));
     if (previous.some((item) => !currentIds.has(item.id)))
@@ -355,7 +566,7 @@ async function loadTrash() {
     renderTrash();
     if (deletions.some((item) => item.state !== "deleted")) {
         trashTimer = window.setTimeout(() => {
-            if (showTrash)
+            if (section === "Recently deleted")
                 void loadTrash().catch((error) => {
                     result.textContent = String(error);
                 });
@@ -394,7 +605,7 @@ async function load(refreshTrash = true) {
     library.hidden = false;
     renderTree();
     renderWorks();
-    if (showTrash && refreshTrash)
+    if (section === "Recently deleted" && refreshTrash)
         await loadTrash();
 }
 function openEditor(folder) {

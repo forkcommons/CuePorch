@@ -9,6 +9,7 @@ from demo_source import build_server
 from browser import chromium
 from installed_library import check_folders
 from installed_trash import check_private
+from installed_cards import check_cards
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -295,8 +296,13 @@ with tempfile.TemporaryDirectory() as tmp:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    card_result, download_url = check_cards(
+                        page, base, auth, home / "institution.sqlite",
+                        next(w for w in works if w["title"] == "Station meeting"),
+                    )
                     trash_result = check_private(
-                        page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed
+                        page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
+                        download_url,
                     )
                     browser.close()
                     results.append(
@@ -309,6 +315,7 @@ with tempfile.TemporaryDirectory() as tmp:
                             playback_width=width,
                             anonymous_denied=True,
                             library=library_result,
+                            card_actions=card_result,
                             recently_deleted=trash_result,
                         )
                     )

@@ -61,6 +61,11 @@ def register(app, tx, staff, read_works):
             abort(400)
         works = {work["id"]: work["title"] for work in read_works()}
         with tx() as con:
+            works.update(
+                (work, title)
+                for work, title in con.execute("SELECT work,title FROM library_title")
+                if work in works
+            )
             if kind == "folder":
                 folder = con.execute(
                     "SELECT name FROM library_folder WHERE id=?", (items[0],)
@@ -135,6 +140,10 @@ def register(app, tx, staff, read_works):
                         409,
                         "Withdraw this separately managed video route before deleting the work.",
                     )
+            con.executemany(
+                "DELETE FROM library_download WHERE work=?",
+                [(item,) for item in selected],
+            )
             deleted_at = time.time()
             for batch_kind, item, title, members in batches:
                 deletion = uuid.uuid4().hex

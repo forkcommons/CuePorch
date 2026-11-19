@@ -52,6 +52,8 @@ def export(collection, database, target):
                 "library_folder",
                 "library_placement",
                 "library_star",
+                "library_title",
+                "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
             ):

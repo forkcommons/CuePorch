@@ -54,3 +54,14 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 
 .work-info { display: block; color: #425d62; }
 .work-info:empty { display: none; }
+
+.work-menu { margin: .15rem; }
+.work-menu summary { cursor: pointer; color: #13596a; }
+.work-menu button { display: block; }
+.library-dialog { border: 1px solid #6e8387; border-radius: .5rem; width: min(38rem, 90vw); }
+.library-dialog::backdrop { background: #152e33a0; }
+.library-dialog h2 { margin-top: 0; }
+.library-dialog label, .library-dialog textarea, .library-dialog input[readonly] { display: block; width: 100%; }
+.library-dialog dd { margin-inline-start: 0; overflow-wrap: anywhere; }
+.library-dialog dt { font-weight: 600; }
+.library-dialog video { margin-block: .5rem; }

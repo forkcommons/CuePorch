@@ -25,7 +25,7 @@ def wait_for(base, auth, predicate):
     raise AssertionError("Recently deleted did not reach the expected state")
 
 
-def check_private(page, base, auth, database, work, grant, existing_embed):
+def check_private(page, base, auth, database, work, grant, existing_embed, download_url):
     folders = requests.get(
         base + "/api/library/folders", headers=auth, timeout=10
     ).json()
@@ -40,12 +40,14 @@ def check_private(page, base, auth, database, work, grant, existing_embed):
         row["folder"] == child
         for row in requests.get(base + "/api/library", headers=auth, timeout=10).json()
     )
+    assert requests.head(download_url, timeout=10).status_code == 200
     page.goto(base + "/operator/library")
     page.get_by_role("button", name="Load library").click()
     tree = page.get_by_role("navigation", name="Folders")
     tree.get_by_role("button", name="Station programs", exact=True).click()
     page.get_by_role("button", name="Delete folder", exact=True).click()
     expect(page.get_by_role("status")).to_contain_text("Recently deleted")
+    assert requests.head(download_url, timeout=10).status_code == 404
     assert not any(
         item["id"] == work
         for item in requests.get(base + "/api/library", headers=auth).json()
@@ -63,6 +65,7 @@ def check_private(page, base, auth, database, work, grant, existing_embed):
     tree.get_by_role("button", name="Recently deleted").click()
     page.get_by_label("Deleted by").fill("different operator")
     expect(page.get_by_text("No recently deleted items match.")).to_be_visible()
+    assert requests.head(download_url, timeout=10).status_code == 404
     page.get_by_label("Deleted by").fill("operator")
     page.get_by_label("Type").select_option("folder")
     restore = page.get_by_role("button", name="Restore Station programs", exact=True)
@@ -99,6 +102,7 @@ def check_private(page, base, auth, database, work, grant, existing_embed):
     return {
         "nested_folder_restored": True,
         "screening_blocked_in_trash": True,
+        "download_ticket_revoked_on_delete": True,
         "expiry_enforced": True,
     }
 

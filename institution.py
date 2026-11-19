@@ -18,6 +18,7 @@ import time
 import tempfile
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, Thread
 from urllib.parse import urlsplit
@@ -34,6 +35,7 @@ from flask import (
 from waitress import serve
 
 from cueporch import verify
+import library_actions
 import library_folders
 import library_trash
 import library_worker
@@ -83,7 +85,11 @@ def create_app(root, database, operator, institution, simulation=None):
     works = {work["id"]: work for work in manifest["works"]}
     db = sqlite3.connect(database)
     db.executescript(
-        SCHEMA + library_worker.SCHEMA + library_folders.SCHEMA + library_trash.SCHEMA
+        SCHEMA
+        + library_worker.SCHEMA
+        + library_folders.SCHEMA
+        + library_trash.SCHEMA
+        + library_actions.SCHEMA
     )
     db.execute("CREATE TABLE IF NOT EXISTS owner(institution TEXT PRIMARY KEY)")
     db.execute("BEGIN IMMEDIATE")
@@ -626,8 +632,9 @@ def create_app(root, database, operator, institution, simulation=None):
                     "SELECT item FROM library_deleted_item WHERE kind='work'"
                 )
             }
+            titles = dict(con.execute("SELECT work,title FROM library_title"))
         return [
-            dict(work=w["id"], version=f["sha256"], title=w["title"])
+            dict(work=w["id"], version=f["sha256"], title=titles.get(w["id"], w["title"]))
             for w in catalog["works"]
             if w["id"] not in deleted
             for f in w["files"]
@@ -763,6 +770,8 @@ def create_app(root, database, operator, institution, simulation=None):
             if not session:
                 abort(403)
             grant = active(con, session[0])
+            if request.path == "/screen/" + token:
+                title = library_actions.title_for(con, works[grant["work"]])
         versions = [
             works[grant["work"]],
             *works[grant["work"]].get("versions_history", []),
@@ -851,7 +860,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 abort(403)
             page = render_template(
                 "screening.html",
-                title=works[grant["work"]]["title"],
+                title=title,
                 src=request.path + "/media",
                 base=request.path,
                 tracks=tracks,
@@ -1059,6 +1068,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_folders.register(app, tx, staff, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
+    library_actions.register(app, tx, staff, read_library_works, root)
 
     @app.get("/api/library")
     def library():
@@ -1082,17 +1092,36 @@ def create_app(root, database, operator, institution, simulation=None):
                     (actor,),
                 )
             }
+            titles = {
+                row["work"]: row for row in con.execute("SELECT * FROM library_title")
+            }
+            queue = {
+                row[0]
+                for row in con.execute(
+                    "SELECT work FROM library_watch_later WHERE actor=?", (actor,)
+                )
+            }
         latest = {r["work"]: dict(r) for r in jobs}
         return [
             dict(
                 id=w["id"],
-                title=w["title"],
+                title=titles[w["id"]]["title"] if w["id"] in titles else w["title"],
                 folder=placement.get(w["id"]),
+                watch_later=w["id"] in queue,
+                title_sync_error=bool(titles[w["id"]]["error"])
+                if w["id"] in titles
+                else False,
                 source_privacy=w.get("source_privacy"),
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),
                 added_at=w.get("library_added_at"),
-                modified_at=w.get("source_modified_time"),
+                modified_at=(
+                    datetime.fromtimestamp(
+                        titles[w["id"]]["changed"], timezone.utc
+                    ).isoformat()
+                    if w["id"] in titles
+                    else w.get("source_modified_time")
+                ),
                 version_count=1 + len(w.get("versions_history", [])),
                 starred=w["id"] in starred,
                 source=w["source_url"],
@@ -1157,7 +1186,9 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator/library")
     def library_console():
-        return render_template("library_console.html")
+        return render_template(
+            "library_console.html", public_url=os.environ.get("CUEPORCH_PUBLIC_URL", "")
+        )
 
     @app.get("/api/delivery")
     def delivery_jobs():

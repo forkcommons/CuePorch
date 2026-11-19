@@ -9,6 +9,7 @@ import time
 from filelock import FileLock, Timeout
 from peertube_destination import PeerTube
 import library_trash
+from library_actions import sync_titles, title_for
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS publication_job(
@@ -66,6 +67,7 @@ def start(app, root, db, tx, action, apply_routes):
                         library_trash.process(tx, receipts, origin, root)
                         if origin:
                             process(origin)
+                            sync_titles(tx, receipts, origin)
                 except Timeout:
                     pass
                 except Exception:
@@ -118,6 +120,7 @@ def start(app, root, db, tx, action, apply_routes):
                         == "superseded"
                     ):
                         continue
+                    label = title_for(con, work)
                     status = "processing"
                     for step in steps:
                         result = action(
@@ -145,7 +148,7 @@ def start(app, root, db, tx, action, apply_routes):
                 )
                 video = peer.publish(
                     root,
-                    work,
+                    dict(work, title=label),
                     receipts / (work["id"] + ".json"),
                     bool(job["want_public"]),
                 )
@@ -156,7 +159,7 @@ def start(app, root, db, tx, action, apply_routes):
                             """INSERT INTO route VALUES(?,?,?,?,0,?)
                             ON CONFLICT(kind,slug) DO UPDATE SET destination=excluded.destination,
                             description=excluded.description,current_action=excluded.current_action""",
-                            (job["kind"], work["id"], dest, work["title"], uid),
+                            (job["kind"], work["id"], dest, title_for(con, work), uid),
                         )
                     else:
                         con.execute(
