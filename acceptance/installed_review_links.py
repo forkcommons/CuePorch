@@ -8,7 +8,7 @@ from installed_cards import select_action
 from playwright.sync_api import expect
 
 
-def check_review_links(page, base, auth, work):
+def check_review_links(page, base, auth, work, review_update):
     work_id = work["work"]
     title = work["title"]
     endpoint = base + "/api/library/work/" + work_id + "/review-links"
@@ -86,6 +86,8 @@ def check_review_links(page, base, auth, work):
         expect(
             visitor.get_by_text("You are previewing the recipient’s review page.")
         ).to_have_count(0)
+        expect(visitor.get_by_role("button", name="Upload new version")).to_have_count(0)
+        assert visitor.request.post(link + "/versions").status == 403
         visitor.get_by_label("Playback speed").select_option("1.5")
         visitor.get_by_label("Loop", exact=True).check()
         assert player.evaluate("v => [v.playbackRate, v.loop]") == [1.5, True]
@@ -105,9 +107,28 @@ def check_review_links(page, base, auth, work):
             visitor.get_by_text("Keep this frame in the sequence.", exact=True)
         ).to_be_visible()
         visitor.get_by_role("button", name="Reply", exact=True).click()
-        visitor.get_by_label("Comment", exact=True).fill("=1+1")
+        visitor.get_by_label("Comment", exact=True).fill(
+            "=1+1. See https://example.invalid/reel. <script>text</script>"
+        )
         visitor.get_by_role("button", name="Post reply", exact=True).click()
-        expect(visitor.get_by_text("=1+1", exact=True)).to_be_visible()
+        reference = visitor.get_by_role("link", name="https://example.invalid/reel", exact=True)
+        expect(reference).to_have_attribute("rel", "noopener noreferrer")
+        expect(reference.locator("..")).to_contain_text("<script>text</script>")
+        expect(visitor.locator("#reviewComments script")).to_have_count(0)
+        comment = visitor.locator("#reviewComments > li").filter(has_text="Keep this frame")
+        reaction = comment.get_by_role("button", name="Like", exact=True).first
+        reaction.click()
+        expect(reaction).to_have_attribute("aria-pressed", "true")
+        expect(reaction).to_contain_text("1")
+        visitor.reload()
+        expect(reaction).to_have_attribute("aria-pressed", "true")
+        assert unlocked.get(feedback, timeout=10).json()["comments"][0]["reactions"] == [
+            {"emoji": "👍", "count": 1, "selected": False}
+        ]
+        reaction.click()
+        expect(reaction).to_have_attribute("aria-pressed", "false")
+        reaction.click()
+        expect(reaction).to_have_attribute("aria-pressed", "true")
         visitor.get_by_label("Search comments").fill("absent phrase")
         expect(visitor.get_by_text("No matching comments.", exact=True)).to_be_visible()
         visitor.get_by_label("Search comments").clear()
@@ -162,6 +183,43 @@ def check_review_links(page, base, auth, work):
         for item in unlocked.get(feedback, timeout=10).json()["comments"]
     )
     dialog.get_by_role("button", name="Back to review links", exact=True).click()
+    with page.context.expect_page() as preview:
+        row.get_by_role("button", name="Preview as reviewer", exact=True).click()
+    operator_view = preview.value
+    try:
+        expect(operator_view.get_by_label("New review version")).to_be_visible()
+        assert operator_view.request.post(link + "/versions").status == 403
+        operator_view.get_by_label("New review version").set_input_files(review_update)
+        with operator_view.expect_response(
+            lambda response: response.url == link + "/versions" and response.request.method == "POST",
+            timeout=40000,
+        ) as uploaded:
+            operator_view.get_by_role("button", name="Upload new version", exact=True).click()
+        response = uploaded.value
+        assert response.ok, f"Review replacement returned HTTP {response.status}"
+        selected_cut = operator_view.locator('#uploadReviewVersion input[name="current"]')
+        expect(selected_cut).not_to_have_value(recent[0]["key"])
+        current = selected_cut.input_value()
+    finally:
+        operator_view.close()
+    retained = requests.get(
+        base + "/api/library/work/" + work_id + "/versions", headers=auth, timeout=10
+    ).json()
+    assert [version["key"] for version in retained[:2]] == [current, recent[0]["key"]]
+    assert unlocked.get(feedback, timeout=10).json()["comments"][0]["reactions"][0]["count"] == 1
+    again = page.context.browser.new_context()
+    try:
+        recipient = again.new_page()
+        recipient.goto(link)
+        recipient.get_by_label("Review password").fill("fixture-screening-password")
+        recipient.get_by_role("button", name="Open review").click()
+        new_width = recipient.locator("video").evaluate(
+            "async v=>{v.muted=true;await v.play();return v.videoWidth}"
+        )
+        assert new_width == 192
+        expect(recipient.get_by_text("No comments yet.", exact=True)).to_be_visible()
+    finally:
+        again.close()
     row.get_by_role("button", name="Disable", exact=True).click()
     expect(row.get_by_role("button", name="Enable", exact=True)).to_be_visible()
     assert unlocked.get(media, timeout=10).status_code == 404
@@ -193,10 +251,10 @@ def check_review_links(page, base, auth, work):
         timeout=10,
     )
     response.raise_for_status()
-    assert requests.get(media + "?download=1", timeout=10).status_code == 403
+    assert requests.get(link + "/media/" + current + "?download=1", timeout=10).status_code == 403
     assert (
         requests.post(
-            feedback,
+            link + "/feedback/" + current,
             json={"author": "Visitor", "body": "Disabled", "seconds": 0},
             timeout=10,
         ).status_code
@@ -218,6 +276,9 @@ def check_review_links(page, base, auth, work):
         "version_specific_feedback": True,
         "staff_csv_and_resolution": True,
         "operator_recipient_preview_and_player_controls": True,
+        "review_comment_links_safely_rendered": True,
+        "review_reactions_persist_across_browser_reload": True,
+        "new_version_from_operator_review_keeps_same_link_width": new_width,
     }
 
 

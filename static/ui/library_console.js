@@ -1,3 +1,4 @@
+import { renderCommentText } from "./review_comment_text.js";
 const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
 const deleteWorks = document.querySelector("#deleteWorks");
@@ -638,7 +639,7 @@ async function manageReviewFeedback(work, link, back) {
             const author = document.createElement("strong");
             author.textContent = comment.author;
             const text = document.createElement("p");
-            text.textContent = comment.body;
+            renderCommentText(text, comment.body);
             row.append(author, " · " + comment.seconds.toFixed(2) + " seconds", text);
             if (!comment.parent) {
                 const control = document.createElement("button");
@@ -1116,4 +1117,3 @@ action(document.querySelector("#exportMap"), async () => {
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 });
-export {};

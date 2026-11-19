@@ -47,8 +47,8 @@ def register(app, tx, staff, read_works, root, remember_work):
         return work
 
     library_thumbnail.register(app, tx, staff, get_work, root)
-    library_versions.register(app, tx, staff, get_work, root, remember_work)
-    review_links.register(app, tx, staff, get_work, title_for, root)
+    replace_video = library_versions.register(app, tx, staff, get_work, root, remember_work)
+    review_links.register(app, tx, staff, get_work, title_for, root, replace_video)
 
     @app.get("/api/library/work/<uid>")
     def work_info(uid):

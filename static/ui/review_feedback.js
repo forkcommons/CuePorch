@@ -1,4 +1,31 @@
+import { renderCommentText } from "./review_comment_text.js";
 const endpoint = document.querySelector("#reviewFeedback").dataset.feedback;
+const upload = document.querySelector("#uploadReviewVersion");
+if (upload) {
+    upload.onsubmit = async (event) => {
+        event.preventDefault();
+        const button = upload.querySelector("button");
+        const message = document.querySelector("#reviewUploadMessage");
+        button.disabled = true;
+        message.textContent = "Preparing new version…";
+        try {
+            const response = await fetch(upload.action, {
+                method: "POST",
+                headers: { "X-CuePorch-Preview": upload.dataset.token },
+                body: new FormData(upload),
+            });
+            if (!response.ok) {
+                const page = new DOMParser().parseFromString(await response.text(), "text/html");
+                throw new Error(page.querySelector("p")?.textContent || "Unable to upload this version.");
+            }
+            window.location.assign(location.pathname);
+        }
+        catch (error) {
+            message.textContent = String(error);
+            button.disabled = false;
+        }
+    };
+}
 const player = document.querySelector("video");
 const loop = document.querySelector("#reviewLoop");
 const speed = document.querySelector("#reviewSpeed");
@@ -89,13 +116,49 @@ function resetPin() {
     action.textContent = "Post comment";
     cancel.hidden = true;
 }
-function renderEntry(entry) {
+const reactionOptions = [
+    ["👍", "Like"], ["❤️", "Love"], ["🎉", "Celebrate"], ["💡", "Good idea"],
+];
+function renderReactions(entry, canReact) {
+    const controls = document.createElement("span");
+    controls.className = "review-reactions";
+    for (const [index, [emoji, label]] of reactionOptions.entries()) {
+        const reaction = entry.reactions.find((item) => item.emoji === emoji);
+        const count = reaction?.count ?? 0;
+        if (!canReact) {
+            if (count)
+                controls.append(` ${emoji} ${count}`);
+            continue;
+        }
+        const button = document.createElement("button");
+        button.id = `reaction-${entry.id}-${index}`;
+        button.type = "button";
+        button.textContent = count ? `${emoji} ${count}` : emoji;
+        button.setAttribute("aria-label", label);
+        button.setAttribute("aria-pressed", String(reaction?.selected ?? false));
+        button.onclick = async () => {
+            button.disabled = true;
+            try {
+                await call(`/${entry.id}/reaction`, "PUT", { emoji, selected: !reaction?.selected });
+                await load();
+                document.getElementById(button.id)?.focus();
+            }
+            catch (error) {
+                feedbackMessage.textContent = String(error);
+                button.disabled = false;
+            }
+        };
+        controls.append(button);
+    }
+    return controls;
+}
+function renderEntry(entry, canReact) {
     const node = document.createElement("li");
     const name = document.createElement("strong");
     name.textContent = entry.author;
     const text = document.createElement("p");
-    text.textContent = entry.body;
-    node.append(name, text);
+    renderCommentText(text, entry.body);
+    node.append(name, text, renderReactions(entry, canReact));
     return node;
 }
 function render() {
@@ -111,7 +174,8 @@ function render() {
         const replies = data.comments.filter((entry) => entry.parent === thread.id);
         if (filter && !includes(thread) && !replies.some(includes))
             continue;
-        const item = renderEntry(thread);
+        const canReact = data.permissions.allow_comment && !thread.resolved;
+        const item = renderEntry(thread, canReact);
         const jump = document.createElement("button");
         jump.type = "button";
         jump.textContent = displayTime(thread.seconds);
@@ -136,7 +200,7 @@ function render() {
         }
         if (replies.length) {
             const list = document.createElement("ul");
-            list.append(...replies.map(renderEntry));
+            list.append(...replies.map((reply) => renderEntry(reply, canReact)));
             item.append(list);
         }
         comments.append(item);
@@ -208,4 +272,3 @@ decision.onsubmit = async (event) => {
     }
 };
 load().catch((error) => { feedbackMessage.textContent = String(error); });
-export {};

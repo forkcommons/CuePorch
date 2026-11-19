@@ -18,6 +18,14 @@
       {% if error %}<p role="alert">That password did not open the review.</p>{% endif %}
     </form>
     {% elif selected %}
+    {% if operator_preview %}
+    <form id="uploadReviewVersion" action="{{ url_for('replace_review_video', uid=uid) }}" method="post" enctype="multipart/form-data" data-token="{{ replacement_token }}">
+      <input type="hidden" name="current" value="{{ current_version }}">
+      <label>New review version <input type="file" name="video" accept=".mp4,.mov,.webm,.mkv" required></label>
+      <button>Upload new version</button>
+      <p role="status" id="reviewUploadMessage"></p>
+    </form>
+    {% endif %}
     {% if versions|length > 1 %}
     <form method="get">
       <label>Video version

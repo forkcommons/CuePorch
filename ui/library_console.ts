@@ -1,3 +1,5 @@
+import { renderCommentText } from "./review_comment_text.js";
+
 interface Work {
   id: string;
   title: string;
@@ -795,7 +797,7 @@ async function manageReviewFeedback(work: Work, link: ReviewLink, back: () => Pr
       const author = document.createElement("strong");
       author.textContent = comment.author;
       const text = document.createElement("p");
-      text.textContent = comment.body;
+      renderCommentText(text, comment.body);
       row.append(author, " · " + comment.seconds.toFixed(2) + " seconds", text);
       if (!comment.parent) {
         const control = document.createElement("button");

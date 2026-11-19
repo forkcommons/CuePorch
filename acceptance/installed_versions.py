@@ -10,7 +10,7 @@ from installed_cards import select_action
 from playwright.sync_api import expect, sync_playwright
 
 
-def generate_replacement(path):
+def generate_replacement(path, width=256):
     subprocess.run(
         [
             "ffmpeg",
@@ -19,7 +19,7 @@ def generate_replacement(path):
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=s=256x144:r=24:d=2",
+            f"testsrc2=s={width}x144:r=24:d=2",
             "-c:v",
             "libx264",
             "-pix_fmt",

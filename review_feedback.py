@@ -3,6 +3,7 @@
 import csv
 import io
 import math
+import re
 import time
 import uuid
 
@@ -21,6 +22,9 @@ CREATE INDEX IF NOT EXISTS review_comment_cut
 CREATE TABLE IF NOT EXISTS review_decision(
  link TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL,
  PRIMARY KEY(link,version));
+CREATE TABLE IF NOT EXISTS review_reaction(
+ comment TEXT NOT NULL, actor TEXT NOT NULL, emoji TEXT NOT NULL,
+ PRIMARY KEY(comment,actor,emoji));
 """
 
 OPTIONS = {
@@ -29,6 +33,13 @@ OPTIONS = {
     "allow_resolved": False,
 }
 STATUSES = ("In progress", "Needs review", "Approved")
+REACTIONS = ("👍", "❤️", "🎉", "💡")
+REVIEWER_COOKIE = "cueporch_reviewer"
+
+
+def reviewer_token():
+    token = request.cookies.get(REVIEWER_COOKIE, "")
+    return token if re.fullmatch(r"[A-Za-z0-9_-]{43}", token) else None
 
 
 def settings(con, uid):
@@ -48,7 +59,7 @@ def save_settings(con, uid, body):
     )
 
 
-def register(app, tx, scoped_access, export_access, confidential):
+def register(app, tx, scoped_access, export_access, confidential, session_digest):
     def get_comments(con, uid, version, show_resolved):
         return [
             dict(row)
@@ -61,6 +72,23 @@ def register(app, tx, scoped_access, export_access, confidential):
             )
         ]
 
+    def with_reactions(con, uid, version, comments):
+        token = reviewer_token()
+        actor = session_digest(token) if token else None
+        by_comment = {comment["id"]: comment.setdefault("reactions", []) for comment in comments}
+        rows = con.execute(
+            """SELECT r.comment,r.emoji,count(*) AS count,max(r.actor=?) AS selected
+               FROM review_reaction r JOIN review_comment c ON c.id=r.comment
+               WHERE c.link=? AND c.version=? GROUP BY r.comment,r.emoji""",
+            (actor, uid, version),
+        )
+        for row in rows:
+            if row["comment"] in by_comment:
+                by_comment[row["comment"]].append(
+                    {"emoji": row["emoji"], "count": row["count"], "selected": bool(row["selected"])}
+                )
+        return comments
+
     @app.get("/review/<uid>/feedback/<version>")
     def review_feedback(uid, version):
         with tx() as con:
@@ -72,7 +100,9 @@ def register(app, tx, scoped_access, export_access, confidential):
             result = {
                 "permissions": rights,
                 "status": status[0] if status else STATUSES[0],
-                "comments": get_comments(con, uid, version, rights["allow_resolved"]),
+                "comments": with_reactions(
+                    con, uid, version, get_comments(con, uid, version, rights["allow_resolved"])
+                ),
             }
         return confidential(result)
 
@@ -137,6 +167,36 @@ def register(app, tx, scoped_access, export_access, confidential):
                 ),
             )
         return confidential(({"id": comment}, 201))
+
+    @app.put("/review/<uid>/feedback/<version>/<comment>/reaction")
+    def set_review_reaction(uid, version, comment):
+        request.max_content_length = 4096
+        value = request.get_json()
+        emoji = value.get("emoji") if isinstance(value, dict) else None
+        selected = value.get("selected") if isinstance(value, dict) else None
+        if emoji not in REACTIONS or type(selected) is not bool:
+            abort(400)
+        with tx() as con:
+            _, rights = scoped_access(con, uid, version)
+            token = reviewer_token()
+            if not token or not rights["allow_comment"]:
+                abort(403)
+            row = con.execute(
+                """SELECT c.resolved OR coalesce(p.resolved,0) AS resolved FROM review_comment c
+                   LEFT JOIN review_comment p ON p.id=c.parent
+                   WHERE c.id=? AND c.link=? AND c.version=?""",
+                (comment, uid, version),
+            ).fetchone()
+            if row is None or (row["resolved"] and not rights["allow_resolved"]):
+                abort(404)
+            if row["resolved"]:
+                abort(409, "This comment thread is resolved.")
+            key = (comment, session_digest(token), emoji)
+            if selected:
+                con.execute("INSERT OR IGNORE INTO review_reaction VALUES (?,?,?)", key)
+            else:
+                con.execute("DELETE FROM review_reaction WHERE comment=? AND actor=? AND emoji=?", key)
+        return confidential(("", 204))
 
     @app.put("/review/<uid>/feedback/<version>/status")
     def update_review_status(uid, version):

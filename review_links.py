@@ -40,7 +40,7 @@ def session_digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def register(app, tx, staff, get_work, title_for, root):
+def register(app, tx, staff, get_work, title_for, root, replace_video):
     def locate(con, work, uid):
         row = con.execute(
             "SELECT * FROM review_link WHERE id=? AND work=?", (uid, work)
@@ -215,6 +215,10 @@ def register(app, tx, staff, get_work, title_for, root):
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
             con.execute("DELETE FROM review_feedback_permission WHERE link=?", (uid,))
             con.execute("DELETE FROM review_appearance WHERE link=?", (uid,))
+            con.execute(
+                "DELETE FROM review_reaction WHERE comment IN (SELECT id FROM review_comment WHERE link=?)",
+                (uid,),
+            )
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 
@@ -240,6 +244,10 @@ def register(app, tx, staff, get_work, title_for, root):
                 (session_digest(token), uid, time.time()),
             ).fetchone()
         )
+
+    def preview_form_token():
+        token = request.cookies.get("cueporch_review_preview", "")
+        return session_digest("review replacement:" + token)
 
     def authorized(con, row):
         if preview_session(con, row["id"]):
@@ -299,6 +307,22 @@ def register(app, tx, staff, get_work, title_for, root):
             expires - now,
         )
 
+    @app.post("/review/<uid>/versions")
+    def replace_review_video(uid):
+        submitted = request.headers.get("X-CuePorch-Preview", "")
+
+        def verify(con):
+            row, _ = active(con, uid)
+            if not preview_session(con, uid) or not secrets.compare_digest(
+                submitted.encode(), preview_form_token().encode()
+            ):
+                abort(403)
+            return row["work"]
+
+        with tx() as con:
+            work = verify(con)
+        return confidential(replace_video(work, verify))
+
     def playable_versions(work, row):
         current = [work]
         if row["allow_versions"]:
@@ -348,7 +372,7 @@ def register(app, tx, staff, get_work, title_for, root):
         return match[0], review_feedback.settings(con, uid)
 
     review_feedback.register(
-        app, tx, scoped_feedback_access, operator_feedback_access, confidential
+        app, tx, scoped_feedback_access, operator_feedback_access, confidential, session_digest
     )
     review_settings.register(app, tx, staff)
 
@@ -395,7 +419,7 @@ def register(app, tx, staff, get_work, title_for, root):
                         **properties,
                     }
                 )
-        return confidential(
+        page = confidential(
             render_template(
                 "review.html",
                 uid=uid,
@@ -407,9 +431,20 @@ def register(app, tx, staff, get_work, title_for, root):
                 appearance=appearance,
                 recommendations=recommendations,
                 operator_preview=is_preview,
+                replacement_token=preview_form_token() if is_preview else None,
+                current_version=video_version_key(work),
                 renditions=renditions,
             )
         )
+        if selected and not review_feedback.reviewer_token():
+            set_review_cookie(
+                page,
+                review_feedback.REVIEWER_COOKIE,
+                secrets.token_urlsafe(32),
+                uid,
+                min(REVIEW_LIFETIME, row["expires"] - time.time()),
+            )
+        return page
 
     @app.get("/review/<uid>/logo")
     def review_logo(uid):

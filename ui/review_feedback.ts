@@ -1,3 +1,11 @@
+import { renderCommentText } from "./review_comment_text.js";
+
+interface Reaction {
+  emoji: string;
+  count: number;
+  selected: boolean;
+}
+
 interface CommentEntry {
   id: string;
   parent: string | null;
@@ -6,6 +14,7 @@ interface CommentEntry {
   seconds: number;
   created: number;
   resolved: boolean;
+  reactions: Reaction[];
 }
 
 interface Feedback {
@@ -19,6 +28,31 @@ interface Feedback {
 }
 
 const endpoint = document.querySelector<HTMLElement>("#reviewFeedback")!.dataset.feedback!;
+const upload = document.querySelector<HTMLFormElement>("#uploadReviewVersion");
+if (upload) {
+  upload.onsubmit = async (event) => {
+    event.preventDefault();
+    const button = upload.querySelector<HTMLButtonElement>("button")!;
+    const message = document.querySelector<HTMLElement>("#reviewUploadMessage")!;
+    button.disabled = true;
+    message.textContent = "Preparing new version…";
+    try {
+      const response = await fetch(upload.action, {
+        method: "POST",
+        headers: { "X-CuePorch-Preview": upload.dataset.token! },
+        body: new FormData(upload),
+      });
+      if (!response.ok) {
+        const page = new DOMParser().parseFromString(await response.text(), "text/html");
+        throw new Error(page.querySelector("p")?.textContent || "Unable to upload this version.");
+      }
+      window.location.assign(location.pathname);
+    } catch (error) {
+      message.textContent = String(error);
+      button.disabled = false;
+    }
+  };
+}
 const player = document.querySelector<HTMLVideoElement>("video")!;
 const loop = document.querySelector<HTMLInputElement>("#reviewLoop")!;
 const speed = document.querySelector<HTMLSelectElement>("#reviewSpeed")!;
@@ -110,13 +144,49 @@ function resetPin() {
   cancel.hidden = true;
 }
 
-function renderEntry(entry: CommentEntry) {
+const reactionOptions = [
+  ["👍", "Like"], ["❤️", "Love"], ["🎉", "Celebrate"], ["💡", "Good idea"],
+];
+
+function renderReactions(entry: CommentEntry, canReact: boolean) {
+  const controls = document.createElement("span");
+  controls.className = "review-reactions";
+  for (const [index, [emoji, label]] of reactionOptions.entries()) {
+    const reaction = entry.reactions.find((item) => item.emoji === emoji);
+    const count = reaction?.count ?? 0;
+    if (!canReact) {
+      if (count) controls.append(` ${emoji} ${count}`);
+      continue;
+    }
+    const button = document.createElement("button");
+    button.id = `reaction-${entry.id}-${index}`;
+    button.type = "button";
+    button.textContent = count ? `${emoji} ${count}` : emoji;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", String(reaction?.selected ?? false));
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await call(`/${entry.id}/reaction`, "PUT", { emoji, selected: !reaction?.selected });
+        await load();
+        document.getElementById(button.id)?.focus();
+      } catch (error) {
+        feedbackMessage.textContent = String(error);
+        button.disabled = false;
+      }
+    };
+    controls.append(button);
+  }
+  return controls;
+}
+
+function renderEntry(entry: CommentEntry, canReact: boolean) {
   const node = document.createElement("li");
   const name = document.createElement("strong");
   name.textContent = entry.author;
   const text = document.createElement("p");
-  text.textContent = entry.body;
-  node.append(name, text);
+  renderCommentText(text, entry.body);
+  node.append(name, text, renderReactions(entry, canReact));
   return node;
 }
 
@@ -131,7 +201,8 @@ function render() {
   for (const thread of threads) {
     const replies = data.comments.filter((entry) => entry.parent === thread.id);
     if (filter && !includes(thread) && !replies.some(includes)) continue;
-    const item = renderEntry(thread);
+    const canReact = data.permissions.allow_comment && !thread.resolved;
+    const item = renderEntry(thread, canReact);
     const jump = document.createElement("button");
     jump.type = "button";
     jump.textContent = displayTime(thread.seconds);
@@ -155,7 +226,7 @@ function render() {
     }
     if (replies.length) {
       const list = document.createElement("ul");
-      list.append(...replies.map(renderEntry));
+      list.append(...replies.map((reply) => renderEntry(reply, canReact)));
       item.append(list);
     }
     comments.append(item);

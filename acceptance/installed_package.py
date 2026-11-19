@@ -155,6 +155,7 @@ class Museum(BaseHTTPRequestHandler):
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     replacement = generate_replacement(root / "replacement.mp4")
+    review_update = generate_replacement(root / "review-update.mp4", width=192)
     src = build_server(root / "fixture")
     source = serve(src)
     museum = ThreadingHTTPServer(("127.0.0.1", 0), Museum)
@@ -302,7 +303,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
-                    review_result = check_review_links(page, base, auth, copy)
+                    review_result = check_review_links(page, base, auth, copy, review_update)
                     review_result.update(check_review_defaults(
                         page, base, auth, copy, keys["creator"], replacement,
                     ))

@@ -39,8 +39,10 @@ def register(app, tx, staff, get_work, root, remember_work):
                 )
         return versions
 
-    def apply(uid, previous, **edit):
+    def apply(uid, previous, guard=None, **edit):
         with tx() as con:
+            if guard is not None:
+                guard(con)
             get_work(con, uid)
             try:
                 updated = update_video_version(root, uid, expected=previous, **edit)
@@ -49,9 +51,7 @@ def register(app, tx, staff, get_work, root, remember_work):
             remember_work(updated)
         return {"current": video_version_key(updated)}
 
-    @app.post("/api/library/work/<uid>/versions")
-    def replace_work_video(uid):
-        staff()
+    def replace(uid, guard=None):
         request.max_content_length = int(
             os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", str(8 * 1024**3))
         )
@@ -65,6 +65,8 @@ def register(app, tx, staff, get_work, root, remember_work):
             abort(415, "Choose an MP4, MOV, WebM or MKV video.")
         previous = request.form.get("current")
         with tx() as con:
+            if guard is not None:
+                guard(con)
             work = get_work(con, uid)
             if video_version_key(work) != previous:
                 abort(409, "The video changed. Reload the current version.")
@@ -77,7 +79,12 @@ def register(app, tx, staff, get_work, root, remember_work):
                 duration = prepare_screening(source, target)
             except ValueError as error:
                 abort(422, str(error))
-            return apply(uid, previous, replacement=(source, target, duration))
+            return apply(uid, previous, guard, replacement=(source, target, duration))
+
+    @app.post("/api/library/work/<uid>/versions")
+    def replace_work_video(uid):
+        staff()
+        return replace(uid)
 
     @app.post("/api/library/work/<uid>/versions/restore")
     def restore_video_version(uid):
@@ -88,3 +95,5 @@ def register(app, tx, staff, get_work, root, remember_work):
         ):
             abort(400, "Choose a retained version to restore.")
         return apply(uid, body["current"], restore_key=body["restore"])
+
+    return replace
