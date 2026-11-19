@@ -9,6 +9,8 @@ import uuid
 
 from flask import Response, abort, request
 
+import review_notifications
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_feedback_permission(
  link TEXT PRIMARY KEY, allow_comment INTEGER NOT NULL,
@@ -60,6 +62,10 @@ def save_settings(con, uid, body):
 
 
 def register(app, tx, scoped_access, export_access, confidential, session_digest):
+    def reviewer_actor():
+        token = reviewer_token()
+        return session_digest(token) if token else None
+
     def get_comments(con, uid, version, show_resolved):
         return [
             dict(row)
@@ -73,9 +79,10 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
         ]
 
     def with_reactions(con, uid, version, comments):
-        token = reviewer_token()
-        actor = session_digest(token) if token else None
-        by_comment = {comment["id"]: comment.setdefault("reactions", []) for comment in comments}
+        actor = reviewer_actor()
+        by_comment = {
+            comment["id"]: comment.setdefault("reactions", []) for comment in comments
+        }
         rows = con.execute(
             """SELECT r.comment,r.emoji,count(*) AS count,max(r.actor=?) AS selected
                FROM review_reaction r JOIN review_comment c ON c.id=r.comment
@@ -85,7 +92,11 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
         for row in rows:
             if row["comment"] in by_comment:
                 by_comment[row["comment"]].append(
-                    {"emoji": row["emoji"], "count": row["count"], "selected": bool(row["selected"])}
+                    {
+                        "emoji": row["emoji"],
+                        "count": row["count"],
+                        "selected": bool(row["selected"]),
+                    }
                 )
         return comments
 
@@ -93,15 +104,28 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
     def review_feedback(uid, version):
         with tx() as con:
             _, rights = scoped_access(con, uid, version)
+            actor = reviewer_actor()
             status = con.execute(
                 "SELECT status FROM review_decision WHERE link=? AND version=?",
                 (uid, version),
             ).fetchone()
+            comments = get_comments(con, uid, version, rights["allow_resolved"])
+            options = (
+                review_notifications.participants(con, uid, version, comments)
+                if actor and rights["allow_comment"]
+                else []
+            )
             result = {
                 "permissions": rights,
                 "status": status[0] if status else STATUSES[0],
-                "comments": with_reactions(
-                    con, uid, version, get_comments(con, uid, version, rights["allow_resolved"])
+                "comments": with_reactions(con, uid, version, comments),
+                "mention_options": [
+                    {"id": item["id"], "name": item["name"]}
+                    for item in options
+                    if item["actor"] != actor
+                ],
+                "notices": review_notifications.inbox(
+                    con, uid, version, actor, rights["allow_resolved"]
                 ),
             }
         return confidential(result)
@@ -152,6 +176,17 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 ):
                     abort(400, "Choose a time within the video.")
             comment = uuid.uuid4().hex
+            mentions = body.get("mentions", [])
+            targets = review_notifications.targets(
+                con,
+                uid,
+                version,
+                get_comments(con, uid, version, rights["allow_resolved"])
+                if mentions
+                else [],
+                text,
+                mentions,
+            )
             con.execute(
                 """INSERT INTO review_comment (id,link,version,parent,author,body,seconds,created)
                    VALUES (?,?,?,?,?,?,?,?)""",
@@ -166,7 +201,28 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                     time.time(),
                 ),
             )
+            review_notifications.record(
+                con, uid, version, comment, reviewer_actor(), parent, targets
+            )
         return confidential(({"id": comment}, 201))
+
+    @app.put("/review/<uid>/feedback/<version>/notices")
+    def update_review_notices(uid, version):
+        request.max_content_length = 4096
+        body = request.get_json()
+        with tx() as con:
+            scoped_access(con, uid, version)
+            review_notifications.set_inbox(con, uid, version, reviewer_actor(), body)
+        return confidential(("", 204))
+
+    @app.get("/review/<uid>/feedback/<version>/notices")
+    def review_notices(uid, version):
+        with tx() as con:
+            _, rights = scoped_access(con, uid, version)
+            result = review_notifications.inbox(
+                con, uid, version, reviewer_actor(), rights["allow_resolved"]
+            )
+        return confidential(result)
 
     @app.put("/review/<uid>/feedback/<version>/<comment>/reaction")
     def set_review_reaction(uid, version, comment):
@@ -195,7 +251,10 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             if selected:
                 con.execute("INSERT OR IGNORE INTO review_reaction VALUES (?,?,?)", key)
             else:
-                con.execute("DELETE FROM review_reaction WHERE comment=? AND actor=? AND emoji=?", key)
+                con.execute(
+                    "DELETE FROM review_reaction WHERE comment=? AND actor=? AND emoji=?",
+                    key,
+                )
         return confidential(("", 204))
 
     @app.put("/review/<uid>/feedback/<version>/status")

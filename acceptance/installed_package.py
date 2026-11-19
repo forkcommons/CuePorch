@@ -68,6 +68,18 @@ def install_windows(setup, home):
         "arguments"
     ]
 
+def wait_for_desktop(proc, home):
+    marker = home / "desktop-session.json"
+    for _ in range(200):
+        if proc.poll() is not None:
+            raise RuntimeError(f"Installed service exited with code {proc.returncode}")
+        try:
+            return json.loads(marker.read_text(encoding="utf8"))["url"]
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            time.sleep(0.1)
+    raise TimeoutError("The installed service did not publish a readable session file")
+
+
 def prepare_previous_windows(home, source, venue):
     install_windows(args.windows_baseline_setup, home)
     with socket.socket() as sock:
@@ -79,14 +91,7 @@ def prepare_previous_windows(home, source, venue):
         env=dict(os.environ, CUEPORCH_DESKTOP_PORT=str(port), CUEPORCH_SIMULATOR=source),
     )
     try:
-        marker = home / "desktop-session.json"
-        for _ in range(200):
-            if proc.poll() is not None:
-                raise RuntimeError("Released 0.2.0 service exited during setup")
-            if marker.exists():
-                break
-            time.sleep(0.1)
-        desktop = json.loads(marker.read_text())["url"]
+        desktop = wait_for_desktop(proc, home)
         with sync_playwright() as pw:
             browser = chromium(pw)
             page = browser.new_page()
@@ -204,16 +209,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 ),
             )
             try:
-                for _ in range(200):
-                    if proc.poll() is not None:
-                        raise RuntimeError(
-                            "Installed service exited: "
-                            + (home / "service.log").read_text(errors="replace")[-1200:]
-                        )
-                    if (home / "desktop-session.json").exists():
-                        break
-                    time.sleep(0.1)
-                desktop = json.loads((home / "desktop-session.json").read_text())["url"]
+                desktop = wait_for_desktop(proc, home)
                 with sync_playwright() as pw:
                     browser = chromium(pw)
                     page = browser.new_page()
@@ -338,6 +334,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 )
                 quit_response.raise_for_status()
                 proc.wait(timeout=20)
+                args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
             finally:
                 if proc.poll() is None:
                     import psutil
@@ -351,4 +348,3 @@ with tempfile.TemporaryDirectory() as tmp:
         src.server_close()
         museum.shutdown()
         museum.server_close()
-args.report.write_text(json.dumps(results, indent=2))

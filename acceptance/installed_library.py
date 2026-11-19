@@ -6,7 +6,10 @@ from playwright.sync_api import expect
 
 def check_folders(page, base, auth, works):
     page.goto(base + "/operator/library")
+    page.wait_for_function("typeof document.querySelector('#load')?.onclick === 'function'")
+    assert page.locator("#key").evaluate("input => input.value.length >= 24"), "Operator session unavailable"
     page.get_by_role("button", name="Load library").click()
+    expect(page.locator("#result")).to_have_text("Library loaded.", timeout=15000)
     expect(page.locator("#items tr")).to_have_count(3)
 
     def create(name):

@@ -86,7 +86,9 @@ def check_review_links(page, base, auth, work, review_update):
         expect(
             visitor.get_by_text("You are previewing the recipient’s review page.")
         ).to_have_count(0)
-        expect(visitor.get_by_role("button", name="Upload new version")).to_have_count(0)
+        expect(visitor.get_by_role("button", name="Upload new version")).to_have_count(
+            0
+        )
         assert visitor.request.post(link + "/versions").status == 403
         visitor.get_by_label("Playback speed").select_option("1.5")
         visitor.get_by_label("Loop", exact=True).check()
@@ -111,20 +113,25 @@ def check_review_links(page, base, auth, work, review_update):
             "=1+1. See https://example.invalid/reel. <script>text</script>"
         )
         visitor.get_by_role("button", name="Post reply", exact=True).click()
-        reference = visitor.get_by_role("link", name="https://example.invalid/reel", exact=True)
+        reference = visitor.get_by_role(
+            "link", name="https://example.invalid/reel", exact=True
+        )
         expect(reference).to_have_attribute("rel", "noopener noreferrer")
         expect(reference.locator("..")).to_contain_text("<script>text</script>")
         expect(visitor.locator("#reviewComments script")).to_have_count(0)
-        comment = visitor.locator("#reviewComments > li").filter(has_text="Keep this frame")
+        comment = visitor.locator("#reviewComments > li").filter(
+            has_text="Keep this frame"
+        )
         reaction = comment.get_by_role("button", name="Like", exact=True).first
         reaction.click()
         expect(reaction).to_have_attribute("aria-pressed", "true")
+        check_mentions(visitor, page.context.browser, link, feedback)
         expect(reaction).to_contain_text("1")
         visitor.reload()
         expect(reaction).to_have_attribute("aria-pressed", "true")
-        assert unlocked.get(feedback, timeout=10).json()["comments"][0]["reactions"] == [
-            {"emoji": "👍", "count": 1, "selected": False}
-        ]
+        assert unlocked.get(feedback, timeout=10).json()["comments"][0][
+            "reactions"
+        ] == [{"emoji": "👍", "count": 1, "selected": False}]
         reaction.click()
         expect(reaction).to_have_attribute("aria-pressed", "false")
         reaction.click()
@@ -137,7 +144,8 @@ def check_review_links(page, base, auth, work, review_update):
         expect(visitor.locator("#reviewStatus")).to_have_text("Needs review")
         visitor.get_by_label("Video version").select_option(index=1)
         visitor.get_by_role("button", name="View version").click()
-        expect(visitor).to_have_url(link + "?version=" + recent[1]["key"])
+        prior_cut = link + "?version=" + recent[1]["key"]
+        visitor.wait_for_url(lambda url: url.split("#", 1)[0] == prior_cut)
         previous = player.evaluate(
             "async v=>{v.muted=true;await v.play();return v.videoWidth}"
         )
@@ -191,13 +199,19 @@ def check_review_links(page, base, auth, work, review_update):
         assert operator_view.request.post(link + "/versions").status == 403
         operator_view.get_by_label("New review version").set_input_files(review_update)
         with operator_view.expect_response(
-            lambda response: response.url == link + "/versions" and response.request.method == "POST",
+            lambda response: (
+                response.url == link + "/versions" and response.request.method == "POST"
+            ),
             timeout=40000,
         ) as uploaded:
-            operator_view.get_by_role("button", name="Upload new version", exact=True).click()
+            operator_view.get_by_role(
+                "button", name="Upload new version", exact=True
+            ).click()
         response = uploaded.value
         assert response.ok, f"Review replacement returned HTTP {response.status}"
-        selected_cut = operator_view.locator('#uploadReviewVersion input[name="current"]')
+        selected_cut = operator_view.locator(
+            '#uploadReviewVersion input[name="current"]'
+        )
         expect(selected_cut).not_to_have_value(recent[0]["key"])
         current = selected_cut.input_value()
     finally:
@@ -206,7 +220,12 @@ def check_review_links(page, base, auth, work, review_update):
         base + "/api/library/work/" + work_id + "/versions", headers=auth, timeout=10
     ).json()
     assert [version["key"] for version in retained[:2]] == [current, recent[0]["key"]]
-    assert unlocked.get(feedback, timeout=10).json()["comments"][0]["reactions"][0]["count"] == 1
+    assert (
+        unlocked.get(feedback, timeout=10).json()["comments"][0]["reactions"][0][
+            "count"
+        ]
+        == 1
+    )
     again = page.context.browser.new_context()
     try:
         recipient = again.new_page()
@@ -251,7 +270,10 @@ def check_review_links(page, base, auth, work, review_update):
         timeout=10,
     )
     response.raise_for_status()
-    assert requests.get(link + "/media/" + current + "?download=1", timeout=10).status_code == 403
+    assert (
+        requests.get(link + "/media/" + current + "?download=1", timeout=10).status_code
+        == 403
+    )
     assert (
         requests.post(
             link + "/feedback/" + current,
@@ -278,8 +300,68 @@ def check_review_links(page, base, auth, work, review_update):
         "operator_recipient_preview_and_player_controls": True,
         "review_comment_links_safely_rendered": True,
         "review_reactions_persist_across_browser_reload": True,
+        "review_mentions_and_notification_preferences": True,
         "new_version_from_operator_review_keeps_same_link_width": new_width,
     }
+
+
+def check_mentions(recipient, browser, link, feedback):
+    other = browser.new_context()
+    try:
+        page = other.new_page()
+        page.goto(link)
+        page.get_by_label("Review password").fill("fixture-screening-password")
+        page.get_by_role("button", name="Open review").click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+        page.get_by_label("Name", exact=True).fill("A second reviewer")
+        comment = page.get_by_label("Comment", exact=True)
+        comment.fill("@A")
+        page.get_by_role("button", name="Mention A reviewer", exact=True).click()
+        expect(comment).to_have_value("@A reviewer ")
+        comment.press("End")
+        comment.press_sequentially("Please check the revised title.")
+        page.get_by_role("button", name="Post reply", exact=True).click()
+        posted = page.get_by_text(
+            "@A reviewer Please check the revised title.", exact=True
+        )
+        expect(posted).to_be_visible()
+        bell = recipient.get_by_text("Notifications (1)", exact=True)
+        expect(bell).to_be_visible(timeout=15000)
+        bell.click()
+        notice = recipient.get_by_role(
+            "link", name="A second reviewer mentioned you", exact=True
+        )
+        target = notice.get_attribute("href")
+        assert target and target.startswith("#comment-")
+        notice.click()
+        expect(recipient.locator(target)).to_be_focused()
+        expect(recipient.locator(target)).to_contain_text(
+            "Please check the revised title."
+        )
+        expect(notice).to_have_count(0)
+        assert recipient.url.endswith(target)
+
+        mode = recipient.get_by_label("Comment notifications")
+        mode.select_option("off")
+        expect(mode).to_be_enabled()
+        assert recipient.request.get(feedback + "/notices").json() == {
+            "mode": "off",
+            "items": [],
+        }
+        page.get_by_role("button", name="Reply", exact=True).click()
+        comment.fill("@A")
+        page.get_by_role("button", name="Mention A reviewer", exact=True).click()
+        comment.press("End")
+        comment.press_sequentially("Another notification would be disabled.")
+        page.get_by_role("button", name="Post reply", exact=True).click()
+        expect(
+            page.get_by_text(
+                "@A reviewer Another notification would be disabled.", exact=True
+            )
+        ).to_be_visible()
+        assert recipient.request.get(feedback + "/notices").json()["items"] == []
+    finally:
+        other.close()
 
 
 def check_review_defaults(page, base, auth, work, creator, clip):

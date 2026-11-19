@@ -17,6 +17,11 @@ interface CommentEntry {
   reactions: Reaction[];
 }
 
+interface NoticeInbox {
+  mode: string;
+  items: { comment: string; author: string; reason: "mention" | "reply" | "comment" }[];
+}
+
 interface Feedback {
   permissions: {
     allow_comment: boolean;
@@ -25,6 +30,8 @@ interface Feedback {
   };
   status: string;
   comments: CommentEntry[];
+  mention_options: { id: string; name: string }[];
+  notices: NoticeInbox;
 }
 
 const endpoint = document.querySelector<HTMLElement>("#reviewFeedback")!.dataset.feedback!;
@@ -114,6 +121,11 @@ const search = document.querySelector<HTMLInputElement>("#searchFeedback")!;
 const sort = document.querySelector<HTMLSelectElement>("#sortFeedback")!;
 const resolved = document.querySelector<HTMLElement>("#resolvedFilter")!;
 const showResolved = resolved.querySelector<HTMLInputElement>("input")!;
+const mentions = document.querySelector<HTMLElement>("#reviewMentions")!;
+const noticeList = document.querySelector<HTMLUListElement>("#reviewNoticeList")!;
+const noticeMode = document.querySelector<HTMLSelectElement>("#reviewNoticeMode")!;
+const noticeCount = document.querySelector<HTMLElement>("#reviewNoticeCount")!;
+const mentionIds = new Set<string>();
 
 let data: Feedback | null = null;
 let parent: string | null = null;
@@ -182,12 +194,67 @@ function renderReactions(entry: CommentEntry, canReact: boolean) {
 
 function renderEntry(entry: CommentEntry, canReact: boolean) {
   const node = document.createElement("li");
+  node.id = "comment-" + entry.id;
+  node.tabIndex = -1;
   const name = document.createElement("strong");
   name.textContent = entry.author;
   const text = document.createElement("p");
   renderCommentText(text, entry.body);
   node.append(name, text, renderReactions(entry, canReact));
   return node;
+}
+
+function renderMentions() {
+  const end = message.selectionStart;
+  const match = /(?:^|\s)@([^\s@]+)$/.exec(message.value.slice(0, end));
+  const options = (match && data)
+    ? data.mention_options.filter((item) => item.name.toLocaleLowerCase().startsWith(match[1].toLocaleLowerCase())).slice(0, 8)
+    : [];
+  mentions.replaceChildren();
+  mentions.hidden = !options.length;
+  if (!match) return;
+  for (const option of options) {
+    const select = document.createElement("button");
+    select.type = "button";
+    select.textContent = "Mention " + option.name;
+    select.onclick = () => {
+      message.setRangeText("@" + option.name + " ", end - match[1].length - 1, end, "end");
+      mentionIds.add(option.id);
+      mentions.hidden = true;
+      message.focus();
+    };
+    mentions.append(select);
+  }
+}
+
+function renderNotices(inbox: NoticeInbox, refresh = false) {
+  const label = inbox.items.length ? `Notifications (${inbox.items.length})` : "Notifications";
+  if (noticeCount.textContent !== label) noticeCount.textContent = label;
+  if (!noticeMode.disabled) noticeMode.value = inbox.mode;
+  if (!refresh && noticeList.contains(document.activeElement)) return;
+  noticeList.replaceChildren();
+  for (const item of inbox.items) {
+    const entry = document.createElement("li");
+    const linked = document.createElement("a");
+    linked.href = "#comment-" + item.comment;
+    const label = item.reason === "mention" ? " mentioned you" : item.reason === "reply" ? " replied to you" : " posted a comment";
+    linked.textContent = item.author + label;
+    linked.onclick = async (event) => {
+      event.preventDefault();
+      try {
+        await call("/notices", "PUT", { read: item.comment });
+        search.value = "";
+        showResolved.checked = true;
+        await load(true);
+        window.location.hash = linked.hash;
+        focusComment();
+      } catch (error) {
+        feedbackMessage.textContent = String(error);
+      }
+    };
+    entry.append(linked);
+    noticeList.append(entry);
+  }
 }
 
 function render() {
@@ -238,7 +305,15 @@ function render() {
   }
 }
 
-async function load() {
+function focusComment() {
+  const hash = location.hash;
+  if (!/^#comment-[a-f0-9]{32}$/.test(hash)) return;
+  const target = document.getElementById(hash.slice(1));
+  target?.scrollIntoView({ block: "center" });
+  target?.focus({ preventScroll: true });
+}
+
+async function load(refreshNotices = false) {
   const updated: Feedback = await (await call()).json();
   data = updated;
   editor.hidden = !updated.permissions.allow_comment;
@@ -247,6 +322,7 @@ async function load() {
   decisionStatus.value = updated.status;
   status.textContent = updated.status;
   render();
+  renderNotices(updated.notices, refreshNotices);
 }
 
 document.querySelector<HTMLButtonElement>("#markFrame")!.onclick = () => {
@@ -260,6 +336,17 @@ cancel.onclick = resetPin;
 search.oninput = render;
 sort.onchange = render;
 showResolved.onchange = render;
+message.oninput = renderMentions;
+noticeMode.onchange = async () => {
+  noticeMode.disabled = true;
+  try {
+    await call("/notices", "PUT", { mode: noticeMode.value });
+  } catch (error) {
+    feedbackMessage.textContent = String(error);
+  } finally {
+    noticeMode.disabled = false;
+  }
+};
 
 editor.onsubmit = async (event) => {
   event.preventDefault();
@@ -270,8 +357,11 @@ editor.onsubmit = async (event) => {
       body: message.value,
       seconds: pinned ?? player.currentTime,
       parent,
+      mentions: [...mentionIds],
     });
     message.value = "";
+    mentionIds.clear();
+    mentions.hidden = true;
     resetPin();
     await load();
     feedbackMessage.textContent = "Comment posted.";
@@ -297,4 +387,12 @@ decision.onsubmit = async (event) => {
   }
 };
 
-load().catch((error) => { feedbackMessage.textContent = String(error); });
+load().then(focusComment).catch((error) => { feedbackMessage.textContent = String(error); });
+window.setInterval(async () => {
+  if (!data) return;
+  try {
+    renderNotices(await (await call("/notices")).json());
+  } catch {
+    // The next navigation or user action reports any expired access.
+  }
+}, 5000);

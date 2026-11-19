@@ -10,6 +10,7 @@ from flask import Response, abort, render_template, request, send_file
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import review_feedback
+import review_notifications
 import review_settings
 from catalog import video_version_key
 from media_tools import video_properties
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS review_unlock_limit(
  link TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
 """
     + review_feedback.SCHEMA
+    + review_notifications.SCHEMA
     + review_settings.SCHEMA
 )
 
@@ -219,6 +221,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 "DELETE FROM review_reaction WHERE comment IN (SELECT id FROM review_comment WHERE link=?)",
                 (uid,),
             )
+            review_notifications.forget(con, uid)
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 

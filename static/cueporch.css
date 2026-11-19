@@ -79,3 +79,4 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 #reviewComments p { white-space: pre-wrap; }
 .review-reactions { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
 .review-reactions [aria-pressed="true"] { outline: 2px solid currentColor; }
+.review-page #reviewComments :target { outline: 2px solid currentColor; outline-offset: .25rem; }
