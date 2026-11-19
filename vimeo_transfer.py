@@ -269,6 +269,9 @@ def _migrate(institution, root, source, dry_run, refresh):
             if isinstance(val, (bool, str))
             and key in ("view", "embed", "download", "add", "comments")
         }
+        owner = video.get("user")
+        if isinstance(owner, dict) and isinstance(owner.get("name"), str):
+            record["source_creator"] = owner["name"]
         record["source_created_time"] = video.get("created_time")
         record["source_modified_time"] = video.get("modified_time")
         items = list(assets(video, tracks))

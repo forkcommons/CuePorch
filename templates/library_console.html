@@ -22,14 +22,19 @@
       <nav id="folderTree" aria-label="Folders"></nav>
       <button type="button" id="newFolder">New folder</button>
       <button type="button" id="editFolder" hidden>Edit folder</button>
+      <button type="button" id="starFolder" hidden>Star folder</button>
     </aside>
     <section aria-labelledby="folderTitle">
       <h2 id="folderTitle">Library</h2>
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
         <label>Source privacy <select id="privacy"><option value="">All</option></select></label>
+        <label>Created by <input id="creator" type="search" list="creators"></label>
+        <datalist id="creators"></datalist>
         <label>Sort <select id="sort">
           <option value="title">Title A to Z</option><option value="title-desc">Title Z to A</option>
+          <option value="added-desc">Last added</option><option value="added">First added</option>
+          <option value="modified-desc">Last modified</option><option value="modified">First modified</option>
           <option value="long">Longest</option><option value="short">Shortest</option>
         </select></label>
         <label>View <select id="view"><option value="list">List</option><option value="grid">Grid</option></select></label>

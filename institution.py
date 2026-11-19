@@ -132,8 +132,10 @@ def create_app(root, database, operator, institution, simulation=None):
         )
 
     def staff():
-        if not operator_name():
+        actor = operator_name()
+        if not actor:
             abort(403)
+        return actor
 
     def action(con, uid, step, payload):
         if step not in STEPS:
@@ -1029,13 +1031,19 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/api/library")
     def library():
-        staff()
+        actor = staff()
         data = read_library_works()
         with tx() as con:
             jobs = con.execute(
                 "SELECT j.work,j.status,j.remote,j.error,r.kind AS route_kind FROM publication_job j LEFT JOIN route r ON r.slug=j.work AND r.kind=j.kind ORDER BY j.rowid"
             ).fetchall()
             placement = dict(con.execute("SELECT work,folder FROM library_placement"))
+            starred = {
+                row[0]
+                for row in con.execute(
+                    "SELECT item FROM library_star WHERE kind='work' AND actor=?", (actor,)
+                )
+            }
         latest = {r["work"]: dict(r) for r in jobs}
         return [
             dict(
@@ -1044,6 +1052,11 @@ def create_app(root, database, operator, institution, simulation=None):
                 folder=placement.get(w["id"]),
                 source_privacy=w.get("source_privacy"),
                 duration_seconds=w.get("duration_seconds"),
+                creator=w.get("source_creator"),
+                added_at=w.get("library_added_at"),
+                modified_at=w.get("source_modified_time"),
+                version_count=1 + len(w.get("versions_history", [])),
+                starred=w["id"] in starred,
                 source=w["source_url"],
                 quality=w["disposition"],
                 exceptions=w.get("transfer_issues", []),

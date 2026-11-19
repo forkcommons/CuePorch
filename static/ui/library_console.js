@@ -1,5 +1,8 @@
 const key = document.querySelector("#key");
 const result = document.querySelector("#result");
+const creator = document.querySelector("#creator");
+const creators = document.querySelector("#creators");
+const starFolder = document.querySelector("#starFolder");
 const library = document.querySelector("#library");
 const tree = document.querySelector("#folderTree");
 const heading = document.querySelector("#folderTitle");
@@ -25,6 +28,7 @@ let works = [];
 let folders = [];
 let current = null;
 let editing;
+let showStarred = false;
 const selected = new Set();
 function request(path, method = "GET", body) {
     return fetch(path, {
@@ -89,17 +93,41 @@ function renderTree() {
         }
         return list;
     }
-    tree.replaceChildren(folderButton("Library", null), branch(null));
-    heading.textContent =
-        folders.find((folder) => folder.id === current)?.name || "Library";
-    editFolder.hidden = current === null;
+    const starredButton = document.createElement("button");
+    starredButton.textContent = "Starred";
+    if (showStarred)
+        starredButton.setAttribute("aria-current", "true");
+    starredButton.onclick = () => {
+        showStarred = true;
+        current = null;
+        selected.clear();
+        renderTree();
+        renderWorks();
+        tree.querySelector('[aria-current="true"]')?.focus();
+    };
+    const starredFolders = document.createElement("ul");
+    if (showStarred) {
+        for (const folder of folders.filter((entry) => entry.starred)) {
+            const item = document.createElement("li");
+            item.append(folderButton(folder.name, folder.id, folder.color));
+            starredFolders.append(item);
+        }
+    }
+    tree.replaceChildren(folderButton("Library", null), branch(null), starredButton, starredFolders);
+    const folder = folders.find((entry) => entry.id === current);
+    heading.textContent = showStarred ? "Starred" : folder?.name || "Library";
+    editFolder.hidden = starFolder.hidden = !folder;
+    starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
+    if (folder) {
+        action(starFolder, () => setStar("folder", folder.id, !folder.starred));
+    }
     folderOptions(destination);
     destination.value = current || "";
 }
 function folderButton(label, id, color) {
     const button = document.createElement("button");
     button.textContent = label;
-    if (id === current)
+    if (!showStarred && id === current)
         button.setAttribute("aria-current", "true");
     if (color) {
         const dot = document.createElement("span");
@@ -109,6 +137,7 @@ function folderButton(label, id, color) {
         button.prepend(dot);
     }
     button.onclick = () => {
+        showStarred = false;
         current = id;
         selected.clear();
         renderTree();
@@ -118,23 +147,41 @@ function folderButton(label, id, color) {
     };
     return button;
 }
+async function setStar(kind, id, starred) {
+    await completed(await request("/api/library/star/" + kind + "/" + encodeURIComponent(id), "PUT", { starred }));
+    await load();
+    result.textContent = starred ? "Added to Starred." : "Removed from Starred.";
+}
+function numericValue(work, order) {
+    if (order === "long" || order === "short")
+        return work.duration_seconds;
+    const field = order.startsWith("added") ? work.added_at : work.modified_at;
+    const date = field === null ? NaN : Date.parse(field);
+    return Number.isFinite(date) ? date : null;
+}
 function renderWorks() {
     const query = search.value.trim().toLocaleLowerCase();
-    const visible = works.filter((work) => work.folder === current &&
+    const author = creator.value.trim().toLocaleLowerCase();
+    const visible = works.filter((work) => (showStarred ? work.starred : work.folder === current) &&
+        (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
         work.title.toLocaleLowerCase().includes(query) &&
         (!privacy.value || (work.source_privacy || "Unknown") === privacy.value));
     visible.sort((a, b) => {
         const title = a.title.localeCompare(b.title);
+        const stable = title || a.id.localeCompare(b.id);
         const order = sort.value;
-        if (order === "long" || order === "short") {
-            if (a.duration_seconds === null)
-                return b.duration_seconds === null ? title : 1;
-            if (b.duration_seconds === null)
-                return -1;
-            return ((a.duration_seconds - b.duration_seconds) *
-                (order === "long" ? -1 : 1) || title);
-        }
-        return ((order === "title-desc" ? -title : title) || a.id.localeCompare(b.id));
+        if (order === "title")
+            return stable;
+        if (order === "title-desc")
+            return -title || a.id.localeCompare(b.id);
+        const first = numericValue(a, order);
+        const second = numericValue(b, order);
+        if (first === null)
+            return second === null ? stable : 1;
+        if (second === null)
+            return -1;
+        const direction = order === "long" || order.endsWith("-desc") ? -1 : 1;
+        return (first - second) * direction || stable;
     });
     items.replaceChildren();
     table.hidden = !visible.length;
@@ -154,7 +201,31 @@ function renderWorks() {
             updateMove();
         };
         row.insertCell().append(checkbox);
-        row.insertCell().textContent = work.title;
+        const title = row.insertCell();
+        const name = document.createElement("span");
+        name.className = "work-title";
+        name.textContent = work.title;
+        title.append(name);
+        const info = document.createElement("small");
+        info.className = "work-info";
+        const seconds = work.duration_seconds;
+        const duration = seconds === null
+            ? ""
+            : Math.floor(seconds / 60) +
+                ":" +
+                String(Math.floor(seconds % 60)).padStart(2, "0");
+        const formattedDate = work.added_at && Number.isFinite(Date.parse(work.added_at))
+            ? new Date(work.added_at).toLocaleDateString()
+            : "";
+        info.textContent = [
+            work.creator,
+            duration,
+            work.version_count > 1 ? work.version_count + " retained versions" : "",
+            formattedDate,
+        ]
+            .filter(Boolean)
+            .join(" · ");
+        title.append(info);
         row.insertCell().textContent = work.source_privacy || "Unknown";
         row.insertCell().textContent = [
             work.quality,
@@ -165,6 +236,11 @@ function renderWorks() {
                 .filter(Boolean)
                 .join(" · ") || "Preserved locally";
         const actions = row.insertCell();
+        const star = document.createElement("button");
+        star.textContent = work.starred ? "Unstar work" : "Star work";
+        star.setAttribute("aria-label", (work.starred ? "Unstar " : "Star ") + work.title);
+        action(star, () => setStar("work", work.id, !work.starred));
+        actions.append(star);
         for (const pub of work.public_eligible ? [false, true] : [false]) {
             const button = document.createElement("button");
             button.textContent = pub ? "Publish publicly" : "Deliver privately";
@@ -190,6 +266,10 @@ async function load() {
     ]);
     works = await libraryResponse.json();
     folders = await folderResponse.json();
+    const names = [
+        ...new Set(works.flatMap((work) => (work.creator ? [work.creator] : []))),
+    ].sort();
+    creators.replaceChildren(...names.map((name) => new Option(name, name)));
     if (!folders.some((entry) => entry.id === current))
         current = null;
     selected.clear();
@@ -254,13 +334,14 @@ document.querySelector("#newFolder").onclick = () => openEditor();
 editFolder.onclick = () => openEditor(folders.find((folder) => folder.id === current));
 document.querySelector("#cancelFolder").onclick = () => editor.close();
 search.oninput =
-    privacy.onchange =
-        sort.onchange =
-            view.onchange =
-                () => {
-                    selected.clear();
-                    renderWorks();
-                };
+    creator.oninput =
+        privacy.onchange =
+            sort.onchange =
+                view.onchange =
+                    () => {
+                        selected.clear();
+                        renderWorks();
+                    };
 action(document.querySelector("#load"), async () => {
     await load();
     result.textContent = "Library loaded.";

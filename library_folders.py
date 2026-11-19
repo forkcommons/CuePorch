@@ -13,18 +13,51 @@ CREATE UNIQUE INDEX IF NOT EXISTS library_folder_sibling
  ON library_folder(COALESCE(parent, ''), name COLLATE NOCASE);
 CREATE TABLE IF NOT EXISTS library_placement(
  work TEXT PRIMARY KEY, folder TEXT REFERENCES library_folder(id));
+CREATE TABLE IF NOT EXISTS library_star(
+ actor TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('work','folder')),
+ item TEXT NOT NULL, PRIMARY KEY(actor,kind,item));
 """
 
 
 def register(app, tx, staff, read_works):
+    @app.put("/api/library/star/<kind>/<item>")
+    def set_star(kind, item):
+        actor = staff()
+        body = request.get_json()
+        if not isinstance(body, dict) or type(body.get("starred")) is not bool:
+            abort(400, "Specify whether this item is starred.")
+        with tx() as con:
+            if kind == "folder":
+                exists = con.execute(
+                    "SELECT 1 FROM library_folder WHERE id=?", (item,)
+                ).fetchone()
+            elif kind == "work":
+                exists = any(work["id"] == item for work in read_works())
+            else:
+                abort(404)
+            if not exists:
+                abort(404)
+            if body["starred"]:
+                con.execute("INSERT OR IGNORE INTO library_star VALUES(?,?,?)", (actor, kind, item))
+            else:
+                con.execute(
+                    "DELETE FROM library_star WHERE actor=? AND kind=? AND item=?",
+                    (actor, kind, item),
+                )
+        return "", 204
+
     @app.get("/api/library/folders")
     def library_folders():
-        staff()
+        actor = staff()
         with tx() as con:
             return [
                 dict(row)
                 for row in con.execute(
-                    "SELECT * FROM library_folder ORDER BY name COLLATE NOCASE, id"
+                    """SELECT f.*, s.item IS NOT NULL AS starred
+                       FROM library_folder f LEFT JOIN library_star s
+                       ON s.kind='folder' AND s.item=f.id AND s.actor=?
+                       ORDER BY f.name COLLATE NOCASE, f.id""",
+                    (actor,),
                 )
             ]
 

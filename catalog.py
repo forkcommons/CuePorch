@@ -3,6 +3,7 @@
 import json
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from filelock import FileLock
@@ -17,6 +18,7 @@ def merge_collection(source, destination):
         if incoming["institution"] != current["institution"]:
             raise ValueError("Source belongs to a different institution")
         works = {w["id"]: w for w in current["works"]}
+        added_at = datetime.now(timezone.utc).isoformat()
         for work in incoming["works"]:
             for item in work["files"]:
                 digest = item["sha256"]
@@ -35,6 +37,10 @@ def merge_collection(source, destination):
                 finally:
                     temporary.unlink(missing_ok=True)
             prior = works.get(work["id"])
+            if prior is None:
+                work["library_added_at"] = added_at
+            elif "library_added_at" in prior:
+                work["library_added_at"] = prior["library_added_at"]
             if prior and prior["files"] != work["files"]:
                 versions = prior.get("versions_history", [])
                 work["versions_history"] = versions + [

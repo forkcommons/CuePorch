@@ -68,7 +68,8 @@ def build_server(directory, port=0):
                             name="Station meeting",
                             privacy=dict(view="anybody", embed="public"),
                             duration=4,
-                            modified_time="2026-11-01",
+                            user=dict(name="Station team"),
+                            modified_time="2026-11-03",
                             download=[
                                 dict(
                                     quality="source",
@@ -83,6 +84,7 @@ def build_server(directory, port=0):
                             name="Exhibition cut",
                             privacy=dict(view="nobody", embed="whitelist"),
                             duration=4,
+                            user=dict(name="Independent artist"),
                             modified_time="2026-11-01",
                             download=[
                                 dict(
@@ -98,7 +100,8 @@ def build_server(directory, port=0):
                             name="Exhibition cut",
                             privacy=dict(view="nobody", embed="private"),
                             duration=4,
-                            modified_time="2026-11-01",
+                            user=dict(name="Independent artist"),
+                            modified_time="2026-11-02",
                             download=[],
                         ),
                     ]

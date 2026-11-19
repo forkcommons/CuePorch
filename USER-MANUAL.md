@@ -27,7 +27,7 @@ For an actual account, start a separate installation without `--simulate`. Use t
 
 ### Organize imported works
 
-Open **Manage library and embeds**, then **Load library**. The root lists works without a folder. Choose **New folder** and select its parent and color. Open an existing folder to edit its name, parent or color. Select works, choose a destination and select **Move selected**. The work IDs, delivery jobs and watch links stay the same. Search titles and filter by recorded source privacy within the current folder. Choose a list or grid and sort by title or duration. The source privacy column displays the imported record. Folder placement leaves the work’s access settings as they were.
+Open **Manage library and embeds**, then **Load library**. The root lists works without a folder. Choose **New folder** and select its parent and color. Open an existing folder to edit its name, parent or color. Select works, choose a destination and select **Move selected**. The work IDs, delivery jobs and watch links stay the same. Search titles and filter by recorded source privacy within the current folder. Choose a list or grid and sort by title, added date, modification date or duration. Filter by creator when the source provides a name. Use Star work or Star folder to keep frequently used items in your personal Starred view. Dates and attribution depend on the available import and library history. The source privacy column displays the imported record. Folder placement leaves the work’s access settings as they were.
 
 ### Artists and exhibitors
 

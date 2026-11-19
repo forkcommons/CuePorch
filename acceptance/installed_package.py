@@ -18,13 +18,120 @@ p.add_argument(
     type=Path,
     help="Install into the isolated launcher directory and verify the generated Start menu shortcut",
 )
+p.add_argument(
+    "--windows-baseline-setup",
+    type=Path,
+    help="Exercise an upgrade from the released 0.2.0 Setup executable",
+)
 args = p.parse_args()
+if args.windows_baseline_setup and not args.windows_setup:
+    p.error("--windows-baseline-setup requires --windows-setup")
 results = []
 
 
 def serve(server):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return f"http://127.0.0.1:{server.server_port}"
+
+
+def install_windows(setup, home):
+    subprocess.run(
+        [
+            str(setup.resolve()),
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/DIR=" + str(args.launcher.resolve().parent),
+            "/LIBRARY=" + str(home),
+        ],
+        check=True,
+    )
+    shortcut_script = """
+    $link=Join-Path ([Environment]::GetFolderPath('Programs')) 'ForkCommons/CuePorch.lnk'
+    $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($link)
+    [pscustomobject]@{target=$shortcut.TargetPath; arguments=$shortcut.Arguments}|ConvertTo-Json -Compress
+    """
+    link = json.loads(
+        subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", shortcut_script],
+            text=True,
+        )
+    )
+    assert Path(link["target"]).resolve() == args.launcher.resolve(), link[
+        "target"
+    ]
+    assert link["arguments"] == '--data "' + str(home) + '"', link[
+        "arguments"
+    ]
+
+def prepare_previous_windows(home, source, venue):
+    install_windows(args.windows_baseline_setup, home)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        [str(args.launcher.resolve()), "--data", str(home), "--headless"],
+        env=dict(os.environ, CUEPORCH_DESKTOP_PORT=str(port), CUEPORCH_SIMULATOR=source),
+    )
+    try:
+        marker = home / "desktop-session.json"
+        for _ in range(200):
+            if proc.poll() is not None:
+                raise RuntimeError("Released 0.2.0 service exited during setup")
+            if marker.exists():
+                break
+            time.sleep(0.1)
+        desktop = json.loads(marker.read_text())["url"]
+        with sync_playwright() as pw:
+            browser = chromium(pw)
+            page = browser.new_page()
+            page.goto(desktop)
+            page.get_by_label("Institution name").fill("Upgrade from 0.2.0")
+            page.get_by_role("button", name="Save setup").click()
+            page.get_by_role("link", name="Open operator console").click()
+            page.get_by_role("link", name="Move from Vimeo").click()
+            page.get_by_role("button", name="Preview transfer").click()
+            page.wait_for_function("document.querySelector('#status').textContent.startsWith('inventoried')")
+            page.get_by_role("button", name="Transfer privately").click()
+            page.wait_for_function("document.querySelector('#status').textContent.startsWith('transferred')")
+            browser.close()
+        keys = json.loads((home / "operator.json").read_text())
+        auth = {"Authorization": "Bearer " + keys["operator"]}
+        response = requests.get(base + "/api/screening-copies", headers=auth, timeout=10)
+        response.raise_for_status()
+        copy = next(work for work in response.json() if work["title"] == "Exhibition cut")
+        response = requests.post(
+            base + "/api/grants", headers=auth, timeout=10,
+            json=dict(work=copy["work"], version=copy["version"], origin=venue,
+                      starts=time.time() - 1, ends=time.time() + 900,
+                      audience="Members", agreement="0.2.0 upgrade rehearsal"),
+        )
+        response.raise_for_status()
+        grant = response.json()
+        destination = "https://station.example/videos/embed/fixture"
+        requests.put(
+            base + "/api/routes/meeting/baseline", headers=auth, timeout=10,
+            json=dict(revision="one", destination=destination, public_authorized=True),
+        ).raise_for_status()
+        requests.put(
+            base + "/api/policy/moderation", headers=auth, timeout=10,
+            json={"required": True},
+        ).raise_for_status()
+        requests.post(
+            base + "/desktop/api/quit", timeout=10,
+            headers={"Authorization": "Bearer " + desktop.split("#")[1]},
+        ).raise_for_status()
+        proc.wait(timeout=20)
+        return dict(grant=grant, copy=copy, route="/embed/meeting/baseline", destination=destination)
+    finally:
+        if proc.poll() is None:
+            import psutil
+
+            for child in psutil.Process(proc.pid).children(recursive=True):
+                child.terminate()
+            proc.terminate()
+            proc.wait()
 
 
 class Museum(BaseHTTPRequestHandler):
@@ -48,9 +155,15 @@ with tempfile.TemporaryDirectory() as tmp:
     museum = ThreadingHTTPServer(("127.0.0.1", 0), Museum)
     venue = serve(museum)
     try:
-        for upgrade in (False, True):
-            home = root / ("upgraded" if upgrade else "new")
-            if upgrade:
+        baselines = [None, "0.1.0"]
+        if args.windows_baseline_setup:
+            baselines.append("0.2.0")
+        for version in baselines:
+            upgrade = version is not None
+            home = root / ("upgrade-" + version if upgrade else "new")
+            if version == "0.2.0":
+                prior = prepare_previous_windows(home, source, venue)
+            elif version == "0.1.0":
                 subprocess.run(
                     [
                         sys.executable,
@@ -63,43 +176,14 @@ with tempfile.TemporaryDirectory() as tmp:
                     check=True,
                 )
                 prior = json.loads((root / "upgrade-proof-private.json").read_text())
+            if upgrade:
                 prior_hashes = {
                     f.name: hashlib.sha256(f.read_bytes()).hexdigest()
                     for f in (home / "collection/objects").iterdir()
                 }
                 prior_keys = (home / "operator.json").read_bytes()
             if args.windows_setup:
-                import platform
-
-                assert platform.system() == "Windows"
-                subprocess.run(
-                    [
-                        str(args.windows_setup.resolve()),
-                        "/VERYSILENT",
-                        "/SUPPRESSMSGBOXES",
-                        "/NORESTART",
-                        "/DIR=" + str(args.launcher.resolve().parent),
-                        "/LIBRARY=" + str(home),
-                    ],
-                    check=True,
-                )
-                shortcut_script = """
-                $link=Join-Path ([Environment]::GetFolderPath('Programs')) 'ForkCommons/CuePorch.lnk'
-                $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($link)
-                [pscustomobject]@{target=$shortcut.TargetPath; arguments=$shortcut.Arguments}|ConvertTo-Json -Compress
-                """
-                link = json.loads(
-                    subprocess.check_output(
-                        ["powershell.exe", "-NoProfile", "-Command", shortcut_script],
-                        text=True,
-                    )
-                )
-                assert Path(link["target"]).resolve() == args.launcher.resolve(), link[
-                    "target"
-                ]
-                assert link["arguments"] == '--data "' + str(home) + '"', link[
-                    "arguments"
-                ]
+                install_windows(args.windows_setup, home)
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
@@ -109,6 +193,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 env=dict(
                     os.environ,
                     CUEPORCH_DESKTOP_PORT=str(port),
+                    CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
                     CUEPORCH_SIMULATOR=source,
                 ),
             )
@@ -213,6 +298,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     results.append(
                         dict(
                             upgrade=upgrade,
+                            baseline=version,
                             inventory=3,
                             missing_media=1,
                             repeat_ids_unique=True,

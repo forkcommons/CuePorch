@@ -48,7 +48,7 @@ def export(collection, database, target):
                 "institution": owner[0],
                 "collection": "collection/manifest.json",
             }
-            for table in ("library_folder", "library_placement"):
+            for table in ("library_folder", "library_placement", "library_star"):
                 if db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone():
