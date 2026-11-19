@@ -343,11 +343,11 @@ def play_event(page, stable, status, navigate=True):
 
 
 @contextmanager
-def send_signal(ffmpeg, server, key, seconds, muxer="flv"):
+def send_signal(ffmpeg, server, key, seconds, muxer="flv", *, size="320x180"):
     address = f"{server}/{key}" if key else server
     with subprocess.Popen(
         [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
-         "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=550",
+         "-i", f"testsrc2=size={size}:rate=24", "-f", "lavfi", "-i", "sine=frequency=550",
          "-t", str(seconds), "-c:v", "libx264", "-preset", "veryfast", "-g", "48",
          "-sc_threshold", "0", "-c:a", "aac", "-f", muxer, address],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

@@ -30,6 +30,7 @@ interface AudienceMetrics {
 interface ProductionCaptions {enabled: boolean; language: string; status: string; cue_count: number;}
 interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
 interface LibraryRecording {state: string; work: string | null; error: string | null;}
+interface PlaylistOptions {enabled: boolean; autoplay_next: boolean; loop: boolean;}
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
@@ -68,6 +69,11 @@ const libraryRecording = element<HTMLDetailsElement>("eventLibraryRecording");
 const libraryRecordingStatus = element("libraryRecordingStatus");
 const libraryRecordingLink = element<HTMLAnchorElement>("libraryRecordingLink");
 const saveLibraryRecording = button("saveLibraryRecording");
+const eventPlaylistPanel = element<HTMLDetailsElement>("eventPlaylistSettings");
+const eventPlaylistForm = element<HTMLFormElement>("eventPlaylistForm");
+const eventPlaylistStatus = element("eventPlaylistStatus");
+const playlistOptions = ["enabled", "autoplay_next", "loop"] as const;
+const playlistOption = (name: keyof PlaylistOptions) => eventPlaylistForm.elements.namedItem(name) as HTMLInputElement;
 let replayCaptionRevision = "";
 const destinations = element<HTMLDetailsElement>("eventDestinations");
 const destinationList = element("destinationList");
@@ -191,6 +197,11 @@ function choose(event: LiveEvent, instance: Occurrence) {
   libraryRecording.open = false;
   libraryRecordingStatus.textContent = "";
   libraryRecordingLink.hidden = saveLibraryRecording.disabled = true;
+  eventPlaylistPanel.open = false;
+  eventPlaylistPanel.hidden = event.event.schedule.repeat === "none";
+  eventPlaylistForm.reset();
+  eventPlaylistStatus.textContent = "";
+  button("saveEventPlaylist").disabled = true;
   destinations.open = false;
   destinationForm.reset();
   destinationList.replaceChildren();
@@ -640,6 +651,17 @@ async function updateLibraryRecording(save = false) {
 libraryRecording.ontoggle = () => { if (libraryRecording.open) void action(() => updateLibraryRecording()); };
 button("refreshLibraryRecording").onclick = () => void action(() => updateLibraryRecording());
 saveLibraryRecording.onclick = () => void action(() => updateLibraryRecording(true));
+
+async function updatePlaylist(save = false) {
+  const body = save ? Object.fromEntries(playlistOptions.map(name => [name, playlistOption(name).checked])) : undefined;
+  const result = await request<PlaylistOptions>(`${root}/${active!.event.id}/playlist`, save ? "PUT" : "GET", body);
+  for (const name of playlistOptions) playlistOption(name).checked = result[name];
+  button("saveEventPlaylist").disabled = false;
+  eventPlaylistStatus.textContent = save ? "Replay playlist settings saved." : "";
+}
+
+eventPlaylistPanel.ontoggle = () => { if (eventPlaylistPanel.open) void action(() => updatePlaylist()); };
+eventPlaylistForm.onsubmit = (event) => { event.preventDefault(); void action(() => updatePlaylist(true)); };
 
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;

@@ -8,11 +8,14 @@
 </head>
 <body class="live-event-page">
   <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
-        data-embed="{{ 'yes' if embed else 'no' }}" data-latency="{{ event.latency }}">
+        data-embed="{{ 'yes' if embed else 'no' }}" data-latency="{{ event.latency }}"
+        data-occurrence="{{ occurrence.id if occurrence else '' }}" data-timezone="{{ event.schedule.timezone }}">
     <header>
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
-      {% if occurrence %}<p><time datetime="{{ occurrence.start }}">{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }})</time></p>{% endif %}
+      <p id="eventOccurrenceTime" {% if not occurrence %}hidden{% endif %}><time {% if occurrence %}datetime="{{ occurrence.start }}"{% endif %}>
+        {% if occurrence %}{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }}){% endif %}
+      </time></p>
       <p role="status" id="eventStatus">{{ status }}</p>
     </header>
     {% if registration %}
@@ -27,11 +30,19 @@
         <button type="button" id="refreshEvent">Check stream status</button>
       {% endif %}
     </div>
+    <nav id="eventArchivePlaylist" aria-label="Past broadcasts" hidden>
+      <h2>Past broadcasts</h2>
+      <button type="button" id="archivePrevious">Previous replay</button>
+      <label>Choose a broadcast <select id="archiveChoice"></select></label>
+      <button type="button" id="archiveNext">Next replay</button>
+      <a href="{{ url_for('event_embed' if embed else 'event_page', slug=request.view_args.slug) }}">Open current event</a>
+    </nav>
     <section id="eventCaptions" data-endpoint="{{ caption_endpoint or '' }}" aria-label="Live captions" hidden>
       <button type="button" id="toggleLiveCaptions" aria-pressed="false" disabled>Show live captions</button>
       <details><summary id="eventTranscriptLabel">Live transcript</summary><ol aria-label="Caption lines"></ol></details>
       <p role="status"></p>
     </section>
+    <div id="eventAudiencePanels">
     {% if chat_endpoint %}
       <section id="audienceChat" data-endpoint="{{ chat_endpoint }}" data-embed="{{ 'yes' if embed else 'no' }}"
                aria-labelledby="chatHeading" hidden>
@@ -66,7 +77,9 @@
         <p id="engagementStatus" role="status"></p>
       </section>
     {% endif %}
+    </div>
   </main>
+  <script id="eventArchiveData" type="application/json">{{ playlist | tojson }}</script>
   {% if not registration %}<script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>{% endif %}
   <script type="module" src="{{ url_for('static', filename='ui/live_event.js') }}"></script>
   {% if chat_endpoint %}<script type="module" src="{{ url_for('static', filename='ui/event_chat.js') }}"></script>{% endif %}

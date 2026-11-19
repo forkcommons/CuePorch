@@ -18,6 +18,7 @@ import event_chat
 import event_captions
 import event_engagement
 import event_library_recordings
+import event_playlist
 import event_program
 import event_replay_captions
 import event_schedule
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
  delivery TEXT NOT NULL, PRIMARY KEY(event,opens));
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
-       + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA)
+       + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
+       + event_playlist.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -221,6 +223,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
+    event_playlist.register(app, tx, staff, read)
+
+    def viewer_enrolled(token, scope, released_archive):
+        try:
+            registered_scope = guests.loads(token, max_age=12 * 3600)
+        except BadSignature:
+            return False
+        # A submitted registration covers the other released entries of the same event playlist.
+        # Media, captions and engagement continue to check the exact occurrence being requested.
+        return registered_scope == scope or (released_archive and isinstance(registered_scope, list)
+            and len(registered_scope) == 5 and registered_scope[:2] == scope[:2] and registered_scope[3:] == scope[3:])
 
     def locked(uid):
         if not re.fullmatch(r"[a-f0-9]{32}", uid):
@@ -373,8 +386,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         form = library_registration.active(con, "event", row["id"])
         scope = [row["id"], row["revision"], opens, form["revision"] if form else None]
         embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
-        if form and not valid_ticket(guests, request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], 12 * 3600):
-            abort(404)
+        if form:
+            on_playlist = (delivery and delivery["delivery"] == "replay"
+                           and event_playlist.settings(con, row["id"])["enabled"]
+                           and event["schedule"]["repeat"] != "none")
+            if not viewer_enrolled(request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], on_playlist):
+                abort(404)
         now = datetime.now(timezone.utc)
         active = now < datetime.fromisoformat(slot["end"]) and (not delivery or delivery["delivery"] != "replay")
         return scope, active
@@ -654,6 +671,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         grant = None
         enrollment = None
         form_error = None
+        archives = None
         with tx() as con:
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
@@ -676,24 +694,29 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         shown = selected_open(event, saved["opens"])
             delivery = occurrence(con, row["id"], shown["id"]) if shown else None
             withdrawn = delivery and delivery["delivery"] in ("withdrawing", "withdrawn")
-            form = library_registration.active(con, "event", row["id"]) if shown and not withdrawn else None
+            form = library_registration.active(con, "event", row["id"]) if shown else None
+            options = event_playlist.settings(con, row["id"])
+            playlist_enabled = options["enabled"] and event["schedule"]["repeat"] != "none"
             captioned = bool(shown and not withdrawn and (not delivery or delivery["delivery"] != "replay") and
                              event_captions.active_track(con, row["id"], shown["id"]))
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             if form:
-                if request.method == "POST":
+                if request.method == "POST" and not withdrawn:
                     if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
                         abort(403, "Open the registration form again.")
                     form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
                     if not form_error:
                         grant = guests.dumps(scope)
                 elif token := request.headers.get("X-CuePorch-Event-Viewer"):
-                    if valid_ticket(guests, token, scope, 12 * 3600):
+                    on_playlist = playlist_enabled and (withdrawn or (delivery and delivery["delivery"] == "replay"))
+                    if viewer_enrolled(token, scope, on_playlist):
                         grant = token
-                if not grant and not json_status:
+                if not grant and not json_status and not withdrawn:
                     enrollment = forms.dumps(scope)
+            if playlist_enabled and (not form or grant):
+                archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
         address = None
         analytics_token = None
         protected = bool(form)
@@ -703,7 +726,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         status = "Scheduled"
         if withdrawn:
             status = "This occurrence was withdrawn"
-        if protected and not grant:
+        if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
             try:
@@ -713,8 +736,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     available = (observed["public"] != host_private and (observed["state"] == "live" or
                                  (observed["state"] == "replay" and delivery["delivery"] == "replay")))
                     if available:
-                        playlist = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
-                        directory, filename = root_path(delivery["origin"], playlist, delivery["remote"], host_private)
+                        manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
+                        directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)
                         gateway = HLS_PREFIXES.index(directory.rsplit("/", 1)[0] + "/")
                         session = files.dumps(scope + [delivery["remote"], gateway, observed["state"] == "replay"])
                         address = url_for("event_media_file", token=session, filename=filename)
@@ -743,12 +766,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             elif captioned:
                 caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"])
         view = (dict(status=status, address=address, protected=protected, native_video=native_video,
-                     captions=caption_endpoint, analytics_token=analytics_token)
+                     captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=shown)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint,
-                                     analytics_token=analytics_token,
+                                     analytics_token=analytics_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
