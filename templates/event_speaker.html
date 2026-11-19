@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Guest speaker · CuePorch</title>
+  <link rel="stylesheet" href="/static/cueporch.css">
+</head>
+<body data-speaker-endpoint="{{ endpoint }}">
+  <main>
+    <h1>Guest speaker</h1>
+    <h2 id="guestSpeakerName" hidden></h2>
+    <p id="guestSpeakerStatus" role="status">Use your invitation to join the speaker room.</p>
+    <div class="video-work-actions">
+      <button type="button" id="joinSpeaker">Join with camera and mic</button>
+      <button type="button" id="toggleSpeakerCamera" hidden>Turn camera off</button>
+      <button type="button" id="toggleSpeakerMic" hidden>Mute microphone</button>
+      <button type="button" id="leaveSpeaker" hidden>Leave speaker room</button>
+    </div>
+    <video id="guestSpeakerPreview" muted playsinline autoplay hidden aria-label="My camera preview"></video>
+    {% include 'speaker_chat.html' %}
+  </main>
+  <script type="module" src="/static/ui/event_speaker.js"></script>
+</body>
+</html>

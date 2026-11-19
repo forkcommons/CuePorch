@@ -1,9 +1,10 @@
-import { drawRecording, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
+import { drawRecording, drawTileGrid, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
 import { openRecordingStorage } from "./recording_draft.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { BrowserBroadcast } from "./event_broadcast.js";
 import { setupSceneDeck } from "./event_scenes.js";
 import { relaySummary } from "./event_health.js";
+import { setupSpeakers } from "./studio_speakers.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const select = (id) => element(id);
@@ -28,6 +29,8 @@ const relayHealth = document.querySelector("#studioRelayHealth");
 const mode = document.querySelector("#browserProductionMode");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
 const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, updateControls, selectClipAudio) : null;
+const speakerEndpoint = document.body.dataset.speakerEndpoint;
+const speakers = speakerEndpoint ? setupSpeakers(speakerEndpoint, () => key.value, () => { wireAudio(); updateControls(); }) : null;
 let camera = null;
 let screen = null;
 let active = null;
@@ -52,7 +55,7 @@ function hasSource(source) {
     return source?.stream.getTracks().some(track => track.readyState === "live");
 }
 function ready() {
-    return Boolean(hasSource(screen) || hasSource(camera) || scenes?.ready());
+    return Boolean(hasSource(screen) || hasSource(camera) || scenes?.ready() || speakers?.activeFeeds().length);
 }
 function closeSource(source) {
     source?.stream.getTracks().forEach(track => track.stop());
@@ -130,7 +133,8 @@ function wireAudio() {
         return;
     const mic = camera?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
     const shared = screen?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-    for (const track of [...mic, ...shared]) {
+    const guests = speakers?.activeFeeds().flatMap(feed => feed.stream.getAudioTracks().filter(track => track.readyState === "live")) || [];
+    for (const track of [...mic, ...shared, ...guests]) {
         const node = audio.createMediaStreamSource(new MediaStream([track]));
         node.connect(mix);
         if (mic.includes(track))
@@ -167,9 +171,16 @@ function draw(now) {
         return;
     const options = { layout: select("recordLayout").value, color: input("recordColor").value,
         background: select("recordBackground").value };
-    const painted = scenes?.draw(context, camera?.preview || null, screen?.preview || null);
-    if (!painted)
-        drawRecording(context, options, camera?.preview || null, screen?.preview || null);
+    const guests = speakers?.activeFeeds().flatMap(feed => feed.preview ? [feed.preview] : []) || [];
+    const presenter = guests[0] || camera?.preview || null;
+    const painted = scenes?.draw(context, presenter, screen?.preview || null);
+    if (!painted && guests.length > 1) {
+        const local = [screen?.preview, camera?.preview].filter(item => item != null);
+        drawTileGrid(context, [...guests, ...local], options.color);
+    }
+    else if (!painted) {
+        drawRecording(context, options, presenter, screen?.preview || null);
+    }
     if (analyser && audioSources.length) {
         analyser.getByteTimeDomainData(audioSamples);
         const total = audioSamples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0);
@@ -552,6 +563,7 @@ identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)
     run(open);
 window.addEventListener("pagehide", () => {
+    speakers?.close();
     scenes?.close();
     closeSource(camera);
     closeSource(screen);

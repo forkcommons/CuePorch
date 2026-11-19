@@ -1,9 +1,10 @@
-import {drawRecording, mediaPreview, recordingMime, recordingSize, type Composition} from "./recording_composition.js";
+import {drawRecording, drawTileGrid, mediaPreview, recordingMime, recordingSize, type Composition} from "./recording_composition.js";
 import {openRecordingStorage, type RecordingDraft} from "./recording_draft.js";
 import {uploadLibraryFile} from "./library_upload.js";
 import {BrowserBroadcast} from "./event_broadcast.js";
 import {setupSceneDeck} from "./event_scenes.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
+import {setupSpeakers} from "./studio_speakers.js";
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => element<HTMLInputElement>(id);
@@ -29,6 +30,8 @@ const relayHealth = document.querySelector<HTMLElement>("#studioRelayHealth");
 const mode = document.querySelector<HTMLSelectElement>("#browserProductionMode");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
 const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, updateControls, selectClipAudio) : null;
+const speakerEndpoint = document.body.dataset.speakerEndpoint;
+const speakers = speakerEndpoint ? setupSpeakers(speakerEndpoint, () => key.value, () => {wireAudio(); updateControls();}) : null;
 
 interface Folder { id: string; parent: string | null; name: string }
 interface Source { stream: MediaStream; preview: HTMLVideoElement | null }
@@ -76,7 +79,7 @@ function hasSource(source: Source | null) {
 }
 
 function ready() {
-  return Boolean(hasSource(screen) || hasSource(camera) || scenes?.ready());
+  return Boolean(hasSource(screen) || hasSource(camera) || scenes?.ready() || speakers?.activeFeeds().length);
 }
 
 function closeSource(source: Source | null) {
@@ -149,7 +152,8 @@ function wireAudio() {
   if (!audio || !analyser || !mix) return;
   const mic = camera?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
   const shared = screen?.stream.getAudioTracks().filter(track => track.readyState === "live") || [];
-  for (const track of [...mic, ...shared]) {
+  const guests = speakers?.activeFeeds().flatMap(feed => feed.stream.getAudioTracks().filter(track => track.readyState === "live")) || [];
+  for (const track of [...mic, ...shared, ...guests]) {
     const node = audio.createMediaStreamSource(new MediaStream([track]));
     node.connect(mix);
     if (mic.includes(track)) node.connect(analyser);
@@ -187,8 +191,15 @@ function draw(now: number) {
   if (now - lastPaint < 28) return;
   const options = {layout: select("recordLayout").value, color: input("recordColor").value,
     background: select("recordBackground").value} as Composition;
-  const painted = scenes?.draw(context, camera?.preview || null, screen?.preview || null);
-  if (!painted) drawRecording(context, options, camera?.preview || null, screen?.preview || null);
+  const guests = speakers?.activeFeeds().flatMap(feed => feed.preview ? [feed.preview] : []) || [];
+  const presenter = guests[0] || camera?.preview || null;
+  const painted = scenes?.draw(context, presenter, screen?.preview || null);
+  if (!painted && guests.length > 1) {
+    const local = [screen?.preview, camera?.preview].filter(item => item != null);
+    drawTileGrid(context, [...guests, ...local], options.color);
+  } else if (!painted) {
+    drawRecording(context, options, presenter, screen?.preview || null);
+  }
   if (analyser && audioSources.length) {
     analyser.getByteTimeDomainData(audioSamples);
     const total = audioSamples.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0);
@@ -530,6 +541,7 @@ async function open() {
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value) run(open);
 window.addEventListener("pagehide", () => {
+  speakers?.close();
   scenes?.close();
   closeSource(camera);
   closeSource(screen);

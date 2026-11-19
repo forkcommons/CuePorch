@@ -6,7 +6,8 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }} · CuePorch</title>
 </head>
-<body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}">
+<body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}"
+      data-speaker-endpoint="{{ speaker_endpoint or '' }}" data-public-url="{{ speaker_public_url or '' }}">
   <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
@@ -35,6 +36,20 @@
         <ul id="recordDrafts" aria-label="Recovered recordings"></ul>
       </section>
       <aside aria-label="Recording controls">
+        {% if speaker_endpoint %}
+        <details id="studioSpeakers">
+          <summary>Speakers</summary>
+          <label><input type="checkbox" id="reviewSpeakers"> Approve invited speakers before they connect</label>
+          <form id="inviteSpeaker">
+            <label>Speaker name <input name="name" maxlength="72" required></label>
+            <button type="submit">Create invitation</button>
+          </form>
+          <label>Speaker invitation link <input id="studioSpeakerLink" readonly></label>
+          <ol id="studioSpeakerList" aria-label="Invited speakers"></ol>
+          <p id="studioSpeakerStatus" role="status"></p>
+          {% include 'speaker_chat.html' %}
+        </details>
+        {% endif %}
         {% if scene_endpoint %}
         <details id="studioScenes">
           <summary>Scenes and graphics</summary>

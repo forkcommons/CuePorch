@@ -41,6 +41,17 @@ export function recordingSize(shortSide, aspect) {
     const factor = shortSide / Math.min(horizontal, vertical);
     return { width: 2 * Math.round(horizontal * factor / 2), height: 2 * Math.round(vertical * factor / 2) };
 }
+export function drawTileGrid(context, sources, color) {
+    const { width, height } = context.canvas;
+    const columns = Math.ceil(Math.sqrt(sources.length * width / height));
+    const rows = Math.ceil(sources.length / columns);
+    const tileWidth = width / columns, tileHeight = height / rows;
+    context.fillStyle = color;
+    context.fillRect(0, 0, width, height);
+    for (const [index, source] of sources.entries()) {
+        fit(context, source, index % columns * tileWidth, Math.floor(index / columns) * tileHeight, tileWidth, tileHeight);
+    }
+}
 export function mediaPreview(source) {
     if (!source.getVideoTracks().length)
         return null;
