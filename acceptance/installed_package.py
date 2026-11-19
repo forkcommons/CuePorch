@@ -29,6 +29,7 @@ from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_recording import check_recording
+from installed_timeline import check_timeline, timeline_fixtures
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -46,9 +47,13 @@ p.add_argument(
     type=Path,
     help="Exercise an upgrade from the released 0.2.0 Setup executable",
 )
+p.add_argument("--only", choices=("fresh", "0.1.0", "0.2.0"),
+               help="Run just one available installation case")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
+if args.only == "0.2.0" and not args.windows_baseline_setup:
+    p.error("--only 0.2.0 requires --windows-baseline-setup")
 results = []
 
 
@@ -189,6 +194,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
     replacement = generate_replacement(root / "replacement.mp4")
     editor_master = root / "editor-master.mp4"
     editor_fixture(editor_master)
+    timeline_green, timeline_music = timeline_fixtures(root)
     review_update = generate_replacement(root / "review-update.mp4", width=192)
     caption_video = speech_video(args.caption_speech, root / "caption-speech.mp4") if args.caption_speech else None
     src = build_server(root / "fixture")
@@ -200,6 +206,9 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         if args.windows_baseline_setup:
             baselines.append("0.2.0")
         for version in baselines:
+            if args.only and args.only != (version or "fresh"):
+                continue
+            print(f"Running installed baseline {version or 'fresh'}", flush=True)
             upgrade = version is not None
             home = root / ("upgrade-" + version if upgrade else "new")
             if version == "0.2.0":
@@ -366,6 +375,10 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     recording = check_recording(pw, base, auth)
+                    timeline = check_timeline(
+                        page, browser, base, auth, editor_master, timeline_green, timeline_music,
+                        home / "institution.sqlite",
+                    )
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -399,6 +412,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             advanced_analytics=advanced_analytics,
                             editing=editing,
                             recording=recording,
+                            timeline=timeline,
                         )
                     )
                 quit_response = requests.post(
@@ -406,7 +420,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     headers={"Authorization": "Bearer " + desktop.split("#")[1]},
                 )
                 quit_response.raise_for_status()
-                proc.wait(timeout=20)
+                assert proc.wait(timeout=20) == 0, f"{home.name}: CuePorch reported a shutdown error"
                 args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
             finally:
                 if proc.poll() is None:

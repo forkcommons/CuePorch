@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="/static/cueporch.css">
+  <title>Timeline editor · CuePorch</title>
+</head>
+<body data-work="{{ work }}">
+  <nav aria-label="Operator">
+    <a href="/operator/videos/{{ work }}">Video details</a>
+    <a href="/operator/videos/{{ work }}/editing">Trim and GIF</a>
+    <a href="/operator/record">Record Studio</a>
+  </nav>
+  <h1>Timeline editor</h1>
+  <form id="timelineIdentity">
+    <label>Operator credential <input id="timelineKey" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open timeline</button>
+  </form>
+  <p id="timelineStatus" role="status"></p>
+  <main id="timelineStudio" hidden>
+    <div class="video-work-actions">
+      <button id="undoTimeline" type="button">Undo</button>
+      <button id="redoTimeline" type="button">Redo</button>
+      <button id="saveTimeline" type="button">Save draft</button>
+      <button id="renderTimeline" type="button">Render as a new version</button>
+      <button id="discardTimeline" type="button">Reset draft</button>
+    </div>
+    <p id="timelineRecovery" hidden>Opened your saved draft.</p>
+    <div class="video-workspace">
+      <section aria-labelledby="timelinePreviewTitle">
+        <h2 id="timelinePreviewTitle">Preview</h2>
+        <video id="timelinePreview" controls playsinline hidden aria-label="Timeline source video"></video>
+        <p id="timelineSourceName"></p>
+        <div class="video-work-actions">
+          <button id="splitTimeline" type="button" disabled>Split at preview time</button>
+          <button id="playTimelineClip" type="button" disabled>Play selected clip</button>
+        </div>
+      </section>
+      <aside aria-label="Timeline settings">
+        <fieldset>
+          <legend>Canvas</legend>
+          <label>Aspect ratio <select id="timelineRatio">
+            <option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option>
+          </select></label>
+          <label>Background color <input type="color" id="timelineColor"></label>
+        </fieldset>
+        <fieldset>
+          <legend>Library media</legend>
+          <label>Find video <input id="timelineSearch" type="search"></label>
+          <label for="timelineVideo">Add video</label>
+          <select id="timelineVideo"></select>
+          <button id="appendTimeline" type="button">Add to timeline</button>
+        </fieldset>
+        <fieldset>
+          <legend>Background audio</legend>
+          <label for="timelineMusic">Audio work</label>
+          <select id="timelineMusic"><option value="">None</option></select>
+          <label>Start at audio time (seconds) <input id="timelineMusicStart" type="number" step="0.001" min="0"></label>
+          <label>Volume (%) <input id="timelineMusicGain" type="number" min="0" max="100" step="1"></label>
+          <button id="setTimelineMusic" type="button">Apply background audio</button>
+        </fieldset>
+      </aside>
+    </div>
+    <section aria-labelledby="timelineHeading">
+      <h2 id="timelineHeading">Video track</h2>
+      <p id="timelineDuration"></p>
+      <ol id="timelineClips"></ol>
+    </section>
+    <section id="timelineTranscript" aria-labelledby="timelineTranscriptHeading" hidden>
+      <h2 id="timelineTranscriptHeading">Transcript of the selected source</h2>
+      <label>Subtitle track <select id="timelineSubtitle"></select></label>
+      <label>Find text <input id="timelineTextSearch" type="search"></label>
+      <ul id="timelineCues" class="trim-cues"></ul>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/timeline_studio.js"></script>
+</body>
+</html>

@@ -202,6 +202,8 @@ def main():
                     )
             settings = new
             save(config, settings)
+            if institution:
+                institution.extensions["stop_editor"]()
             institution = activate()
             return jsonify(ok=True)
 
@@ -237,6 +239,8 @@ def main():
     finally:
         server.task_dispatcher.shutdown()
         wasyncore.close_all(server._map)
+        if institution:
+            institution.extensions["stop_editor"]()
         handle.unlink(missing_ok=True)
         lock.release()
 

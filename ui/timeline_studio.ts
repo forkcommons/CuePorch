@@ -1,0 +1,380 @@
+export {};
+
+interface Clip { work: string; cut: string; start: number; end: number }
+interface Music { work: string; cut?: string; start: number; gain: number }
+interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null }
+interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
+interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null }
+interface Media { id: string; title: string; asset_type?: string }
+interface Cue { start: number; end: number; text: string }
+
+const node = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const button = (id: string) => node<HTMLButtonElement>(id);
+const input = (id: string) => node<HTMLInputElement>(id);
+const select = (id: string) => node<HTMLSelectElement>(id);
+const identity = node<HTMLFormElement>("timelineIdentity");
+const key = input("timelineKey");
+const status = node("timelineStatus");
+const video = node<HTMLVideoElement>("timelinePreview");
+const trackList = node<HTMLOListElement>("timelineClips");
+const uid = document.body.dataset.work || "";
+const endpoint = (work = uid) => "/api/library/work/" + encodeURIComponent(work);
+
+const undo: Settings[] = [];
+const redo: Settings[] = [];
+let project: Project;
+let state: Settings;
+let media = new Map<string, Media>();
+let selected = -1;
+let poll: number | undefined;
+let debounce: number | undefined;
+let generation = 0;
+let confirmed = 0;
+let writing: Promise<void> | null = null;
+let running: Job | null = null;
+let previewVersion = 0;
+let cueVersion = 0;
+let stopTime: number | undefined;
+let cues: Cue[] = [];
+key.value = sessionStorage.getItem("cueporchOperator") || "";
+
+function message(error: unknown) {
+  status.textContent = error instanceof Error ? error.message : String(error);
+}
+
+function run(fn: () => Promise<void>) {
+  void fn().catch(message);
+}
+
+async function call<T>(url: string, method = "GET", payload?: object) {
+  const headers: Record<string, string> = {Authorization: "Bearer " + key.value};
+  if (payload) headers["Content-Type"] = "application/json";
+  const response = await fetch(url, {method, headers, body: payload && JSON.stringify(payload)});
+  if (!response.ok) {
+    const error = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p");
+    throw new Error(error?.textContent || `Timeline request failed (${response.status}).`);
+  }
+  return await response.json() as T;
+}
+
+const seconds = (value: number) => (value / 1000).toFixed(3).replace(/\.?0+$/, "");
+const millis = (field: HTMLInputElement) => Math.round(field.valueAsNumber * 1000);
+const duration = (rows: Clip[]) => rows.reduce((total, row) => total + row.end - row.start, 0);
+const working = () => running?.state === "queued" || running?.state === "rendering";
+const nameOf = (work: string) => media.get(work)?.title || work;
+
+function controls() {
+  button("undoTimeline").disabled = !undo.length;
+  button("redoTimeline").disabled = !redo.length;
+  button("renderTimeline").disabled = !state.clips.length || working();
+  button("splitTimeline").disabled = selected < 0 || video.hidden;
+  button("playTimelineClip").disabled = button("splitTimeline").disabled;
+  button("discardTimeline").disabled = Boolean(working());
+  button("appendTimeline").disabled = !select("timelineVideo").value || state.clips.length >= 128;
+}
+
+function listSources() {
+  const filter = input("timelineSearch").value.trim().toLocaleLowerCase();
+  const picker = select("timelineVideo");
+  const last = picker.value;
+  picker.replaceChildren();
+  for (const item of media.values()) {
+    if ((item.asset_type || "video") === "video" && item.title.toLocaleLowerCase().includes(filter)) {
+      picker.add(new Option(item.title, item.id));
+    }
+  }
+  if (Array.from(picker.options).some(option => option.value === last)) picker.value = last;
+  controls();
+}
+
+function action(label: string, onClick: () => void) {
+  const result = document.createElement("button");
+  result.type = "button";
+  result.textContent = label;
+  result.onclick = onClick;
+  return result;
+}
+
+function timeInput(label: string, value: number, change: (milliseconds: number) => void) {
+  const group = document.createElement("label");
+  const field = document.createElement("input");
+  field.type = "number";
+  field.min = "0";
+  field.step = ".001";
+  field.value = seconds(value);
+  field.onchange = () => change(millis(field));
+  group.append(label, field);
+  return group;
+}
+
+function paint() {
+  select("timelineRatio").value = state.ratio;
+  input("timelineColor").value = "#" + state.color;
+  select("timelineMusic").value = state.music?.work || "";
+  input("timelineMusicStart").value = seconds(state.music?.start || 0);
+  input("timelineMusicGain").value = String(state.music?.gain ?? 25);
+  node("timelineDuration").textContent = seconds(duration(state.clips)) + " seconds";
+  trackList.replaceChildren();
+  for (const [index, clip] of state.clips.entries()) {
+    const row = document.createElement("li");
+    row.className = "timeline-clip";
+    const choose = action(nameOf(clip.work), () => run(() => inspect(index)));
+    choose.setAttribute("aria-pressed", String(index === selected));
+    const earlier = action("Earlier", () => move(index, -1));
+    earlier.disabled = index === 0;
+    const later = action("Later", () => move(index, 1));
+    later.disabled = index === state.clips.length - 1;
+    row.append(choose, timeInput("Start (seconds)", clip.start, start => range(index, start, clip.end)),
+      timeInput("End (seconds)", clip.end, end => range(index, clip.start, end)),
+      earlier, later, action("Remove", () => remove(index)));
+    trackList.append(row);
+  }
+  controls();
+}
+
+async function save(force = false) {
+  if (debounce !== undefined) window.clearTimeout(debounce);
+  debounce = undefined;
+  if (writing) await writing;
+  if (confirmed === generation && (!force || project.revision)) return;
+  const pending = generation;
+  const current = project.current;
+  const write = (async () => {
+    const updated = await call<Project>(endpoint() + "/timeline", "PUT", {
+      revision: project.revision, base: current, settings: state,
+    });
+    project = updated;
+    confirmed = pending;
+    if (!working()) status.textContent = "Draft saved.";
+  })();
+  writing = write;
+  try { await write; }
+  finally { if (writing === write) writing = null; }
+  if (confirmed !== generation) schedule();
+}
+
+function schedule() {
+  if (debounce !== undefined) window.clearTimeout(debounce);
+  debounce = window.setTimeout(() => run(save), 350);
+}
+
+function change(next: Settings) {
+  undo.push(state);
+  redo.length = 0;
+  state = next;
+  generation++;
+  paint();
+  schedule();
+}
+
+function history(source: Settings[], target: Settings[]) {
+  const prior = source.pop();
+  if (!prior) return;
+  target.push(state);
+  state = prior;
+  selected = -1;
+  video.hidden = true;
+  node("timelineTranscript").hidden = true;
+  generation++;
+  paint();
+  schedule();
+}
+
+function remove(index: number) {
+  selected = -1;
+  video.hidden = true;
+  node("timelineTranscript").hidden = true;
+  change({...state, clips: state.clips.filter((_, value) => value !== index)});
+}
+
+function move(index: number, by: number) {
+  const clips = [...state.clips];
+  const next = index + by;
+  [clips[index], clips[next]] = [clips[next], clips[index]];
+  if (selected === index) selected = next;
+  else if (selected === next) selected = index;
+  change({...state, clips});
+}
+
+function range(index: number, start: number, end: number) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < 100) {
+    paint();
+    message("Choose at least 0.1 seconds within the source.");
+    return;
+  }
+  const clips = state.clips.map((clip, i) => i === index ? {...clip, start, end} : clip);
+  change({...state, clips});
+}
+
+function seek(position: number) {
+  stopTime = undefined;
+  video.currentTime = position / 1000;
+}
+
+function split(at: number) {
+  const clip = state.clips[selected];
+  if (!clip || at - clip.start < 100 || clip.end - at < 100) {
+    message("Choose a point inside the selected clip.");
+    return;
+  }
+  const clips = [...state.clips];
+  clips.splice(selected, 1, {...clip, end: at}, {...clip, start: at});
+  change({...state, clips});
+}
+
+function omitCue(cue: Cue) {
+  const clip = state.clips[selected];
+  if (!clip) return;
+  const first = Math.max(cue.start, clip.start), last = Math.min(cue.end, clip.end);
+  if (first >= last) return;
+  const retained = [
+    {...clip, end: first}, {...clip, start: last},
+  ].filter(part => part.end - part.start >= 100);
+  const clips = [...state.clips];
+  clips.splice(selected, 1, ...retained);
+  if (!retained.length) {
+    selected = -1;
+    video.hidden = true;
+    node("timelineTranscript").hidden = true;
+  }
+  change({...state, clips});
+}
+
+function paintCues() {
+  const query = input("timelineTextSearch").value.trim().toLocaleLowerCase();
+  const list = node("timelineCues");
+  list.replaceChildren();
+  for (const cue of cues.filter(cue => cue.text.toLocaleLowerCase().includes(query))) {
+    const row = document.createElement("li");
+    const text = document.createElement("span");
+    text.textContent = cue.text;
+    row.append(action(seconds(cue.start) + "s", () => seek(cue.start)), text,
+      action("Split before", () => split(cue.start)), action("Remove from video", () => omitCue(cue)));
+    list.append(row);
+  }
+}
+
+async function transcript() {
+  const clip = state.clips[selected];
+  const language = select("timelineSubtitle").value;
+  const version = ++cueVersion;
+  if (!clip || !language) return;
+  const query = new URLSearchParams({cut: clip.cut, language});
+  const response = await call<{cues: Cue[]}>(endpoint(clip.work) + "/timeline/transcript?" + query);
+  if (version !== cueVersion) return;
+  cues = response.cues;
+  paintCues();
+}
+
+async function inspect(index: number) {
+  selected = index;
+  video.hidden = true;
+  stopTime = undefined;
+  node("timelineTranscript").hidden = true;
+  paint();
+  const clip = state.clips[index];
+  const version = ++previewVersion;
+  node("timelineSourceName").textContent = nameOf(clip.work);
+  const query = new URLSearchParams({cut: clip.cut});
+  const [preview, subtitles] = await Promise.all([
+    call<{preview: string}>(endpoint(clip.work) + "/timeline/preview", "POST", {cut: clip.cut}),
+    call<{languages: string[]}>(endpoint(clip.work) + "/timeline/transcript?" + query),
+  ]);
+  if (version !== previewVersion || state.clips[selected]?.cut !== clip.cut) return;
+  video.src = preview.preview;
+  video.onloadedmetadata = () => seek(clip.start);
+  video.hidden = false;
+  const language = select("timelineSubtitle");
+  language.replaceChildren(...subtitles.languages.map(value => new Option(value, value)));
+  node("timelineTranscript").hidden = !language.value;
+  controls();
+  await transcript();
+}
+
+function showJob(job: Job, fromReload = false) {
+  running = job;
+  controls();
+  if (job.state === "saved") {
+    if (job.result && !fromReload) project.current = job.result;
+    status.textContent = "New version saved.";
+    return;
+  }
+  if (job.state === "failed") {
+    message(job.error || "The render stopped.");
+    return;
+  }
+  status.textContent = job.state === "queued" ? "Render queued." : "Rendering the timeline…";
+  if (poll !== undefined) window.clearTimeout(poll);
+  poll = window.setTimeout(() => run(async () => {
+    showJob(await call<Job>(endpoint() + "/timeline/render/" + job.id));
+  }), 900);
+}
+
+button("renderTimeline").onclick = () => run(async () => {
+  await save(true);
+  showJob(await call<Job>(endpoint() + "/timeline/render", "POST", {revision: project.revision}));
+});
+button("saveTimeline").onclick = () => run(() => save(true));
+button("undoTimeline").onclick = () => history(undo, redo);
+button("redoTimeline").onclick = () => history(redo, undo);
+button("discardTimeline").onclick = () => run(async () => {
+  if (writing) await writing;
+  if (debounce !== undefined) window.clearTimeout(debounce);
+  project = await call<Project>(endpoint() + "/timeline", "DELETE", {revision: project.revision});
+  state = project.settings;
+  selected = -1;
+  video.hidden = true;
+  node("timelineTranscript").hidden = true;
+  confirmed = ++generation;
+  undo.length = redo.length = 0;
+  status.textContent = "Draft reset.";
+  paint();
+});
+button("appendTimeline").onclick = () => run(async () => {
+  const work = select("timelineVideo").value;
+  const info = await call<{version: string; duration: number}>(endpoint(work) + "/editing");
+  change({...state, clips: [...state.clips, {work, cut: info.version, start: 0, end: info.duration}]});
+});
+button("setTimelineMusic").onclick = () => {
+  const work = select("timelineMusic").value;
+  const start = millis(input("timelineMusicStart")), gain = input("timelineMusicGain").valueAsNumber;
+  change({...state, music: work ? {work, start, gain} : null});
+};
+button("splitTimeline").onclick = () => split(Math.round(video.currentTime * 1000));
+button("playTimelineClip").onclick = () => run(async () => {
+  const clip = state.clips[selected];
+  seek(clip.start);
+  stopTime = clip.end / 1000;
+  await video.play();
+});
+video.ontimeupdate = () => {
+  if (stopTime !== undefined && video.currentTime >= stopTime) {
+    video.pause();
+    stopTime = undefined;
+  }
+};
+input("timelineSearch").oninput = listSources;
+input("timelineTextSearch").oninput = paintCues;
+select("timelineSubtitle").onchange = () => run(transcript);
+select("timelineRatio").onchange = () => change({...state, ratio: select("timelineRatio").value});
+input("timelineColor").onchange = () => change({...state, color: input("timelineColor").value.slice(1)});
+
+async function open() {
+  const [items, loaded] = await Promise.all([
+    call<Media[]>("/api/library"), call<Project>(endpoint() + "/timeline"),
+  ]);
+  media = new Map(items.map(item => [item.id, item]));
+  project = loaded;
+  state = project.settings;
+  const music = select("timelineMusic");
+  for (const item of items) if (item.asset_type === "audio") music.add(new Option(item.title, item.id));
+  listSources();
+  paint();
+  sessionStorage.setItem("cueporchOperator", key.value);
+  identity.hidden = true;
+  node("timelineStudio").hidden = false;
+  node("timelineRecovery").hidden = !project.draft;
+  if (project.job) showJob(project.job, true);
+}
+identity.onsubmit = event => { event.preventDefault(); run(open); };
+if (key.value) run(open);

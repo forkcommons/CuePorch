@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from contextlib import closing
 
 import requests
 from browser import chromium
@@ -85,7 +86,7 @@ def check_private(page, base, auth, database, work, grant, existing_embed, downl
     page.get_by_role("button", name="Delete folder", exact=True).click()
     wait_for(base, auth, lambda data: len(data) == 1 and data[0]["state"] == "deleted")
     deletion = records(base, auth)[0]["id"]
-    with sqlite3.connect(database) as con:
+    with closing(sqlite3.connect(database)) as con, con:
         con.execute(
             "UPDATE library_deletion SET deleted_at=? WHERE id=?",
             (time.time() - 31 * 86400, deletion),

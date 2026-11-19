@@ -18,12 +18,14 @@ import library_ratings
 import library_registration
 import library_analytics
 import library_editing
+import library_timeline
 import library_thumbnail
 import library_versions
 import library_privacy
 import library_share
 import library_peer_handoff
 import review_links
+import timeline_jobs
 from catalog import copy_work
 from library_trash import hidden
 
@@ -76,7 +78,7 @@ def save_title(con, work, name):
     )
 
 
-def register(app, tx, staff, read_works, root, remember_work, permits, action):
+def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -91,6 +93,8 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action):
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)
     library_analytics.register(app, tx, staff, get_work, title_for)
     library_editing.register(app, tx, staff, get_work, root, remember_work, title_for, VIDEO_MIME)
+    library_timeline.register(app, tx, staff, get_work, root, signing_key)
+    start_editor = timeline_jobs.register(app, tx, staff, get_work, root, remember_work)
     library_caption_jobs.register(app, tx, staff, get_work, action)
     library_languages.register(
         app, tx, staff, get_work, root, remember_work, title_for,
@@ -280,6 +284,8 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action):
         response.cache_control.no_store = True
         response.cache_control.private = True
         return response
+
+    return start_editor
 
 
 def sync_edits(tx, receipts, origin, root, connect):

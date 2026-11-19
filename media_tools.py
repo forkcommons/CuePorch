@@ -1,14 +1,39 @@
 """Prepare the browser-compatible copy retained for exact-cut screenings."""
 
 import re
+import os
 import subprocess
+import time
 from functools import lru_cache
 
 
 LOCAL_FFMPEG = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,pipe"]
 
 
-def prepare_screening(source, target, input_format=None, *, interval=None, full_resolution=False):
+def run_media(args, timeout=None, stopping=None):
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    if stopping is None:
+        return subprocess.run(args, capture_output=True, timeout=timeout, creationflags=flags)
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags) as process:
+        try:
+            while not stopping.is_set():
+                remaining = 0.4 if deadline is None else deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(remaining, 0.4))
+                    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+                except subprocess.TimeoutExpired:
+                    continue
+            raise InterruptedError("The service is closing.")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+
+def prepare_screening(source, target, input_format=None, *, interval=None, full_resolution=False, stopping=None):
     decoder = ["-f", input_format] if input_format else []
     clip = []
     if interval is not None:
@@ -16,7 +41,7 @@ def prepare_screening(source, target, input_format=None, *, interval=None, full_
         decoder.extend(["-ss", f"{start:.3f}"])
         clip = ["-t", f"{end - start:.3f}"]
     width = "iw" if full_resolution else "min(1280,iw)"
-    result = subprocess.run(
+    result = run_media(
         [
             *LOCAL_FFMPEG,
             "-v",
@@ -48,7 +73,7 @@ def prepare_screening(source, target, input_format=None, *, interval=None, full_
             "pipe:1",
             str(target),
         ],
-        capture_output=True,
+        stopping=stopping,
     )
     if result.returncode or not target.is_file() or not target.stat().st_size:
         raise ValueError("Unable to prepare the screening copy")
@@ -62,7 +87,7 @@ def prepare_screening(source, target, input_format=None, *, interval=None, full_
 
 
 def make_gif(source, target, start, end):
-    result = subprocess.run(
+    result = run_media(
         [
             *LOCAL_FFMPEG,
             "-v", "error", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(source),
@@ -72,7 +97,6 @@ def make_gif(source, target, start, end):
             "[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer",
             "-an", "-t", f"{end - start:.3f}", "-loop", "0", str(target),
         ],
-        capture_output=True,
         timeout=180,
     )
     if result.returncode or not target.is_file() or not target.stat().st_size:
@@ -83,24 +107,22 @@ def make_gif(source, target, start, end):
 def video_properties(path):
     """Read dimensions and nominal frame rate from the packaged FFmpeg."""
     try:
-        result = subprocess.run(
+        result = run_media(
             [
                 *LOCAL_FFMPEG,
                 "-hide_banner",
                 "-i",
                 str(path),
             ],
-            capture_output=True,
-            encoding="utf8",
-            errors="replace",
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return {}
-    audio = re.search(r"Audio: ([^,\r\n]+)(?:, (\d+ Hz), ([^,\r\n]+))?", result.stderr)
+    description = result.stderr.decode("utf-8", errors="replace")
+    audio = re.search(r"Audio: ([^,\r\n]+)(?:, (\d+ Hz), ([^,\r\n]+))?", description)
     audio_info = ", ".join(part for part in audio.groups() if part) if audio else None
-    duration = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
-    for line in result.stderr.splitlines():
+    duration = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", description)
+    for line in description.splitlines():
         if "Video:" not in line or "(attached pic)" in line:
             continue
         size = re.search(r"\b([1-9]\d{1,4})x([1-9]\d{1,4})\b", line)

@@ -106,15 +106,22 @@ def check_editing(page, browser, base, auth, collection, master):
         player = guest.new_page()
         player.goto(f"{base}/watch/work/{uid}")
         video = player.locator("video")
-        assert video.evaluate("""async v => {
-          v.muted=true;await v.play();
+        video.evaluate("""async v => {
+          v.muted=true;await v.play();v.pause();v.currentTime=.25;
+        }""")
+        player.wait_for_function("""() => {
+          const video=document.querySelector('video');
+          return video.readyState>=2 && !video.seeking && Math.abs(video.currentTime-.25)<.05;
+        }""", timeout=10000)
+        frame = video.evaluate("""v => {
           const canvas = document.createElement('canvas');
           canvas.width=1;canvas.height=1;
           const context=canvas.getContext('2d');
-          context.drawImage(v,0,0,1,1);v.pause();
-          const pixel=context.getImageData(0,0,1,1).data;
-          return v.videoWidth===256 && v.duration>1.4 && v.duration<1.6 && pixel[2]>200 && pixel[0]<40;
+          context.drawImage(v,Math.floor(v.videoWidth/2),Math.floor(v.videoHeight/2),1,1,0,0,1,1);
+          return {width:v.videoWidth,duration:v.duration,pixel:Array.from(context.getImageData(0,0,1,1).data)};
         }""")
+        assert frame["width"] == 256 and 1.4 < frame["duration"] < 1.6, frame
+        assert frame["pixel"][2] > 200 and frame["pixel"][0] < 40, frame
         requests.post(endpoint + "/versions/restore", headers=auth, timeout=12,
                       json=dict(current=trimmed["version"], restore=prior)).raise_for_status()
         player.reload()

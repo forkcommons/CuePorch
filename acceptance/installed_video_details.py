@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from contextlib import closing
 from urllib.parse import urlsplit
 
 import requests
@@ -121,7 +122,7 @@ def check_workspace(page, browser, base, auth, database):
         assert width == 256 and player.evaluate("v => v.currentTime") >= 0.4
         media = base + player.get_attribute("src")
         assert requests.head(media, timeout=10).status_code == 200
-        with sqlite3.connect(database) as con:
+        with closing(sqlite3.connect(database)) as con, con:
             con.execute("UPDATE library_share_alias SET expires=? WHERE work=?", (time.time() - 1, uid))
         assert requests.get(alias, timeout=10).status_code == 404
         assert requests.head(media, timeout=10).status_code == 404

@@ -51,11 +51,13 @@ import library_peer_handoff
 import library_privacy
 import library_share
 import library_thumbnail
+import library_timeline
 import library_trash
 import library_upload
 import library_worker
 import review_links
 import review_push
+import timeline_jobs
 import vimeo_privacy
 from review_settings import new_upload as create_upload_review
 
@@ -120,6 +122,8 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_ratings.SCHEMA
         + library_registration.SCHEMA
         + library_analytics.SCHEMA
+        + library_timeline.SCHEMA
+        + timeline_jobs.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
     )
@@ -1108,7 +1112,9 @@ def create_app(root, database, operator, institution, simulation=None):
     def remember_work(work):
         works[work["id"]] = work
 
-    library_actions.register(app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action)
+    start_editor = library_actions.register(
+        app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
+    )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
@@ -1303,6 +1309,10 @@ def create_app(root, database, operator, institution, simulation=None):
     def operator_editing(work):
         return render_template("video_editing.html", work=str(work))
 
+    @app.get("/operator/videos/<uuid:work>/timeline")
+    def operator_timeline(work):
+        return render_template("timeline_studio.html", work=str(work))
+
     @app.get("/player.js")
     def player_sdk():
         response = app.send_static_file("ui/embed_player.js")
@@ -1380,6 +1390,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_worker.start(app, root, database, tx, action, apply_routes)
     library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_editor"] = start_editor()
     review_push.start(app, tx, database)
     return app
 

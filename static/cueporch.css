@@ -23,6 +23,10 @@ main { max-width: 65rem; }
 #recordPrompter { white-space: pre-wrap; max-height: 8rem; overflow: auto; padding: .6rem; background: #112529; color: #fff; }
 #recordDrafts li { margin-block: .4rem; }
 #recordDrafts button + button { margin-inline-start: .35rem; }
+.timeline-clip { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; padding: .65rem 0; }
+.timeline-clip label { margin: 0; }
+.timeline-clip input { width: 7rem; }
+.timeline-clip [aria-pressed="true"] { background: #1f6965; color: white; }
 #videoDetails [hidden], #identify[hidden] { display: none; }
 .video-work-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: .7rem 1rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
