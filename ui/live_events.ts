@@ -2,6 +2,7 @@ import {setupRegistration} from "./video_registration.js";
 import {ChatState, messageAction, renderChat} from "./event_chat.js";
 import {setupProducerEngagement} from "./event_engagement.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
+import {waitingPlayer} from "./event_waiting.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -31,6 +32,9 @@ interface ProductionCaptions {enabled: boolean; language: string; status: string
 interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
 interface LibraryRecording {state: string; work: string | null; error: string | null;}
 interface PlaylistOptions {enabled: boolean; autoplay_next: boolean; loop: boolean;}
+interface EventPlayerOptions {
+  show_schedule: boolean; show_recurring: boolean; poster: string | null; image: string | null; recurring: string;
+}
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
@@ -74,6 +78,14 @@ const eventPlaylistForm = element<HTMLFormElement>("eventPlaylistForm");
 const eventPlaylistStatus = element("eventPlaylistStatus");
 const playlistOptions = ["enabled", "autoplay_next", "loop"] as const;
 const playlistOption = (name: keyof PlaylistOptions) => eventPlaylistForm.elements.namedItem(name) as HTMLInputElement;
+const eventPlayerPanel = element<HTMLDetailsElement>("eventPlayerSettings");
+const eventPlayerForm = element<HTMLFormElement>("eventPlayerForm");
+const eventPlayerStatus = element("eventPlayerStatus");
+const playerOption = (name: string) => eventPlayerForm.elements.namedItem(name) as HTMLInputElement;
+const previewWaiting = waitingPlayer(eventPlayerPanel);
+let playerOptions: EventPlayerOptions | undefined;
+let selectedPosterUrl = "";
+let removePoster = false;
 let replayCaptionRevision = "";
 const destinations = element<HTMLDetailsElement>("eventDestinations");
 const destinationList = element("destinationList");
@@ -202,6 +214,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   eventPlaylistForm.reset();
   eventPlaylistStatus.textContent = "";
   button("saveEventPlaylist").disabled = true;
+  eventPlayerPanel.open = false;
+  clearPlayerOptions();
   destinations.open = false;
   destinationForm.reset();
   destinationList.replaceChildren();
@@ -222,6 +236,84 @@ function choose(event: LiveEvent, instance: Occurrence) {
   const address = event.embed ? new URL(event.embed + "?occurrence=" + instance.id, publicBase).href : "";
   input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
 }
+
+function releasePosterPreview() {
+  if (selectedPosterUrl) URL.revokeObjectURL(selectedPosterUrl);
+  selectedPosterUrl = "";
+}
+
+function clearPlayerOptions() {
+  playerOptions = undefined;
+  removePoster = false;
+  releasePosterPreview();
+  eventPlayerForm.reset();
+  eventPlayerStatus.textContent = "";
+  button("saveEventPlayer").disabled = true;
+  button("removeEventPoster").disabled = true;
+  previewWaiting(null);
+}
+
+function paintWaitingPreview() {
+  if (!active || !playerOptions) return;
+  const {event, instance} = active;
+  const next = playerOption("show_schedule").checked;
+  const recurring = playerOption("show_recurring").checked ? playerOptions.recurring : "";
+  const poster = selectedPosterUrl || (!removePoster ? playerOptions.image : null);
+  button("removeEventPoster").disabled = !poster;
+  previewWaiting(next || recurring || poster ? {
+    poster, date: next ? instance.start : "", recurring,
+    message: next ? `${instance.local.replace("T", " ")} (${event.event.schedule.timezone})` : "",
+  } : null);
+}
+
+function showPlayerOptions(options: EventPlayerOptions) {
+  playerOptions = options;
+  removePoster = false;
+  releasePosterPreview();
+  eventPlayerForm.reset();
+  playerOption("show_schedule").checked = options.show_schedule;
+  playerOption("show_recurring").checked = options.show_recurring;
+  playerOption("show_recurring").disabled = !options.recurring;
+  button("saveEventPlayer").disabled = false;
+  paintWaitingPreview();
+}
+
+eventPlayerPanel.ontoggle = () => {
+  if (eventPlayerPanel.open && active && !playerOptions) {
+    void action(async () => showPlayerOptions(await request<EventPlayerOptions>(`${root}/${active!.event.id}/player`)));
+  }
+};
+eventPlayerForm.oninput = (event) => {
+  if (event.target === playerOption("poster")) {
+    releasePosterPreview();
+    const file = playerOption("poster").files?.[0];
+    if (file) selectedPosterUrl = URL.createObjectURL(file);
+  }
+  paintWaitingPreview();
+};
+button("removeEventPoster").onclick = () => {
+  removePoster = true;
+  playerOption("poster").value = "";
+  releasePosterPreview();
+  paintWaitingPreview();
+};
+eventPlayerForm.onsubmit = (event) => {
+  event.preventDefault();
+  void action(async () => {
+    if (!active || !playerOptions) return;
+    let poster = removePoster ? null : playerOptions.poster;
+    const file = playerOption("poster").files?.[0];
+    if (file) {
+      const upload = new FormData();
+      upload.append("logo", file);
+      poster = (await request<{logo: string}>("/api/review-logos", "POST", upload)).logo;
+    }
+    showPlayerOptions(await request<EventPlayerOptions>(`${root}/${active.event.id}/player`, "PUT", {
+      poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
+    }));
+    eventPlayerStatus.textContent = "Event player saved.";
+  });
+};
 
 function readCalendar(value: Calendar) {
   calendar = value;

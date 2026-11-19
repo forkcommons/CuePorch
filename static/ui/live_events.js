@@ -2,6 +2,7 @@ import { setupRegistration } from "./video_registration.js";
 import { messageAction, renderChat } from "./event_chat.js";
 import { setupProducerEngagement } from "./event_engagement.js";
 import { relaySummary } from "./event_health.js";
+import { waitingPlayer } from "./event_waiting.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -35,6 +36,14 @@ const eventPlaylistForm = element("eventPlaylistForm");
 const eventPlaylistStatus = element("eventPlaylistStatus");
 const playlistOptions = ["enabled", "autoplay_next", "loop"];
 const playlistOption = (name) => eventPlaylistForm.elements.namedItem(name);
+const eventPlayerPanel = element("eventPlayerSettings");
+const eventPlayerForm = element("eventPlayerForm");
+const eventPlayerStatus = element("eventPlayerStatus");
+const playerOption = (name) => eventPlayerForm.elements.namedItem(name);
+const previewWaiting = waitingPlayer(eventPlayerPanel);
+let playerOptions;
+let selectedPosterUrl = "";
+let removePoster = false;
 let replayCaptionRevision = "";
 const destinations = element("eventDestinations");
 const destinationList = element("destinationList");
@@ -156,6 +165,8 @@ function choose(event, instance) {
     eventPlaylistForm.reset();
     eventPlaylistStatus.textContent = "";
     button("saveEventPlaylist").disabled = true;
+    eventPlayerPanel.open = false;
+    clearPlayerOptions();
     destinations.open = false;
     destinationForm.reset();
     destinationList.replaceChildren();
@@ -177,6 +188,83 @@ function choose(event, instance) {
     const address = event.embed ? new URL(event.embed + "?occurrence=" + instance.id, publicBase).href : "";
     input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
 }
+function releasePosterPreview() {
+    if (selectedPosterUrl)
+        URL.revokeObjectURL(selectedPosterUrl);
+    selectedPosterUrl = "";
+}
+function clearPlayerOptions() {
+    playerOptions = undefined;
+    removePoster = false;
+    releasePosterPreview();
+    eventPlayerForm.reset();
+    eventPlayerStatus.textContent = "";
+    button("saveEventPlayer").disabled = true;
+    button("removeEventPoster").disabled = true;
+    previewWaiting(null);
+}
+function paintWaitingPreview() {
+    if (!active || !playerOptions)
+        return;
+    const { event, instance } = active;
+    const next = playerOption("show_schedule").checked;
+    const recurring = playerOption("show_recurring").checked ? playerOptions.recurring : "";
+    const poster = selectedPosterUrl || (!removePoster ? playerOptions.image : null);
+    button("removeEventPoster").disabled = !poster;
+    previewWaiting(next || recurring || poster ? {
+        poster, date: next ? instance.start : "", recurring,
+        message: next ? `${instance.local.replace("T", " ")} (${event.event.schedule.timezone})` : "",
+    } : null);
+}
+function showPlayerOptions(options) {
+    playerOptions = options;
+    removePoster = false;
+    releasePosterPreview();
+    eventPlayerForm.reset();
+    playerOption("show_schedule").checked = options.show_schedule;
+    playerOption("show_recurring").checked = options.show_recurring;
+    playerOption("show_recurring").disabled = !options.recurring;
+    button("saveEventPlayer").disabled = false;
+    paintWaitingPreview();
+}
+eventPlayerPanel.ontoggle = () => {
+    if (eventPlayerPanel.open && active && !playerOptions) {
+        void action(async () => showPlayerOptions(await request(`${root}/${active.event.id}/player`)));
+    }
+};
+eventPlayerForm.oninput = (event) => {
+    if (event.target === playerOption("poster")) {
+        releasePosterPreview();
+        const file = playerOption("poster").files?.[0];
+        if (file)
+            selectedPosterUrl = URL.createObjectURL(file);
+    }
+    paintWaitingPreview();
+};
+button("removeEventPoster").onclick = () => {
+    removePoster = true;
+    playerOption("poster").value = "";
+    releasePosterPreview();
+    paintWaitingPreview();
+};
+eventPlayerForm.onsubmit = (event) => {
+    event.preventDefault();
+    void action(async () => {
+        if (!active || !playerOptions)
+            return;
+        let poster = removePoster ? null : playerOptions.poster;
+        const file = playerOption("poster").files?.[0];
+        if (file) {
+            const upload = new FormData();
+            upload.append("logo", file);
+            poster = (await request("/api/review-logos", "POST", upload)).logo;
+        }
+        showPlayerOptions(await request(`${root}/${active.event.id}/player`, "PUT", {
+            poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
+        }));
+        eventPlayerStatus.textContent = "Event player saved.";
+    });
+};
 function readCalendar(value) {
     calendar = value;
     element("eventsHost").hidden = value.host_ready;

@@ -18,6 +18,7 @@ import event_chat
 import event_captions
 import event_engagement
 import event_library_recordings
+import event_player
 import event_playlist
 import event_program
 import event_replay_captions
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS live_occurrence(
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
-       + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
@@ -225,6 +226,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
     event_playlist.register(app, tx, staff, read)
+    event_player.register(app, tx, staff, read)
 
     def viewer_enrolled(token, scope, released_archive):
         try:
@@ -719,6 +721,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     enrollment = forms.dumps(scope)
             if playlist_enabled and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
+            artwork = event_player.settings(con, row["id"])
+            poster = url_for("event_poster", slug=slug, opens=shown["id"], digest=artwork["poster"]) if (
+                shown and not withdrawn and artwork["poster"]) else None
+            next_broadcast = shown
+            if artwork["show_schedule"] and shown and (datetime.fromisoformat(shown["end"]) <= now
+                    or (delivery and delivery["delivery"] == "replay")):
+                canceled = {record["opens"] for record in con.execute("SELECT opens FROM live_occurrence WHERE event=?"
+                            " AND delivery IN ('withdrawing','withdrawn')", (row["id"],))}
+                next_broadcast = next((item for item in upcoming if item["id"] > now.timestamp()
+                                       and item["id"] not in canceled), None)
+            pre_live = event_player.lobby(artwork, event, next_broadcast, poster) if not withdrawn else None
         address = None
         analytics_token = None
         protected = bool(form)
@@ -767,12 +780,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 caption_endpoint = url_for("audience_replay_captions", slug=slug, opens=shown["id"])
             elif captioned:
                 caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"])
-        view = (dict(status=status, address=address, protected=protected, native_video=native_video,
+        if address:
+            pre_live = None
+        view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
                      captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=shown)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
-                                     native_video=native_video, caption_endpoint=caption_endpoint,
+                                     native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      analytics_token=analytics_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
@@ -794,6 +809,24 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.route("/events/<slug>/embed", methods=["GET", "POST"])
     def event_embed(slug):
         return viewer(slug, True)
+
+    @app.get("/events/<slug>/<int:opens>/poster/<digest>")
+    def event_poster(slug, opens, digest):
+        with tx() as con:
+            row, event = read(con, slug, True)
+            selected_open(event, opens)
+            delivery = occurrence(con, row["id"], opens)
+            if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])["poster"] != digest
+                    or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
+                abort(404)
+            image = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
+        if not image:
+            abort(404)
+        response = make_response(image["content"])
+        response.mimetype = image["mime"]
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     def delivered(con, uid, revision, opens, form_revision, remote, replay):
         row, event = read(con, uid)

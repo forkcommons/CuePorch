@@ -1,0 +1,8 @@
+<section class="event-waiting" data-event-waiting aria-label="Before the broadcast" {% if not lobby_preview %}hidden{% endif %}>
+  <img data-event-poster alt="Event artwork" {% if lobby_preview and lobby_preview.poster %}src="{{ lobby_preview.poster }}"{% else %}hidden{% endif %}>
+  <p class="event-next-time" data-event-next {% if not lobby_preview or not lobby_preview.message %}hidden{% endif %}>
+    <span {% if not lobby_preview or not lobby_preview.date %}hidden{% endif %}>Next broadcast</span>
+    <time {% if lobby_preview and lobby_preview.date %}datetime="{{ lobby_preview.date }}"{% endif %}>{{ lobby_preview.message if lobby_preview else '' }}</time>
+  </p>
+  <p class="event-repeat-time" data-event-repeat {% if not lobby_preview or not lobby_preview.recurring %}hidden{% endif %}>{{ lobby_preview.recurring if lobby_preview else '' }}</p>
+</section>

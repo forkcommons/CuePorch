@@ -119,6 +119,18 @@
         </form>
         <p id="eventPlaylistStatus" role="status"></p>
       </details>
+      <details id="eventPlayerSettings">
+        <summary>Event player</summary>
+        <form id="eventPlayerForm">
+          <label><input type="checkbox" name="show_schedule"> Show the next broadcast time in the player</label>
+          <label><input type="checkbox" name="show_recurring"> Show the recurring schedule in the player</label>
+          <label>Event poster <input name="poster" type="file" accept="image/jpeg,image/png,image/webp"></label>
+          <button type="button" id="removeEventPoster">Remove poster</button>
+          <button type="submit" id="saveEventPlayer" disabled>Save event player</button>
+        </form>
+        <p id="eventPlayerStatus" role="status"></p>
+        {% include 'event_waiting.html' %}
+      </details>
       <details id="eventReplayCaptions">
         <summary>Replay captions</summary>
         <p id="replayCaptionStatus" role="status"></p>

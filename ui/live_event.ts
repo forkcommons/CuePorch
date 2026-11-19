@@ -1,5 +1,6 @@
 import {setupLiveCaptions} from "./live_caption_player.js";
 import {measureEventPlayback} from "./event_playback.js";
+import {waitingPlayer, type BeforeEvent} from "./event_waiting.js";
 
 const lobby = document.querySelector<HTMLElement>("#eventLobby")!;
 const eventStatus = document.querySelector<HTMLElement>("#eventStatus")!;
@@ -15,7 +16,9 @@ interface ArchivePlaylist {entries: {id: number; label: string}[]; autoplay_next
 interface EventView {
   status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
   occurrence: {id: number; start: string; local: string} | null; playlist: ArchivePlaylist | null;
+  lobby_preview: BeforeEvent | null;
 }
+const waiting = waitingPlayer(lobby);
 const openingOccurrence = Number(lobby.dataset.occurrence) || null;
 let currentOccurrence = openingOccurrence;
 let playlist: ArchivePlaylist | null = null;
@@ -149,13 +152,14 @@ async function checkStatus() {
     if (response.status === 404) {
       eventStatus.textContent = "This event is unavailable";
       closePlayer();
+      waiting(null);
       showPlaylist(null);
       stopChecking();
       return;
     }
     if (!response.ok) return;
     const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics,
-      occurrence, playlist: archives}: EventView = await response.json();
+      occurrence, playlist: archives, lobby_preview: before}: EventView = await response.json();
     if (requested !== location.href) return;
     const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
     currentOccurrence = occurrence?.id ?? null;
@@ -187,6 +191,7 @@ async function checkStatus() {
       // A live player can coast through a delayed host poll without restarting.
       return;
     }
+    waiting(src || player.querySelector("video,iframe") ? null : before);
     captions.select(captionPath || "");
     if (eventStatus.textContent !== next) eventStatus.textContent = next;
   } catch {
