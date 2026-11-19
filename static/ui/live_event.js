@@ -5,6 +5,11 @@ import { eventControls } from "./event_controls.js";
 const lobby = document.querySelector("#eventLobby");
 const eventStatus = document.querySelector("#eventStatus");
 const player = document.querySelector("#eventPlayer");
+const branding = document.querySelector("#eventBranding");
+const logo = branding.querySelector("img");
+const byline = branding.querySelector(".event-byline");
+const liveBadge = branding.querySelector(".event-live-badge");
+const viewerCount = branding.querySelector(".event-viewer-count");
 const dateRow = document.querySelector("#eventOccurrenceTime");
 const eventTitle = document.querySelector("#eventHeader h1");
 const controls = eventControls(player, eventTitle, JSON.parse(document.querySelector("#eventAppearanceData").textContent || "{}"));
@@ -28,6 +33,19 @@ const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
 const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
+function showBranding(value) {
+    logo.hidden = !value.logo;
+    if (value.logo && logo.getAttribute("src") !== value.logo)
+        logo.src = value.logo;
+    if (!value.logo)
+        logo.removeAttribute("src");
+    byline.textContent = value.byline;
+    byline.hidden = !value.byline;
+    liveBadge.hidden = !value.live_badge;
+    viewerCount.hidden = value.viewers === null;
+    viewerCount.textContent = value.viewers === null ? "" : `${value.viewers} watching`;
+    branding.hidden = logo.hidden && byline.hidden && liveBadge.hidden && viewerCount.hidden;
+}
 function neighboringArchive(direction) {
     const entries = playlist?.entries ?? [];
     const index = entries.findIndex(entry => entry.id === currentOccurrence);
@@ -81,7 +99,7 @@ function renderVideo(address, phase, analytics, video) {
         video.controls = true;
         video.playsInline = true;
         video.setAttribute("aria-label", "Event video");
-        player.replaceChildren(video);
+        player.replaceChildren(video, branding);
     }
     stopMeasuring = measureEventPlayback(video, analytics);
     const replay = phase === "Replay";
@@ -153,7 +171,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance } = await response.json();
+        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance, branding: brand } = await response.json();
         if (requested !== location.href)
             return;
         const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
@@ -170,6 +188,7 @@ async function checkStatus() {
         previewReplay = fallback;
         lobby.dataset.previewReplay = fallback ? "yes" : "no";
         controls.setAppearance(appearance);
+        showBranding(brand);
         const current = player.querySelector("iframe");
         if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
             closePlayer();
@@ -190,7 +209,7 @@ async function checkStatus() {
             frame.allow = "autoplay; fullscreen; picture-in-picture";
             frame.allowFullscreen = true;
             captions.bind();
-            player.replaceChildren(frame);
+            player.replaceChildren(frame, branding);
             if (next === "Replay" && !archives && !previewReplay)
                 stopChecking();
         }

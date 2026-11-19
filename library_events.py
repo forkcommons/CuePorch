@@ -915,8 +915,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     latest_slot = selected_open(event, latest["opens"])
                     latest_managed = private_delivery(con, event, row["id"], latest["opens"])
                     latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
-            poster = url_for("event_poster", slug=slug, opens=shown["id"], digest=artwork["poster"]) if (
+            poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"]) if (
                 shown and not withdrawn and artwork["poster"]) else None
+            logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"]) if (
+                shown and not withdrawn and artwork["logo"]) else None
+            viewers = event_analytics.current(con, row["id"], shown["id"], "live") if (
+                artwork["show_viewers"] and delivery and delivery["delivery"] == "ready" and (not form or grant)) else None
             next_broadcast = shown
             if artwork["show_schedule"] and shown and (datetime.fromisoformat(shown["end"]) <= now
                     or (delivery and delivery["delivery"] == "replay")):
@@ -929,7 +933,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         analytics_token = None
         protected = bool(form)
         host_private = protected or managed
-        native_video = host_private or captioned or replay_captioned or appearance["customize"]
+        native_video = host_private or captioned or replay_captioned or appearance["customize"] or viewers is not None
         can_participate = shown and not withdrawn and (not protected or grant)
         playing = shown
         preview_replay = False
@@ -956,14 +960,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 caption_endpoint = url_for("viewer_event_captions", slug=slug, opens=shown["id"])
         if address:
             pre_live = None
+        branding = dict(logo=logo if address else None, byline=artwork["byline"] if address else "",
+                        live_badge=status == "Live" and artwork["show_live_badge"],
+                        viewers=viewers if status == "Live" else None)
         view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
                      captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=playing,
-                     preview_replay=preview_replay, appearance=appearance)
+                     preview_replay=preview_replay, appearance=appearance, branding=branding)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=playing, audience_occurrence=shown,
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
-                                     preview_replay=preview_replay, appearance=appearance,
+                                     preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
@@ -986,13 +993,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def event_embed(slug):
         return viewer(slug, True)
 
-    @app.get("/events/<slug>/<int:opens>/poster/<digest>")
-    def event_poster(slug, opens, digest):
+    @app.get("/events/<slug>/<int:opens>/<any(poster,logo):kind>/<digest>")
+    def event_artwork(slug, opens, kind, digest):
         with tx() as con:
             row, event = read(con, slug, True)
             selected_open(event, opens)
             delivery = occurrence(con, row["id"], opens)
-            if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])["poster"] != digest
+            if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])[kind] != digest
                     or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
                 abort(404)
             image = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()

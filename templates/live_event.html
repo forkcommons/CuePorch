@@ -32,6 +32,14 @@
       {% elif not registration and status != "This occurrence was withdrawn" %}
         <button type="button" id="refreshEvent">Check stream status</button>
       {% endif %}
+      <div id="eventBranding" {% if not branding.logo and not branding.byline and not branding.live_badge and branding.viewers is none %}hidden{% endif %}>
+        <img alt="Event logo" {% if branding.logo %}src="{{ branding.logo }}"{% else %}hidden{% endif %}>
+        <span class="event-byline" {% if not branding.byline %}hidden{% endif %}>{{ branding.byline }}</span>
+        <span class="event-live-badge" {% if not branding.live_badge %}hidden{% endif %}>Live</span>
+        <span class="event-viewer-count" {% if branding.viewers is none %}hidden{% endif %}>
+          {% if branding.viewers is not none %}{{ branding.viewers }} watching{% endif %}
+        </span>
+      </div>
     </div>
     <template id="eventControls">
       {% with appearance = dict(progress=true, allow_seek=true, volume=true, pip=true, fullscreen=true), tracks = [] %}

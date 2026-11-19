@@ -2,9 +2,11 @@
 
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from io import BytesIO
 import json
 from threading import Thread
 
+from PIL import Image
 from playwright.sync_api import expect, sync_playwright
 import requests
 
@@ -32,6 +34,9 @@ def check_event_controls(base, keys, ffmpeg):
     path = f"/api/live-events/{event['id']}"
     watch, embed = (f"{base}{event[surface]}?occurrence={opens}" for surface in ("watch", "embed"))
     config = path + "/player"
+    raw = BytesIO()
+    Image.new("RGB", (64, 24), "#0d689e").save(raw, format="PNG")
+    logo_bytes = raw.getvalue()
 
     with sync_playwright() as pw, ThreadingHTTPServer(("127.0.0.1", 0), PublisherPage) as publisher:
         publisher.code = f'<iframe title="Station player" src="{embed}" width="800" height="700" allowfullscreen></iframe>'
@@ -50,6 +55,16 @@ def check_event_controls(base, keys, ffmpeg):
             expect(save).to_be_enabled()
             expect(customization).not_to_be_checked()
             expect(panel.get_by_label("Primary color")).to_be_disabled()
+            badge = panel.get_by_label("Show live badge")
+            count = panel.get_by_label("Show current viewer count")
+            byline = panel.get_by_label("Player byline")
+            expect(badge).not_to_be_checked()
+            expect(count).not_to_be_checked()
+            badge.check()
+            count.check()
+            byline.fill("Longmont community showcase")
+            panel.get_by_label("Player logo").set_input_files(dict(name="station.png", mimeType="image/png", buffer=logo_bytes))
+            assert panel.locator("#eventLogoPreview").evaluate("async i => { await i.decode(); return i.naturalWidth }") == 64
             customization.check()
             panel.get_by_label("Play button").select_option("auto")
             panel.get_by_label("Show event title").uncheck()
@@ -77,9 +92,10 @@ def check_event_controls(base, keys, ffmpeg):
             for surface in (watcher, frame):
                 expect(surface.locator("#eventStatus")).to_have_text("Scheduled")
                 expect(surface.get_by_role("heading", name=title)).to_have_count(0)
+                expect(surface.locator("#eventBranding")).to_be_hidden()
 
             encoder = api("POST", f"{path}/{opens}/encoder")
-            with send_signal(ffmpeg, encoder["server"], encoder["key"], 85) as process:
+            with send_signal(ffmpeg, encoder["server"], encoder["key"], 110) as process:
                 wait_for_delivery(base + f"{path}/{opens}", auth, "live", 40, process)
                 for surface in (watcher, frame):
                     expect(surface.locator("#eventStatus")).to_have_text("Live", timeout=35000)
@@ -95,6 +111,15 @@ def check_event_controls(base, keys, ffmpeg):
                     play.click()
                     surface.wait_for_function("document.querySelector('#eventPlayer video')?.videoWidth === 320")
                     expect(player.get_by_role("button", name="Pause", exact=True)).to_have_css("position", "static")
+                    brand = player.locator("#eventBranding")
+                    expect(brand.locator(".event-live-badge")).to_have_text("Live")
+                    expect(brand.locator(".event-byline")).to_have_text("Longmont community showcase")
+                    logo = brand.get_by_role("img", name="Event logo")
+                    assert logo.evaluate("async i => { await i.decode(); return i.naturalWidth }") == 64
+                    logo_url = base + logo.get_attribute("src")
+                    assert requests.get(logo_url, timeout=10).content == logo_bytes
+                for surface in (watcher, frame):
+                    expect(surface.locator(".event-viewer-count")).to_have_text("2 watching", timeout=18000)
 
                 player = watcher.locator("#eventPlayer")
                 video = player.locator("video")
@@ -121,9 +146,15 @@ def check_event_controls(base, keys, ffmpeg):
                 watcher.wait_for_function("!document.fullscreenElement")
                 for key in ("Show volume", "Show playback progress", "Allow fullscreen"):
                     panel.get_by_label(key).uncheck()
+                panel.get_by_role("button", name="Remove logo").click()
+                badge.uncheck()
+                count.uncheck()
+                byline.fill("")
                 persist()
+                assert requests.get(logo_url, timeout=10).status_code == 404
                 for surface in (watcher, frame):
                     player = surface.locator("#eventPlayer")
+                    expect(player.locator("#eventBranding")).to_be_hidden(timeout=16000)
                     expect(player.get_by_label("Volume")).to_be_hidden(timeout=16000)
                     expect(player.get_by_label("Position")).to_be_hidden(timeout=16000)
                     expect(player.get_by_role("button", name="Fullscreen")).to_have_count(0)
@@ -139,6 +170,8 @@ def check_event_controls(base, keys, ffmpeg):
             return dict(decoded_watch_width=320, decoded_embed_width=320, saved_colors=True, automatic_play_button=True,
                         volume_and_mute_applied=True, rewind_decoded_seconds=round(rewind, 2), fullscreen=True,
                         hidden_controls_updated_on_open_links=True, default_controls_restored=True,
+                        logo_and_byline_on_both_links=True, live_badge_and_two_viewers=True,
+                        removal_revokes_logo_and_clears_branding=True,
                         invalid_color_rejected=True, stable_links=True)
         finally:
             browser.close()

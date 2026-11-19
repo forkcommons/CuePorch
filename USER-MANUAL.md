@@ -170,6 +170,8 @@ Use **Refresh stream status** to see the connected host's current delivery state
 
 Open **Event player** in production settings to preview and save a poster, the next broadcast time, and the recurring schedule. The same settings apply to the event page and its existing embed. A published event's poster is visible in the waiting view, including when viewers must register before playback. The live player replaces the waiting view when the stream is ready. Choose **Remove poster** and save to withdraw the old artwork.
 
+Add a **Player logo** and **Player byline** to identify the event during live playback and replay. **Show live badge** and **Show current viewer count** are optional and appear during the live broadcast. The count represents CuePorch players currently watching, with privacy opt-outs excluded. To remove the logo from open players and revoke its address, choose **Remove logo** and save.
+
 Turn on **Customize viewer controls** to choose the play button position, primary, accent and icon colors, and whether viewers see the event title, progress, volume, picture-in-picture and fullscreen controls. Viewers can seek through the available live DVR window or a replay when progress is shown. Browser support determines whether picture-in-picture and fullscreen appear. The same settings apply to the watch page and its embeds. Turn the switch off to restore the standard player.
 
 Select **Show the latest released replay before going live** to let viewers watch the most recent available recording while waiting for the next stream. A replay awaiting approval stays unavailable. Viewers still register if the event requires registration. When the live stream is ready, the same player switches from the recording to the live broadcast.

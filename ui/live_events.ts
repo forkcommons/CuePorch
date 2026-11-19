@@ -40,6 +40,8 @@ interface PlaylistOptions {enabled: boolean; autoplay_next: boolean; loop: boole
 interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   show_schedule: boolean; show_recurring: boolean; show_latest: boolean;
   poster: string | null; image: string | null; recurring: string;
+  logo: string | null; logo_image: string | null; byline: string;
+  show_live_badge: boolean; show_viewers: boolean;
 }
 interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
 interface Destinations {available: boolean; destinations: Destination[];}
@@ -91,9 +93,14 @@ const playerOption = (name: string) => eventPlayerForm.elements.namedItem(name) 
 const appearanceFields = element<HTMLFieldSetElement>("eventAppearanceOptions");
 const playPosition = eventPlayerForm.elements.namedItem("play_position") as HTMLSelectElement;
 const previewWaiting = waitingPlayer(eventPlayerPanel);
+const eventLogo = element<HTMLImageElement>("eventLogoPreview");
+const playerArtwork = {poster: button("removeEventPoster"), logo: button("removeEventLogo")};
+const artworkFields = ["poster", "logo"] as const;
+const displaySwitches = ["show_schedule", "show_recurring", "show_latest", "show_live_badge", "show_viewers"] as const;
+type ArtworkField = typeof artworkFields[number];
 let playerOptions: EventPlayerOptions | undefined;
-let selectedPosterUrl = "";
-let removePoster = false;
+const artworkPreview = {poster: "", logo: ""};
+const removedArtwork = new Set<ArtworkField>();
 let replayCaptionRevision = "";
 const destinations = element<HTMLDetailsElement>("eventDestinations");
 const destinationList = element("destinationList");
@@ -316,20 +323,24 @@ function choose(event: LiveEvent, instance: Occurrence) {
   input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
 }
 
-function releasePosterPreview() {
-  if (selectedPosterUrl) URL.revokeObjectURL(selectedPosterUrl);
-  selectedPosterUrl = "";
+function releaseArtworkPreview(name: ArtworkField) {
+  if (artworkPreview[name]) URL.revokeObjectURL(artworkPreview[name]);
+  artworkPreview[name] = "";
 }
 
 function clearPlayerOptions() {
   playerOptions = undefined;
-  removePoster = false;
-  releasePosterPreview();
+  removedArtwork.clear();
+  for (const name of artworkFields) {
+    releaseArtworkPreview(name);
+    playerArtwork[name].disabled = true;
+  }
   eventPlayerForm.reset();
   appearanceFields.disabled = true;
   eventPlayerStatus.textContent = "";
   button("saveEventPlayer").disabled = true;
-  button("removeEventPoster").disabled = true;
+  eventLogo.hidden = true;
+  eventLogo.removeAttribute("src");
   previewWaiting(null);
 }
 
@@ -338,8 +349,13 @@ function paintWaitingPreview() {
   const {event, instance} = active;
   const next = playerOption("show_schedule").checked;
   const recurring = playerOption("show_recurring").checked ? playerOptions.recurring : "";
-  const poster = selectedPosterUrl || (!removePoster ? playerOptions.image : null);
-  button("removeEventPoster").disabled = !poster;
+  const poster = artworkPreview.poster || (!removedArtwork.has("poster") ? playerOptions.image : null);
+  const logo = artworkPreview.logo || (!removedArtwork.has("logo") ? playerOptions.logo_image : null);
+  playerArtwork.poster.disabled = !poster;
+  playerArtwork.logo.disabled = !logo;
+  eventLogo.hidden = !logo;
+  if (logo) eventLogo.src = logo;
+  else eventLogo.removeAttribute("src");
   previewWaiting(next || recurring || poster ? {
     poster, date: next ? instance.start : "", recurring,
     message: next ? `${instance.local.replace("T", " ")} (${event.event.schedule.timezone})` : "",
@@ -348,12 +364,11 @@ function paintWaitingPreview() {
 
 function showPlayerOptions(options: EventPlayerOptions) {
   playerOptions = options;
-  removePoster = false;
-  releasePosterPreview();
+  removedArtwork.clear();
+  for (const name of artworkFields) releaseArtworkPreview(name);
   eventPlayerForm.reset();
-  playerOption("show_schedule").checked = options.show_schedule;
-  playerOption("show_recurring").checked = options.show_recurring;
-  playerOption("show_latest").checked = options.show_latest;
+  for (const key of displaySwitches) playerOption(key).checked = options[key];
+  playerOption("byline").value = options.byline;
   for (const key of playerSwitches) playerOption(key).checked = options[key];
   for (const key of playerColors) playerOption(key).value = options[key];
   playPosition.value = options.play_position;
@@ -370,37 +385,48 @@ eventPlayerPanel.ontoggle = () => {
 };
 eventPlayerForm.oninput = (event) => {
   if (event.target === playerOption("customize")) appearanceFields.disabled = !playerOption("customize").checked;
-  if (event.target === playerOption("poster")) {
-    releasePosterPreview();
-    const file = playerOption("poster").files?.[0];
-    if (file) selectedPosterUrl = URL.createObjectURL(file);
+  for (const name of artworkFields) {
+    if (event.target !== playerOption(name)) continue;
+    releaseArtworkPreview(name);
+    const file = playerOption(name).files?.[0];
+    if (file) artworkPreview[name] = URL.createObjectURL(file);
   }
   paintWaitingPreview();
 };
-button("removeEventPoster").onclick = () => {
-  removePoster = true;
-  playerOption("poster").value = "";
-  releasePosterPreview();
-  paintWaitingPreview();
-};
+for (const name of artworkFields) {
+  playerArtwork[name].onclick = () => {
+    removedArtwork.add(name);
+    playerOption(name).value = "";
+    releaseArtworkPreview(name);
+    paintWaitingPreview();
+  };
+}
 eventPlayerForm.onsubmit = (event) => {
   event.preventDefault();
   void action(async () => {
     if (!active || !playerOptions) return;
-    let poster = removePoster ? null : playerOptions.poster;
-    const file = playerOption("poster").files?.[0];
-    if (file) {
-      const upload = new FormData();
-      upload.append("logo", file);
-      poster = (await request<{logo: string}>("/api/review-logos", "POST", upload)).logo;
-    }
-    showPlayerOptions(await request<EventPlayerOptions>(`${root}/${active.event.id}/player`, "PUT", {
-      poster, show_schedule: playerOption("show_schedule").checked, show_recurring: playerOption("show_recurring").checked,
-      show_latest: playerOption("show_latest").checked,
+    const eventId = active.event.id;
+    const fields = {
+      byline: playerOption("byline").value,
+      ...Object.fromEntries(displaySwitches.map(key => [key, playerOption(key).checked])),
       ...Object.fromEntries(playerSwitches.map(key => [key, playerOption(key).checked])),
       ...Object.fromEntries(playerColors.map(key => [key, playerOption(key).value])),
       play_position: playPosition.value,
-    }));
+    };
+    const images = {
+      poster: removedArtwork.has("poster") ? null : playerOptions.poster,
+      logo: removedArtwork.has("logo") ? null : playerOptions.logo,
+    };
+    const files = artworkFields.map(name => ({name, file: playerOption(name).files?.[0]}));
+    for (const {name, file} of files) {
+      if (!file) continue;
+      const upload = new FormData();
+      upload.append("logo", file);
+      images[name] = (await request<{logo: string}>("/api/review-logos", "POST", upload)).logo;
+    }
+    const options = await request<EventPlayerOptions>(`${root}/${eventId}/player`, "PUT", {...fields, ...images});
+    if (active?.event.id !== eventId) return;
+    showPlayerOptions(options);
     eventPlayerStatus.textContent = "Event player saved.";
   });
 };

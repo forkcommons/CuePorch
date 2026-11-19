@@ -6,6 +6,11 @@ import {eventControls, type EventAppearance} from "./event_controls.js";
 const lobby = document.querySelector<HTMLElement>("#eventLobby")!;
 const eventStatus = document.querySelector<HTMLElement>("#eventStatus")!;
 const player = document.querySelector<HTMLElement>("#eventPlayer")!;
+const branding = document.querySelector<HTMLElement>("#eventBranding")!;
+const logo = branding.querySelector("img")!;
+const byline = branding.querySelector<HTMLElement>(".event-byline")!;
+const liveBadge = branding.querySelector<HTMLElement>(".event-live-badge")!;
+const viewerCount = branding.querySelector<HTMLElement>(".event-viewer-count")!;
 const dateRow = document.querySelector<HTMLElement>("#eventOccurrenceTime")!;
 const eventTitle = document.querySelector<HTMLElement>("#eventHeader h1")!;
 const controls = eventControls(player, eventTitle, JSON.parse(document.querySelector("#eventAppearanceData")!.textContent || "{}"));
@@ -16,12 +21,14 @@ const archiveChoice = document.querySelector<HTMLSelectElement>("#archiveChoice"
 const previous = document.querySelector<HTMLButtonElement>("#archivePrevious")!;
 const next = document.querySelector<HTMLButtonElement>("#archiveNext")!;
 interface ArchivePlaylist {entries: {id: number; label: string}[]; autoplay_next: boolean; loop: boolean;}
+interface EventBranding {logo: string | null; byline: string; live_badge: boolean; viewers: number | null;}
 interface EventView {
   status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
   occurrence: {id: number; start: string; local: string} | null; playlist: ArchivePlaylist | null;
   lobby_preview: BeforeEvent | null;
   preview_replay: boolean;
   appearance: EventAppearance;
+  branding: EventBranding;
 }
 const waiting = waitingPlayer(lobby);
 const openingOccurrence = Number(lobby.dataset.occurrence) || null;
@@ -44,6 +51,18 @@ const Hls = (window as Window & {Hls?: HlsFactory}).Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
 const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
+
+function showBranding(value: EventBranding) {
+  logo.hidden = !value.logo;
+  if (value.logo && logo.getAttribute("src") !== value.logo) logo.src = value.logo;
+  if (!value.logo) logo.removeAttribute("src");
+  byline.textContent = value.byline;
+  byline.hidden = !value.byline;
+  liveBadge.hidden = !value.live_badge;
+  viewerCount.hidden = value.viewers === null;
+  viewerCount.textContent = value.viewers === null ? "" : `${value.viewers} watching`;
+  branding.hidden = logo.hidden && byline.hidden && liveBadge.hidden && viewerCount.hidden;
+}
 
 function neighboringArchive(direction: -1 | 1) {
   const entries = playlist?.entries ?? [];
@@ -99,7 +118,7 @@ function renderVideo(address: string, phase: string, analytics: string, video?: 
     video.controls = true;
     video.playsInline = true;
     video.setAttribute("aria-label", "Event video");
-    player.replaceChildren(video);
+    player.replaceChildren(video, branding);
   }
   stopMeasuring = measureEventPlayback(video, analytics);
   const replay = phase === "Replay";
@@ -167,7 +186,8 @@ async function checkStatus() {
     }
     if (!response.ok) return;
     const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics,
-      occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance}: EventView = await response.json();
+      occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback,
+      appearance, branding: brand}: EventView = await response.json();
     if (requested !== location.href) return;
     const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
     currentOccurrence = occurrence?.id ?? null;
@@ -182,6 +202,7 @@ async function checkStatus() {
     previewReplay = fallback;
     lobby.dataset.previewReplay = fallback ? "yes" : "no";
     controls.setAppearance(appearance);
+    showBranding(brand);
     const current = player.querySelector("iframe");
     if (next === "This occurrence was withdrawn" || (viewer && next === "Registration required")) {
       closePlayer();
@@ -198,7 +219,7 @@ async function checkStatus() {
       frame.allow = "autoplay; fullscreen; picture-in-picture";
       frame.allowFullscreen = true;
       captions.bind();
-      player.replaceChildren(frame);
+      player.replaceChildren(frame, branding);
       if (next === "Replay" && !archives && !previewReplay) stopChecking();
     } else if (current && !src && next === "The stream is unavailable") {
       // A live player can coast through a delayed host poll without restarting.

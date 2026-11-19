@@ -134,6 +134,12 @@
           <label><input type="checkbox" name="show_latest"> Show the latest released replay before going live</label>
           <label>Event poster <input name="poster" type="file" accept="image/jpeg,image/png,image/webp"></label>
           <button type="button" id="removeEventPoster">Remove poster</button>
+          <label>Player byline <input name="byline" maxlength="100"></label>
+          <label>Player logo <input name="logo" type="file" accept="image/jpeg,image/png,image/webp"></label>
+          <button type="button" id="removeEventLogo">Remove logo</button>
+          <img id="eventLogoPreview" alt="Player logo preview" hidden>
+          <label><input type="checkbox" name="show_live_badge"> Show live badge</label>
+          <label><input type="checkbox" name="show_viewers"> Show current viewer count</label>
           <label><input type="checkbox" name="customize"> Customize viewer controls</label>
           <fieldset id="eventAppearanceOptions" disabled>
             <legend>Viewer controls and colors</legend>

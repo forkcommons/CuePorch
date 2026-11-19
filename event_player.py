@@ -11,11 +11,11 @@ from library_appearance import COLORS, PALETTE, brand_image
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_player_settings(event TEXT PRIMARY KEY, settings TEXT NOT NULL);
 """
-SWITCHES = ("show_schedule", "show_recurring", "show_latest")
+SWITCHES = ("show_schedule", "show_recurring", "show_latest", "show_live_badge", "show_viewers")
 PLAYER_SWITCHES = dict(customize=False, progress=True, volume=True, pip=True, fullscreen=True, show_title=True)
 PLAYER_COLORS = {key: value for key, value in COLORS if key in ("primary", "accent", "icon")}
 APPEARANCE = PLAYER_SWITCHES | PLAYER_COLORS | {"play_position": "bottom"}
-DEFAULTS = dict.fromkeys(SWITCHES, False) | {"poster": None} | APPEARANCE
+DEFAULTS = dict.fromkeys(SWITCHES, False) | dict(poster=None, logo=None, byline="") | APPEARANCE
 
 
 def settings(con, event):
@@ -70,9 +70,15 @@ def register(app, tx, staff, read):
                     abort(422, "Use six-digit hexadecimal player colors.")
                 if values["play_position"] not in ("bottom", "center", "auto"):
                     abort(422, "Choose a play button position.")
-                poster = values["poster"]
-                if poster is not None and (not isinstance(poster, str) or not con.execute(
-                        "SELECT 1 FROM review_logo WHERE digest=?", (poster,)).fetchone()):
-                    abort(422, "Choose an uploaded poster image.")
+                byline = values["byline"]
+                if not isinstance(byline, str) or len(byline) > 100 or (byline and not byline.isprintable()):
+                    abort(422, "Enter a byline of up to 100 characters.")
+                values["byline"] = byline.strip()
+                for name in ("poster", "logo"):
+                    digest = values[name]
+                    if digest is not None and (not isinstance(digest, str) or not con.execute(
+                            "SELECT 1 FROM review_logo WHERE digest=?", (digest,)).fetchone()):
+                        abort(422, f"Choose an uploaded {name} image.")
                 con.execute("INSERT OR REPLACE INTO live_player_settings VALUES(?,?)", (uid, json.dumps(values)))
-            return dict(values, image=brand_image(con, values["poster"]), recurring=recurring(event["schedule"]))
+            return dict(values, image=brand_image(con, values["poster"]), logo_image=brand_image(con, values["logo"]),
+                        recurring=recurring(event["schedule"]))
