@@ -21,6 +21,7 @@ import library_appearance
 from library_languages import tracks_for
 import library_interactivity
 import library_ratings
+import library_registration
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
 from library_trash import hidden
@@ -271,6 +272,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
+    registration_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-registration")
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
@@ -399,29 +401,48 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             video = playback(work) if work else None
             if video is None or not permits(work, settings):
                 abort(404)
+            form = library_registration.active(con, "video", uid)
+            enrollment = request.form.get("enrollment", "")
+            enrollment_scope = [uid, row["revision"], alias["revision"] if alias else None,
+                                embed, form["revision"] if form else None]
+            if enrollment:
+                try:
+                    pending = registration_serializer.loads(enrollment, max_age=1200)
+                except BadSignature:
+                    abort(403, "Open the registration form again.")
+                if not form or pending != enrollment_scope:
+                    abort(403, "Open the registration form again.")
             locked = mode == "password" and not (
-                request.method == "POST" and try_password(con, uid, request.form.get("password", ""), row["password_hash"])
+                enrollment or (request.method == "POST"
+                               and try_password(con, uid, request.form.get("password", ""), row["password_hash"]))
             )
+            form_error = None
+            if enrollment:
+                form_error = library_registration.enroll(con, "video", uid, form, request.form, request.args)
+            needs_registration = not locked and form and (not enrollment or form_error)
+            can_watch = not locked and not needs_registration
             payload = [uid, row["revision"], video["sha256"]]
             if alias is not None:
                 payload.append(alias["revision"])
-            token = None if locked else serializer.dumps(payload)
+            if form and can_watch:
+                payload.append({"registration": form["revision"]})
+            token = serializer.dumps(payload) if can_watch else None
             title = "Protected video" if locked else title_for(con, work)
-            details = details_for(con, work) if not locked and not embed else None
-            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if not locked else None
+            details = details_for(con, work) if can_watch and not embed else None
+            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if can_watch else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
             options = library_embed.options(request.args if embed else {}, appearance)
-            chapters = library_interactivity.readable_chapters(work) if not locked and (
+            chapters = library_interactivity.readable_chapters(work) if can_watch and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
             ) else []
             presentation = library_interactivity.for_viewer(
                 con, work, lambda: library_interactivity.public_videos(con, read_works, title_for, permits, uid)
-            ) if not locked else None
+            ) if can_watch else None
             poster = bool(presentation and presentation["ending"]["mode"] == "thumbnail"
                           and selected_thumbnail(con, work))
             if presentation and presentation["ending"]["mode"] == "loop":
                 options["loop"] = True
-            rating = library_ratings.available(con, work) if not locked else None
+            rating = library_ratings.available(con, work) if can_watch else None
             if rating:
                 rating["session"] = rating_serializer.dumps(
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
@@ -431,6 +452,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             duration = work.get("duration_seconds")
             if duration and start >= duration:
                 start = 0
+            form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             token=token, tracks=tracks_for(work), download=settings["download"],
@@ -438,13 +460,14 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             unlock_token=unlock_token, details=details, start=start,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
                             presentation=presentation, poster=poster, rating=rating,
-                            share=share_paths(uid, row)["watch"]),
-            401 if locked and request.method == "POST" else 200,
+                            share=share_paths(uid, row)["watch"], registration=form if form_token else None,
+                            enrollment=form_token, registration_error=form_error),
+            401 if locked and request.method == "POST" else 422 if form_error else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        if rating:
+        if rating or form:
             response.cache_control.private = True
             response.cache_control.no_store = True
         return response
@@ -461,7 +484,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         row = get_privacy(con, uid)
         if not row or row["revision"] != revision or blocked(con, uid):
             abort(404)
+        extra = alias.pop() if alias and isinstance(alias[-1], dict) else {}
         if alias and not library_share.current(con, uid, alias[0]):
+            abort(404)
+        form = library_registration.active(con, "video", uid)
+        if form and extra.get("registration") != form["revision"]:
             abort(404)
         work = find_work(uid)
         video = playback(work) if work else None

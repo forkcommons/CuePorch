@@ -1,0 +1,197 @@
+"""Accountless local viewer registration and operator-managed form data."""
+
+import csv
+from datetime import datetime, timezone
+from io import StringIO
+import json
+import re
+import time
+import uuid
+
+from flask import Response, abort, request
+
+from library_interactivity import text_field, web_link
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS viewer_form(
+ kind TEXT NOT NULL, subject TEXT NOT NULL, revision TEXT NOT NULL, settings TEXT NOT NULL,
+ PRIMARY KEY(kind,subject));
+CREATE TABLE IF NOT EXISTS viewer_registrant(
+ kind TEXT NOT NULL, subject TEXT NOT NULL, email_key TEXT NOT NULL, email TEXT NOT NULL,
+ registered REAL NOT NULL, answers TEXT NOT NULL, PRIMARY KEY(kind,subject,email_key));
+CREATE TABLE IF NOT EXISTS viewer_form_preset(
+ name TEXT PRIMARY KEY COLLATE NOCASE, settings TEXT NOT NULL);
+"""
+UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medium")
+DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
+               first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single")
+FORM_TYPES = ("text", "select", "checkbox", "description")
+EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+
+
+def read_form(con, kind, subject):
+    row = con.execute("SELECT revision,settings FROM viewer_form WHERE kind=? AND subject=?",
+                      (kind, subject)).fetchone()
+    return (row["revision"], DEFAULT | json.loads(row["settings"])) if row else (None, DEFAULT.copy())
+
+
+def active(con, kind, subject):
+    revision, settings = read_form(con, kind, subject)
+    return dict(settings, revision=revision) if settings["enabled"] else None
+
+
+def validation(body):
+    if not isinstance(body, dict) or any(type(body.get(key)) is not bool for key in ("enabled", "collect_utm")):
+        abort(422, "Choose valid registration settings.")
+    result = {key: body[key] for key in ("enabled", "collect_utm")}
+    for field in ("first_name", "last_name"):
+        if body.get(field) not in ("off", "optional", "required"):
+            abort(422, "Choose which name fields to ask for.")
+        result[field] = body[field]
+    result["heading"] = text_field(body.get("heading"), "a form heading", 80, True)
+    result["description"] = text_field(body.get("description", ""), "a form description", 1000)
+    result["privacy_url"] = web_link(body.get("privacy_url", ""))
+    layout = body.get("layout", "single")
+    if layout not in ("single", "steps"):
+        abort(422, "Choose a registration layout.")
+    result["layout"] = layout
+    custom = body.get("fields")
+    if not isinstance(custom, list) or len(custom) > 20:
+        abort(422, "A registration form can have up to 20 custom fields.")
+    fields = []
+    keys = set()
+    for entry in custom:
+        if not isinstance(entry, dict) or entry.get("type") not in FORM_TYPES:
+            abort(422, "Choose a supported field type.")
+        key, kind = entry.get("id"), entry["type"]
+        if not isinstance(key, str) or not re.fullmatch(r"field_[a-z0-9_]{1,25}", key) or key in keys:
+            abort(422, "Each custom field needs a unique identifier.")
+        keys.add(key)
+        label = text_field(entry.get("label"), "a field label", 240, True)
+        required = entry.get("required", False) if kind != "description" else False
+        if type(required) is not bool:
+            abort(422, "Choose whether the field is required.")
+        choices = []
+        if kind == "select":
+            options = entry.get("options")
+            if not isinstance(options, list) or not 1 <= len(options) <= 25:
+                abort(422, "A dropdown needs one to 25 choices.")
+            choices = [text_field(option, "a dropdown choice", 80, True) for option in options]
+            if len(set(choices)) != len(choices):
+                abort(422, "Use distinct dropdown choices.")
+        fields.append(dict(id=key, type=kind, label=label, required=required, options=choices))
+    return dict(result, fields=fields)
+
+
+def enroll(con, kind, subject, definition, fields, query):
+    address = fields.get("email", "").strip()
+    values = {}
+    if len(address) > 254 or not EMAIL.fullmatch(address):
+        return "Enter a valid email address."
+    for field in ("first_name", "last_name"):
+        mode = definition[field]
+        if mode == "off":
+            continue
+        name = fields.get(field, "").strip()
+        if len(name) > 80 or (mode == "required" and not name):
+            return "Enter the required name fields."
+        values[field] = name
+    for field in definition["fields"]:
+        key, form_type = field["id"], field["type"]
+        if form_type == "description":
+            continue
+        answer = fields.get(key, "").strip()
+        if form_type == "checkbox":
+            value = answer == "yes"
+            if field["required"] and not value:
+                return "Check the required boxes."
+        else:
+            value = answer
+            if field["required"] and not value:
+                return "Complete all required fields."
+            if form_type == "select" and value and value not in field["options"]:
+                return "Choose an option from the form."
+            if form_type == "text" and len(value) > 50:
+                return "Use up to 50 characters in each text response."
+        values[key] = value
+    if definition["collect_utm"]:
+        for key in UTM_FIELDS:
+            value = query.get(key, "")[:250]
+            if value:
+                values[key] = value
+    con.execute("INSERT OR IGNORE INTO viewer_registrant VALUES(?,?,?,?,?,?)",
+                (kind, subject, address.casefold(), address, time.time(), json.dumps(values)))
+    return None
+
+
+def registrant_rows(con, kind, subject, limit=-1):
+    return con.execute(
+        """SELECT email,registered,answers FROM viewer_registrant WHERE kind=? AND subject=?
+           ORDER BY registered DESC,email_key LIMIT ?""", (kind, subject, limit),
+    )
+
+
+def csv_cell(value):
+    if type(value) is bool:
+        return "Yes" if value else "No"
+    text = str(value)
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text[:1] in ("\t", "\r") else text
+
+
+def register(app, tx, staff, get_work, protected_public):
+    @app.route("/api/library/work/<uid>/registration", methods=["GET", "PUT"])
+    def video_registration(uid):
+        staff()
+        with tx() as con:
+            work = get_work(con, uid)
+            if work.get("asset_type", "video") != "video":
+                abort(404)
+            revision, config = read_form(con, "video", uid)
+            if request.method == "PUT":
+                body = request.get_json()
+                if not isinstance(body, dict) or body.get("revision") != revision:
+                    abort(409, "The registration form changed. Reopen the editor.")
+                updated = validation(body.get("settings"))
+                if updated["enabled"] and protected_public(con, uid):
+                    abort(409, "Registration cannot gate a designated public record.")
+                name = text_field(body.get("preset_name", ""), "a registration preset name", 80)
+                if name:
+                    con.execute("""INSERT INTO viewer_form_preset VALUES(?,?) ON CONFLICT(name) DO UPDATE SET
+                                   settings=excluded.settings""", (name, json.dumps(updated)))
+                if config != updated:
+                    revision = uuid.uuid4().hex
+                    config = updated
+                    con.execute("""INSERT INTO viewer_form VALUES('video',?,?,?)
+                                   ON CONFLICT(kind,subject) DO UPDATE SET
+                                   revision=excluded.revision,settings=excluded.settings""",
+                                (uid, revision, json.dumps(config)))
+            return dict(revision=revision, settings=config,
+                        protected_public=protected_public(con, uid),
+                        presets={row["name"]: DEFAULT | json.loads(row["settings"]) for row in con.execute(
+                            "SELECT name,settings FROM viewer_form_preset ORDER BY name"
+                        )},
+                        registrants=[dict(email=row["email"], registered=row["registered"],
+                                          answers=json.loads(row["answers"]))
+                                     for row in registrant_rows(con, "video", uid, limit=100)])
+
+    @app.get("/api/library/work/<uid>/registration/export")
+    def export_registration(uid):
+        staff()
+        with tx() as con:
+            get_work(con, uid)
+            entries = [(row["email"], row["registered"], json.loads(row["answers"]))
+                       for row in registrant_rows(con, "video", uid)]
+        keys = ["first_name", "last_name", *UTM_FIELDS]
+        keys += sorted({key for _, _, values in entries for key in values if key.startswith("field_")})
+        output = StringIO()
+        csv_data = csv.writer(output)
+        csv_data.writerow(["email", "registration_date_utc", *keys])
+        for email, registered, answers in entries:
+            row = [email, datetime.fromtimestamp(registered, timezone.utc).isoformat()]
+            row += [answers.get(key, "") for key in keys]
+            csv_data.writerow(csv_cell(value) for value in row)
+        return Response(output.getvalue(), mimetype="text/csv", headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": "attachment; filename=cueporch-registrants.csv",
+        })

@@ -44,6 +44,7 @@ import library_folders
 import library_languages
 import library_interactivity
 import library_ratings
+import library_registration
 import library_peer_handoff
 import library_privacy
 import library_share
@@ -115,6 +116,7 @@ def create_app(root, database, operator, institution, simulation=None):
         + library_details.SCHEMA
         + library_interactivity.SCHEMA
         + library_ratings.SCHEMA
+        + library_registration.SCHEMA
         + library_thumbnail.SCHEMA
         + review_links.SCHEMA
     )

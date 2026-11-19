@@ -95,7 +95,7 @@ main { max-width: 65rem; }
 #interactivityEditor [hidden], [data-chapter-menu][hidden] { display: none; }
 #interactivityEditor fieldset label { margin-block: .4rem; }
 #chapterPreview { max-height: 28rem; }
-#chapterRows li, #cardRows li { margin-block: .6rem; padding: .5rem; border-block-end: 1px solid #becac7; }
+#chapterRows li, #cardRows li, #registrationFields li { margin-block: .6rem; padding: .5rem; border-block-end: 1px solid #becac7; }
 .archive-player[data-play-position="center"] [data-control="play"],
 .archive-player[data-play-position="auto"][data-state="ready"] [data-control="play"] {
   position: absolute; z-index: 1; top: 44%; left: 50%; transform: translateX(-50%);

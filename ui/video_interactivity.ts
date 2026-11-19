@@ -1,5 +1,6 @@
 import { setupPresentation } from "./video_presentation.js";
 import { setupRatings } from "./video_ratings.js";
+import { setupRegistration } from "./video_registration.js";
 
 interface Chapter { title: string; timecode: number; }
 interface Chapters { title: string; version: string; revision: string; chapters: Chapter[]; }
@@ -56,16 +57,20 @@ function displayTime(seconds: number) {
 }
 
 const showPresentation = setupPresentation(call, addPicture, timestamp, displayTime, preview);
-const showRatings = setupRatings(call, timestamp, displayTime, async () => {
-  const response = await fetch(endpoint + "/rating/export", {headers: {Authorization: "Bearer " + key.value}});
-  if (!response.ok) throw new Error("The rating report could not be exported.");
+async function exportCsv(suffix: string, filename: string) {
+  const response = await fetch(endpoint + suffix, {headers: {Authorization: "Bearer " + key.value}});
+  if (!response.ok) throw new Error("The CSV could not be exported.");
   const uri = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
   link.href = uri;
-  link.download = "cueporch-video-rating.csv";
+  link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(uri), 1000);
-});
+}
+const showRatings = setupRatings(call, timestamp, displayTime,
+  () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
+const showRegistration = setupRegistration(call,
+  () => exportCsv("/registration/export", "cueporch-registrants.csv"));
 
 function appendChapter(chapter: Chapter) {
   const row = rowTemplate.content.firstElementChild!.cloneNode(true) as HTMLElement;
@@ -114,7 +119,7 @@ async function show() {
     identity.hidden = true;
     editor.hidden = false;
     status.textContent = "";
-    await Promise.all([showPresentation(), showRatings()]);
+    await Promise.all([showPresentation(), showRatings(), showRegistration()]);
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
   }
