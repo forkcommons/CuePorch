@@ -28,12 +28,13 @@ live_modes = p.add_mutually_exclusive_group()
 live_modes.add_argument("--registered-event", action="store_true", help="Test an audience-registration event instead")
 live_modes.add_argument("--browser-event", action="store_true", help="Test browser capture through the installed Live Studio")
 live_modes.add_argument("--scenes-event", action="store_true", help="Verify live scene changes and graphics from the installed studio")
+live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify live DVR and actual browser relay diagnostics")
 live_modes.add_argument("--srt-event", action="store_true", help="Test encrypted SRT through the installed production controls")
 live_modes.add_argument("--program-event", action="store_true", help="Test an unattended prerecorded event from installed CuePorch")
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
-if (a.registered_event or a.browser_event or a.scenes_event or a.srt_event or a.program_event) and not a.live_rtmp_port:
+if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
 
 
@@ -137,6 +138,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_browser_delivery(base, keys)
                 elif a.scenes_event:
                     evidence["event_delivery"] = check_browser_delivery(base, keys, (root, ffmpeg))
+                elif a.event_diagnostics:
+                    evidence["event_delivery"] = check_browser_delivery(base, keys, diagnostics=True)
                 elif a.srt_event:
                     evidence["event_delivery"] = check_srt_delivery(base, keys, ffmpeg)
                 elif a.program_event:

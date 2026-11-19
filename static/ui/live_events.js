@@ -1,6 +1,7 @@
 import { setupRegistration } from "./video_registration.js";
 import { messageAction, renderChat } from "./event_chat.js";
 import { setupProducerEngagement } from "./event_engagement.js";
+import { relaySummary } from "./event_health.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -13,6 +14,7 @@ const field = (name) => form.elements.namedItem(name);
 const preset = element("eventPreset");
 const output = element("eventProduction");
 const health = element("eventHealth");
+const measurements = element("eventHealthDetails");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -110,6 +112,7 @@ function choose(event, instance) {
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
+    measurements.textContent = "";
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -181,6 +184,7 @@ function openEditor(current) {
         for (const name of ["title", "description", "type", "visibility", "latency"])
             field(name).value = values[name];
         field("save_replay").checked = values.save_replay;
+        field("dvr_seconds").value = values.dvr_seconds?.toString() ?? "";
         const schedule = values.schedule;
         for (const name of ["timezone", "start", "end", "repeat"])
             field(name).value = schedule[name];
@@ -220,6 +224,7 @@ preset.onchange = () => {
     for (const name of ["type", "description", "latency"])
         field(name).value = value[name];
     field("save_replay").checked = value.save_replay;
+    field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
     field("timezone").value = value.schedule.timezone;
 };
 form.onsubmit = (event) => {
@@ -236,7 +241,8 @@ form.onsubmit = (event) => {
             revision: editing?.revision,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
-            save_replay: field("save_replay").checked, schedule,
+            save_replay: field("save_replay").checked,
+            dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,
         });
         form.hidden = true;
         await load();
@@ -386,7 +392,16 @@ chatForm.onsubmit = (event) => {
 button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 button("readEventHealth").onclick = () => void action(async () => {
     const result = await request(mediaPath("health"));
-    health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");
+    const settings = result.delivery_settings;
+    const lines = [result.state.replaceAll("_", " ")];
+    if (typeof result.viewers === "number")
+        lines.push(`${result.viewers} viewers`);
+    if (settings?.latency)
+        lines.push(`${settings.latency} latency mode`);
+    if (typeof settings?.dvr_seconds === "number")
+        lines.push(settings.dvr_seconds ? `DVR up to ${settings.dvr_seconds} s` : "DVR off");
+    health.textContent = lines.join(" · ");
+    measurements.textContent = relaySummary(result, result.state === "live" ? "Encoder measurements unavailable from this host." : "");
 });
 button("withdrawEvent").onclick = () => void action(async () => {
     encoder.hidden = true;

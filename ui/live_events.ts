@@ -1,6 +1,7 @@
 import {setupRegistration} from "./video_registration.js";
 import {ChatState, messageAction, renderChat} from "./event_chat.js";
 import {setupProducerEngagement} from "./event_engagement.js";
+import {relaySummary, type RelayHealth} from "./event_health.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -9,7 +10,7 @@ interface Schedule {
 }
 interface EventSettings {
   title: string; description: string; type: string; visibility: string;
-  latency: string; save_replay: boolean; schedule: Schedule;
+  latency: string; save_replay: boolean; dvr_seconds?: number; schedule: Schedule;
 }
 interface Occurrence {id: number; start: string; end: string; local: string; delivery: string; program: string | null;}
 interface LiveEvent {
@@ -18,6 +19,10 @@ interface LiveEvent {
 }
 interface Calendar {events: LiveEvent[]; overlaps: string[]; host_ready: boolean;}
 interface Encoder {server: string; secure_server?: string; key: string; public: boolean;}
+interface EventHealth extends RelayHealth {
+  state: string; viewers?: number;
+  delivery_settings?: {latency: string | null; dvr_seconds: number | null};
+}
 interface SrtListener {server: string; passphrase: string; key_bytes: number;}
 interface ProgramSource {work: string; cut: string;}
 interface ProgramChoice extends ProgramSource {title: string;}
@@ -38,6 +43,7 @@ const field = (name: string) => form.elements.namedItem(name) as HTMLInputElemen
 const preset = element<HTMLSelectElement>("eventPreset");
 const output = element("eventProduction");
 const health = element("eventHealth");
+const measurements = element("eventHealthDetails");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const starting = input("calendarFirst"), ending = input("calendarLast");
@@ -142,6 +148,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   element("srtSettings").hidden = true;
   input("srtPassphrase").value = "";
   health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
+  measurements.textContent = "";
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -210,6 +217,7 @@ function openEditor(current?: LiveEvent) {
   if (values) {
     for (const name of ["title", "description", "type", "visibility", "latency"] as const) field(name).value = values[name];
     field("save_replay").checked = values.save_replay;
+    field("dvr_seconds").value = values.dvr_seconds?.toString() ?? "";
     const schedule = values.schedule;
     for (const name of ["timezone", "start", "end", "repeat"] as const) field(name).value = schedule[name];
     field("interval").value = String(schedule.interval);
@@ -247,6 +255,7 @@ preset.onchange = () => {
   if (!value) return;
   for (const name of ["type", "description", "latency"] as const) field(name).value = value[name];
   field("save_replay").checked = value.save_replay;
+  field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
   field("timezone").value = value.schedule.timezone;
 };
 
@@ -264,7 +273,8 @@ form.onsubmit = (event) => {
       revision: editing?.revision,
       slug: field("slug").value, title: field("title").value, description: field("description").value,
       type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
-      save_replay: field("save_replay").checked, schedule,
+      save_replay: field("save_replay").checked,
+      dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,
     });
     form.hidden = true;
     await load();
@@ -401,8 +411,14 @@ chatForm.onsubmit = (event) => {
 button("exportEventChat").onclick = () => void action(() => downloadCsv(mediaPath("chat/export"), "cueporch-event-chat.csv"));
 
 button("readEventHealth").onclick = () => void action(async () => {
-  const result = await request<{state: string; viewers?: number}>(mediaPath("health"));
-  health.textContent = result.state.replaceAll("_", " ") + (typeof result.viewers === "number" ? ` · ${result.viewers} viewers` : "");
+  const result = await request<EventHealth>(mediaPath("health"));
+  const settings = result.delivery_settings;
+  const lines = [result.state.replaceAll("_", " ")];
+  if (typeof result.viewers === "number") lines.push(`${result.viewers} viewers`);
+  if (settings?.latency) lines.push(`${settings.latency} latency mode`);
+  if (typeof settings?.dvr_seconds === "number") lines.push(settings.dvr_seconds ? `DVR up to ${settings.dvr_seconds} s` : "DVR off");
+  health.textContent = lines.join(" · ");
+  measurements.textContent = relaySummary(result, result.state === "live" ? "Encoder measurements unavailable from this host." : "");
 });
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;

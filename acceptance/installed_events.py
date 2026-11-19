@@ -511,7 +511,7 @@ def archive_has_scene_audio(operator, ffmpeg):
     return False
 
 
-def check_browser_delivery(base, keys, graphics=None):
+def check_browser_delivery(base, keys, graphics=None, diagnostics=False):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
@@ -525,6 +525,7 @@ def check_browser_delivery(base, keys, graphics=None):
     (slot,) = entry["occurrences"]
     studio = f"{base}/api/live-events/{entry['id']}/{slot['id']}/browser"
     assert requests.post(studio, timeout=10).status_code == 403
+    health = studio.removesuffix("browser") + "health"
     watch = base + entry["watch"] + f"?occurrence={slot['id']}"
     with sync_playwright() as pw:
         browser = chromium(pw, ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"])
@@ -534,6 +535,12 @@ def check_browser_delivery(base, keys, graphics=None):
             operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(keys['operator'])})")
             operator.goto(base + "/operator/live-events")
             operator.get_by_role("button", name="Open production for Installed browser broadcast", exact=False).click()
+            if diagnostics:
+                operator.get_by_role("button", name="Edit event").click()
+                operator.get_by_label("Live DVR window in seconds").fill("120")
+                operator.get_by_role("button", name="Save event").click()
+                expect(operator.locator("#newEventForm")).to_be_hidden()
+                operator.get_by_role("button", name="Open production for Installed browser broadcast", exact=False).click()
             operator.get_by_role("link", name="Open browser studio").click()
             expect(operator.get_by_role("heading", name="Live Studio")).to_be_visible()
             panel = prepare_live_scenes(operator, base, studio, auth, *graphics) if graphics else None
@@ -555,6 +562,8 @@ def check_browser_delivery(base, keys, graphics=None):
             _, width, _ = play_event(guest, watch, "Live", navigate=False)
             assert width >= 320
             scene_result = check_broadcast_graphics(guest, panel) if panel else {}
+            if diagnostics:
+                scene_result.update(check_live_diagnostics(operator, guest, health, auth))
             operator.get_by_role("button", name="Stop", exact=True).click()
             expect(operator.locator("#recordStatus")).to_contain_text("Recording ready.", timeout=20000)
             expect(operator.get_by_label("Finished recording")).to_be_visible()
@@ -574,6 +583,43 @@ def check_browser_delivery(base, keys, graphics=None):
                         **scene_result)
         finally:
             browser.close()
+
+
+def check_live_diagnostics(operator, guest, health, auth):
+    import re
+
+    expect(operator.locator("#studioRelayHealth")).to_have_text(re.compile(r"Browser relay.*[1-9].*fps.*[1-9]\d* kbps"), timeout=20000)
+    response = requests.get(health, headers=auth, timeout=10)
+    response.raise_for_status()
+    observed = response.json()
+    assert observed["state"] == "live" and observed["delivery_settings"] == dict(latency="standard", dvr_seconds=120)
+    values = observed["encoder"]["metrics"]
+    assert values["fps"] > 0 and values["bitrate"] > 0 and values["drop_frames"] >= 0
+    assert requests.get(health, timeout=10).status_code == 403
+    assert requests.get(health + "?source=relay", timeout=10).status_code == 403
+    video = guest.frame_locator('iframe[title="Event video"]').locator("video").first
+    rewind = video.evaluate("""async v => {
+        const until = Date.now() + 45000;
+        while (Date.now() < until) {
+            const bufferStart = v.seekable.length ? v.seekable.start(0) : v.currentTime;
+            if (v.currentTime - bufferStart > 12) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        const from = v.currentTime;
+        if (from - v.seekable.start(0) <= 12) throw Error('Live DVR has no past playable buffer');
+        v.pause();
+        await new Promise((resolve, reject) => {
+            v.addEventListener('seeked', resolve, {once: true});
+            setTimeout(() => reject(Error('Live DVR rewind did not decode')), 12000);
+            v.currentTime = from - 10;
+        });
+        if (!v.videoWidth || v.readyState < 2) throw Error('No decoded rewind frame');
+        return from - v.currentTime;
+    }""")
+    assert rewind >= 9.5
+    return dict(measured_encoder_fps=values["fps"], measured_encoder_kbps=values["bitrate"],
+                peer_dvr_window_seconds=120, live_rewind_decoded_seconds=round(rewind, 2),
+                diagnostics_require_operator=True)
 
 
 def check_srt_delivery(base, keys, ffmpeg):

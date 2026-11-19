@@ -126,12 +126,18 @@ def edit(raw):
     replay = raw.get("save_replay", False)
     if type(replay) is not bool:
         abort(422, "Choose whether to record a replay.")
+    dvr = raw.get("dvr_seconds")
+    if dvr is not None and (type(dvr) is not int or not 0 <= dvr <= 14400):
+        abort(422, "Set a DVR window of up to four hours in seconds, or enter 0 to disable it.")
     try:
         schedule = event_schedule.validate(raw.get("schedule"))
     except ValueError as error:
         abort(422, str(error))
-    return dict(title=title, description=description, type=kind, latency=latency,
+    value = dict(title=title, description=description, type=kind, latency=latency,
                 visibility=visibility, save_replay=replay, schedule=schedule)
+    if dvr is not None:
+        value["dvr_seconds"] = dvr
+    return value
 
 
 def summary(con, row, event, first, last):
@@ -200,7 +206,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
         return render_template("record_studio.html", broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens),
-                               scene_endpoint=url_for("studio_scene_deck", uid=uid, opens=opens))
+                               scene_endpoint=url_for("studio_scene_deck", uid=uid, opens=opens),
+                               health_endpoint=url_for("event_health", uid=uid, opens=opens))
 
     @app.route("/api/live-events", methods=["GET", "POST"])
     def list_events():
@@ -351,6 +358,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
                     abort(409, "This event already has a live or finished signal.")
                 return dict(event_peer.encoder(host, remote), public=broadcast)
+        except event_peer.UnsupportedDvrWindow as error:
+            abort(422, str(error))
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "Could not prepare the event on the connected video host.")
 
@@ -481,11 +490,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             _, event = read(con, uid)
             selected_open(event, opens)
             target = occurrence(con, uid, opens)
+        local = studio.health(uid, opens)
+        if request.args.get("source") == "relay":
+            return dict(encoder=local)
         if target is None or target["delivery"] not in DELIVERED:
-            return dict(state=target["delivery"] if target else "scheduled")
+            return dict(state=target["delivery"] if target else "scheduled", encoder=local)
         try:
             with event_peer.connected_host(target["origin"]) as host:
-                return event_peer.observe(host, target["remote"])
+                result = event_peer.observe(host, target["remote"])
+                if result["state"] in ("live", "waiting_for_encoder"):
+                    result["delivery_settings"] = event_peer.live_settings(host, target["remote"])
+                return dict(result, encoder=local)
         except (ValueError, requests.RequestException, KeyError):
             abort(502, "Could not read stream health from the connected video host.")
 

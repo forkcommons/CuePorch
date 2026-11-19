@@ -3,6 +3,7 @@ import {openRecordingStorage, type RecordingDraft} from "./recording_draft.js";
 import {uploadLibraryFile} from "./library_upload.js";
 import {BrowserBroadcast} from "./event_broadcast.js";
 import {setupSceneDeck} from "./event_scenes.js";
+import {relaySummary, type RelayHealth} from "./event_health.js";
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => element<HTMLInputElement>(id);
@@ -23,6 +24,8 @@ const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
 const broadcastEndpoint = document.body.dataset.eventBroadcast || "";
+const healthEndpoint = document.body.dataset.eventHealth;
+const relayHealth = document.querySelector<HTMLElement>("#studioRelayHealth");
 const mode = document.querySelector<HTMLSelectElement>("#browserProductionMode");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
 const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, updateControls, selectClipAudio) : null;
@@ -89,6 +92,7 @@ function updateControls() {
   button("pauseRecord").hidden = !running || Boolean(active?.broadcast);
   button("endRecord").hidden = !running;
   if (mode) mode.disabled = running || busy;
+  if (relayHealth && !active?.broadcast) relayHealth.hidden = true;
   button("pauseRecord").disabled = button("endRecord").disabled = busy;
   button("pauseRecord").textContent = active?.recorder.state === "paused" ? "Resume" : "Pause";
   element<HTMLFieldSetElement>("recordFormat").disabled = running || busy;
@@ -99,6 +103,31 @@ function updateControls() {
   button("downloadRecord").disabled = !take || running || busy;
   prompter.hidden = Boolean(screen) || !script.value.trim();
   button("pipRecord").hidden = !document.pictureInPictureEnabled || !canvas.captureStream;
+}
+
+if (healthEndpoint && relayHealth) {
+  let reading = false;
+  window.setInterval(async () => {
+    const session = active;
+    if (!session?.broadcast || reading || document.hidden) return;
+    reading = true;
+    try {
+      const result = await fetch(`${healthEndpoint}?source=relay`, {
+        cache: "no-store", signal: AbortSignal.timeout(8000), headers: {Authorization: `Bearer ${key.value}`},
+      });
+      const value: RelayHealth = result.ok ? await result.json() : {};
+      if (active !== session) return;
+      relayHealth.textContent = relaySummary(value, "Relay measurements unavailable.");
+      relayHealth.hidden = false;
+    } catch {
+      if (active === session) {
+        relayHealth.textContent = "Relay measurements unavailable.";
+        relayHealth.hidden = false;
+      }
+    } finally {
+      reading = false;
+    }
+  }, 3000);
 }
 
 async function listDevices() {

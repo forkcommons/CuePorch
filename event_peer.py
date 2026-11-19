@@ -12,6 +12,10 @@ from peertube_destination import PeerTube
 LATENCY = {"standard": 1, "fail-safe": 2, "low": 3}
 
 
+class UnsupportedDvrWindow(ValueError):
+    pass
+
+
 def host_available():
     return all(os.environ.get(name) for name in ("CUEPORCH_PEERTUBE_ORIGIN", "PEERTUBE_USERNAME", "PEERTUBE_PASSWORD"))
 
@@ -55,6 +59,13 @@ def stage_remote(host, marker, event):
         raise ValueError("The connected account needs a PeerTube channel.")
     body = dict(name=marker, channelId=channels[0]["id"], privacy=3, permanentLive=False,
                 saveReplay=event["save_replay"], latencyMode=LATENCY[event["latency"]], downloadEnabled=False)
+    if event.get("dvr_seconds") is not None:
+        seconds = event["dvr_seconds"]
+        if seconds:
+            limit = host.call("GET", "/api/v1/config").json()["live"]["dvr"]["maxWindow"]
+            if seconds > limit:
+                raise UnsupportedDvrWindow(f"The connected PeerTube host allows a DVR window of up to {limit} seconds.")
+        body["dvrWindow"] = seconds
     if event["save_replay"]:
         body["replaySettings"] = {"privacy": 3}
     created = host.call("POST", "/api/v1/videos/live", json=body).json()
@@ -72,6 +83,12 @@ def release_remote(host, target, event, public):
 def encoder(host, target):
     remote = host.call("GET", "/api/v1/videos/live/" + target).json()
     return dict(server=remote["rtmpUrl"], secure_server=remote.get("rtmpsUrl"), key=remote["streamKey"])
+
+
+def live_settings(host, target):
+    remote = host.call("GET", "/api/v1/videos/live/" + target).json()
+    latency = next((name for name, value in LATENCY.items() if value == remote.get("latencyMode")), None)
+    return dict(latency=latency, dvr_seconds=remote.get("dvrWindow"))
 
 
 def status(video):

@@ -3,6 +3,7 @@
 from contextlib import suppress
 from hashlib import sha256
 from ipaddress import ip_address
+import math
 from queue import Empty, Full, Queue
 import re
 import secrets
@@ -44,12 +45,38 @@ def output_arguments(encoder):
     ]
 
 
-def relay_process(args, stdin):
-    return subprocess.Popen(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", *args],
-        stdin=stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+class EncoderProgress:
+    def __init__(self, args, stdin):
+        self.latest = None
+        self.process = subprocess.Popen(
+            ["ffmpeg", "-nostdin", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "1", *args],
+            stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        Thread(target=self.read, name="CuePorch encoder progress", daemon=True).start()
+
+    def read(self):
+        # FFmpeg batches progress fields until each progress=continue/end marker.
+        with self.process.stdout as stream:
+            values = {}
+            for line in stream:
+                name, _, value = line.decode("ascii", errors="replace").strip().partition("=")
+                if name in ("fps", "bitrate", "drop_frames"):
+                    try:
+                        measured = float(value.removesuffix("kbits/s"))
+                    except ValueError:
+                        continue
+                    if math.isfinite(measured) and measured >= 0:
+                        values[name] = int(measured) if name == "drop_frames" else measured
+                elif name == "progress":
+                    self.latest = (time.monotonic(), values)
+                    values = {}
+
+    def sample(self):
+        latest = self.latest
+        if self.process.poll() is not None or latest is None or time.monotonic() - latest[0] > 5:
+            return None
+        return latest[1]
 
 
 class Capture:
@@ -63,11 +90,12 @@ class Capture:
         self.next = 0
         self.last = None
         self.error = False
-        self.process = relay_process(
+        self.progress = EncoderProgress(
             ["-fflags", "+genpts", "-protocol_whitelist", "pipe", "-f", "webm", "-i", "pipe:0",
              *output_arguments(encoder)],
             subprocess.PIPE,
         )
+        self.process = self.progress.process
         self.thread = Thread(target=self.receive, name="CuePorch browser encoder", daemon=True)
         self.thread.start()
 
@@ -141,7 +169,8 @@ class Relay:
         self.stop = Event()
         self.done = Event()
         self.lease = lease
-        self.process = relay_process(args, subprocess.DEVNULL)
+        self.progress = EncoderProgress(args, subprocess.DEVNULL)
+        self.process = self.progress.process
         try:
             self.process.wait(timeout=0.4)
         except subprocess.TimeoutExpired:
@@ -230,6 +259,15 @@ class Studio:
             if isinstance(room, SrtRelay) and room.endpoint == endpoint and not room.done.is_set() and not room.stop.is_set():
                 return room.credentials()
         return None
+
+    def health(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if not room or room.done.is_set() or room.stop.is_set():
+                return None
+        source = "browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else "program"
+        values = room.progress.sample()
+        return dict(source=source, metrics=values)
 
     def get(self, uid, opens, token):
         with self.lock:

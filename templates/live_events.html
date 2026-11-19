@@ -57,6 +57,8 @@
         <legend>Production and viewers</legend>
         <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
         <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
+        <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
+        <small id="eventDvrHelp">Leave blank for the host default. Enter 0 to turn DVR off. The host sets the maximum.</small>
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
       </fieldset>
       <button type="submit">Save event</button>
@@ -72,6 +74,7 @@
       <button type="button" id="readEventHealth">Refresh stream status</button>
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
+      <p id="eventHealthDetails"></p>
       <div id="encoderSettings" hidden>
         <label>RTMP server <input id="rtmpServer" readonly></label>
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>

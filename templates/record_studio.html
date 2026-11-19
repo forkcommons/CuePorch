@@ -6,7 +6,7 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }} · CuePorch</title>
 </head>
-<body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}">
+<body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}">
   <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
@@ -31,6 +31,7 @@
           <button type="button" id="pipRecord" hidden>Picture in picture</button>
           <span id="recordTime" aria-label="Time recorded"></span>
         </div>
+        {% if health_endpoint %}<p id="studioRelayHealth" hidden></p>{% endif %}
         <ul id="recordDrafts" aria-label="Recovered recordings"></ul>
       </section>
       <aside aria-label="Recording controls">
