@@ -62,6 +62,18 @@ interface ReviewLink {
   password: boolean;
   allow_download: boolean;
   allow_versions: boolean;
+  allow_comment: boolean;
+  allow_status: boolean;
+  allow_resolved: boolean;
+}
+
+interface ReviewComment {
+  id: string;
+  parent: string | null;
+  author: string;
+  body: string;
+  seconds: number;
+  resolved: boolean;
 }
 
 type LibraryView = "Library" | "Starred" | "Watch later" | "Recently deleted";
@@ -552,6 +564,9 @@ async function reviewLinksDialog(work: Work) {
     removePassword: reviewField("Remove saved password", "checkbox"),
     allowDownload: reviewField("Allow download", "checkbox"),
     allowVersions: reviewField("Allow previous versions", "checkbox"),
+    allowComment: reviewField("Allow comments", "checkbox"),
+    allowStatus: reviewField("Allow status changes", "checkbox"),
+    allowResolved: reviewField("Allow resolved comments", "checkbox"),
   };
   fields.name.input.required = true;
   fields.name.input.maxLength = 128;
@@ -572,6 +587,9 @@ async function reviewLinksDialog(work: Work) {
     fields.removePassword.input.checked = false;
     fields.allowDownload.input.checked = !!link?.allow_download;
     fields.allowVersions.input.checked = !!link?.allow_versions;
+    fields.allowComment.input.checked = link?.allow_comment ?? true;
+    fields.allowStatus.input.checked = !!link?.allow_status;
+    fields.allowResolved.input.checked = !!link?.allow_resolved;
     save.textContent = link ? "Save review settings" : "Create review link";
     cancel.hidden = !link;
     editor.onsubmit = async (event) => {
@@ -584,6 +602,9 @@ async function reviewLinksDialog(work: Work) {
           expires: new Date(fields.expires.input.value).getTime() / 1000,
           allow_download: fields.allowDownload.input.checked,
           allow_versions: fields.allowVersions.input.checked,
+          allow_comment: fields.allowComment.input.checked,
+          allow_status: fields.allowStatus.input.checked,
+          allow_resolved: fields.allowResolved.input.checked,
           ...(password || fields.removePassword.input.checked
             ? { password: fields.removePassword.input.checked ? "" : password }
             : {}),
@@ -636,6 +657,7 @@ async function reviewLinksDialog(work: Work) {
     const buttons: [string, () => Promise<void>][] = [
       ["Copy review link", () => copyText(field)],
       ["Manage", async () => { populate(link); fields.name.input.focus(); }],
+      ["Comments", () => manageReviewFeedback(work, link, reopen)],
       [link.enabled ? "Disable" : "Enable", () => update("", "PUT", { enabled: !link.enabled })],
       ["Make a copy", () => update("/copy", "POST")],
       ["Delete", () => update("", "DELETE")],
@@ -657,6 +679,78 @@ function reviewField(text: string, type: string) {
   input.type = type;
   label.append(text, input);
   return { label, input };
+}
+
+async function manageReviewFeedback(work: Work, link: ReviewLink, back: () => Promise<void>) {
+  const versions: VideoVersion[] = await (
+    await completed(await request(workEndpoint(work) + "/versions"))
+  ).json();
+  openWorkDialog("Comments for " + link.name);
+  const backButton = document.createElement("button");
+  backButton.textContent = "Back to review links";
+  action(backButton, back);
+  const picker = document.createElement("select");
+  const label = document.createElement("label");
+  label.textContent = "Video version";
+  label.append(picker);
+  versions.forEach((version, index) => {
+    if (version.video_files.some((file) => file.format === "mp4")) {
+      picker.append(new Option(version.current ? "Current version" : "Previous version " + index, version.key));
+    }
+  });
+  const list = document.createElement("ol");
+  const download = document.createElement("button");
+  download.textContent = "Download comments CSV";
+  const url = () => link.path + "/feedback/" + picker.value;
+  const render = async () => {
+    if (!picker.value) {
+      workDialogStatus.textContent = "This review has no playable version.";
+      download.disabled = true;
+      return;
+    }
+    const data: { comments: ReviewComment[]; status: string } = await (
+      await completed(await request(url()))
+    ).json();
+    workDialogStatus.textContent = data.status;
+    list.replaceChildren();
+    for (const comment of data.comments) {
+      const row = document.createElement("li");
+      const author = document.createElement("strong");
+      author.textContent = comment.author;
+      const text = document.createElement("p");
+      text.textContent = comment.body;
+      row.append(author, " · " + comment.seconds.toFixed(2) + " seconds", text);
+      if (!comment.parent) {
+        const control = document.createElement("button");
+        control.textContent = comment.resolved ? "Reopen thread" : "Resolve thread";
+        action(control, async () => {
+          await completed(await request(url() + "/" + comment.id + "/resolved", "PUT", {
+            resolved: !comment.resolved,
+          }));
+          await render();
+        });
+        row.append(control);
+      }
+      list.append(row);
+    }
+    if (!list.children.length) {
+      const row = document.createElement("li");
+      row.textContent = "No comments yet.";
+      list.append(row);
+    }
+  };
+  picker.onchange = () => render().catch((error) => { workDialogStatus.textContent = String(error); });
+  action(download, async () => {
+    const response = await completed(await request(url() + "/comments.csv"));
+    const object = URL.createObjectURL(await response.blob());
+    const file = document.createElement("a");
+    file.href = object;
+    file.download = "review-comments.csv";
+    file.click();
+    window.setTimeout(() => URL.revokeObjectURL(object), 1000);
+  });
+  workDialogBody.append(backButton, label, download, list);
+  await render();
 }
 
 let thumbnailUrl: string | undefined;

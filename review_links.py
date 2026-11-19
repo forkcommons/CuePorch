@@ -9,9 +9,11 @@ import time
 from flask import abort, render_template, request, send_file
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import review_feedback
 from catalog import video_version_key
 
-SCHEMA = """
+SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS review_link(
  id TEXT PRIMARY KEY, work TEXT NOT NULL, name TEXT NOT NULL, expires REAL NOT NULL,
  password_hash TEXT, enabled INTEGER NOT NULL DEFAULT 1,
@@ -22,6 +24,8 @@ CREATE TABLE IF NOT EXISTS review_session(
 CREATE TABLE IF NOT EXISTS review_unlock_limit(
  link TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
 """
+    + review_feedback.SCHEMA
+)
 
 REVIEW_LIFETIME = 30 * 86400
 SESSION_LIFETIME = 2 * 3600
@@ -40,19 +44,26 @@ def register(app, tx, staff, get_work, title_for, root):
             abort(404)
         return row
 
-    def project(row):
-        return {
-            name: row[name]
-            for name in (
-                "id",
-                "name",
-                "expires",
-                "enabled",
-                "allow_download",
-                "allow_versions",
-                "created",
-            )
-        } | {"password": bool(row["password_hash"]), "path": "/review/" + row["id"]}
+    def project(con, row):
+        return (
+            {
+                name: row[name]
+                for name in (
+                    "id",
+                    "name",
+                    "expires",
+                    "enabled",
+                    "allow_download",
+                    "allow_versions",
+                    "created",
+                )
+            }
+            | {
+                "password": bool(row["password_hash"]),
+                "path": "/review/" + row["id"],
+            }
+            | review_feedback.settings(con, row["id"])
+        )
 
     def link_fields(body):
         if not isinstance(body, dict):
@@ -83,7 +94,7 @@ def register(app, tx, staff, get_work, title_for, root):
         with tx() as con:
             get_work(con, work)
             return [
-                project(row)
+                project(con, row)
                 for row in con.execute(
                     "SELECT * FROM review_link WHERE work=? ORDER BY created DESC",
                     (work,),
@@ -114,7 +125,8 @@ def register(app, tx, staff, get_work, title_for, root):
                     time.time(),
                 ),
             )
-            return project(locate(con, work, uid)), 201
+            review_feedback.save_settings(con, uid, body)
+            return project(con, locate(con, work, uid)), 201
 
     @app.put("/api/library/work/<work>/review-links/<uid>")
     def manage_review(work, uid):
@@ -131,6 +143,9 @@ def register(app, tx, staff, get_work, title_for, root):
                 abort(400)
             if "name" in body:
                 name, expires, password = link_fields(body)
+                review_feedback.save_settings(
+                    con, uid, review_feedback.settings(con, uid) | body
+                )
                 password_hash = (
                     (generate_password_hash(password) if password else None)
                     if "password" in body
@@ -155,7 +170,7 @@ def register(app, tx, staff, get_work, title_for, root):
                 )
             if not enabled or "password" in body:
                 con.execute("DELETE FROM review_session WHERE link=?", (uid,))
-            return project(locate(con, work, uid))
+            return project(con, locate(con, work, uid))
 
     @app.post("/api/library/work/<work>/review-links/<uid>/copy")
     def copy_review(work, uid):
@@ -173,7 +188,10 @@ def register(app, tx, staff, get_work, title_for, root):
                    FROM review_link WHERE id=?""",
                 (new_id, now + REVIEW_LIFETIME, now, uid),
             )
-            return project(locate(con, work, new_id)), 201
+            review_feedback.save_settings(
+                con, new_id, review_feedback.settings(con, uid)
+            )
+            return project(con, locate(con, work, new_id)), 201
 
     @app.delete("/api/library/work/<work>/review-links/<uid>")
     def remove_review(work, uid):
@@ -183,6 +201,7 @@ def register(app, tx, staff, get_work, title_for, root):
             locate(con, work, uid)
             con.execute("DELETE FROM review_session WHERE link=?", (uid,))
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
+            con.execute("DELETE FROM review_feedback_permission WHERE link=?", (uid,))
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 
@@ -239,6 +258,34 @@ def register(app, tx, staff, get_work, title_for, root):
             if media is not None:
                 playable.setdefault(video_version_key(version), (version, media))
         return playable
+
+    def operator_feedback_access(con, uid, version):
+        staff()
+        row = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
+        if row is None:
+            abort(404)
+        work = get_work(con, row["work"])
+        match = playable_versions(work, {"allow_versions": True}).get(version)
+        if not match:
+            abort(404)
+        return match[0]
+
+    def scoped_feedback_access(con, uid, version):
+        if request.headers.get("Authorization"):
+            return operator_feedback_access(con, uid, version), dict.fromkeys(
+                review_feedback.OPTIONS, True
+            )
+        row, work = active(con, uid)
+        if not authorized(con, row):
+            abort(403)
+        match = playable_versions(work, row).get(version)
+        if not match:
+            abort(404)
+        return match[0], review_feedback.settings(con, uid)
+
+    review_feedback.register(
+        app, tx, scoped_feedback_access, operator_feedback_access, confidential
+    )
 
     @app.get("/review/<uid>")
     def review_page(uid):

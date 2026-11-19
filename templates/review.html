@@ -34,6 +34,30 @@
       {% endfor %}
     </video>
     {% if allow_download %}<a href="{{ url_for('review_media', uid=uid, version=selected, download=1) }}">Download this version</a>{% endif %}
+    <section id="reviewFeedback" data-feedback="{{ url_for('review_feedback', uid=uid, version=selected) }}">
+      <h2>Feedback</h2>
+      <p id="reviewStatus" role="status"></p>
+      <form id="reviewDecision" hidden>
+        <label>Review status
+          <select name="status"><option>In progress</option><option>Needs review</option><option>Approved</option></select>
+        </label>
+        <button>Save status</button>
+      </form>
+      <form id="writeFeedback" hidden>
+        <label>Name <input name="author" maxlength="80" required autocomplete="name"></label>
+        <label>Comment <textarea name="body" maxlength="3000" required></textarea></label>
+        <button type="button" id="markFrame">Use current time</button>
+        <button type="button" id="cancelReply" hidden>Cancel reply</button>
+        <p id="pin"></p>
+        <button id="submitComment">Post comment</button>
+      </form>
+      <label>Search comments <input id="searchFeedback" type="search"></label>
+      <label id="resolvedFilter" hidden><input type="checkbox"> Show resolved</label>
+      <label>Sort comments <select id="sortFeedback"><option value="time">Timecode</option><option value="newest">Newest first</option></select></label>
+      <ol id="reviewComments"></ol>
+      <p id="feedbackMessage" role="status"></p>
+    </section>
+    <script type="module" src="/static/ui/review_feedback.js"></script>
     {% else %}<p>This review has no playable copy yet.</p>{% endif %}
   </main>
 </body>

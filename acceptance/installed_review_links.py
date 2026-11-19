@@ -18,6 +18,8 @@ def check_review_links(page, base, auth, work):
     dialog.get_by_label("Review password").fill("fixture-screening-password")
     dialog.get_by_label("Allow download").check()
     dialog.get_by_label("Allow previous versions").check()
+    dialog.get_by_label("Allow status changes").check()
+    dialog.get_by_label("Allow resolved comments").check()
     dialog.get_by_role("button", name="Create review link", exact=True).click()
     expect(dialog.get_by_role("status")).to_have_text("Review link created.")
     link = dialog.get_by_label("Link for Curator screening").input_value()
@@ -52,6 +54,9 @@ def check_review_links(page, base, auth, work):
     )
     assert binary.status_code == 206 and len(binary.content) == 128
     assert "attachment" in binary.headers["Content-Disposition"]
+    feedback = link + "/feedback/" + recent[0]["key"]
+    assert requests.get(feedback, timeout=10).status_code == 403
+    assert unlocked.get(feedback + "/comments.csv", timeout=10).status_code == 403
 
     context = page.context.browser.new_context()
     try:
@@ -67,6 +72,26 @@ def check_review_links(page, base, auth, work):
             "async v=>{v.muted=true;await v.play();return v.videoWidth}"
         )
         assert initial == 320
+        player.evaluate("v => {v.pause(); v.currentTime = 1.25;}")
+        visitor.get_by_role("button", name="Use current time", exact=True).click()
+        visitor.get_by_label("Name", exact=True).fill("A reviewer")
+        visitor.get_by_label("Comment", exact=True).fill(
+            "Keep this frame in the sequence."
+        )
+        visitor.get_by_role("button", name="Post comment", exact=True).click()
+        expect(
+            visitor.get_by_text("Keep this frame in the sequence.", exact=True)
+        ).to_be_visible()
+        visitor.get_by_role("button", name="Reply", exact=True).click()
+        visitor.get_by_label("Comment", exact=True).fill("=1+1")
+        visitor.get_by_role("button", name="Post reply", exact=True).click()
+        expect(visitor.get_by_text("=1+1", exact=True)).to_be_visible()
+        visitor.get_by_label("Search comments").fill("absent phrase")
+        expect(visitor.get_by_text("No matching comments.", exact=True)).to_be_visible()
+        visitor.get_by_label("Search comments").clear()
+        visitor.get_by_label("Review status").select_option("Needs review")
+        visitor.get_by_role("button", name="Save status", exact=True).click()
+        expect(visitor.locator("#reviewStatus")).to_have_text("Needs review")
         visitor.get_by_label("Video version").select_option(index=1)
         visitor.get_by_role("button", name="View version").click()
         expect(visitor).to_have_url(link + "?version=" + recent[1]["key"])
@@ -74,10 +99,37 @@ def check_review_links(page, base, auth, work):
             "async v=>{v.muted=true;await v.play();return v.videoWidth}"
         )
         assert previous == 256
+        expect(visitor.get_by_text("No comments yet.", exact=True)).to_be_visible()
     finally:
         context.close()
 
     row = dialog.locator("li").filter(has_text="Curator screening")
+    view = unlocked.get(feedback, timeout=10)
+    view.raise_for_status()
+    contents = view.json()
+    assert contents["status"] == "Needs review"
+    thread = next(
+        comment for comment in contents["comments"] if comment["parent"] is None
+    )
+    assert abs(thread["seconds"] - 1.25) < 0.1
+    assert any(item["parent"] == thread["id"] for item in contents["comments"])
+    row.get_by_role("button", name="Comments", exact=True).click()
+    expect(
+        dialog.get_by_text("Keep this frame in the sequence.", exact=True)
+    ).to_be_visible()
+    with page.expect_download() as csv:
+        dialog.get_by_role("button", name="Download comments CSV").click()
+    exported = csv.value.path().read_text(encoding="utf8")
+    assert "Keep this frame in the sequence." in exported and "'=1+1" in exported
+    dialog.get_by_role("button", name="Resolve thread", exact=True).click()
+    expect(
+        dialog.get_by_role("button", name="Reopen thread", exact=True)
+    ).to_be_visible()
+    assert any(
+        item["resolved"]
+        for item in unlocked.get(feedback, timeout=10).json()["comments"]
+    )
+    dialog.get_by_role("button", name="Back to review links", exact=True).click()
     row.get_by_role("button", name="Disable", exact=True).click()
     expect(row.get_by_role("button", name="Enable", exact=True)).to_be_visible()
     assert unlocked.get(media, timeout=10).status_code == 404
@@ -103,12 +155,21 @@ def check_review_links(page, base, auth, work):
             "expires": time.time() + 2,
             "allow_download": False,
             "allow_versions": False,
+            "allow_comment": False,
             "password": "",
         },
         timeout=10,
     )
     response.raise_for_status()
     assert requests.get(media + "?download=1", timeout=10).status_code == 403
+    assert (
+        requests.post(
+            feedback,
+            json={"author": "Visitor", "body": "Disabled", "seconds": 0},
+            timeout=10,
+        ).status_code
+        == 403
+    )
     assert (
         requests.get(link + "/media/" + recent[1]["key"], timeout=10).status_code == 404
     )
@@ -121,4 +182,7 @@ def check_review_links(page, base, auth, work):
         "download_and_prior_version_permissions_enforced": True,
         "disable_revokes_existing_session": True,
         "copy_delete_and_expiration": True,
+        "comment_timecode_replies_search_and_status": True,
+        "version_specific_feedback": True,
+        "staff_csv_and_resolution": True,
     }
