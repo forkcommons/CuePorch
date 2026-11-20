@@ -4,6 +4,16 @@ interface Invitation {id: string; email: string; role: Role; expires: number}
 interface Share {id: string; title: string; shared: boolean}
 interface Roster {members: (Member & {removed: number | null})[]; invitations: Invitation[]}
 interface Audit {actor: string; action: string; subject: string; detail: string | null; at: number}
+interface GroupFolder {id: string; title: string}
+interface Group {
+  id: string; name: string; revision: string; members: string[]; folders: string[];
+  unavailable_folders?: GroupFolder[];
+}
+interface GroupOptions {
+  groups: Group[];
+  members: Pick<Member, "id" | "name" | "email">[];
+  folders: GroupFolder[];
+}
 
 const access = document.querySelector<HTMLFormElement>("#teamManagementAccess")!;
 const credential = access.querySelector<HTMLInputElement>("input")!;
@@ -23,10 +33,17 @@ const shareFolder = document.querySelector<HTMLSelectElement>("#teamShareFolder"
 const shareFolderButton = document.querySelector<HTMLButtonElement>("#shareTeamFolder")!;
 const sharedFolders = document.querySelector<HTMLUListElement>("#teamSharedFolders")!;
 const activity = document.querySelector<HTMLDetailsElement>("#teamMembershipActivity")!;
+const groupSelector = document.querySelector<HTMLSelectElement>("#teamGroup")!;
+const groupForm = document.querySelector<HTMLFormElement>("#teamGroupForm")!;
+const groupName = groupForm.querySelector<HTMLInputElement>("[name=name]")!;
+const groupMembers = document.querySelector<HTMLElement>("#teamGroupMembers")!;
+const groupFolders = document.querySelector<HTMLElement>("#teamGroupFolders")!;
+const deleteGroup = document.querySelector<HTMLButtonElement>("#removeTeamGroup")!;
 const date = new Intl.DateTimeFormat(undefined, {dateStyle: "medium", timeStyle: "short"});
 let selected: Member | undefined;
 let working = false;
 let names: Map<string, string>;
+let groupOptions: GroupOptions;
 
 function call(path: string, method = "GET", body = {}) {
   return teamRequest(path, method, body, credential.value).then(checked);
@@ -106,6 +123,67 @@ shareFolderButton.onclick = () => void task(async () => {
   await loadShares();
 }, "Folder shared.");
 
+function checkbox(name: string, value: string, label: string, selected: boolean) {
+  const row = document.createElement("div");
+  const caption = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = name;
+  input.value = value;
+  input.checked = selected;
+  caption.append(input, " ", label);
+  row.append(caption);
+  return row;
+}
+
+function selectedGroup() {
+  return groupOptions.groups.find(group => group.id === groupSelector.value);
+}
+
+function showGroup() {
+  const group = selectedGroup();
+  groupName.value = group?.name ?? "";
+  deleteGroup.disabled = !group;
+  groupMembers.replaceChildren(...groupOptions.members.map(member =>
+    checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false)));
+  groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder =>
+    checkbox("folders", folder.id, folder.title, group?.folders.includes(folder.id) ?? false)));
+}
+
+async function loadGroups(id = groupSelector.value) {
+  groupOptions = await (await call("groups")).json();
+  groupSelector.replaceChildren(new Option("New group", ""), ...groupOptions.groups.map(group =>
+    new Option(group.name, group.id)));
+  if (groupOptions.groups.some(group => group.id === id)) groupSelector.value = id;
+  showGroup();
+}
+
+groupSelector.onchange = showGroup;
+document.querySelector<HTMLButtonElement>("#reloadTeamGroups")!.onclick = () => void task(() => loadGroups());
+groupForm.onsubmit = event => {
+  event.preventDefault();
+  void task(async () => {
+    const group = selectedGroup();
+    const form = new FormData(groupForm);
+    const body = {
+      name: groupName.value, members: form.getAll("members"), folders: form.getAll("folders"),
+      revision: group?.revision,
+    };
+    const {id}: {id: string} = await (await call(
+      group ? `groups/${group.id}` : "groups", group ? "PUT" : "POST", body)).json();
+    await loadGroups(id);
+    if (activity.open) await loadActivity();
+  }, "Group saved.");
+};
+
+deleteGroup.onclick = () => void task(async () => {
+  const group = selectedGroup();
+  if (!group) return;
+  await call(`groups/${group.id}`, "DELETE", {revision: group.revision});
+  await loadGroups("");
+  if (activity.open) await loadActivity();
+}, "Group deleted.");
+
 async function loadActivity() {
   const {events}: {events: Audit[]} = await (await call("audit")).json();
   const list = activity.querySelector("ul")!;
@@ -114,8 +192,9 @@ async function loadActivity() {
     const item = document.createElement("li");
     const action = event.action.replaceAll("_", " ");
     const actor = names.get(event.actor.replace(/^team:/, "")) || event.actor;
-    const subject = names.get(event.subject) || event.subject;
-    const detail = event.detail && !/^(video|folder)_/.test(event.action) ? ` (${event.detail})` : "";
+    const subject = event.action.startsWith("group_") ? event.detail || event.subject :
+      names.get(event.subject) || event.subject;
+    const detail = event.detail && !/^(video|folder|group)_/.test(event.action) ? ` (${event.detail})` : "";
     item.textContent = `${date.format(event.at * 1000)} · ${actor} · ${action} · ${subject}${detail}`;
     list.append(item);
   }
@@ -165,6 +244,7 @@ async function loadMembers() {
     selected = undefined;
     sharing.hidden = true;
   }
+  await loadGroups();
   if (activity.open) await loadActivity();
   management.hidden = false;
   access.hidden = true;

@@ -1,6 +1,7 @@
 """Institution-scoped operator policy, screening grants and complaint records."""
 
 import argparse
+from collections import Counter
 import csv
 import io
 import hashlib
@@ -329,6 +330,9 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/api/migration")
     def migration_status():
         staff()
+        page = request.args.get("page", default=0, type=int)
+        if "page" in request.args and page < 1:
+            abort(400, "Choose a positive inventory page number.")
         status = dict(transfer_status)
         state = status["state"]
         if state in ("inventoried", "transferred") or (state == "interrupted" and transfer_inventory.is_file()):
@@ -341,7 +345,17 @@ def create_app(root, database, operator, institution, simulation=None):
                         targets = library_showcases.imported_targets(con)
                     for showcase in showcases:
                         showcase["target"] = targets.get(showcase["uri"])
-                status.update(works=data["works"], showcases=showcases,
+                entries = data["works"]
+                counts = Counter(work["disposition"] for work in entries)
+                status.update(total=len(entries), counts=dict(counts),
+                              metadata_incomplete=sum(bool(work.get("unavailable_metadata")) for work in entries))
+                if page:
+                    size = 100
+                    pages = max(1, (len(entries) + size - 1) // size)
+                    page = min(page, pages)
+                    entries = entries[(page - 1) * size:page * size]
+                    status.update(page=page, pages=pages)
+                status.update(works=entries, showcases=showcases,
                               showcase_issue=data.get("showcase_issue"))
             except (ValueError, OSError, KeyError):
                 return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
@@ -349,13 +363,18 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.post("/api/migration")
     def begin_transfer():
-        from vimeo_transfer import Source, migrate
+        from vimeo_transfer import Source, SourceFailure, migrate
 
         staff()
-        dry = request.json.get("dry_run")
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400, "Provide a migration request.")
+        dry = body.get("dry_run")
         if type(dry) is not bool:
             abort(400)
-        token = request.json.get("token") or os.environ.get("VIMEO_ACCESS_TOKEN")
+        token = body.get("token") or os.environ.get("VIMEO_ACCESS_TOKEN")
+        if token is not None and not isinstance(token, str):
+            abort(400, "Enter a Vimeo token as text.")
         if not simulation and not token:
             abort(400, "Supply the account owner's Vimeo token")
         if not dry and not transfer_inventory.is_file():
@@ -369,6 +388,10 @@ def create_app(root, database, operator, institution, simulation=None):
                 if not dry:
                     action(con, uid, "migration", {"institution": institution})
             update_transfer("running", uid)
+
+            def track(processed, total):
+                nonlocal transfer_status
+                transfer_status = dict(state="running", action=uid, processed=processed, total=total)
 
             def worker():
                 try:
@@ -388,7 +411,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             time.sleep(0.5)
                     if transfer_status["state"] != "running":
                         update_transfer("running", uid)
-                    migrate(institution, transfer_directory, source, dry)
+                    migrate(institution, transfer_directory, source, dry, progress=track)
                     filename = "inventory.json" if dry else "manifest.json"
                     data = json.loads(
                         (transfer_directory / filename).read_text(encoding="utf8")
@@ -426,6 +449,14 @@ def create_app(root, database, operator, institution, simulation=None):
                                             prior[2] if prior else "work",
                                         )
                     update_transfer("inventoried" if dry else "transferred", uid)
+                except SourceFailure as exc:
+                    detail = {
+                        401: "Vimeo rejected the token. Enter an active owner token and retry.",
+                        403: "Vimeo denied access. Check the token's scopes and account permissions.",
+                        404: "Vimeo could not find the requested source. Check the account and preview again.",
+                        429: "Vimeo asked CuePorch to slow down. Wait before resuming the transfer.",
+                    }.get(exc.status, "Check the source and retry from your saved progress.")
+                    update_transfer("failed", uid, f"Source HTTP {exc.status}. {detail}")
                 except (ValueError, OSError, KeyError) as exc:
                     update_transfer("failed", uid, type(exc).__name__ + ". Retry from the source inventory.")
                 finally:

@@ -40,6 +40,25 @@
       <button id="shareTeamFolder" type="button">Share folder</button>
       <ul id="teamSharedFolders"></ul>
     </section>
+    <section aria-labelledby="teamGroupsTitle">
+      <h2 id="teamGroupsTitle">Groups</h2>
+      <p>Share folders and their subfolders with a group of team members.</p>
+      <label>Group <select id="teamGroup"></select></label>
+      <form id="teamGroupForm">
+        <label>Group name <input name="name" required maxlength="64"></label>
+        <fieldset>
+          <legend>Group members</legend>
+          <div id="teamGroupMembers"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Group folders</legend>
+          <div id="teamGroupFolders"></div>
+        </fieldset>
+        <button>Save group</button>
+        <button id="removeTeamGroup" type="button" disabled>Delete group</button>
+        <button id="reloadTeamGroups" type="button">Reload groups</button>
+      </form>
+    </section>
     <details id="teamMembershipActivity">
       <summary>Membership activity</summary>
       <ul></ul>

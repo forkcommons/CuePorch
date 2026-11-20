@@ -186,6 +186,36 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Folder access revoked.")
         assert viewer.request.get(migrated_media).status == 404
 
+        groups_api = base + "/api/team/groups"
+        assert viewer.request.get(groups_api, headers=TEAM).status == 403
+        group_form = admin_page.locator("#teamGroupForm")
+        group_form.get_by_label("Group name").fill("Screening reviewers")
+        group_member = group_form.get_by_role("checkbox", name=f"Val · {email('viewer')}")
+        group_member.check()
+        group_form.get_by_role("checkbox", name="Station programs", exact=True).check()
+        group_form.get_by_role("button", name="Save group").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
+        group, = admin.request.get(groups_api, headers=TEAM).json()["groups"]
+        viewer_page.goto(base + "/team")
+        group_width = playback(viewer_page, migrated["title"])
+        assert group_width == 320
+        assert contributor.request.get(migrated_media).status == 404
+        assert requests.get(migrated_watch, timeout=10).status_code == 404
+        group_member.uncheck()
+        group_form.get_by_role("button", name="Save group").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
+        assert viewer.request.get(migrated_media).status == 404
+        group_api = f"{groups_api}/{group['id']}"
+        assert admin.request.put(group_api, headers=TEAM, data=group).status == 409
+        assert contributor.request.delete(group_api, headers=TEAM, data=group).status == 403
+        group_member.check()
+        group_form.get_by_role("button", name="Save group").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
+        assert viewer.request.get(migrated_media).ok
+        group_form.get_by_role("button", name="Delete group").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group deleted.")
+        assert viewer.request.get(migrated_media).status == 404
+
         admin_page.get_by_label("Video", exact=True).select_option(label=protected_title)
         admin_page.get_by_role("button", name="Share video", exact=True).click()
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Video shared.")
@@ -225,12 +255,16 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 and event["detail"] == migrated["work"]} == {"video_shared", "video_unshared"}
         assert {event["action"] for event in audit if event["subject"] == viewer_id
                 and event["detail"] == parent} == {"folder_shared", "folder_unshared"}
+        assert {event["action"] for event in audit if event["subject"] == group["id"]} == {
+            "group_created", "group_updated", "group_removed",
+        }
         assert all("token" not in record for record in audit)
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
                 inherited_folder_playback_width=inherited_width, folder_move_and_revocation_enforced=True,
+                group_folder_playback_width=group_width, group_revocation_and_stale_edit_enforced=True,
                 existing_audience_identity_separate=True, range_playback=True, forged_origin_denied=True,
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
                 persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True)

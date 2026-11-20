@@ -12,7 +12,9 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import requests
+from playwright.sync_api import expect, sync_playwright
 
+from browser import chromium
 from demo_source import build_server
 
 
@@ -36,13 +38,24 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
     reached = threading.Event()
     release = threading.Event()
     fixture_token = "fixture-token-must-not-be-persisted"
+    total = 121
+    limited = threading.Event()
+    limited.set()
 
     with ExitStack() as cleanup:
         source = cleanup.enter_context(build_server(tmp_path / "source"))
+        source.extra_inventory_count = total - 3
         original = source.RequestHandlerClass.do_GET
 
         def pause_first_second_video(handler):
             requests_by_path[handler.path] += 1
+            if handler.path.startswith("/me/videos?") and limited.is_set():
+                handler.send_response(429)
+                handler.send_header("Retry-After", "120")
+                handler.end_headers()
+                return
+            if handler.path.startswith("/videos/1000/versions?"):
+                return handler.send_error(403)
             if handler.path == "/media/72.mp4" and requests_by_path[handler.path] == 1:
                 reached.set()
                 release.wait(45)
@@ -108,14 +121,36 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
         credentials = json.loads((home / "operator.json").read_text(encoding="utf8"))
         auth = {"Authorization": "Bearer " + credentials["operator"]}
         transfer(base, dry_run=True)
+        wait_for(lambda: status(base)["state"] == "failed", "source rate limit")
+        assert status(base)["detail"].startswith("Source HTTP 429.")
+        limited.clear()
+        transfer(base, dry_run=True)
         wait_for(lambda: status(base)["state"] == "inventoried", "Vimeo preview")
         close(process, base, shell_auth)
 
         process, base, shell_auth = launch()
         preview = status(base)
-        assert preview["state"] == "inventoried" and len(preview["works"]) == 3
+        assert preview["state"] == "inventoried" and len(preview["works"]) == total
+        assert preview["metadata_incomplete"] == 1
+        with sync_playwright() as playwright:
+            browser = chromium(playwright)
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(credentials['operator'])})")
+            page.goto(base + "/operator/migration")
+            expect(page.locator("#rows tr")).to_have_count(100)
+            expect(page.locator("#migrationSummary")).to_contain_text("119 owner file needed")
+            expect(page.locator("#rows tr").filter(has_text="Archive record 1000")).to_contain_text("versions (403)")
+            page.get_by_role("button", name="Next page").click()
+            expect(page.locator("#rows tr")).to_have_count(21)
+            expect(page.get_by_text("Page 2 of 2")).to_be_visible()
+            page.get_by_role("button", name="Previous page").click()
+            expect(page.locator("#rows tr")).to_have_count(100)
+            browser.close()
+        assert requests.get(base + "/api/migration?page=0", headers=auth, timeout=10).status_code == 400
         transfer(base, dry_run=False)
         assert reached.wait(25), "Second video request never reached the rehearsal source"
+        progress = status(base)
+        assert (progress["state"], progress["processed"], progress["total"]) == ("running", 1, total)
         assert (home / "institution-vimeo/checkpoints/71.json").is_file()
         process.kill()
         process.wait(timeout=10)
@@ -123,7 +158,7 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
 
         process, base, shell_auth = launch()
         interrupted = status(base)
-        assert interrupted["state"] == "interrupted" and len(interrupted["works"]) == 3
+        assert interrupted["state"] == "interrupted" and len(interrupted["works"]) == total
         assert requests.get(base + "/api/migration", timeout=10).status_code == 403
         transfer(base, dry_run=False)
         wait_for(lambda: status(base)["state"] == "transferred", "resumed transfer")
@@ -134,7 +169,7 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
 
         process, base, shell_auth = launch()
         completed = status(base)
-        assert completed["state"] == "transferred" and len(completed["works"]) == 3
+        assert completed["state"] == "transferred" and len(completed["works"]) == total
         assert completed["showcases"][0]["target"]
         library = requests.get(base + "/api/library", headers=auth, timeout=10).json()
         assert {work["id"] for work in completed["works"]} == {work["id"] for work in library}

@@ -142,6 +142,17 @@ def build_server(directory, port=0):
                                                   categories=[{"name": "Documentary"}],
                                                   content_rating=["advertisement", "language"],
                                                   spatial={"projection": "equirectangular"})
+                    extra_inventory = getattr(self.server, "extra_inventory_count", 0)
+                    if extra_inventory:
+                        values.extend(dict(uri=f"/videos/{identifier}", name=f"Archive record {identifier}",
+                                           privacy=dict(view="nobody", embed="private"), download=[])
+                                      for identifier in range(1000, 1000 + extra_inventory))
+                        total = len(values)
+                        page = int(parse_qs(urlsplit(self.path).query).get("page", ["1"])[0])
+                        start = (page - 1) * 100
+                        values = values[start:start + 100]
+                        if start + 100 < total:
+                            following = f"{path}?per_page=100&page={page + 1}"
                 elif path == "/videos/72/privacy/domains":
                     values = [{"domain": "museum.example"}]
                 elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):

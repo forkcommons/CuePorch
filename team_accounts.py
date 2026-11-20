@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS team_folder_grant(
  member TEXT NOT NULL REFERENCES team_member(id) ON DELETE CASCADE,
  folder TEXT NOT NULL REFERENCES library_folder(id) ON DELETE CASCADE,
  PRIMARY KEY(member,folder));
+CREATE TABLE IF NOT EXISTS team_group(
+ id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, revision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS team_group_member(
+ team_group TEXT NOT NULL REFERENCES team_group(id) ON DELETE CASCADE,
+ member TEXT NOT NULL REFERENCES team_member(id) ON DELETE CASCADE, PRIMARY KEY(team_group,member));
+CREATE INDEX IF NOT EXISTS team_groups_by_member ON team_group_member(member,team_group);
+CREATE TABLE IF NOT EXISTS team_group_folder(
+ team_group TEXT NOT NULL REFERENCES team_group(id) ON DELETE CASCADE,
+ folder TEXT NOT NULL REFERENCES library_folder(id) ON DELETE CASCADE, PRIMARY KEY(team_group,folder));
 CREATE TABLE IF NOT EXISTS team_owned_work(work TEXT PRIMARY KEY, member TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS team_owned_work_member ON team_owned_work(member);
 CREATE TABLE IF NOT EXISTS team_membership_event(
@@ -103,15 +112,29 @@ def visible_folders(con):
 
 
 def inherited_works(con, member):
-    rows = con.execute("""WITH RECURSIVE granted(id) AS (
-        SELECT f.id FROM team_folder_grant g JOIN library_folder f ON f.id=g.folder
-        WHERE g.member=? AND NOT EXISTS (
+    rows = con.execute("""WITH RECURSIVE roots(id) AS (
+        SELECT folder FROM team_folder_grant WHERE member=?
+        UNION
+        SELECT f.folder FROM team_group_folder f JOIN team_group_member m ON m.team_group=f.team_group
+        JOIN team_group g ON g.id=m.team_group WHERE m.member=?
+    ), granted(id) AS (
+        SELECT f.id FROM roots r JOIN library_folder f ON f.id=r.id
+        WHERE NOT EXISTS (
             SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
         UNION
         SELECT f.id FROM library_folder f JOIN granted g ON f.parent=g.id
         WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
-    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""", (member,))
+    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""", (member, member))
     return {row[0] for row in rows}
+
+
+def group_selection(values, available, label):
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        abort(400, f"Choose {label} from this workspace.")
+    selection = set(values)
+    if not selection <= available:
+        abort(409, f"Reload the group. Some {label} are unavailable.")
+    return selection
 
 
 def register(app, tx, origin, key, institution, operator_name, read_works, title_for, root):
@@ -283,6 +306,9 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
+                con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
+                    WHERE id IN (SELECT team_group FROM team_group_member WHERE member=?)""", (uid,))
+                con.execute("DELETE FROM team_group_member WHERE member=?", (uid,))
                 note(con, actor, "removed", uid, previous)
             elif (role := role_from(body)) != previous:
                 con.execute("UPDATE team_member SET role=? WHERE id=?", (role, uid))
@@ -295,6 +321,69 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             manager(con)
             rows = [dict(row) for row in con.execute("SELECT * FROM team_membership_event ORDER BY sequence DESC LIMIT 200")]
         return private(dict(events=rows))
+
+    @app.get("/api/team/groups")
+    def team_groups():
+        with tx() as con:
+            manager(con)
+            members = [dict(row) for row in con.execute("""SELECT id,name,email FROM team_member
+                WHERE removed IS NULL ORDER BY name COLLATE NOCASE,email""")]
+            folders = [dict(row) for row in visible_folders(con)]
+            groups = {row["id"]: dict(row, members=[], folders=[]) for row in con.execute(
+                "SELECT id,name,revision FROM team_group ORDER BY name COLLATE NOCASE")}
+            for group_id, member_id in con.execute("SELECT team_group,member FROM team_group_member"):
+                if group_id in groups:
+                    groups[group_id]["members"].append(member_id)
+            available = {folder["id"] for folder in folders}
+            for group_id, folder_id, name in con.execute("""SELECT g.team_group,g.folder,f.name
+                FROM team_group_folder g JOIN library_folder f ON f.id=g.folder"""):
+                if group_id in groups:
+                    groups[group_id]["folders"].append(folder_id)
+                    if folder_id not in available:
+                        groups[group_id].setdefault("unavailable_folders", []).append(
+                            dict(id=folder_id, title=f"{name} (unavailable)"))
+        return private(dict(groups=list(groups.values()), members=members, folders=folders))
+
+    @app.post("/api/team/groups")
+    @app.route("/api/team/groups/<uuid:group>", methods=("PUT", "DELETE"))
+    def save_team_group(group=None):
+        body = mutation(secure_site(origin))
+        uid = str(group or uuid.uuid4())
+        with tx() as con:
+            actor = manager(con)
+            if group:
+                current = con.execute("SELECT name,revision FROM team_group WHERE id=?", (uid,)).fetchone()
+                if current is None:
+                    abort(404)
+                if body.get("revision") != current["revision"]:
+                    abort(409, "This group changed. Reload it before saving.")
+            if request.method == "DELETE":
+                con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
+                con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
+                con.execute("DELETE FROM team_group WHERE id=?", (uid,))
+                note(con, actor, "group_removed", uid, current["name"])
+                return private("", 204)
+            name = body.get("name")
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 64:
+                abort(400, "Enter a group name of up to 64 characters.")
+            name = name.strip()
+            if con.execute("SELECT 1 FROM team_group WHERE name=? COLLATE NOCASE AND id<>?", (name, uid)).fetchone():
+                abort(409, "A group already has this name.")
+            members = group_selection(body.get("members"), {row[0] for row in con.execute(
+                "SELECT id FROM team_member WHERE removed IS NULL")}, "members")
+            available = {row["id"] for row in visible_folders(con)}
+            existing = {row[0] for row in con.execute("""SELECT g.folder FROM team_group_folder g
+                JOIN library_folder f ON f.id=g.folder WHERE g.team_group=?""", (uid,))}
+            folders = group_selection(body.get("folders"), available | existing, "folders")
+            revision = uuid.uuid4().hex
+            con.execute("""INSERT INTO team_group VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,revision=excluded.revision""", (uid, name, revision))
+            con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
+            con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
+            con.executemany("INSERT INTO team_group_member VALUES(?,?)", [(uid, member) for member in members])
+            con.executemany("INSERT INTO team_group_folder VALUES(?,?)", [(uid, folder) for folder in folders])
+            note(con, actor, "group_updated" if group else "group_created", uid, name)
+        return private(dict(id=uid, revision=revision), 200 if group else 201)
 
     @app.get("/api/team/members/<uuid:account>/works")
     def team_share_options(account):

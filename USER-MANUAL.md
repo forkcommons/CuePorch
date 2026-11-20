@@ -38,6 +38,8 @@ Open **Team members** from the Operator console. Enter the person’s email and 
 
 Administrators can open the Library and manage invitations, roles, and video access. Contributors can upload private videos to **My Library** and view videos shared with them. Viewers can play the videos you share with them. Choose **Manage media access** next to a member to share a video or a folder for viewing. A folder share includes playable videos in its subfolders. Moving a video out of that branch or revoking the folder share removes that path to it. A direct video share still applies. **Remove access** ends the member’s team sessions. Their retained uploads remain available to administrators. The installation’s operator credential remains available for owner access. Viewer accounts for public Watch are independent of team membership.
 
+In **Groups**, select **New group**, enter a name, and choose the members and folders to share. A group grants viewing access to the chosen folders and their subfolders. You can remove a member or folder from the group or delete the entire group. Any separate video, folder or group share still applies. If another administrator saved changes first, use **Reload groups** to load their changes before trying again.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.
@@ -48,6 +50,8 @@ Administrators can open the Library and manage invitations, roles, and video acc
 For an actual account, start a separate installation without `--simulate`. Use the owner’s Vimeo token with the required scopes and access to the account’s files and captions. Preview before transferring. **Original recovered** means a source designated as an original was retrieved. **Playback copy only** means the preserved file is a rendition. **Owner file needed** means the item still needs media. Keep those items on the reconciliation list. A new website embed cannot redirect a link controlled by Vimeo. Keep the old site mapping available while testing replacements. [Vimeo file access](https://help.vimeo.com/hc/en-us/articles/12427806914577) · [Vimeo caption access](https://help.vimeo.com/hc/en-us/articles/17480150130833)
 
 When CuePorch restarts, **Move from Vimeo** shows the saved inventory or result to an authorized operator. If the service stopped during a transfer, re-enter the same Vimeo account token and choose **Transfer privately**. CuePorch reuses verified files from that job. The token stays in process memory.
+
+The transfer shows how many videos have been processed. After a preview or transfer, use the inventory pages and **Source issues** column to find missing media and identify metadata Vimeo did not return. The summary counts cover the entire inventory.
 
 To record where a video is already embedded, open **Edit video details** and enter each page URL under **Pages that embed this video**. Save the details before downloading the embed map. Each recorded page gets its own row, and the entries stay with the work when you transfer the Vimeo account again.
 

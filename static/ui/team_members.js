@@ -17,10 +17,17 @@ const shareFolder = document.querySelector("#teamShareFolder");
 const shareFolderButton = document.querySelector("#shareTeamFolder");
 const sharedFolders = document.querySelector("#teamSharedFolders");
 const activity = document.querySelector("#teamMembershipActivity");
+const groupSelector = document.querySelector("#teamGroup");
+const groupForm = document.querySelector("#teamGroupForm");
+const groupName = groupForm.querySelector("[name=name]");
+const groupMembers = document.querySelector("#teamGroupMembers");
+const groupFolders = document.querySelector("#teamGroupFolders");
+const deleteGroup = document.querySelector("#removeTeamGroup");
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 let selected;
 let working = false;
 let names;
+let groupOptions;
 function call(path, method = "GET", body = {}) {
     return teamRequest(path, method, body, credential.value).then(checked);
 }
@@ -102,6 +109,61 @@ shareFolderButton.onclick = () => void task(async () => {
     await call(`members/${selected.id}/folders/${shareFolder.value}`, "PUT");
     await loadShares();
 }, "Folder shared.");
+function checkbox(name, value, label, selected) {
+    const row = document.createElement("div");
+    const caption = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = name;
+    input.value = value;
+    input.checked = selected;
+    caption.append(input, " ", label);
+    row.append(caption);
+    return row;
+}
+function selectedGroup() {
+    return groupOptions.groups.find(group => group.id === groupSelector.value);
+}
+function showGroup() {
+    const group = selectedGroup();
+    groupName.value = group?.name ?? "";
+    deleteGroup.disabled = !group;
+    groupMembers.replaceChildren(...groupOptions.members.map(member => checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false)));
+    groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder => checkbox("folders", folder.id, folder.title, group?.folders.includes(folder.id) ?? false)));
+}
+async function loadGroups(id = groupSelector.value) {
+    groupOptions = await (await call("groups")).json();
+    groupSelector.replaceChildren(new Option("New group", ""), ...groupOptions.groups.map(group => new Option(group.name, group.id)));
+    if (groupOptions.groups.some(group => group.id === id))
+        groupSelector.value = id;
+    showGroup();
+}
+groupSelector.onchange = showGroup;
+document.querySelector("#reloadTeamGroups").onclick = () => void task(() => loadGroups());
+groupForm.onsubmit = event => {
+    event.preventDefault();
+    void task(async () => {
+        const group = selectedGroup();
+        const form = new FormData(groupForm);
+        const body = {
+            name: groupName.value, members: form.getAll("members"), folders: form.getAll("folders"),
+            revision: group?.revision,
+        };
+        const { id } = await (await call(group ? `groups/${group.id}` : "groups", group ? "PUT" : "POST", body)).json();
+        await loadGroups(id);
+        if (activity.open)
+            await loadActivity();
+    }, "Group saved.");
+};
+deleteGroup.onclick = () => void task(async () => {
+    const group = selectedGroup();
+    if (!group)
+        return;
+    await call(`groups/${group.id}`, "DELETE", { revision: group.revision });
+    await loadGroups("");
+    if (activity.open)
+        await loadActivity();
+}, "Group deleted.");
 async function loadActivity() {
     const { events } = await (await call("audit")).json();
     const list = activity.querySelector("ul");
@@ -110,8 +172,9 @@ async function loadActivity() {
         const item = document.createElement("li");
         const action = event.action.replaceAll("_", " ");
         const actor = names.get(event.actor.replace(/^team:/, "")) || event.actor;
-        const subject = names.get(event.subject) || event.subject;
-        const detail = event.detail && !/^(video|folder)_/.test(event.action) ? ` (${event.detail})` : "";
+        const subject = event.action.startsWith("group_") ? event.detail || event.subject :
+            names.get(event.subject) || event.subject;
+        const detail = event.detail && !/^(video|folder|group)_/.test(event.action) ? ` (${event.detail})` : "";
         item.textContent = `${date.format(event.at * 1000)} · ${actor} · ${action} · ${subject}${detail}`;
         list.append(item);
     }
@@ -160,6 +223,7 @@ async function loadMembers() {
         selected = undefined;
         sharing.hidden = true;
     }
+    await loadGroups();
     if (activity.open)
         await loadActivity();
     management.hidden = false;

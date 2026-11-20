@@ -13,6 +13,12 @@ const showcaseRows = document.querySelector<HTMLTableSectionElement>("#showcaseI
 const cutover = document.querySelector<HTMLElement>("#migrationCutover")!;
 const exportMap = document.querySelector<HTMLButtonElement>("#migrationExportMap")!;
 const cutoverStatus = document.querySelector<HTMLElement>("#migrationCutoverStatus")!;
+const summary = document.querySelector<HTMLElement>("#migrationSummary")!;
+const pagination = document.querySelector<HTMLElement>("#migrationPages")!;
+const pageNumber = document.querySelector<HTMLElement>("#migrationPageNumber")!;
+const previousPage = document.querySelector<HTMLButtonElement>("#migrationPreviousPage")!;
+const nextPage = document.querySelector<HTMLButtonElement>("#migrationNextPage")!;
+let currentPage = 1;
 const headers = () => ({
   Authorization: "Bearer " + key.value,
   "Content-Type": "application/json",
@@ -21,6 +27,9 @@ async function run(dry: boolean) {
   inventory.disabled = transfer.disabled = true;
   cutover.hidden = true;
   cutoverStatus.textContent = "";
+  summary.textContent = "";
+  pagination.hidden = true;
+  currentPage = 1;
   statusBox.textContent = "Starting migration request…";
   try {
     const response = await fetch("/api/migration", {
@@ -39,19 +48,37 @@ function failed(error: unknown) {
   inventory.disabled = transfer.disabled = false;
   statusBox.textContent = error instanceof Error ? error.message : String(error);
 }
-async function poll() {
-  const r = await fetch("/api/migration", { headers: headers() });
+async function poll(page = currentPage) {
+  const r = await fetch("/api/migration?page=" + page, { headers: headers() });
   if (!r.ok) throw new Error(`Could not read migration progress (${r.status})`);
   const data = await r.json();
   const active = data.state === "running" || data.state === "waiting";
   inventory.disabled = transfer.disabled = active;
   cutover.hidden = data.state !== "transferred";
   statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
+  if (data.counts) {
+    const dispositions = Object.entries(data.counts).map(([name, count]) => `${count} ${name}`);
+    summary.textContent = [`${data.total} videos`, ...dispositions,
+      `${data.metadata_incomplete} with unavailable source metadata`].join(" · ");
+  } else {
+    summary.textContent = typeof data.processed === "number"
+      ? `${data.processed} of ${data.total} videos processed` : "";
+  }
+  currentPage = data.page || 1;
+  pagination.hidden = !data.pages || data.pages < 2;
+  pageNumber.textContent = `Page ${currentPage} of ${data.pages || 1}`;
+  previousPage.disabled = currentPage <= 1;
+  nextPage.disabled = currentPage >= (data.pages || 1);
   rows.replaceChildren();
   for (const w of data.works || []) {
     const row = rows.insertRow();
     for (const v of [w.title, w.source_id, w.disposition, w.source_privacy])
       row.insertCell().textContent = v;
+    const exceptions = [
+      ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
+      ...(w.transfer_issues || []).map((issue: {role: string; http_status: number}) => `${issue.role} (${issue.http_status})`),
+    ];
+    row.insertCell().textContent = exceptions.join(", ") || "None reported";
   }
   const albums = data.showcases || [];
   showcases.hidden = !albums.length && !data.showcase_issue;
@@ -77,6 +104,8 @@ async function poll() {
 }
 inventory.onclick = () => run(true);
 transfer.onclick = () => run(false);
+previousPage.onclick = () => void poll(currentPage - 1).catch(failed);
+nextPage.onclick = () => void poll(currentPage + 1).catch(failed);
 exportMap.onclick = async () => {
   exportMap.disabled = true;
   cutoverStatus.textContent = "";

@@ -62,9 +62,7 @@ class Source:
                         delay = exc.headers.get("Retry-After", "2")
                         exc.close()
                         if not delay.isdigit() or int(delay) > 30:
-                            raise ValueError(
-                                "Source rate limit reached. Resume later."
-                            ) from None
+                            raise SourceFailure(429) from None
                         time.sleep(int(delay))
                         continue
                     if not authenticated and exc.code in (301, 302, 303, 307, 308):
@@ -254,18 +252,18 @@ def showcase_inventory(institution, source, account, video_ids):
     return result, None
 
 
-def migrate(institution, root, source, dry_run=False):
+def migrate(institution, root, source, dry_run=False, *, progress=None):
     from filelock import FileLock
 
     root.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(root.parent / ("." + root.name + ".transfer.lock")), timeout=0):
         try:
-            return _migrate(institution, root, source, dry_run, refresh=True)
+            return _migrate(institution, root, source, dry_run, refresh=True, progress=progress)
         except RefreshLinks:
-            return _migrate(institution, root, source, dry_run, refresh=False)
+            return _migrate(institution, root, source, dry_run, refresh=False, progress=progress)
 
 
-def _migrate(institution, root, source, dry_run, refresh):
+def _migrate(institution, root, source, dry_run, refresh, progress):
     # The inventory is fully reconciled before creating local records or fetching files.
     videos = list(source.pages("/me/videos"))
     resource_ids = [v["uri"] for v in videos]
@@ -285,6 +283,8 @@ def _migrate(institution, root, source, dry_run, refresh):
     if job.exists() and json.loads(job.read_text(encoding="utf8")) != binding:
         raise ValueError("Source and destination do not match the previous migration")
     dump(job, binding)
+    if progress:
+        progress(0, len(videos))
     showcases, showcase_issue = showcase_inventory(institution, source, account,
                                                    {uri.split("/")[-1] for uri in resource_ids})
     (root / "objects").mkdir(exist_ok=True)
@@ -384,6 +384,8 @@ def _migrate(institution, root, source, dry_run, refresh):
                         dict(meta, **store(root, source, link, size))
                     )
                 except SourceFailure as exc:
+                    if exc.status == 429:
+                        raise
                     if refresh and exc.status in (401, 403, 410):
                         raise RefreshLinks() from None
                     record.setdefault("transfer_issues", []).append(
@@ -425,6 +427,8 @@ def _migrate(institution, root, source, dry_run, refresh):
                     ),
                 )
         works.append(record)
+        if progress:
+            progress(len(works), len(videos))
     manifest = dict(schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue)
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:
