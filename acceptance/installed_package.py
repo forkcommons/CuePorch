@@ -377,7 +377,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     assert width > 0
                     if args.team_only:
-                        team = check_team_accounts(page, browser, base, auth, replacement)
+                        team = check_team_accounts(page, browser, base, auth, replacement, copy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
                                             repeat_ids_unique=True, anonymous_denied=True, playback_width=width,
                                             setup_seconds=setup_seconds, team=team))
