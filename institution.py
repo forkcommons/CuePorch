@@ -35,6 +35,7 @@ from waitress import serve
 
 from cueporch import verify
 import analytics_reports
+import audience_accounts
 import library_actions
 import library_appearance
 import library_caption_jobs
@@ -124,6 +125,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_caption_jobs.SCHEMA
             + library_details.SCHEMA
             + library_discovery.SCHEMA
+            + audience_accounts.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -982,7 +984,7 @@ def create_app(root, database, operator, institution, simulation=None):
             "watch.html",
             title=row["description"] or row["slug"],
             url=row["destination"],
-            slug=slug,
+            slug=slug, save_kind=kind if kind in ("work", "meeting") else None, save_slug=slug,
         )
 
     @app.get("/support")
@@ -1089,8 +1091,11 @@ def create_app(root, database, operator, institution, simulation=None):
     def read_library_works():
         return json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
 
-    library_discovery.register(app, tx, staff, read_library_works, library_actions.title_for, vimeo_privacy.permits,
-                               root, institution)
+    def public_listing(con, item=None):
+        return library_discovery.listing(con, read_library_works, library_actions.title_for, vimeo_privacy.permits, item)
+
+    library_discovery.register(app, tx, staff, public_listing, root, institution)
+    audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)

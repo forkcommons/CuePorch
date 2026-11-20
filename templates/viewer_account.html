@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Viewer account · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body>
+  <nav aria-label="Watch"><a href="{{ url_for('catalog') }}">Explore</a> · <a href="{{ url_for('watch_later_page') }}">Watch Later</a></nav>
+  <main id="viewerAccount" class="viewer-account" data-destination="{{ destination }}">
+    <h1>Viewer account</h1>
+    <p id="viewerAccountStatus" role="status"></p>
+    <div id="viewerEntrance" class="account-entrance" hidden>
+      <section aria-labelledby="viewerSignInHeading">
+        <h2 id="viewerSignInHeading">Sign in</h2>
+        <form id="viewerSignIn" method="post">
+          <label>Email <input type="email" name="email" autocomplete="username" maxlength="254" required></label>
+          <label>Password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
+          <button type="submit">Sign in</button>
+        </form>
+      </section>
+      <section aria-labelledby="viewerJoinHeading">
+        <h2 id="viewerJoinHeading">Create an account</h2>
+        <form id="viewerSignUp" method="post">
+          <label>Display name <input name="name" autocomplete="name" maxlength="120" required></label>
+          <label>Email <input type="email" name="email" autocomplete="username" maxlength="254" required></label>
+          <label>Password <input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="256" required></label>
+          <button type="submit">Create account</button>
+        </form>
+      </section>
+    </div>
+    <div id="viewerManagement" hidden>
+      {% if destination %}<p><a href="{{ destination }}">Return to video</a></p>{% endif %}
+      <section aria-labelledby="viewerDetailsHeading">
+        <h2 id="viewerDetailsHeading">Account details</h2>
+        <form id="viewerDetails" method="post">
+          <label>Display name <input name="name" autocomplete="name" maxlength="120" required></label>
+          <label>Email <input type="email" name="email" autocomplete="username" maxlength="254" required></label>
+          <label>Pronouns <input name="pronouns" maxlength="60"></label>
+          <label>Current password to change email <input type="password" name="current_password" autocomplete="current-password" maxlength="256"></label>
+          <button type="submit">Save account details</button>
+        </form>
+      </section>
+      <section aria-labelledby="changeViewerPasswordHeading">
+        <h2 id="changeViewerPasswordHeading">Change password</h2>
+        <form id="changeViewerPassword" method="post">
+          <label>Current password <input type="password" name="current_password" autocomplete="current-password" maxlength="256" required></label>
+          <label>New password <input type="password" name="new_password" autocomplete="new-password" minlength="12" maxlength="256" required></label>
+          <button type="submit">Change password</button>
+        </form>
+      </section>
+      <button type="button" id="viewerSignOut">Sign out</button>
+      <details>
+        <summary>Delete account</summary>
+        <p>This removes your account and saved videos.</p>
+        <form id="deleteViewerAccount" method="post">
+          <label>Current password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
+          <button type="submit">Delete my account</button>
+        </form>
+      </details>
+    </div>
+    <noscript><p>Turn on JavaScript to use your viewer account.</p></noscript>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/viewer_account.js') }}"></script>
+</body>
+</html>

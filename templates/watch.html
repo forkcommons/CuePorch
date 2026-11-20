@@ -1,4 +1,6 @@
 <!doctype html><html lang="en"><meta name="viewport"
         content="width=device-width,initial-scale=1"><meta charset="utf-8"><link rel="stylesheet" href="/static/cueporch.css"><title>{{title}}</title><h1>{{title}}</h1>
         <iframe title="{{title}}" src="{{url}}" allow="autoplay; fullscreen" allowfullscreen
-        style="border:0;width:100%;aspect-ratio:16/9"></iframe><p><a href="/support?work={{slug}}">Report an issue or appeal</a></p></html>
+        style="border:0;width:100%;aspect-ratio:16/9"></iframe>
+        {% if save_kind %}{% include "save_video.html" %}{% endif %}
+        <p><a href="/support?work={{slug}}">Report an issue or appeal</a></p></html>

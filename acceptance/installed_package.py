@@ -28,6 +28,7 @@ from installed_registration import check_registration
 from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
 from installed_discovery import check_discovery
+from installed_audience_accounts import check_audience_accounts
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
@@ -56,6 +57,7 @@ p.add_argument("--only", choices=("fresh", "0.1.0", "0.2.0"),
 focused = p.add_mutually_exclusive_group()
 focused.add_argument("--analytics-only", action="store_true", help="Test migration and the analytics reports on the installed package")
 focused.add_argument("--discovery-only", action="store_true", help="Test migration and public discovery on the installed package")
+focused.add_argument("--audience-accounts-only", action="store_true", help="Test migration, discovery and viewer accounts on the installed package")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -211,7 +213,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
-    if not (args.analytics_only or args.discovery_only):
+    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -366,11 +368,14 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
-                    if args.discovery_only:
+                    if args.discovery_only or args.audience_accounts_only:
                         discovery = check_discovery(page, browser, base, auth, replacement)
+                        audience = check_audience_accounts(browser, base, auth, replacement) if args.audience_accounts_only else None
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
                                             missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
                                             playback_width=width, setup_seconds=setup_seconds, discovery=discovery))
+                        if audience is not None:
+                            results[-1]["audience_accounts"] = audience
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         args.report.write_text(json.dumps(results, indent=2), encoding="utf8")

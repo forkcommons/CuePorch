@@ -93,6 +93,7 @@
       <button type="submit">Watch video</button>
     </form>
   {% endif %}
+  {% if save_kind %}{% include "save_video.html" %}{% endif %}
   {% if not embed %}<p><a href="{{ url_for('support', work=work) }}">Report an issue or appeal</a></p>{% endif %}
 </body>
 </html>

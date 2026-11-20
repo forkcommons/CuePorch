@@ -87,7 +87,7 @@ def no_store(body):
     return response
 
 
-def register(app, tx, staff, read_works, title_for, permits, root, institution):
+def register(app, tx, staff, public_listing, root, institution):
     @app.get("/")
     @app.get("/watch")
     @app.get("/watch/<any(picks,categories,channels):section>")
@@ -95,7 +95,7 @@ def register(app, tx, staff, read_works, title_for, permits, root, institution):
         query = request.args.get("q", "").strip()[:120]
         category = request.args.get("category", "").strip()[:120]
         with tx() as con:
-            entries = listing(con, read_works, title_for, permits)
+            entries = public_listing(con)
             _, keys = picks(con)
         featured = [entries[key] for key in keys if key in entries]
         videos = ordered(entry for entry in entries.values() if entry["kind"] != "channel")
@@ -136,7 +136,7 @@ def register(app, tx, staff, read_works, title_for, permits, root, institution):
             abort(404)
         key = (kind, slug)
         with tx() as con:
-            entry = listing(con, read_works, title_for, permits, key).get(key)
+            entry = public_listing(con, key).get(key)
         if not entry or not entry["image"] or digest != entry["image"]:
             abort(404)
         path = root / "objects" / entry["image"]
@@ -156,7 +156,7 @@ def register(app, tx, staff, read_works, title_for, permits, root, institution):
         staff()
         with tx() as con:
             revision, keys = picks(con)
-            entries = {key: entry for key, entry in listing(con, read_works, title_for, permits).items()
+            entries = {key: entry for key, entry in public_listing(con).items()
                        if entry["kind"] != "channel"}
             if request.method == "PUT":
                 body = request.get_json()

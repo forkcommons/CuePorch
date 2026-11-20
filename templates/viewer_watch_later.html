@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Watch Later · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="watch-catalog">
+  <nav aria-label="Watch"><a href="{{ url_for('catalog') }}">Explore</a> · <a href="{{ url_for('viewer_account_page') }}">Viewer account</a></nav>
+  <main>
+    <h1>Watch Later</h1>
+    {% if signed_in %}
+      {% if rows %}
+        <ul class="watch-grid">
+          {% for item in rows %}
+            <li data-saved-row>
+              <a class="watch-card" href="{{ item.watch }}">
+                {% if item.cover %}<img src="{{ item.cover }}" alt="" loading="lazy">{% else %}<span class="watch-card-cover" aria-hidden="true">▶</span>{% endif %}
+                <strong>{{ item.title }}</strong>
+              </a>
+              <button type="button" data-remove-video data-kind="{{ item.kind }}" data-slug="{{ item.slug }}"
+                      aria-label="Remove {{ item.title }} from Watch Later">Remove</button>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      <p id="watchLaterEmpty" {% if rows %}hidden{% endif %}>Your Watch Later list is empty.</p>
+      <p id="watchLaterStatus" role="status"></p>
+    {% else %}
+      <p><a href="{{ url_for('viewer_account_page') }}">Sign in to see your Watch Later list</a></p>
+    {% endif %}
+  </main>
+  {% if rows %}<script type="module" src="{{ url_for('static', filename='ui/save_video.js') }}"></script>{% endif %}
+</body>
+</html>

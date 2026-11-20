@@ -472,6 +472,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
+                            save_kind="work" if mode == "public" and not embed else None, save_slug=uid,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
