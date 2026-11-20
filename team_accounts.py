@@ -13,6 +13,7 @@ from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_analytics
+import team_analytics
 import team_workspaces
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
                                       secure_site, token_hash, workspace_session, workspace_session_cookie)
@@ -52,7 +53,7 @@ CREATE INDEX IF NOT EXISTS team_owned_work_member ON team_owned_work(member);
 CREATE TABLE IF NOT EXISTS team_membership_event(
  sequence INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  subject TEXT NOT NULL, detail TEXT, at REAL NOT NULL);
-"""
+""" + team_analytics.SCHEMA
 ROLES = ("admin", "contributor", "viewer")
 MANAGERS = ("owner", "admin")
 SESSION_SECONDS = 12 * 3600
@@ -576,8 +577,12 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 return work
         abort(404)
 
+    named_playback = team_analytics.register(
+        app, tx, origin, key, manager, member, access, mutation, note, read_works, title_for, spreadsheet_cell,
+    )
+
     @app.get("/api/team/video/<uuid:work>/analytics")
-    def team_analytics_report(work):
+    def team_video_analytics_report(work):
         secure = secure_site(origin)
         same_origin(secure)
         if request.headers.get("Authorization") != "Bearer " + SESSION_MARKER:
@@ -608,9 +613,11 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             title = title_for(con, item)
             editable = can_edit(con, row, str(work))
             analytics = can_read_analytics(con, row, str(work))
+            telemetry = named_playback(con, item, row)
         return private(render_template("team_watch.html", title=title, media=url_for("team_video", work=work),
                                        details=url_for("team_edit_video", work=work) if editable else None,
-                                       analytics=url_for("team_video_analytics", work=work) if analytics else None))
+                                       analytics=url_for("team_video_analytics", work=work) if analytics else None,
+                                       telemetry=telemetry))
 
     @app.get("/team/video/<uuid:work>/analytics")
     def team_video_analytics(work):

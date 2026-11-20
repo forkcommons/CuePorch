@@ -24,12 +24,14 @@ def check_workspace_branding(page, browser, first, auth, second, second_auth):
         assert response.ok, response.text()
         brand = response.json()
         assert brand["logo"], brand
+        assert brand["label"] == "Station archive" and brand["accent"] == "#317368", brand
         expect(page.locator("#teamSettingsStatus")).to_have_text("Workspace branding saved.")
         expect(page.locator("#workspaceLogoPreview")).to_have_attribute("src", brand["logo"])
         return brand["logo"]
 
     page.goto(first + "/team/members")
     page.get_by_role("link", name="Team settings", exact=True).click()
+    expect(page.get_by_label("Workspace name")).to_have_value("New station")
     page.get_by_label("Workspace name").fill("Station archive")
     page.get_by_label("Accent color").fill("#317368")
     old = upload_logo("PNG", "teal", "archive.png", "image/png")

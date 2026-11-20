@@ -8,6 +8,9 @@
   <h1>{{ title }}</h1>
   {% if details %}<p><a href="{{ details }}">Edit video details</a></p>{% endif %}
   {% if analytics %}<p><a href="{{ analytics }}">Video analytics</a></p>{% endif %}
-  <video controls controlslist="nodownload" playsinline preload="metadata" aria-label="{{ title }}" src="{{ media }}"></video>
+  {% if telemetry %}<p>This workspace records viewing activity for signed-in team members.</p>{% endif %}
+  <video controls controlslist="nodownload" playsinline preload="metadata" aria-label="{{ title }}" src="{{ media }}"
+    {% if telemetry %}data-analytics="{{ telemetry }}" data-team-view{% endif %}></video>
 </main>
+{% if telemetry %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}
 </html>

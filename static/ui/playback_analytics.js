@@ -1,6 +1,6 @@
 import { browserIdentity } from "./browser_analytics.js";
 const video = document.querySelector("video[data-analytics]");
-const viewer = browserIdentity();
+const viewer = video.hasAttribute("data-team-view") ? undefined : browserIdentity();
 let sequence = 0;
 let played = !video.paused || video.played.length > 0;
 let completed = video.ended;

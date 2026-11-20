@@ -236,6 +236,8 @@ h1 { margin: 0 0 1.2rem; font-size: clamp(2rem, 5vw, 3.5rem); }
 h2 { margin: 2rem 0 .7rem; }
 a { color: #13596a; text-underline-offset: .15em; }
 form { display: grid; gap: .8rem; max-width: 42rem; margin: 1rem 0; }
+#teamSettingsAccess[hidden], #teamBranding[hidden],
+#teamAnalyticsAccess[hidden], #teamAnalyticsSettings[hidden] { display: none; }
 label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 form label { display: grid; gap: .15rem; }
 input, select, textarea, button { font: inherit; }

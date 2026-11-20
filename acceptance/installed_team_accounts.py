@@ -360,6 +360,69 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert any(event["action"] == "owner_changed" and event["subject"] == successor_id for event in audit)
         assert any(event["action"] == "roster_exported" and event["actor"] == f"team:{successor_id}" for event in audit)
 
+        named_api = base + "/api/team/analytics"
+        successor.get_by_role("link", name="Team analytics").click()
+        named_tracking = successor.get_by_label("Record named viewing activity")
+        expect(named_tracking).to_be_visible()
+        expect(named_tracking).not_to_be_checked()
+        assert viewer.request.get(named_api, headers=TEAM).status == 403  # This context now belongs to the Owner.
+        assert contributor.request.put(named_api + "/settings", headers=TEAM, data={"enabled": True}).status == 403
+        contributor_page.goto(base + owned[0]["watch"])
+        assert contributor_page.locator("video").get_attribute("data-analytics") is None
+
+        def save_named_tracking(enable):
+            named_tracking.set_checked(enable)
+            successor.get_by_role("button", name="Save viewing privacy").click()
+            expect(successor.locator("#teamAnalyticsStatus")).to_have_text("Viewing privacy saved.")
+
+        save_named_tracking(True)
+        contributor_page.reload()
+        expect(contributor_page.get_by_text("This workspace records viewing activity for signed-in team members.")).to_be_visible()
+        player = contributor_page.locator("video")
+        observation = base + player.get_attribute("data-analytics")
+        with contributor_page.expect_response(lambda response: response.url == observation and
+                                               response.request.post_data_json.get("completed")) as ended:
+            player.evaluate("v => { v.muted = true; return v.play(); }")
+        assert ended.value.status == 204
+        assert admin.request.post(observation, data=ended.value.request.post_data_json).status == 404
+        assert contributor.request.get(named_api + "?format=csv", headers=TEAM).status == 403
+        assert requests.get(named_api, timeout=10).status_code == 403
+
+        opt_out = browser.new_context(extra_http_headers={"DNT": "1", "Sec-GPC": "1"})
+        try:
+            opt_out.request.post(base + "/api/team/session", headers=TEAM,
+                                 data={"email": email("contributor"), "password": PASSWORD})
+            private_view = opt_out.new_page()
+            private_view.goto(base + owned[0]["watch"])
+            private_player = private_view.locator("video")
+            assert private_player.get_attribute("data-analytics") is None
+            private_player.evaluate("v => { v.muted = true; return v.play(); }")
+            private_view.wait_for_function("document.querySelector('video').ended")
+            assert opt_out.request.post(observation, data=ended.value.request.post_data_json).status == 204
+        finally:
+            opt_out.close()
+
+        successor.get_by_role("button", name="Apply filters").click()
+        expect(successor.locator("#teamAnalyticsTotals")).to_have_text("Members 1 · Videos 1 · Views 1")
+        named_row = successor.locator("#teamAnalyticsRows tr")
+        expect(named_row).to_have_count(1)
+        expect(named_row.get_by_role("cell").nth(3)).to_have_text("1")
+        named_row.get_by_role("button", name=draft_name).click()
+        expect(successor.get_by_role("button", name="Clear member or video filter")).to_be_visible()
+        with successor.expect_download() as named_download:
+            successor.get_by_role("button", name="Download CSV").click()
+        named_rows = list(csv.DictReader(StringIO(named_download.value.path().read_text(encoding="utf-8"))))
+        assert len(named_rows) == 1 and named_rows[0]["Email"] == email("contributor")
+        assert named_rows[0]["Video"] == draft_name and float(named_rows[0]["Time watched (seconds)"]) > 0
+
+        save_named_tracking(False)
+        assert viewer.request.get(named_api, headers=TEAM).status == 403
+        assert contributor.request.post(observation, data=ended.value.request.post_data_json).status == 404
+        save_named_tracking(True)
+        assert contributor.request.post(observation, data=ended.value.request.post_data_json).status == 404
+        expect(successor.locator("#teamAnalyticsTotals")).to_have_text("Members 1 · Videos 1 · Views 1")
+        save_named_tracking(False)
+
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
@@ -371,4 +434,5 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True,
                 owner_assignment_and_transfer_with_stale_check=True, admin_cannot_take_ownership=True,
                 private_audited_roster_csv=True, private_contributor_video_report_and_export=True,
-                report_requires_current_ownership_and_session=True), email("contributor")
+                report_requires_current_ownership_and_session=True,
+                named_playback_report_scope_opt_out_and_csv=True), email("contributor")

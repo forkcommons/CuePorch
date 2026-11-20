@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team analytics · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team/members">Team members</a></nav>
+  <h1>Team analytics</h1>
+  <form id="teamAnalyticsAccess">
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open team analytics</button>
+  </form>
+  <p id="teamAnalyticsStatus" role="status"></p>
+  <form id="teamAnalyticsSettings" hidden>
+    <label><input type="checkbox" name="enabled"> Record named viewing activity</label>
+    <p>When enabled, Owners and Administrators can see which signed-in members watched videos in the team player.</p>
+    <button>Save viewing privacy</button>
+  </form>
+  <section id="teamAnalyticsReport" hidden aria-label="Named viewing activity">
+    <form id="teamAnalyticsFilter">
+      <label>From (UTC) <input type="date" name="from" required></label>
+      <label>To (UTC) <input type="date" name="to" required></label>
+      <button>Apply filters</button>
+      <button type="button" id="teamAnalyticsReset" hidden>Clear member or video filter</button>
+      <button type="button" id="teamAnalyticsExport">Download CSV</button>
+    </form>
+    <p id="teamAnalyticsTotals" aria-live="polite"></p>
+    <div class="analytics-table">
+      <table>
+        <thead><tr><th scope="col">Member</th><th scope="col">Video</th><th scope="col">Views</th>
+          <th scope="col">Completions</th><th scope="col">Time watched</th></tr></thead>
+        <tbody id="teamAnalyticsRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script type="module" src="/static/ui/team_analytics.js"></script>
+</html>
