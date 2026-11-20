@@ -6,6 +6,8 @@ const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
 const deleteWorks = document.querySelector("#deleteWorks");
 const privacySelected = document.querySelector("#privacySelected");
+const showcaseSelected = document.querySelector("#showcaseSelected");
+const ratingSelected = document.querySelector("#ratingSelected");
 const uploadDefaults = document.querySelector("#uploadDefaults");
 const workBrowse = document.querySelector("#workBrowse");
 const trashBrowse = document.querySelector("#trashBrowse");
@@ -99,6 +101,8 @@ function updateMove() {
     destination.disabled = !selected.size;
     deleteWorks.disabled = move.disabled = !selected.size;
     privacySelected.disabled = !selected.size || ![...selected].every((uid) => works.some((work) => work.id === uid && work.editable_privacy));
+    showcaseSelected.disabled = ratingSelected.disabled = !selected.size || selected.size > 50 ||
+        ![...selected].every(uid => works.some(work => work.id === uid && work.asset_type === "video"));
 }
 function renderTree() {
     function branch(parent) {
@@ -349,6 +353,8 @@ function cardMenu(work) {
         ["Copy link", () => shareDialog(work, "watch")],
         ["Review link", () => reviewLinksDialog(work)],
         ["Copy embed code", () => shareDialog(work, "embed")],
+        ["Add to showcases", () => addShowcaseMembers([work.id])],
+        ["Set video rating", () => editRatings([work.id])],
         [
             work.watch_later ? "Remove from Watch later" : "Watch later",
             () => saveForLater(work),
@@ -389,6 +395,88 @@ function openWorkDialog(title) {
         workDialog.showModal();
     return workDialogBody;
 }
+function videoBatch(title, label, count, submit) {
+    const body = openWorkDialog(title);
+    const summary = document.createElement("p");
+    summary.textContent = `${count} selected ${count === 1 ? "video" : "videos"}`;
+    const form = document.createElement("form");
+    form.className = "library-batch-form";
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = label;
+    body.append(summary, form);
+    form.append(save);
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        save.disabled = true;
+        workDialogStatus.textContent = "";
+        try {
+            const message = await submit(new FormData(form));
+            if (form.isConnected)
+                workDialogStatus.textContent = message;
+        }
+        catch (error) {
+            if (form.isConnected)
+                workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+        }
+        finally {
+            save.disabled = false;
+        }
+    };
+    return { form, save };
+}
+async function addShowcaseMembers(works) {
+    const response = await completed(await request("/api/showcases"));
+    const destinations = await response.json();
+    const { form, save } = videoBatch("Add to showcases", "Add videos", works.length, async (fields) => {
+        const showcases = fields.getAll("showcase");
+        if (!showcases.length)
+            throw new Error("Choose at least one showcase.");
+        const response = await completed(await request("/api/showcases/selected-videos", "POST", { works, showcases }));
+        const { added, showcases: count } = await response.json();
+        return added ? `Added ${added} entries across ${count} ${count === 1 ? "showcase" : "showcases"}.`
+            : "These videos are already in the selected showcases.";
+    });
+    if (!destinations.length) {
+        save.hidden = true;
+        const link = document.createElement("a");
+        link.href = "/operator/showcases";
+        link.textContent = "Create a showcase first";
+        form.prepend(link);
+        return;
+    }
+    const choices = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = "Showcases";
+    choices.append(legend);
+    for (const destination of destinations) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "showcase";
+        input.value = destination.id;
+        label.append(input, ` ${destination.settings.title} (${destination.settings.visibility.replace("_", " ")})`);
+        choices.append(label);
+    }
+    form.prepend(choices);
+}
+function editRatings(works) {
+    const { form } = videoBatch("Set video rating", "Apply rating", works.length, async (fields) => {
+        const response = await completed(await request("/api/library/ratings", "PUT", {
+            works, mode: fields.get("mode"), prompt: fields.get("prompt"), start: Number(fields.get("start")),
+        }));
+        const { updated } = await response.json();
+        return updated ? `Saved rating settings for ${updated} ${updated === 1 ? "video" : "videos"}.`
+            : "The selected videos already use these rating settings.";
+    });
+    const template = document.querySelector("#batchRatingFields");
+    form.prepend(template.content.cloneNode(true));
+    const mode = form.querySelector("[name=mode]");
+    const fields = form.querySelector("fieldset");
+    mode.onchange = () => { fields.disabled = fields.hidden = mode.value === "none"; };
+}
+action(showcaseSelected, () => addShowcaseMembers([...selected]));
+action(ratingSelected, async () => editRatings([...selected]));
 function publicAddress(path) {
     return new URL(path, document.body.dataset.publicUrl || location.origin).href;
 }

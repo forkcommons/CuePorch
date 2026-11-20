@@ -16,7 +16,7 @@ import library_registration
 import media_bandwidth
 from library_analytics import source_origin
 from library_appearance import brand_image
-from library_interactivity import image_id, text_field, web_link
+from library_interactivity import image_id, selected_ids, text_field, web_link
 from library_languages import tracks_for
 from library_thumbnail import selected_thumbnail, thumbnail_type
 from vimeo_privacy import target_settings
@@ -179,6 +179,32 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, uid, uuid.uuid4().hex, json.dumps(DEFAULTS), datetime.now(timezone.utc).isoformat()))
             return summary(get_showcase(con, uid)), 201
+
+    @app.post("/api/showcases/selected-videos")
+    def add_selected_videos():
+        staff()
+        request.max_content_length = 128 * 1024
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(422, "Select videos and showcases.")
+        works = selected_ids(body.get("works"), "videos")
+        destinations = selected_ids(body.get("showcases"), "showcases")
+        added = 0
+        with tx() as con:
+            available = library()
+            if any(work not in available or privacy.blocked(con, work) for work in works):
+                abort(422, "Choose existing videos that are available for showcases.")
+            rows = [get_showcase(con, uid) for uid in destinations]
+            for row in rows:
+                values = state(row)
+                members = set(values["videos"])
+                new = [work for work in works if work not in members]
+                if new:
+                    values["videos"].extend(new)
+                    con.execute("UPDATE video_showcase SET revision=?,settings=? WHERE id=?",
+                                (uuid.uuid4().hex, json.dumps(values), row["id"]))
+                    added += len(new)
+        return dict(showcases=len(rows), added=added)
 
     @app.route("/api/showcases/<uid>", methods=["GET", "PUT", "DELETE", "POST"])
     def operator_showcase(uid):

@@ -8,7 +8,7 @@ import requests
 from playwright.sync_api import expect, sync_playwright
 from demo_source import build_server
 from browser import chromium
-from installed_library import check_folders
+from installed_library import check_bulk_library, check_folders
 from installed_trash import check_private
 from installed_cards import check_cards
 from installed_versions import check_versions, generate_replacement
@@ -70,6 +70,7 @@ focused.add_argument("--audio-tracks-only", action="store_true", help="Test migr
 focused.add_argument("--team-only", action="store_true", help="Test migration and team access on the installed package")
 focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo migration, team access and embed replacement")
 focused.add_argument("--creator-only", action="store_true", help="Test recording, timeline editing and render recovery")
+focused.add_argument("--library-batch-only", action="store_true", help="Test bulk Library operations and individual playback")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -360,7 +361,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
     if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only
-            or args.team_only or args.cutover_only):
+            or args.team_only or args.cutover_only or args.library_batch_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -514,6 +515,13 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    if args.library_batch_only:
+                        batches = check_bulk_library(page, base, auth, replacement)
+                        results.append(dict(library=library_result, library_batches=batches, migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
                     if args.team_only or args.cutover_only:
                         team, contributor_email = check_team_accounts(page, browser, base, auth, replacement, copy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
@@ -648,6 +656,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     migrated_privacy = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                     details.update(check_imported_video_details(base, auth))
+                    batches = check_bulk_library(page, base, auth, replacement)
                     browser.close()
                     results.append(
                         dict(
@@ -659,6 +668,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             playback_width=width,
                             anonymous_denied=True,
                             library=library_result,
+                            library_batches=batches,
                             card_actions=card_result,
                             video_versions=versions_result,
                             review_links=review_result,

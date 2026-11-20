@@ -61,6 +61,12 @@ def text_field(value, label, limit, required=False):
     return value.strip()
 
 
+def selected_ids(items, label):
+    if not isinstance(items, list) or not 1 <= len(items) <= 50 or any(not isinstance(item, str) for item in items):
+        abort(422, f"Select between 1 and 50 {label}.")
+    return list(dict.fromkeys(items))
+
+
 def web_link(value):
     value = text_field(value, "a link", 2048)
     if not value:

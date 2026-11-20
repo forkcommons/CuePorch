@@ -77,6 +77,8 @@ For videos uploaded directly to the library, select the privacy badge and choose
 
 Select multiple directly uploaded videos and choose **Privacy for selected** to apply the same link mode, embed restrictions and download permission to the selection.
 
+Select up to 50 videos and choose **Add to showcases** to add them to one or more existing showcases in order. Showcase visitors still need access to the individual videos. Choose **Set video rating** to add the same thumbs or stars prompt, choose its start time, or turn the widget off. Earlier votes stay in the reports. The same actions are available in each video’s **Actions** menu.
+
 Choose **Folder privacy** to apply an override to directly uploaded videos in the selected folder and its subfolders. Subfolders with their own override keep their settings. New uploads and videos moved in use the nearest folder override. Removing an override keeps each existing video’s current settings. Future uploads inherit the closest remaining override or the uploader’s account defaults.
 
 Open **Actions** beside a work. **Share**, **Copy link** and **Copy embed code** use the published CuePorch address. For a restricted work, use **Manage private screening grants** to assign access. **Watch later** saves a work to your personal queue. The queue is available from the folder navigation.

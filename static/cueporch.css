@@ -284,6 +284,7 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .work-menu button { display: block; }
 .library-dialog { border: 1px solid #6e8387; border-radius: .5rem; width: min(38rem, 90vw); }
 .library-dialog::backdrop { background: #152e33a0; }
+.library-batch-form fieldset { display: grid; gap: .45rem; max-height: 42vh; overflow: auto; margin-block: .6rem; }
 .library-dialog h2 { margin-top: 0; }
 .library-dialog label, .library-dialog textarea, .library-dialog input[readonly] { display: block; width: 100%; }
 .library-dialog dd { margin-inline-start: 0; overflow-wrap: anywhere; }
