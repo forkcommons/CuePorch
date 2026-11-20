@@ -42,6 +42,8 @@ const destination = document.querySelector<HTMLSelectElement>("#driveDestination
 const videos = document.querySelector<HTMLUListElement>("#driveVideos")!;
 const noVideos = document.querySelector<HTMLElement>("#driveEmpty")!;
 const more = document.querySelector<HTMLButtonElement>("#driveMore")!;
+const importSelected = document.querySelector<HTMLButtonElement>("#importCloudSelection")!;
+const batchReceipts = document.querySelector<HTMLUListElement>("#cloudBatchReceipts")!;
 const receipt = document.querySelector<HTMLElement>("#driveReceipt")!;
 const watch = document.querySelector<HTMLElement>("#dropboxWatch")!;
 const watchState = document.querySelector<HTMLElement>("#dropboxWatchStatus")!;
@@ -64,6 +66,7 @@ let active: Integration;
 let source: DriveFile[] = [];
 let currentWatch: WatchReceipt;
 const recentFolders = new Map<string, string>();
+const selectedFiles = new Map<string, DriveFile>();
 
 function pathFor(item: Integration, action: string) {
   return `/api/integrations/${encodeURIComponent(item.id)}/${action}`;
@@ -105,7 +108,8 @@ async function run(action: () => Promise<void>) {
   if (busy) return;
   busy = true;
   status.textContent = "";
-  const controls = [...list.querySelectorAll("button"), ...picker.querySelectorAll("button")];
+  const controls = [...list.querySelectorAll("button"),
+    ...picker.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button,input[type=checkbox]")];
   for (const control of controls) control.disabled = true;
   try {
     await action();
@@ -115,6 +119,18 @@ async function run(action: () => Promise<void>) {
     busy = false;
     for (const control of controls) control.disabled = false;
   }
+}
+
+function updateSelection() {
+  importSelected.hidden = selectedFiles.size === 0;
+  importSelected.textContent = `Import selected videos (${selectedFiles.size})`;
+  for (const element of videos.querySelectorAll<HTMLInputElement>("input[data-cloud-file]")) {
+    element.checked = selectedFiles.has(element.dataset.cloudFile!);
+  }
+}
+
+function importFile(file: DriveFile, folder: string | null) {
+  return api<{id: string; visibility: string}>(pathFor(active, "import"), {file: file.id, folder});
 }
 
 function render() {
@@ -181,6 +197,9 @@ async function openPicker(item: Integration) {
     ...folders.map(folder => new Option(folderName(folder, lookup), folder.id)));
   active = item;
   source = [];
+  selectedFiles.clear();
+  batchReceipts.hidden = true;
+  batchReceipts.replaceChildren();
   pickerHeading.textContent = `Import from ${active.name}`;
   remoteFolder.hidden = !active.browse_folders;
   watch.hidden = active.id !== "dropbox";
@@ -211,11 +230,23 @@ async function loadPage(append: boolean) {
   }
   for (const file of page.files) {
     const row = document.createElement("li");
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.dataset.cloudFile = file.id;
+    const label = document.createElement("label");
+    label.append(toggle, ` Select ${file.name} `);
+    toggle.onchange = () => {
+      if (toggle.checked) selectedFiles.set(file.id, file);
+      else selectedFiles.delete(file.id);
+      updateSelection();
+    };
+    row.append(label);
     row.append(button(`Import ${file.name}`, async () => {
       receipt.hidden = true;
       status.textContent = `Importing ${file.name}…`;
-      const saved = await api<{id: string; visibility: string}>(pathFor(active, "import"),
-        {file: file.id, folder: destination.value || null});
+      const saved = await importFile(file, destination.value || null);
+      selectedFiles.delete(file.id);
+      updateSelection();
       receipt.replaceChildren("Library video: ", videoLink(saved.id, file.name), ` (${saved.visibility})`);
       receipt.hidden = false;
       status.textContent = "Import ready.";
@@ -223,6 +254,7 @@ async function loadPage(append: boolean) {
     videos.append(row);
   }
   noVideos.hidden = videos.childElementCount > 0;
+  updateSelection();
   if (!watch.hidden && currentWatch) renderWatch(currentWatch);
 }
 
@@ -315,6 +347,31 @@ more.onclick = () => void run(() => loadPage(true));
 remoteUp.onclick = () => void run(() => navigateSource(source.slice(0, -1)));
 destination.onchange = () => { if (!watch.hidden && currentWatch) renderWatch(currentWatch); };
 refreshWatch.onclick = () => void run(loadWatch);
+importSelected.onclick = () => void run(async () => {
+  const files = [...selectedFiles.values()];
+  const folder = destination.value || null;
+  batchReceipts.replaceChildren();
+  batchReceipts.hidden = false;
+  receipt.hidden = true;
+  let copied = 0;
+  for (const [index, file] of files.entries()) {
+    status.textContent = `Importing ${index + 1} of ${files.length} · ${file.name}…`;
+    const result = document.createElement("li");
+    try {
+      const saved = await importFile(file, folder);
+      selectedFiles.delete(file.id);
+      result.append(videoLink(saved.id, file.name), ` (${saved.visibility})`);
+      copied += 1;
+    } catch (error) {
+      result.textContent = `${file.name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    batchReceipts.append(result);
+    updateSelection();
+  }
+  const failed = files.length - copied;
+  status.textContent = failed ? `Imported ${copied} of ${files.length}. ${failed} selected for retry.`
+    : `Imported ${copied} of ${files.length} selected videos.`;
+});
 enableWatch.onclick = () => void run(async () => {
   renderWatch(await api<WatchReceipt>(pathFor(active, "watch"), {
     enabled: true, source: source.at(-1)?.id || "", destination: destination.value || null,

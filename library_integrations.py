@@ -12,7 +12,7 @@ from flask import abort, render_template, request
 from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
-from dropbox_watch import Watch
+from dropbox_watch import CursorReset, Watch
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -138,11 +138,15 @@ def import_verified(import_video, provider, actor, identity, name, folder, size,
     return import_video(actor, work, name, folder, save, authorize)
 
 
-def dropbox_entries(connection, revision, source="", cursor=None):
+def dropbox_entries(connection, revision, source="", cursor=None, watch=False):
     suffix = "/continue" if cursor else ""
     fields = {"cursor": cursor} if cursor else {"path": source, "recursive": False, "limit": 50,
                                                "include_non_downloadable_files": False}
     with connection.api(revision, "POST", DROPBOX_RPC + "/files/list_folder" + suffix, json=fields) as response:
+        if watch and cursor and response.status_code == 409:
+            error = response_object(response).get("error")
+            if isinstance(error, dict) and error.get(".tag") == "reset":
+                raise CursorReset()
         check_provider(response)
         result = response_object(response)
     if not (isinstance(result.get("entries"), list) and isinstance(result.get("cursor"), str)
@@ -184,7 +188,9 @@ def register(app, tx, staff, operator, origin, import_video, database):
                             BOX_SCOPE, pkce=False), tx, operator)
     connections = {item.config.key: item for item in (drive, dropbox, box)}
     watch = Watch(
-        app, tx, database, dropbox, lambda revision, cursor: dropbox_entries(dropbox, revision, cursor=cursor),
+        app, tx, database, dropbox, lambda revision, source, cursor: dropbox_entries(
+            dropbox, revision, source, cursor, watch=True,
+        ),
         dropbox_video,
         lambda revision, actor, row, folder, authorize: import_dropbox(
             import_video, dropbox, revision, actor, row, folder, authorize,

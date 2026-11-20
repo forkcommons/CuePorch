@@ -2,6 +2,7 @@
 
 import base64
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -54,7 +55,9 @@ class DropboxImport(unittest.TestCase):
                    "rev": "aaaaa0000000000000099", "size": len(media), "content_hash": content_hash}
             added = row | {"name": "Automatically imported.mp4", "id": "id:automatic",
                            "rev": "aaaaa0000000000000077"}
-            observed = {"revocations": 0, "downloads": 0, "watch_ready": False, "damaged": True}
+            recovered = row | {"name": "Recovered after reset.mp4", "id": "id:recovered",
+                               "rev": "aaaaa0000000000000055"}
+            observed = {"revocations": 0, "downloads": 0, "watch_ready": False, "damaged": True, "reset": "off"}
             provider = Flask("mock-dropbox")
             provider_server = make_server("127.0.0.1", 0, provider, threaded=True, request_handler=QuietHandler)
             provider_url = f"http://127.0.0.1:{provider_server.server_port}"
@@ -109,6 +112,11 @@ class DropboxImport(unittest.TestCase):
             def list_folder():
                 assert request.json["recursive"] is False
                 if request.json["path"] == source_folder["id"]:
+                    if observed["reset"] == "recovering":
+                        observed["reset"] = "recovered"
+                        old = row | {"server_modified": "2020-01-01T00:00:00Z"}
+                        recent = recovered | {"server_modified": datetime.now(timezone.utc).isoformat()}
+                        return dict(entries=[old, recent], cursor="watch-after-reset", has_more=False)
                     return dict(entries=[], cursor="dropbox-next-page", has_more=True)
                 assert request.json["path"] == ""
                 return dict(entries=[source_folder], cursor="root-page", has_more=False)
@@ -120,7 +128,10 @@ class DropboxImport(unittest.TestCase):
                     return dict(entries=[row], cursor="dropbox-last-page", has_more=False)
                 if cursor == "watch-baseline" and observed["watch_ready"]:
                     return dict(entries=[source_folder, added], cursor="watch-following", has_more=False)
-                assert cursor in {"watch-baseline", "watch-following"}
+                if cursor == "watch-following" and observed["reset"] == "requested":
+                    observed["reset"] = "recovering"
+                    return { "error": {".tag": "reset"} }, 409
+                assert cursor in {"watch-baseline", "watch-following", "watch-after-reset"}
                 return dict(entries=[], cursor=cursor, has_more=False)
 
             @provider.post("/2/files/list_folder/get_latest_cursor")
@@ -136,7 +147,7 @@ class DropboxImport(unittest.TestCase):
             @provider.post("/2/files/download")
             def download():
                 path = json.loads(request.headers["Dropbox-API-Arg"])["path"]
-                assert path in {"rev:" + row["rev"], "rev:" + added["rev"]}
+                assert path in {"rev:" + row["rev"], "rev:" + added["rev"], "rev:" + recovered["rev"]}
                 observed["downloads"] += 1
                 if path == "rev:" + added["rev"] and observed["damaged"]:
                     return Response(media[:-1], mimetype="application/octet-stream")
@@ -153,12 +164,12 @@ class DropboxImport(unittest.TestCase):
             api.headers.update({"Authorization": "Bearer " + operator, cloud.MARKER: "1"})
             watch_api = base + "/api/integrations/dropbox/watch"
 
-            def wait_watch(state):
+            def wait_watch(state, count=1):
                 deadline = monotonic() + 15
                 while monotonic() < deadline:
                     result = api.get(watch_api, timeout=5)
                     result.raise_for_status()
-                    if any(job["state"] == state for job in result.json()["jobs"]):
+                    if sum(job["state"] == state for job in result.json()["jobs"]) == count:
                         return result.json()
                     sleep(.1)
                 self.fail("Dropbox watch did not reach " + state)
@@ -213,6 +224,11 @@ class DropboxImport(unittest.TestCase):
                 self.assertEqual(320, preview.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Browse videos").click()
+                observed["reset"] = "requested"
+                reset = wait_watch("imported", count=2)
+                self.assertEqual({"Automatically imported.mp4", "Recovered after reset.mp4"},
+                                 {job["name"] for job in reset["jobs"]})
+                self.assertEqual("recovered", observed["reset"])
                 page.get_by_role("button", name="Stop watching").click()
                 expect(page.locator("#dropboxWatchStatus")).to_have_text("Folder watching is off.")
                 self.assertEqual({"enabled": False, "jobs": []}, api.get(watch_api, timeout=5).json())
@@ -220,7 +236,7 @@ class DropboxImport(unittest.TestCase):
                 expect(page.locator("#integrationStatus")).to_have_text("Dropbox disconnected.")
                 self.assertEqual(1, observed["revocations"])
         print("Dropbox manual import and automatic folder watch passed: new-only cursor, failed-copy retry, "
-              "private Library playback at 320px, disable and disconnect.")
+              "private Library playback at 320px, cursor reset recovery, disable and disconnect.")
 
 
 if __name__ == "__main__":

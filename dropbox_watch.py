@@ -1,6 +1,7 @@
 """Retain one folder cursor and import new Dropbox revisions in the background."""
 
 import json
+from datetime import datetime
 import time
 import uuid
 from threading import Event, Thread
@@ -13,7 +14,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_dropbox_watch(
  id INTEGER PRIMARY KEY CHECK(id=1), revision TEXT NOT NULL, connection TEXT NOT NULL,
  source TEXT NOT NULL, destination TEXT, actor TEXT NOT NULL, cursor TEXT NOT NULL,
- checked INTEGER, error TEXT);
+ checked INTEGER, error TEXT, started INTEGER NOT NULL, recovering INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS workspace_dropbox_queue(
  id INTEGER PRIMARY KEY, watch TEXT NOT NULL, file TEXT NOT NULL, version TEXT NOT NULL,
  entry TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', work TEXT,
@@ -21,6 +22,28 @@ CREATE TABLE IF NOT EXISTS workspace_dropbox_queue(
  UNIQUE(watch,file,version));
 """
 POLL_SECONDS = 30
+
+
+class CursorReset(Exception):
+    pass
+
+
+def migrate(con):
+    columns = {row[1] for row in con.execute("PRAGMA table_info(workspace_dropbox_watch)")}
+    if "started" not in columns:
+        con.execute("ALTER TABLE workspace_dropbox_watch ADD COLUMN started INTEGER NOT NULL DEFAULT 0")
+        con.execute("ALTER TABLE workspace_dropbox_watch ADD COLUMN recovering INTEGER NOT NULL DEFAULT 0")
+        con.execute("UPDATE workspace_dropbox_watch SET started=coalesce(checked,unixepoch())")
+
+
+def changed_since(row, cutoff):
+    try:
+        if not isinstance(row.get("server_modified"), str):
+            return False
+        modified = datetime.fromisoformat(row["server_modified"])
+        return modified.tzinfo is not None and modified.timestamp() >= cutoff
+    except (ValueError, OverflowError, OSError):
+        return False
 
 
 class Watch:
@@ -63,8 +86,10 @@ class Watch:
             ).fetchone():
                 abort(404, "The selected Library folder no longer exists.")
             self.clear(con)
-            con.execute("INSERT INTO workspace_dropbox_watch VALUES(1,?,?,?,?,?,?,NULL,NULL)",
-                        (uuid.uuid4().hex, connection, source, destination, actor, cursor))
+            con.execute("""INSERT INTO workspace_dropbox_watch(
+                            id,revision,connection,source,destination,actor,cursor,started)
+                            VALUES(1,?,?,?,?,?,?,?)""",
+                        (uuid.uuid4().hex, connection, source, destination, actor, cursor, int(time.time())))
         self.wake.set()
 
     def receipt(self):
@@ -96,7 +121,14 @@ class Watch:
 
     def poll(self, watch):
         try:
-            page = self.list_changes(watch["connection"], watch["cursor"])
+            page = self.list_changes(watch["connection"], watch["source"], watch["cursor"])
+        except CursorReset:
+            with self.tx() as con:
+                self.authorized(con, watch)
+                con.execute("""UPDATE workspace_dropbox_watch SET cursor='',recovering=1,error=?
+                               WHERE revision=?""",
+                            ("Dropbox reset the cursor. Checking for new versions.", watch["revision"]))
+            return True
         except HTTPException as error:
             with self.tx() as con:
                 con.execute("UPDATE workspace_dropbox_watch SET error=? WHERE revision=?",
@@ -107,11 +139,18 @@ class Watch:
             for row in page["entries"]:
                 if not self.is_video(row) or not isinstance(row.get("rev"), str):
                     continue
+                if watch["recovering"] and not changed_since(row, watch["started"]):
+                    continue
                 entry = {key: row.get(key) for key in (".tag", "id", "name", "rev", "size", "content_hash")}
                 con.execute("""INSERT OR IGNORE INTO workspace_dropbox_queue(watch,file,version,entry)
                                VALUES(?,?,?,?)""", (watch["revision"], row["id"], row["rev"], json.dumps(entry)))
-            con.execute("UPDATE workspace_dropbox_watch SET cursor=?,checked=?,error=NULL WHERE revision=?",
-                        (page["cursor"], int(time.time()), watch["revision"]))
+            recovering = bool(watch["recovering"] and page["has_more"])
+            con.execute("""UPDATE workspace_dropbox_watch SET cursor=?,checked=?,recovering=?,error=?
+                           WHERE revision=?""", (
+                            page["cursor"], int(time.time()), recovering,
+                            "Checking for new versions after the Dropbox cursor reset." if recovering else None,
+                            watch["revision"],
+                        ))
         return page["has_more"]
 
     def import_next(self, watch):

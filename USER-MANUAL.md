@@ -129,6 +129,8 @@ Open **Integrations** and connect Google Drive. The workspace administrator need
 
 For Dropbox or Box, connect it in **Integrations**, open **Browse videos**, and navigate to the folder with your file. Choose a CuePorch Library destination and select the video. CuePorch verifies the copy against the provider's recorded version and checksum. Open **Connected** to disconnect a provider. The imported copies stay in CuePorch. If the provider declines revocation, use its account settings to remove CuePorch access.
 
+To copy several videos from the same provider, select them and choose **Import selected videos**. Each copy receives its own result. Failed copies stay selected for retry.
+
 To import new Dropbox videos automatically, open the folder in the Dropbox picker, select a Library destination and choose **Watch this folder**. CuePorch checks for new revisions in that folder while the service is running. Videos already present when you start the watch and videos inside its subfolders can be imported manually. Choose **Refresh watch status** to see copies and errors. A failed copy has a **Retry** button. **Stop watching** clears the watch and keeps completed Library copies.
 
 ### Work actions

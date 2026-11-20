@@ -40,8 +40,9 @@ class BoxImport(unittest.TestCase):
             file = dict(id="12", type="file", name="Box screening.mp4", item_status="active",
                         file_version=dict(id="721"), size=len(media), is_download_available=True,
                         permissions=dict(can_download=True), sha1=hashlib.sha1(media, usedforsecurity=False).hexdigest())
+            additional = file | dict(id="14", name="Box bonus.mp4", file_version=dict(id="722"))
             folder = dict(id="8", type="folder", name="Archives")
-            observed = dict(refresh=0, revoked=False, transfers=0, unsafe=True)
+            observed = dict(refresh=0, revoked=False, transfers=0, unsafe=True, pending=True)
             provider = Flask("mock-box")
             server = make_server("127.0.0.1", 0, provider, threaded=True, request_handler=QuietHandler)
             provider_url = f"http://127.0.0.1:{server.server_port}"
@@ -113,16 +114,18 @@ class BoxImport(unittest.TestCase):
                     return dict(entries=[file | dict(id="13", permissions=dict(can_download=False))],
                                 next_marker="next-box-page")
                 assert request.args["marker"] == "next-box-page"
-                return dict(entries=[file], next_marker=None)
+                return dict(entries=[file, additional], next_marker=None)
 
-            @provider.get("/2.0/files/12")
-            def metadata():
+            @provider.get("/2.0/files/<item>")
+            def metadata(item):
                 assert "file_version" in request.args["fields"]
-                return file
+                return file if item == "12" else additional
 
-            @provider.get("/2.0/files/12/content")
-            def download():
-                assert request.args["version"] == file["file_version"]["id"]
+            @provider.get("/2.0/files/<item>/content")
+            def download(item):
+                assert request.args["version"] == ("721" if item == "12" else "722")
+                if item == "14" and observed["pending"]:
+                    return "", 202, {"Retry-After": "2"}
                 target = signed_url if not observed["unsafe"] else provider_url + "/should-never-be-called"
                 return redirect(target)
 
@@ -150,14 +153,23 @@ class BoxImport(unittest.TestCase):
                 expect(page.locator("#integrationStatus")).to_contain_text("unexpected download address")
                 self.assertEqual(0, observed["transfers"])
                 observed["unsafe"] = False
-                import_button.click()
-                receipt = page.locator("#driveReceipt")
-                expect(receipt).to_have_text("Library video: Box screening.mp4 (private)", timeout=30000)
+                page.get_by_role("checkbox", name="Select Box screening.mp4").check()
+                page.get_by_role("checkbox", name="Select Box bonus.mp4").check()
+                page.get_by_role("button", name="Import selected videos (2)").click()
+                expect(page.locator("#integrationStatus")).to_have_text(
+                    "Imported 1 of 2. 1 selected for retry.", timeout=30000,
+                )
+                receipt = page.get_by_role("list", name="Selected import results")
+                expect(receipt).to_contain_text("Box is preparing this file")
                 self.assertEqual((1, 1), (observed["refresh"], observed["transfers"]))
-                detail = receipt.get_by_role("link")
+                detail = receipt.get_by_role("link", name="Box screening.mp4")
                 work = detail.get_attribute("href").split("/")[-1]
                 self.assertEqual(404, requests.get(base + f"/watch/local/{work}", timeout=5).status_code)
-                detail.click()
+                observed["pending"] = False
+                page.get_by_role("button", name="Import selected videos (1)").click()
+                expect(page.locator("#integrationStatus")).to_have_text("Imported 1 of 1 selected videos.")
+                self.assertEqual(2, observed["transfers"])
+                receipt.get_by_role("link", name="Box bonus.mp4").click()
                 video = page.locator("#workspacePreview")
                 expect(video).to_be_visible()
                 self.assertEqual(320, video.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
@@ -166,7 +178,7 @@ class BoxImport(unittest.TestCase):
                 expect(page.locator("#integrationStatus")).to_have_text("Box disconnected.")
                 self.assertTrue(observed["revoked"])
         print("Box OAuth, refresh rotation, marker pagination, version download, signed CDN without bearer,"
-              " external redirect rejection, private 320px playback and revoke passed.")
+              " rejected redirect, selection with retry, private 320px playback and revoke passed.")
 
 
 if __name__ == "__main__":
