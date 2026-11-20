@@ -48,7 +48,12 @@ def build_server(directory, port=0):
 
         def do_GET(self):
             path = urlsplit(self.path).path
-            if path.startswith("/media/"):
+            content_type = "application/json"
+            if path == "/fixture/legacy-player":
+                content_type = "text/html; charset=utf-8"
+                data = b'<!doctype html><title>Legacy test player</title><video controls src="/media/72.mp4"></video>'
+            elif path.startswith("/media/"):
+                content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
             else:
                 if self.headers.get("Authorization") != "Bearer cueporch-fixture":
@@ -168,6 +173,7 @@ def build_server(directory, port=0):
                     dict(data=values, total=len(values) if total is None else total, paging=dict(next=following))
                 ).encode()
             self.send_response(200)
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

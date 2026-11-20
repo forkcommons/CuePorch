@@ -1,5 +1,6 @@
 import { renderCommentText } from "./review_comment_text.js";
 import { libraryUploader } from "./library_upload.js";
+import { saveEmbedMap } from "./embed_map.js";
 import { openPrivacy, privateSettings, sharingFields, type Sharing, type SharingSettings } from "./library_privacy.js";
 
 type AssetType = "video" | "audio" | "image" | "document";
@@ -1634,10 +1635,5 @@ action(
 );
 
 action(document.querySelector<HTMLButtonElement>("#exportMap")!, async () => {
-  const response = await completed(await request("/api/embed-map.csv"));
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(await response.blob());
-  link.download = "cueporch-embed-map.csv";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  await saveEmbedMap(await completed(await request("/api/embed-map.csv")));
 });

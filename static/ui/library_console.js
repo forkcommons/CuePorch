@@ -1,5 +1,6 @@
 import { renderCommentText } from "./review_comment_text.js";
 import { libraryUploader } from "./library_upload.js";
+import { saveEmbedMap } from "./embed_map.js";
 import { openPrivacy, privateSettings, sharingFields } from "./library_privacy.js";
 const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
@@ -1410,10 +1411,5 @@ action(document.querySelector("#publishImports"), async () => {
         "Queued eligible imports: " + (await response.json()).queued;
 });
 action(document.querySelector("#exportMap"), async () => {
-    const response = await completed(await request("/api/embed-map.csv"));
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-embed-map.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    await saveEmbedMap(await completed(await request("/api/embed-map.csv")));
 });

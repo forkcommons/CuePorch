@@ -1,3 +1,4 @@
+import { saveEmbedMap } from "./embed_map.js";
 const key = document.querySelector("input#key");
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 const source = document.querySelector("input#source");
@@ -7,12 +8,17 @@ const rows = document.querySelector("tbody#rows");
 const showcases = document.querySelector("#showcaseInventory");
 const showcaseIssue = document.querySelector("#showcaseInventoryIssue");
 const showcaseRows = document.querySelector("#showcaseInventoryRows");
+const cutover = document.querySelector("#migrationCutover");
+const exportMap = document.querySelector("#migrationExportMap");
+const cutoverStatus = document.querySelector("#migrationCutoverStatus");
 const headers = () => ({
     Authorization: "Bearer " + key.value,
     "Content-Type": "application/json",
 });
 async function run(dry) {
     inventory.disabled = transfer.disabled = true;
+    cutover.hidden = true;
+    cutoverStatus.textContent = "";
     statusBox.textContent = "Starting migration request…";
     try {
         const response = await fetch("/api/migration", {
@@ -38,6 +44,9 @@ async function poll() {
     if (!r.ok)
         throw new Error(`Could not read migration progress (${r.status})`);
     const data = await r.json();
+    const active = data.state === "running" || data.state === "waiting";
+    inventory.disabled = transfer.disabled = active;
+    cutover.hidden = data.state !== "transferred";
     statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
     rows.replaceChildren();
     for (const w of data.works || []) {
@@ -67,11 +76,29 @@ async function poll() {
         if (album.issues.length)
             target.append(" " + album.issues.join(" "));
     }
-    if (["running", "waiting"].includes(data.state))
+    if (active)
         setTimeout(() => void poll().catch(failed), 750);
-    else
-        inventory.disabled = transfer.disabled = false;
 }
 inventory.onclick = () => run(true);
 transfer.onclick = () => run(false);
-export {};
+exportMap.onclick = async () => {
+    exportMap.disabled = true;
+    cutoverStatus.textContent = "";
+    try {
+        const response = await fetch("/api/embed-map.csv", { headers: headers() });
+        if (!response.ok)
+            throw new Error(`Could not download the embed map (${response.status}).`);
+        await saveEmbedMap(response);
+        cutoverStatus.textContent = "Embed map downloaded.";
+    }
+    catch (error) {
+        cutoverStatus.textContent = error instanceof Error ? error.message : "Could not download the embed map.";
+    }
+    finally {
+        exportMap.disabled = false;
+    }
+};
+if (key.value) {
+    inventory.disabled = transfer.disabled = true;
+    void poll().catch(failed);
+}

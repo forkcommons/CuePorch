@@ -65,6 +65,7 @@ focused.add_argument("--discovery-only", action="store_true", help="Test migrati
 focused.add_argument("--audience-accounts-only", action="store_true", help="Test migration, discovery and viewer accounts on the installed package")
 focused.add_argument("--audio-tracks-only", action="store_true", help="Test migration and alternate audio on the installed package")
 focused.add_argument("--team-only", action="store_true", help="Test migration and team access on the installed package")
+focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo migration, team access and embed replacement")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -221,7 +222,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
-    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only):
+    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only
+            or args.team_only or args.cutover_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -376,11 +378,13 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
-                    if args.team_only:
+                    if args.team_only or args.cutover_only:
                         team = check_team_accounts(page, browser, base, auth, replacement, copy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
                                             repeat_ids_unique=True, anonymous_denied=True, playback_width=width,
                                             setup_seconds=setup_seconds, team=team))
+                        if args.cutover_only:
+                            results[-1]["cutover"] = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
