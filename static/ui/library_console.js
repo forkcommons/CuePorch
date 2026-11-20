@@ -1283,11 +1283,14 @@ async function manageReviewFeedback(work, link, back) {
     const list = document.createElement("ol");
     const download = document.createElement("button");
     download.textContent = "Download comments CSV";
+    const markers = document.createElement("button");
+    markers.textContent = "Download Premiere markers";
     const url = () => link.path + "/feedback/" + picker.value;
     const render = async () => {
         if (!picker.value) {
             workDialogStatus.textContent = "This review has no playable version.";
             download.disabled = true;
+            markers.disabled = true;
             return;
         }
         const data = await (await completed(await request(url()))).json();
@@ -1320,16 +1323,22 @@ async function manageReviewFeedback(work, link, back) {
         }
     };
     picker.onchange = () => render().catch((error) => { workDialogStatus.textContent = String(error); });
-    action(download, async () => {
-        const response = await completed(await request(url() + "/comments.csv"));
-        const object = URL.createObjectURL(await response.blob());
-        const file = document.createElement("a");
-        file.href = object;
-        file.download = "review-comments.csv";
-        file.click();
-        window.setTimeout(() => URL.revokeObjectURL(object), 1000);
-    });
-    workDialogBody.append(backButton, label, download, list);
+    const downloadEntries = [
+        { button: download, path: "/comments.csv", name: "review-comments.csv" },
+        { button: markers, path: "/markers.json", name: "cueporch-review-markers.json" },
+    ];
+    for (const { button, path, name } of downloadEntries) {
+        action(button, async () => {
+            const response = await completed(await request(url() + path));
+            const object = URL.createObjectURL(await response.blob());
+            const file = document.createElement("a");
+            file.href = object;
+            file.download = name;
+            file.click();
+            window.setTimeout(() => URL.revokeObjectURL(object), 1000);
+        });
+    }
+    workDialogBody.append(backButton, label, download, markers, list);
     await render();
 }
 let thumbnailUrl;

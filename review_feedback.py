@@ -341,6 +341,37 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 abort(404)
         return confidential(("", 204))
 
+    @app.get("/review/<uid>/feedback/<version>/markers.json")
+    def review_markers(uid, version):
+        import json
+        with tx() as con:
+            export_access(con, uid, version)
+            comments = get_comments(con, uid, version, False)
+        markers = [
+            {
+                "id": row["id"],
+                "seconds": row["seconds"],
+                "author": row["author"],
+                "body": row["body"],
+            }
+            for row in comments
+            if row["parent"] is None
+        ]
+        payload = {
+            "schema": 1,
+            "version": version,
+            "markers": markers,
+        }
+        return confidential(
+            Response(
+                json.dumps(payload),
+                mimetype="application/json",
+                headers={
+                    "Content-Disposition": 'attachment; filename="cueporch-review-markers.json"'
+                },
+            )
+        )
+
     @app.get("/review/<uid>/feedback/<version>/comments.csv")
     def export_review_comments(uid, version):
         with tx() as con:
