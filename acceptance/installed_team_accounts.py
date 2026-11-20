@@ -126,6 +126,29 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert viewer.request.get(base + owned[0]["watch"] + "/media").status == 404
         assert requests.get(f"{base}/watch/work/{owned[0]['id']}", timeout=10).status_code == 404
         draft_width = playback(contributor_page, draft_name)
+        draft_analytics = f"{base}/api/team/video/{owned[0]['id']}/analytics"
+        contributor_page.get_by_role("link", name="Video analytics").click()
+        report_page = contributor_page.url
+        expect(contributor_page.get_by_role("heading", name=f"Analytics for {draft_name}")).to_be_visible()
+        expect(contributor_page.get_by_role("link", name="Advanced report")).to_have_count(0)
+        expect(contributor_page.get_by_label("Operator credential")).not_to_be_visible()
+        expect(contributor_page.get_by_label("Video preview")).to_be_visible()
+        expect(contributor_page.locator("#views")).to_have_text("0")
+        contributor_page.get_by_label("Playback surface").select_option("embed")
+        with contributor_page.expect_response(lambda result: "analytics?" in result.url) as filtered:
+            contributor_page.get_by_role("button", name="Apply filters").click()
+        assert filtered.value.ok and filtered.value.json()["surface"] == "embed"
+        assert "no-store" in filtered.value.headers["cache-control"]
+        with contributor_page.expect_download() as analytics_download:
+            contributor_page.get_by_role("button", name="Download CSV").click()
+        analytics_csv = analytics_download.value.path().read_text(encoding="utf-8")
+        assert analytics_csv.splitlines() == ["day,surface,impressions,views,view_rate,finishes,watched_seconds"]
+        assert admin.request.get(draft_analytics, headers=TEAM).ok
+        assert contributor.request.get(draft_analytics).status == 403
+        assert requests.get(draft_analytics, headers=TEAM, timeout=10).status_code == 401
+        assert contributor.request.get(draft_analytics, headers=TEAM | {
+            "Origin": "https://unrelated.example.org",
+        }).status == 403
 
         admin_page.reload()
         member_row = admin_page.locator("#teamMemberList li").filter(has_text=email("viewer"))
@@ -137,6 +160,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
 
         viewer_page.reload()
         viewer_width = playback(viewer_page, protected_title)
+        expect(viewer_page.get_by_role("link", name="Video analytics")).to_have_count(0)
+        assert viewer.request.get(f"{base}/api/team/video/{uid}/analytics", headers=TEAM).status == 404
         ranged = viewer.request.get(media, headers={"Range": "bytes=0-63"})
         assert ranged.status == 206 and len(ranged.body()) == 64
         assert contributor.request.get(media).status == 404
@@ -224,6 +249,9 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert viewer.request.get(details_path + "/details", headers=TEAM).status == 404
         contributor_page.goto(base + "/team")
         contributor_page.get_by_role("link", name=migrated["title"], exact=True).click()
+        expect(contributor_page.get_by_role("link", name="Video analytics")).to_have_count(0)
+        assert contributor.request.get(f"{base}/api/team/video/{migrated['work']}/analytics?format=csv",
+                                       headers=TEAM).status == 404
         contributor_page.get_by_role("link", name="Edit video details").click()
         edit_page = contributor_page.url
         contributor_page.get_by_label("Description", exact=True).fill("Screening notes from the assigned contributor.")
@@ -260,6 +288,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         contributor_page.get_by_role("button", name="Sign out").click()
         expect(contributor_page.get_by_role("button", name="Sign in to team")).to_be_visible()
         assert contributor.request.get(base + "/api/team/account").status == 401
+        assert contributor.request.get(report_page).status == 401
+        assert contributor.request.get(draft_analytics + "?format=csv", headers=TEAM).status == 401
         contributor_page.get_by_label("Team email").fill(email("contributor"))
         contributor_page.get_by_label("Password").fill(PASSWORD)
         contributor_page.get_by_role("button", name="Sign in to team").click()
@@ -340,4 +370,5 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
                 persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True,
                 owner_assignment_and_transfer_with_stale_check=True, admin_cannot_take_ownership=True,
-                private_audited_roster_csv=True), email("contributor")
+                private_audited_roster_csv=True, private_contributor_video_report_and_export=True,
+                report_requires_current_ownership_and_session=True), email("contributor")

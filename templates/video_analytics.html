@@ -6,13 +6,17 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video analytics · CuePorch</title>
 </head>
-<body data-work="{{ work }}">
+<body data-work="{{ work }}"{% if team_preview %} data-team-preview="{{ team_preview }}"{% endif %}>
+  {% if team_preview %}
+  <nav aria-label="Team"><a href="/team/video/{{ work }}">Back to video</a></nav>
+  {% else %}
   <nav aria-label="Operator">
     <a href="/operator/videos/{{ work }}">Video workspace</a>
     <a href="/operator/analytics?video={{ work }}">Advanced report</a>
   </nav>
+  {% endif %}
   <h1 id="analyticsTitle">Video analytics</h1>
-  <form id="identify">
+  <form id="identify"{% if team_preview %} hidden{% endif %}>
     <label>Operator credential <input id="analyticsKey" type="password" autocomplete="current-password" required></label>
     <button type="submit">Open analytics</button>
   </form>

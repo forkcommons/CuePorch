@@ -40,6 +40,8 @@ Administrators can open the Library and manage invitations, roles, and video acc
 
 Shares start with **Can view**. Select **Can edit** on a video or folder share to let a Contributor update its video details and editorial status. Contributors can also edit their own uploads. They open **Edit video details** from the team player. Viewers can play a video shared with them, including one shared with a group that has edit access. Administrators manage privacy and public sharing.
 
+Open **Video analytics** from the team player to see the video's playback totals, daily activity and retention. Use the date and playback surface filters, or choose **Download CSV**. Contributors can open this report on their own uploads. Owners and Administrators can open it on any video in their workspace.
+
 In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.
 
 Use **Manage workspace links** in **Team members** to add a CuePorch workspace by name and HTTPS origin. Choose the groups that can find it under **Workspaces** in their team library. Set up the member's role in the destination workspace. After they sign in there, the same browser can keep both sessions. Remove access to a workspace from its own **Team members** screen.

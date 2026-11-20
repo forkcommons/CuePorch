@@ -12,6 +12,7 @@ import uuid
 from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import library_analytics
 import team_workspaces
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
                                       secure_site, token_hash, workspace_session, workspace_session_cookie)
@@ -562,6 +563,29 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 selected.intersection_update({work_id})
         return eligible_works(con, selected)
 
+    def can_read_analytics(con, row, uid):
+        return row["role"] in MANAGERS or (row["role"] == "contributor" and con.execute(
+            "SELECT 1 FROM team_owned_work WHERE member=? AND work=?", (row["id"], uid),
+        ).fetchone() is not None)
+
+    def analytics_work(con, uid, secure):
+        row = member(con, secure)
+        if can_read_analytics(con, row, uid):
+            work = access(con, row, uid).get(uid)
+            if work:
+                return work
+        abort(404)
+
+    @app.get("/api/team/video/<uuid:work>/analytics")
+    def team_analytics_report(work):
+        secure = secure_site(origin)
+        same_origin(secure)
+        if request.headers.get("Authorization") != "Bearer " + SESSION_MARKER:
+            abort(403)
+        with tx() as con:
+            item = analytics_work(con, str(work), secure)
+            return private(library_analytics.report(con, item, title_for(con, item)))
+
     @app.get("/api/team/library")
     def team_library():
         secure = secure_site(origin)
@@ -583,8 +607,18 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(404)
             title = title_for(con, item)
             editable = can_edit(con, row, str(work))
+            analytics = can_read_analytics(con, row, str(work))
         return private(render_template("team_watch.html", title=title, media=url_for("team_video", work=work),
-                                       details=url_for("team_edit_video", work=work) if editable else None))
+                                       details=url_for("team_edit_video", work=work) if editable else None,
+                                       analytics=url_for("team_video_analytics", work=work) if analytics else None))
+
+    @app.get("/team/video/<uuid:work>/analytics")
+    def team_video_analytics(work):
+        secure = secure_site(origin)
+        with tx() as con:
+            analytics_work(con, str(work), secure)
+        return private(render_template("video_analytics.html", work=str(work),
+                                       team_preview=url_for("team_video", work=work)))
 
     @app.get("/team/video/<uuid:work>/details")
     def team_edit_video(work):
