@@ -18,6 +18,7 @@ import library_peer_handoff
 import library_share
 import library_embed
 import library_appearance
+import library_audio
 from library_languages import track_key, tracks_for, viewer_tracks
 import library_interactivity
 import library_ratings
@@ -474,6 +475,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             save_kind="work" if mode == "public" and not embed else None, save_slug=uid,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
+                            audio_tracks=library_audio.tracks_for(work) if can_watch else [],
+                            audio_labels=library_audio.KINDS,
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
@@ -572,6 +575,25 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     @app.get("/shared-video/<token>/artwork/<digest>")
     def shared_artwork(token, digest):
         return shared_video(token, artwork=digest)
+
+    @app.get("/shared-video/<token>/audio/<kind>/<language>/<digest>")
+    def shared_audio(token, kind, language, digest):
+        with tx() as con:
+            work, _, settings, grant = authorized_playback(con, token)
+            track = library_audio.get_track(library_audio.tracks_for(work), language, kind)
+            if not track or digest != track["rendition"]["sha256"]:
+                abort(404)
+            download = request.args.get("download") == "1"
+            if download and not settings["download"]:
+                abort(403)
+            path = root / "objects" / digest
+            if not path.is_file():
+                abort(404)
+        response = send_file(path, mimetype="video/mp4", conditional=True, as_attachment=download,
+                             download_name=f"video-{language}-{kind}.mp4" if download else None)
+        if download and (origin := grant.get("download")):
+            library_analytics.record_download(tx, work["id"], response, origin)
+        return media_bandwidth.measure(response, tx, work["id"])
 
     @app.post("/viewer-rating/<session>")
     def viewer_rating(session):

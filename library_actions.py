@@ -11,6 +11,7 @@ from flask import abort, request, send_file
 
 import library_details
 import library_appearance
+import library_audio
 import library_languages
 import library_caption_jobs
 import library_interactivity
@@ -101,6 +102,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         app, tx, staff, get_work, root, remember_work, title_for,
         lambda con, work: library_caption_jobs.queue(con, action, work, require_missing=True),
     )
+    library_audio.register(app, tx, staff, get_work, root, remember_work, library_privacy.playback)
     library_share.register(
         app, tx, staff, get_work,
         lambda con, work: library_privacy.operator_sharing(con, work, permits),

@@ -48,6 +48,18 @@
         <button type="button" id="saveCues">Save subtitles</button>
       </div>
     </section>
+    <section aria-labelledby="alternateAudio">
+      <h2 id="alternateAudio">Alternate audio</h2>
+      <p id="audioUploadStatus" aria-live="polite"></p>
+      <form id="uploadAudio" hidden>
+        <label>Audio language <input name="language" required placeholder="es" maxlength="40"></label>
+        <label>Audio type <select name="kind"><option value="dubbed">Dubbed audio</option><option value="description">Audio description</option><option value="commentary">Commentary</option></select></label>
+        <label>Audio file <input name="track" type="file" accept=".wav,.m4a,.aac,.mp3,.mp4,.flac,.ogg" required></label>
+        <button type="submit">Upload audio</button>
+        <button type="button" id="cancelAudioReplacement" hidden>Cancel replacement</button>
+      </form>
+      <ul id="audioTracks"></ul>
+    </section>
   </main>
   <script type="module" src="/static/ui/video_languages.js"></script>
 </body>

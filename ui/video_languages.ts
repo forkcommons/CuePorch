@@ -7,6 +7,8 @@ interface TrackData { version: string; revision: string; cues: Cue[]; }
 interface DraftCue { start: string; end: string; text: string; settings: string; }
 interface CaptionJob { id: string; state: string; language: string; error: string | null; }
 interface CaptionJobs { available: boolean; jobs: CaptionJob[]; }
+interface AudioTrack { language: string; kind: string; digest: string; revision: string; format: string; }
+interface AudioTracks { version: string; tracks: AudioTrack[]; available?: boolean; }
 
 const identify = document.querySelector<HTMLFormElement>("#identify")!;
 const credential = document.querySelector<HTMLInputElement>("#languageKey")!;
@@ -29,6 +31,15 @@ const generate = document.querySelector<HTMLButtonElement>("#generateCaptions")!
 const generationStatus = document.querySelector<HTMLElement>("#captionJobStatus")!;
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 const languages = endpoint + "/languages";
+const audio = endpoint + "/audio-tracks";
+const audioForm = document.querySelector<HTMLFormElement>("#uploadAudio")!;
+const audioSubmit = audioForm.querySelector<HTMLButtonElement>("button[type=submit]")!;
+const cancelReplacement = document.querySelector<HTMLButtonElement>("#cancelAudioReplacement")!;
+const audioList = document.querySelector<HTMLUListElement>("#audioTracks")!;
+const audioStatus = document.querySelector<HTMLElement>("#audioUploadStatus")!;
+const audioLanguage = audioForm.elements.namedItem("language") as HTMLInputElement;
+const audioType = audioForm.elements.namedItem("kind") as HTMLSelectElement;
+const audioFile = audioForm.elements.namedItem("track") as HTMLInputElement;
 const perPage = 30;
 let state: Languages;
 let selected: string | null = null;
@@ -37,6 +48,9 @@ let track: TrackData;
 let page = 0;
 let captionPoll: number | undefined;
 let refreshedJob: string | null = null;
+let audioState: AudioTracks;
+let replacing: AudioTrack | null = null;
+let audioBusy = false;
 
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
@@ -63,6 +77,85 @@ function button(label: string) {
   control.textContent = label;
   return control;
 }
+
+async function audioAction(callback: () => Promise<void>, done = "") {
+  if (audioBusy) return;
+  audioBusy = true;
+  audioSubmit.disabled = audioFile.disabled = true;
+  audioStatus.textContent = "";
+  try {
+    await callback();
+    audioStatus.textContent = done;
+  } catch (error) {
+    audioStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    audioBusy = false;
+    audioSubmit.disabled = audioFile.disabled = false;
+  }
+}
+
+function audioReplacement(track: AudioTrack | null) {
+  replacing = track;
+  audioForm.reset();
+  audioLanguage.disabled = audioType.disabled = Boolean(track);
+  audioSubmit.textContent = track ? "Replace audio track" : "Upload audio";
+  cancelReplacement.hidden = !track;
+  if (track) {
+    audioLanguage.value = track.language;
+    audioType.value = track.kind;
+    audioFile.focus();
+  }
+}
+
+function showAudio(updated: AudioTracks) {
+  audioState = updated;
+  audioForm.hidden = updated.available === false;
+  audioList.replaceChildren();
+  if (!updated.tracks.length) {
+    const empty = document.createElement("li");
+    empty.textContent = updated.available === false ? "This video has no local playback copy." : "No alternate audio has been added.";
+    audioList.append(empty);
+  }
+  for (const track of updated.tracks) {
+    const path = `${audio}/${encodeURIComponent(track.kind)}/${encodeURIComponent(track.language)}`;
+    const row = document.createElement("li");
+    const type = Array.from(audioType.options).find(option => option.value === track.kind)?.text || track.kind;
+    const label = `${track.language} ${type.toLowerCase()}`;
+    const replace = button(`Replace ${label}`);
+    const download = button(`Download ${label}`);
+    const remove = button(`Remove ${label}`);
+    replace.onclick = () => { if (!audioBusy) audioReplacement(track); };
+    download.onclick = () => void audioAction(async () => {
+      const uri = URL.createObjectURL(await (await request(path)).blob());
+      const link = document.createElement("a");
+      link.href = uri;
+      link.download = `${track.language}-${track.kind}.${track.format}`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(uri), 1000);
+    });
+    remove.onclick = () => void audioAction(async () => {
+      showAudio(await json<AudioTracks>(path, "DELETE", {version: audioState.version, revision: track.revision}));
+      audioReplacement(null);
+    }, "Audio track removed.");
+    row.append(`${track.language} · ${type} `, replace, " ", download, " ", remove);
+    audioList.append(row);
+  }
+}
+
+cancelReplacement.onclick = () => { if (!audioBusy) audioReplacement(null); };
+audioForm.onsubmit = event => {
+  event.preventDefault();
+  if (!audioState || audioBusy) return;
+  const body = new FormData(audioForm);
+  body.set("language", audioLanguage.value);
+  body.set("kind", audioType.value);
+  body.set("version", audioState.version);
+  if (replacing) body.set("revision", replacing.revision);
+  void audioAction(async () => {
+    showAudio(await json<AudioTracks>(audio, "POST", body));
+    audioReplacement(null);
+  }, "Audio track saved.");
+};
 
 async function action(callback: () => Promise<void>, done = "") {
   status.textContent = "";
@@ -224,6 +317,7 @@ async function load() {
   sessionStorage.setItem("cueporchOperator", credential.value);
   identify.hidden = true;
   pane.hidden = false;
+  void audioAction(async () => { showAudio(await json<AudioTracks>(audio)); });
   await renderJobs();
   const info = await json<{preview: string | null}>(endpoint);
   if (info.preview) {

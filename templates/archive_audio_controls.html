@@ -1,0 +1,16 @@
+{% if audio_tracks and (not appearance or appearance.audio_tracks) %}
+  <div data-archive-audio hidden>
+    <label>Audio track
+      <select>
+        <option value="original">Original audio</option>
+        {% for track in audio_tracks %}
+        <option value="{{ track.kind }}:{{ track.language }}"
+                data-src="{{ url_for('shared_audio', token=token, kind=track.kind, language=track.language, digest=track.rendition.sha256) }}">
+          {{ track.language }} · {{ audio_labels[track.kind] }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <span data-audio-status role="status"></span>
+  </div>
+{% endif %}

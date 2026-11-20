@@ -20,6 +20,7 @@ from installed_video_details import check_imported_video_details, check_video_de
 from installed_embed_builder import check_embed_builder
 from installed_appearance import check_appearance
 from installed_languages import check_languages
+from installed_audio_tracks import check_audio_tracks
 from installed_caption_generation import check_caption_generation, speech_video
 from installed_interactivity import check_chapters
 from installed_presentation import check_presentation
@@ -61,6 +62,7 @@ focused = p.add_mutually_exclusive_group()
 focused.add_argument("--analytics-only", action="store_true", help="Test migration and the analytics reports on the installed package")
 focused.add_argument("--discovery-only", action="store_true", help="Test migration and public discovery on the installed package")
 focused.add_argument("--audience-accounts-only", action="store_true", help="Test migration, discovery and viewer accounts on the installed package")
+focused.add_argument("--audio-tracks-only", action="store_true", help="Test migration and alternate audio on the installed package")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -217,7 +219,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
-    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only):
+    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -382,6 +384,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             results[-1]["audience_accounts"] = audience
                             results[-1]["audience_collections"] = check_audience_collections(browser, base, auth, replacement)
                             results[-1]["audience_comments"] = check_audience_comments(browser, base, auth, replacement)
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        continue
+                    if args.audio_tracks_only:
+                        audio = check_audio_tracks(page, browser, base, auth, museum, venue, replacement)
+                        results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
+                                            missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
+                                            playback_width=width, setup_seconds=setup_seconds, audio=audio))
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         args.report.write_text(json.dumps(results, indent=2), encoding="utf8")

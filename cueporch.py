@@ -142,6 +142,8 @@ def verify(root):
                 if entry["role"] != "caption":
                     raise ValueError("Invalid subtitle attachment")
                 files.append(entry)
+            for alternate in edit.get("audio", []):
+                files.extend((alternate["source"], alternate["rendition"]))
         for item in files:
             digest = item["sha256"]
             if not re.fullmatch("[0-9a-f]{64}", digest):
