@@ -1,5 +1,7 @@
 export const sessionMarker = "team-session";
-export const roleLabels = {owner: "Owner", admin: "Administrator", contributor: "Contributor", viewer: "Viewer"};
+export const roleLabels = {
+  owner: "Owner", admin: "Administrator", contributor_plus: "Contributor Plus", contributor: "Contributor", viewer: "Viewer",
+};
 export type Role = keyof typeof roleLabels;
 
 export interface Member {id: string; name: string; email: string; role: Role}

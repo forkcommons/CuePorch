@@ -55,8 +55,9 @@ CREATE TABLE IF NOT EXISTS team_membership_event(
  sequence INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  subject TEXT NOT NULL, detail TEXT, at REAL NOT NULL);
 """ + team_analytics.SCHEMA + creator_profiles.SCHEMA
-ROLES = ("admin", "contributor", "viewer")
 MANAGERS = ("owner", "admin")
+CONTRIBUTORS = ("contributor", "contributor_plus")
+ROLES = ("admin", *CONTRIBUTORS, "viewer")
 SESSION_SECONDS = 12 * 3600
 INVITE_SECONDS = 7 * 86400
 SESSION_MARKER = "team-session"
@@ -95,7 +96,7 @@ def note(con, actor, action, subject, detail=None):
 def role_from(body):
     role = body.get("role")
     if role not in ROLES:
-        abort(400, "Choose Administrator, Contributor or Viewer.")
+        abort(400, "Choose Administrator, Contributor Plus, Contributor or Viewer.")
     return role
 
 
@@ -222,24 +223,26 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             return False
         if row["role"] in MANAGERS:
             return True
-        if row["role"] != "contributor":
+        if row["role"] not in CONTRIBUTORS:
             return False
         direct = con.execute("""SELECT 1 FROM team_owned_work WHERE member=? AND work=?
             UNION ALL SELECT 1 FROM team_work_grant WHERE member=? AND work=? AND permission='edit'""",
             (row["id"], uid, row["id"], uid)).fetchone()
         return direct is not None or uid in inherited_works(con, row["id"], "edit")
 
-    def authorize_editor(con, uid):
+    def authorize_editor(con, uid, *, advanced=False):
         if operator_name(con):
-            return
+            return False
         secure = secure_site(origin)
         same_origin(secure)
         if request.method != "GET":
             mutation(secure)
         if request.headers.get("Authorization") != "Bearer " + SESSION_MARKER:
             abort(403)
-        if not can_edit(con, current(con, secure), uid):
+        row = current(con, secure)
+        if not can_edit(con, row, uid) or (advanced and row["role"] != "contributor_plus"):
             abort(404)
+        return True
 
     @app.get("/team/join")
     def team_join_page():
@@ -560,14 +563,14 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             selected = {work_id} if work_id else None
         else:
             selected = shared_ids(con, row["id"]) | inherited_works(con, row["id"])
-            if row["role"] == "contributor":
+            if row["role"] in CONTRIBUTORS:
                 selected.update(item[0] for item in con.execute("SELECT work FROM team_owned_work WHERE member=?", (row["id"],)))
             if work_id:
                 selected.intersection_update({work_id})
         return eligible_works(con, selected)
 
     def can_read_analytics(con, row, uid):
-        return row["role"] in MANAGERS or (row["role"] == "contributor" and con.execute(
+        return row["role"] in MANAGERS or (row["role"] in CONTRIBUTORS and con.execute(
             "SELECT 1 FROM team_owned_work WHERE member=? AND work=?", (row["id"], uid),
         ).fetchone() is not None)
 
@@ -614,10 +617,12 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(404)
             title = title_for(con, item)
             editable = can_edit(con, row, str(work))
+            interactive = editable and row["role"] == "contributor_plus"
             analytics = can_read_analytics(con, row, str(work))
             telemetry = named_playback(con, item, row)
         return private(render_template("team_watch.html", title=title, media=url_for("team_video", work=work),
                                        details=url_for("team_edit_video", work=work) if editable else None,
+                                       interactivity=url_for("team_edit_interactivity", work=work) if interactive else None,
                                        analytics=url_for("team_video_analytics", work=work) if analytics else None,
                                        telemetry=telemetry))
 
@@ -637,6 +642,18 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             if not can_edit(con, member(con, secure), uid) or uid not in eligible_works(con, {uid}):
                 abort(404)
         return private(render_template("video_details.html", work=uid, public_url="", team_editor=True,
+                                       team_preview=url_for("team_video", work=work)))
+
+    @app.get("/team/video/<uuid:work>/interactivity")
+    def team_edit_interactivity(work):
+        secure = secure_site(origin)
+        uid = str(work)
+        with tx() as con:
+            row = member(con, secure)
+            if (row["role"] != "contributor_plus" or not can_edit(con, row, uid)
+                    or uid not in eligible_works(con, {uid})):
+                abort(404)
+        return private(render_template("video_interactivity.html", work=uid,
                                        team_preview=url_for("team_video", work=work)))
 
     @app.get("/team/video/<uuid:work>/media")

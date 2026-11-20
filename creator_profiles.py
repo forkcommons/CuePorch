@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS audience_creator_follow(
 CREATE INDEX IF NOT EXISTS creator_followers ON audience_creator_follow(member);
 """
 HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])")
-VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor') AND p.visible=1"
+VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor','contributor_plus') AND p.visible=1"
 
 
 def for_work(con, uid):

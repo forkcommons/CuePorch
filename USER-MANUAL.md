@@ -40,6 +40,8 @@ Administrators can open the Library and manage invitations, roles, and video acc
 
 Shares start with **Can view**. Select **Can edit** on a video or folder share to let a Contributor update its video details and editorial status. Contributors can also edit their own uploads. They open **Edit video details** from the team player. Viewers can play a video shared with them, including one shared with a group that has edit access. Administrators manage privacy and public sharing.
 
+**Contributor Plus** includes Contributor access and adds **Edit video interactivity** on videos the member owns or can edit. The team editor can update chapters, timed cards and end screens using artwork already assigned to that video. Administrators can upload new artwork and manage video rating and registration.
+
 Open **Video analytics** from the team player to see the video's playback totals, daily activity and retention. Use the date and playback surface filters, or choose **Download CSV**. Contributors can open this report on their own uploads. Owners and Administrators can open it on any video in their workspace.
 
 Owners and Administrators can open **Team analytics** from **Team members**. Named viewing activity starts off. Turn on **Record named viewing activity** to report signed-in playback from the team player. The player shows that recording is enabled and honors browser Do Not Track and Global Privacy Control. Filter by date, select a member or video, or download the matching CSV. Turning it off stops collection and hides the report. Turning it back on makes earlier recorded activity available again.

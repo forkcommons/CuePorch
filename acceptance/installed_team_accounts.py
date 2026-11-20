@@ -425,6 +425,57 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         expect(successor.locator("#teamAnalyticsTotals")).to_have_text("Members 1 · Videos 1 · Views 1")
         save_named_tracking(False)
 
+        contributor_id = signed_in(contributor)["id"]
+        role_path = f"{base}/api/team/members/{contributor_id}"
+        presentation_path = f"{base}/api/library/work/{owned[0]['id']}/presentation"
+        assert contributor.request.get(presentation_path, headers=TEAM).status == 404
+        successor.goto(base + "/team/members")
+        contributor_row = successor.locator("#teamMemberList li").filter(has_text=email("contributor"))
+        contributor_row.get_by_label("Role for Cameron").select_option("contributor_plus")
+        contributor_row.get_by_role("button", name="Save role").click()
+        expect(successor.locator("#teamMembersStatus")).to_have_text("Member role saved.")
+        assert signed_in(contributor)["role"] == "contributor_plus"
+        assert contributor.request.get(f"{base}/api/library/work/{migrated['work']}/presentation",
+                                       headers=TEAM).status == 404
+        assert contributor.request.get(base + "/api/library", headers=TEAM).status == 403
+        contributor_page.goto(base + owned[0]["watch"])
+        contributor_page.get_by_role("link", name="Edit video interactivity").click()
+        interactive_page = contributor_page.url
+        expect(contributor_page.get_by_role("heading", name=f"Interactivity for {draft_name}")).to_be_visible()
+        assert contributor_page.get_by_label("Video preview").evaluate(
+            "async v => {v.muted = true; await v.play(); v.pause(); return v.videoWidth;}"
+        ) > 0
+        expect(contributor_page.get_by_label("Operator credential")).not_to_be_visible()
+        expect(contributor_page.get_by_role("heading", name="Video rating")).to_have_count(0)
+        contributor_page.get_by_role("button", name="Add chapter").click()
+        contributor_page.locator("#chapterRows").get_by_label("Title").fill("Artist introduction")
+        contributor_page.get_by_role("button", name="Save chapters").click()
+        expect(contributor_page.locator("#chapterStatus")).to_have_text("Chapters saved.")
+        contributor_page.get_by_role("button", name="Add card").click()
+        contributor_page.get_by_label("Card title").fill("Gallery program")
+        contributor_page.get_by_label("Card link").fill("https://gallery.example.org/program")
+        contributor_page.get_by_label("After playback").select_option("message")
+        contributor_page.get_by_label("End message").fill("Thanks for watching.")
+        contributor_page.get_by_role("button", name="Save cards and end screen").click()
+        expect(contributor_page.locator("#presentationStatus")).to_have_text("Cards and end screen saved.")
+        operator_read = requests.get(presentation_path, headers=auth, timeout=10)
+        operator_read.raise_for_status()
+        saved_presentation = operator_read.json()
+        stored_card, = saved_presentation["settings"]["cards"]
+        assert stored_card["title"] == "Gallery program"
+        logo = requests.post(base + "/api/review-logos", headers=auth, timeout=10,
+                             files={"logo": ("staff.png", bytes.fromhex("89504e470d0a1a0a") + b"staff fixture",
+                                             "image/png")})
+        assert logo.status_code == 201
+        settings = saved_presentation["settings"]
+        foreign_art = dict(version=saved_presentation["version"], previous=settings,
+                           cards=[stored_card | {"image": logo.json()["logo"]}], ending=settings["ending"])
+        assert contributor.request.put(presentation_path, headers=TEAM, data=foreign_art).status == 403
+        assert viewer.request.put(role_path, headers=TEAM, data={"role": "contributor"}).ok
+        assert contributor.request.get(interactive_page).status == 404
+        assert contributor.request.get(presentation_path, headers=TEAM).status == 404
+        assert contributor.request.get(base + owned[0]["watch"] + "/media").ok
+
         second_title = "Arts program excerpt"
         second_upload = contributor.request.post(base + "/api/team/uploads", headers=TEAM, multipart={
             "file": {"name": second_title + ".mp4", "mimeType": "video/mp4", "buffer": replacement.read_bytes()},
@@ -553,5 +604,6 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 private_audited_roster_csv=True, private_contributor_video_report_and_export=True,
                 report_requires_current_ownership_and_session=True,
                 named_playback_report_scope_opt_out_and_csv=True,
+                contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
                 private_feed_follows_publication_order_and_account_removal=True), email("contributor")

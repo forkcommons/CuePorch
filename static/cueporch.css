@@ -191,6 +191,7 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 .video-rating[hidden] { display: none; }
 .video-rating button { padding: .2rem .45rem; }
 #interactivityEditor [hidden], [data-chapter-menu][hidden] { display: none; }
+.team-interactivity .interactivity-image { display: none; }
 #interactivityEditor fieldset label { margin-block: .4rem; }
 #chapterPreview { max-height: 28rem; }
 #chapterRows li, #cardRows li, #registrationFields li { margin-block: .6rem; padding: .5rem; border-block-end: 1px solid #becac7; }

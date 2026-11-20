@@ -206,7 +206,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     def team_contributor(con=None):
         member = team_member(con)
-        if not member or member["role"] not in ("contributor", *team_accounts.MANAGERS):
+        if not member or member["role"] not in (*team_accounts.CONTRIBUTORS, *team_accounts.MANAGERS):
             abort(403)
         return member
 

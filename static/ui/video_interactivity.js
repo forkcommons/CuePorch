@@ -1,6 +1,7 @@
 import { setupPresentation } from "./video_presentation.js";
 import { setupRatings } from "./video_ratings.js";
 import { setupRegistration } from "./video_registration.js";
+import { sessionMarker } from "./team_api.js";
 const identity = document.querySelector("#identify");
 const key = document.querySelector("#chapterKey");
 const status = document.querySelector("#chapterStatus");
@@ -12,10 +13,13 @@ const list = document.querySelector("#chapterRows");
 const rowTemplate = document.querySelector("#chapterRow");
 const add = document.querySelector("#addChapter");
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+const teamPreview = document.body.dataset.teamPreview;
 let state;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 async function call(suffix, method = "GET", body) {
-    const headers = { Authorization: "Bearer " + key.value };
+    const headers = { Authorization: "Bearer " + (teamPreview ? sessionMarker : key.value) };
+    if (teamPreview && body)
+        headers["X-CuePorch-Team"] = "1";
     if (body)
         headers["Content-Type"] = "application/json";
     const response = await fetch(endpoint + suffix, { method, headers, body: body && JSON.stringify(body) });
@@ -60,8 +64,8 @@ async function exportCsv(suffix, filename) {
     link.click();
     setTimeout(() => URL.revokeObjectURL(uri), 1000);
 }
-const showRatings = setupRatings(call, timestamp, displayTime, () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
-const showRegistration = setupRegistration(call, () => exportCsv("/registration/export", "cueporch-registrants.csv"));
+const showRatings = teamPreview ? undefined : setupRatings(call, timestamp, displayTime, () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
+const showRegistration = teamPreview ? undefined : setupRegistration(call, () => exportCsv("/registration/export", "cueporch-registrants.csv"));
 function appendChapter(chapter) {
     const row = rowTemplate.content.firstElementChild.cloneNode(true);
     const name = row.querySelector("[name=title]");
@@ -97,25 +101,31 @@ function present(value) {
 async function show() {
     try {
         const settings = await call("/chapters");
-        const work = await call("");
-        if (work.preview) {
-            const ticket = await call("/ticket", "POST", { sha256: work.preview });
-            preview.src = ticket.preview;
+        if (teamPreview) {
+            preview.src = teamPreview;
             preview.hidden = false;
         }
+        else {
+            const work = await call("");
+            if (work.preview) {
+                const ticket = await call("/ticket", "POST", { sha256: work.preview });
+                preview.src = ticket.preview;
+                preview.hidden = false;
+            }
+            sessionStorage.setItem("cueporchOperator", key.value);
+        }
         present(settings);
-        sessionStorage.setItem("cueporchOperator", key.value);
         identity.hidden = true;
         editor.hidden = false;
         status.textContent = "";
-        await Promise.all([showPresentation(), showRatings(), showRegistration()]);
+        await Promise.all([showPresentation(), showRatings?.(), showRegistration?.()]);
     }
     catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);
     }
 }
 identity.onsubmit = (event) => { event.preventDefault(); void show(); };
-if (key.value)
+if (teamPreview || key.value)
     void show();
 add.onclick = () => appendChapter({ title: "", timecode: Math.floor(preview.currentTime || 0) }).focus();
 form.onsubmit = async (event) => {

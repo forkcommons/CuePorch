@@ -92,7 +92,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
     library_appearance.register(app, tx, staff, get_work, read_works, title_for)
     library_details.register(app, tx, authorize_editor, root, get_work, title_for, save_title)
     start_file_links = library_file_links.register(app, tx, staff, root, get_work, permits)
-    library_interactivity.register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits)
+    library_interactivity.register(app, tx, authorize_editor, get_work, title_for, root, remember_work, read_works, permits)
     library_ratings.register(app, tx, staff, get_work, read_works)
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)
     library_analytics.register(app, tx, staff, get_work, title_for)

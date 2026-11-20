@@ -6,10 +6,14 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video interactivity · CuePorch</title>
 </head>
-<body data-work="{{ work }}">
+<body data-work="{{ work }}"{% if team_preview %} class="team-interactivity" data-team-preview="{{ team_preview }}"{% endif %}>
+  {% if team_preview %}
+  <nav aria-label="Team"><a href="/team/video/{{ work }}">Back to video</a></nav>
+  {% else %}
   <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  {% endif %}
   <h1 id="interactivityTitle">Video interactivity</h1>
-  <form id="identify">
+  <form id="identify"{% if team_preview %} hidden{% endif %}>
     <label>Operator credential <input id="chapterKey" type="password" autocomplete="current-password" required></label>
     <button type="submit">Open interactivity</button>
   </form>
@@ -62,6 +66,7 @@
       <button type="submit" id="savePresentation">Save cards and end screen</button>
       <p id="presentationStatus" role="status"></p>
     </form>
+    {% if not team_preview %}
     <form id="ratingEditor" hidden>
       <h2>Video rating</h2>
       <label>Rating type <select name="mode">
@@ -82,6 +87,7 @@
       <p id="ratingStatus" role="status"></p>
     </form>
     {% include 'registration_editor.html' %}
+    {% endif %}
   </main>
   <template id="chapterRow">
     <li>
