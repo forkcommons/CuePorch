@@ -60,11 +60,15 @@ const enableWatch = document.querySelector<HTMLButtonElement>("#enableDropboxWat
 const disableWatch = document.querySelector<HTMLButtonElement>("#disableDropboxWatch")!;
 const refreshWatch = document.querySelector<HTMLButtonElement>("#refreshDropboxWatch")!;
 const params = new URLSearchParams(location.search);
-let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
-if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
-  credential = sessionMarker;
+const personal = document.body.dataset.personal === "1";
+let credential = sessionMarker;
+if (!personal) {
+  credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
+  if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
+    credential = sessionMarker;
+  }
+  sessionStorage.removeItem("cueporchCloudTeam");
 }
-sessionStorage.removeItem("cueporchCloudTeam");
 let integrations: Integration[] = [];
 let onlyConnected = false;
 let cursor: string | null = null;
@@ -76,8 +80,15 @@ let currentWatch: WatchReceipt;
 const recentFolders = new Map<string, string>();
 const selectedFiles = new Map<string, DriveFile>();
 
+function withPersonal(path: string) {
+  if (!personal) return path;
+  const url = new URL(path, location.origin);
+  url.searchParams.set("personal", "1");
+  return `${url.pathname}${url.search}`;
+}
+
 function pathFor(item: Integration, action: string) {
-  return `/api/integrations/${encodeURIComponent(item.id)}/${action}`;
+  return withPersonal(`/api/integrations/${encodeURIComponent(item.id)}/${action}`);
 }
 
 function videoLink(work: string, title: string) {
@@ -167,7 +178,7 @@ function render() {
       if (item.configured) {
         if (item.publishing) {
           const library = document.createElement("a");
-          library.href = "/operator/library";
+          library.href = personal ? "/team" : "/operator/library";
           library.textContent = "Choose a video in Library";
           card.append(library);
         } else card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
@@ -184,7 +195,7 @@ function render() {
     } else if (item.configured) {
       card.append(button(`Connect ${item.name}`, async () => {
         const result = await api<{authorization_url: string}>(pathFor(item, "connect"), {});
-        if (credential === sessionMarker) sessionStorage.setItem("cueporchCloudTeam", "1");
+        if (!personal && credential === sessionMarker) sessionStorage.setItem("cueporchCloudTeam", "1");
         location.assign(result.authorization_url);
       }));
     } else {
@@ -343,13 +354,13 @@ async function navigateSource(path: DriveFile[]) {
 
 async function loadDirectory() {
   try {
-    const result = await api<{integrations: Integration[]}>("/api/integrations");
+    const result = await api<{integrations: Integration[]}>(withPersonal("/api/integrations"));
     integrations = result.integrations;
     category.replaceChildren(new Option("All categories", ""),
       ...[...new Set(integrations.map(item => item.category))].map(name => new Option(name)));
     directory.hidden = false;
     access.hidden = true;
-    if (credential !== sessionMarker) sessionStorage.setItem("cueporchOperator", credential);
+    if (!personal && credential !== sessionMarker) sessionStorage.setItem("cueporchOperator", credential);
     render();
     const completed = integrations.find(item => item.id === params.get("connection"));
     if (completed?.connected && params.get("result") === "connected") {
@@ -361,13 +372,14 @@ async function loadDirectory() {
     if (params.has("connection")) history.replaceState(null, "", location.pathname);
   } catch (error) {
     directory.hidden = true;
-    access.hidden = false;
+    access.hidden = personal;
     message(error);
   }
 }
 
 access.onsubmit = event => {
   event.preventDefault();
+  if (personal) return;
   credential = key.value;
   void loadDirectory();
 };

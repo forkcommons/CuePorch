@@ -6,7 +6,7 @@
 <body data-work="{{ work }}" data-provider="{{ provider }}" data-provider-name="{{ provider_name }}"{% if team %} data-team="1"{% endif %}>
 <main>
   {% if team %}
-  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/video/{{ work }}/details">Back to video</a></nav>
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/video/{{ work }}/details">Back to video</a> · <a href="/team/integrations">My connected apps</a></nav>
   {% else %}
   {% include "operator_navigation.html" %}
   <p><a href="/operator/videos/{{ work }}">Back to video</a></p>
@@ -17,8 +17,9 @@
     <button>Open publication</button>
   </form>
   <p id="socialState" role="status" aria-live="polite"></p>
-  <p id="socialConnect" hidden>{% if team %}Ask an administrator to connect {{ provider_name }}.{% else %}<a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a>{% endif %}</p>
+  <p id="socialConnect" hidden>{% if team %}<a href="/team/integrations">Connect {{ provider_name }} in My connected apps</a>{% else %}<a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a>{% endif %}</p>
   <form id="socialForm" method="post" hidden>
+    <p>Destination account <output id="socialConnectionScope"></output></p>
     <label>Title <input name="title" maxlength="100" required></label>
     {% if provider != "youtube" %}
     <label>Post text <textarea name="description" maxlength="{{ 280 if provider == 'x' else 3000 }}" rows="4"></textarea></label>

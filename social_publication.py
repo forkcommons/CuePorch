@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS social_publication(
  metadata TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', due INTEGER NOT NULL,
  session BLOB, offset INTEGER NOT NULL DEFAULT 0, probe INTEGER NOT NULL DEFAULT 0,
  final_sent INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
- remote TEXT, remote_privacy TEXT, error TEXT);
+ remote TEXT, remote_privacy TEXT, error TEXT, connection_owner TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS social_publication_due ON social_publication(state,due);
 CREATE INDEX IF NOT EXISTS social_publication_work ON social_publication(work,provider);
 """
@@ -89,13 +89,28 @@ def transferable(con, work, visibility, provider):
     abort(409, "This version needs a retained video file before it can be published.")
 
 
-def disconnect(con, provider):
+def migrate(con):
+    columns = {row[1] for row in con.execute("PRAGMA table_info(social_publication)")}
+    if "connection_owner" not in columns:
+        con.execute("ALTER TABLE social_publication ADD COLUMN connection_owner TEXT NOT NULL DEFAULT ''")
+
+
+def disconnect(con, provider, owner=""):
     con.execute("""UPDATE action SET status='canceled',decision='disconnect' WHERE status IN ('waiting','eligible')
-                   AND id IN (SELECT id FROM social_publication WHERE provider=? AND state='queued')""", (provider,))
+                   AND id IN (SELECT id FROM social_publication WHERE connection_owner=? AND state='queued'
+                   AND (? IS NULL OR provider=?))""", (owner, provider, provider))
     con.execute("""UPDATE social_publication SET state=CASE WHEN final_sent THEN 'unconfirmed' ELSE 'canceled' END,
                    session=NULL,error=?
-                   WHERE provider=? AND state='queued'""",
-                ("The destination account disconnected. Check its channel for any transfer already accepted.", provider))
+                   WHERE connection_owner=? AND state='queued' AND (? IS NULL OR provider=?)""",
+                ("The destination account disconnected. Check its channel for any transfer already accepted.",
+                 owner, provider, provider))
+
+
+def remove_member(con, uid):
+    suffix = ":" + uid
+    for table in ("workspace_integration_attempt", "workspace_integration_connection"):
+        con.execute(f"DELETE FROM {table} WHERE substr(provider, -length(?))=?", (suffix, suffix))
+    disconnect(con, None, uid)
 
 
 class AwaitingApproval(Exception):
@@ -120,8 +135,12 @@ class Publisher:
         if self.worker:
             self.worker.join(10)
 
+    def grant(self, job):
+        return self.connection.for_member(job["connection_owner"])
+
     def authorize(self, con, job):
-        self.connection.authorize(con, job["connection"])
+        connection = self.grant(job)
+        connection.authorize(con, job["connection"])
         if not con.execute("SELECT 1 FROM social_publication WHERE id=? AND state='queued'", (job["id"],)).fetchone():
             abort(409, "The upload was canceled.")
         if not con.execute("SELECT 1 FROM action WHERE id=? AND status='eligible'", (job["id"],)).fetchone():
@@ -131,6 +150,8 @@ class Publisher:
         metadata = json.loads(job["metadata"])
         visibility = visibility_for(metadata)
         actor = job["actor"]
+        if connection.owner and actor != "team:" + connection.owner:
+            abort(403, "The upload is limited to its original member connection.")
         if actor.startswith("team:"):
             row = con.execute(f"""SELECT m.id,{EFFECTIVE_ROLE} AS role FROM team_member m
                                   WHERE m.id=? AND m.removed IS NULL""", (actor[5:],)).fetchone()
@@ -161,12 +182,12 @@ class Publisher:
         with self.tx() as con:
             con.execute("""UPDATE social_publication SET session=?,offset=?,attempts=0,error=NULL,due=?
                            WHERE id=? AND state='queued'""",
-                        (self.connection.cipher.encrypt(json.dumps(session).encode()), offset,
+                        (self.grant(job).cipher.encrypt(json.dumps(session).encode()), offset,
                          int(time()) + delay, job["id"]))
 
     def saved_session(self, job):
         try:
-            return json.loads(self.connection.cipher.decrypt(job["session"]))
+            return json.loads(self.grant(job).cipher.decrypt(job["session"]))
         except (InvalidToken, ValueError):
             abort(409, "The video upload session could not be reopened.")
 
@@ -241,17 +262,18 @@ class YoutubePublisher(Publisher):
     def post_next(self, job):
         with self.tx() as con:
             metadata = self.authorize(con, job)
-        args = (self.connection, job["connection"])
+        connection = self.grant(job)
+        args = (connection, job["connection"])
         media_type, size = job["media_type"], job["bytes"]
         if not job["session"]:
             address = youtube_upload.start(*args, metadata, media_type, size)
             with self.tx() as con:
                 self.authorize(con, job)
                 con.execute("UPDATE social_publication SET session=?,attempts=0,error=NULL WHERE id=?",
-                            (self.connection.cipher.encrypt(address.encode("ascii")), job["id"]))
+                            (connection.cipher.encrypt(address.encode("ascii")), job["id"]))
             return
         try:
-            address = self.connection.cipher.decrypt(job["session"]).decode("ascii")
+            address = connection.cipher.decrypt(job["session"]).decode("ascii")
         except (InvalidToken, UnicodeError):
             abort(409, "The saved upload session cannot be opened. Reconnect the YouTube account.")
         body = b""
@@ -298,7 +320,7 @@ class LinkedinPublisher(Publisher):
         company = metadata["company"]
         if company != self.connection.company:
             abort(409, "The LinkedIn Company Page changed. Open a new publication request.")
-        args = (self.connection, job["connection"])
+        args = (self.grant(job), job["connection"])
         if not job["session"]:
             session = linkedin_upload.start(*args, company, job["bytes"])
             session["started"] = int(time())
@@ -339,7 +361,7 @@ class FacebookPublisher(Publisher):
             return
         with self.tx() as con:
             metadata = self.authorize(con, job)
-        args = self.connection, job["connection"], metadata["company"]
+        args = self.grant(job), job["connection"], metadata["company"]
         size, offset = job["bytes"], job["offset"]
         if not job["session"]:
             self.save_session(job, facebook_upload.start(*args, size), 0)
@@ -364,7 +386,7 @@ class XPublisher(Publisher):
             return
         with self.tx() as con:
             metadata = self.authorize(con, job)
-        args = self.connection, job["connection"]
+        args = self.grant(job), job["connection"]
         size, offset = job["bytes"], job["offset"]
         owner = metadata["company"]
         if not job["session"]:
@@ -428,6 +450,14 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         actor = team_accounts.actor_id(team_member(con))
         return actor, actor
 
+    def selected_connection(con, provider, actor):
+        connection = destination(provider)
+        if actor.startswith("team:"):
+            personal = connection.for_member(actor[5:])
+            if personal.connection(con):
+                return personal
+        return connection
+
     @app.get("/operator/videos/<uuid:work>/social")
     def social_page(work):
         secure_site(origin)
@@ -467,9 +497,11 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         modes = [mode for mode in youtube_upload.PRIVACY if mode in policy["modes"]]
         allowed = policy["outbound"] and bool(modes if provider == "youtube" else "public" in modes)
         pages = pages_for(con, connection) if allowed else {}
+        grant = connection.connection(con)
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],
-                    configured=connection.configured, connected=bool(connection.connection(con)), jobs=jobs,
-                    allowed=allowed, modes=modes,
+                    configured=connection.configured, connected=bool(grant), jobs=jobs,
+                    allowed=allowed, modes=modes, connection_scope="personal" if connection.owner else "workspace",
+                    connection_revision=grant["revision"] if grant else None,
                     company=next(iter(pages), None) if provider in ("linkedin", "x") else None,
                     pages=[dict(id=page, name=name) for page, name in pages.items()])
 
@@ -478,15 +510,18 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         secure = secure_site(origin)
         same_origin(secure)
         body = json_mutation(secure, MARKER) if request.method == "POST" else None
-        connection = destination(provider)
         uid = str(work)
         with tx() as con:
             actor, own_jobs = identity(con, uid)
+            connection = selected_connection(con, provider, actor)
             item = find_work(uid)
             if item is None or item.get("asset_type", "video") != "video" or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")
             if body is None:
                 return private(receipt(con, uid, item, connection, own_jobs))
+            scope = "personal" if connection.owner else "workspace"
+            if body.get("connection_scope", "workspace") != scope:
+                abort(409, "The publishing account changed. Reopen this video to confirm the destination.")
             metadata = metadata_for(body, provider, pages_for(con, connection))
             visibility = visibility_for(metadata)
             enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": visibility})
@@ -495,6 +530,8 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
             if not grant:
                 abort(409, "Connect this provider to continue.")
             revision = grant["revision"]
+            if "connection_revision" in body and body["connection_revision"] != revision:
+                abort(409, "The publishing account changed. Reopen this video to confirm the destination.")
             file = transferable(con, item, visibility, provider)
             cut = video_version_key(item)
             if cut != body.get("cut"):
@@ -504,27 +541,28 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
             except ValueError:
                 abort(400, "Open a new request before sending this video.")
             encoded = json.dumps(metadata, sort_keys=True)
-            prior = con.execute("SELECT work,actor,cut,metadata FROM social_publication WHERE id=?", (request_id,)).fetchone()
+            prior = con.execute("""SELECT work,actor,cut,metadata,connection_owner FROM social_publication
+                                  WHERE id=?""", (request_id,)).fetchone()
             if prior:
-                if tuple(prior) != (uid, actor, cut, encoded):
+                if tuple(prior) != (uid, actor, cut, encoded, connection.owner):
                     abort(409, "This publication request has already been used.")
             else:
                 action(con, request_id, "publication", dict(work=uid, destination=connection.config.name,
                                                             company=metadata.get("company"), visibility=visibility, cut=cut))
-                con.execute("""INSERT INTO social_publication(id,provider,connection,actor,work,cut,sha256,bytes,media_type,metadata,due)
-                               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                con.execute("""INSERT INTO social_publication(id,provider,connection,actor,work,cut,sha256,
+                               bytes,media_type,metadata,due,connection_owner) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (request_id, provider, revision, actor, uid, cut, file["sha256"], file["bytes"],
-                             MIME[file["format"]], encoded, int(time())))
+                             MIME[file["format"]], encoded, int(time()), connection.owner))
             return private(receipt(con, uid, item, connection, own_jobs), 200 if prior else 202)
 
     @app.post("/api/library/work/<uuid:work>/social/<provider>/<job>/cancel")
     def cancel_upload(work, provider, job):
         secure = secure_site(origin)
         json_mutation(secure, MARKER)
-        connection = destination(provider)
         uid = str(work)
         with tx() as con:
             actor, own_jobs = identity(con, uid)
+            connection = selected_connection(con, provider, actor)
             item = find_work(uid)
             if item is None or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")

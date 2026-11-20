@@ -1,6 +1,7 @@
 """Browser-bound OAuth for the workspace's cloud storage connections."""
 
 import base64
+from copy import copy
 from dataclasses import dataclass, field
 import hashlib
 import hmac
@@ -107,13 +108,32 @@ class Connection:
         self.configured = bool(self.client and (self.secret or config.public_client))
         self.callback = CALLBACK_ROOT + config.key + "/callback"
         self.cookie = config.key + "-oauth"
-        self.cipher = Fernet(base64.urlsafe_b64encode(hmac.digest(
+        self.key = config.key
+        self.owner = ""
+        self.seed = hmac.digest(
             operator.encode(), ("CuePorch " + config.name + " OAuth").encode(), "sha256",
-        )))
+        )
+        self.cipher = Fernet(base64.urlsafe_b64encode(self.seed))
+
+    def for_member(self, uid):
+        if not uid:
+            return self
+        scoped = copy(self)
+        scoped.owner = uid
+        scoped.key = f"{self.config.key}:{uid}"
+        seed = hmac.digest(self.seed, uid.encode(), "sha256")
+        scoped.cipher = Fernet(base64.urlsafe_b64encode(seed))
+        return scoped
+
+    def started(self, con, state):
+        return TOKEN.fullmatch(state) and con.execute(
+            "SELECT 1 FROM workspace_integration_attempt WHERE provider=? AND state=?",
+            (self.key, token_hash(state)),
+        ).fetchone() is not None
 
     def connection(self, con):
         return con.execute("SELECT * FROM workspace_integration_connection WHERE provider=?",
-                           (self.config.key,)).fetchone()
+                           (self.key,)).fetchone()
 
     def authorize(self, con, revision):
         row = self.connection(con)
@@ -180,7 +200,7 @@ class Connection:
                 abort(409, "Disconnect this provider before connecting another account.")
             con.execute("""INSERT OR REPLACE INTO workspace_integration_attempt
                            (provider,state,binding,verifier,redirect_uri,expires,context) VALUES(?,?,?,?,?,?,?)""", (
-                self.config.key, token_hash(state), token_hash(browser), verifier,
+                self.key, token_hash(state), token_hash(browser), verifier,
                 redirect_uri, int(time.time()) + ATTEMPT_TTL, json.dumps(context) if context is not None else None,
             ))
         params = self.config.authorization_parameters | dict(
@@ -196,29 +216,30 @@ class Connection:
 
     def save_authorization(self, con, tokens, context):
         con.execute("INSERT INTO workspace_integration_connection VALUES(?,?,?)", (
-            self.config.key, uuid.uuid4().hex, self.cipher.encrypt(json.dumps(tokens).encode()),
+            self.key, uuid.uuid4().hex, self.cipher.encrypt(json.dumps(tokens).encode()),
         ))
 
     def return_path(self, result, context):
-        return DIRECTORY + "?" + urlencode({"connection": self.config.key, "result": result})
+        path = "/team/integrations" if self.owner else DIRECTORY
+        return path + "?" + urlencode({"connection": self.config.key, "result": result})
 
-    def complete(self, secure, current):
+    def complete(self, secure, current, allow=None):
         state = request.args.get("state", "")
         binding = workspace_session(self.cookie, secure)
         if not binding or not TOKEN.fullmatch(state):
             abort(403, "This cloud connection did not start in this browser.")
         with self.tx() as con:
             attempt = con.execute("SELECT * FROM workspace_integration_attempt WHERE provider=?",
-                                  (self.config.key,)).fetchone()
+                                  (self.key,)).fetchone()
             if not (attempt and not attempt["claimed"] and attempt["expires"] >= time.time()
                     and hmac.compare_digest(attempt["state"], token_hash(state))
                     and hmac.compare_digest(attempt["binding"], binding)
                     and attempt["redirect_uri"] == current + self.callback):
                 abort(403, "This connection request expired or was already used.")
-            con.execute("UPDATE workspace_integration_attempt SET claimed=1 WHERE provider=?", (self.config.key,))
+            con.execute("UPDATE workspace_integration_attempt SET claimed=1 WHERE provider=?", (self.key,))
         result = "cancelled"
         context = json.loads(attempt["context"]) if attempt["context"] else None
-        selection = (self.config.key, attempt["state"])
+        selection = (self.key, attempt["state"])
         try:
             code = request.args.get("code", "")
             if not request.args.get("error") and 1 <= len(code) <= 4096:
@@ -228,6 +249,8 @@ class Connection:
                 with self.lock:
                     tokens = self.exchange(fields)
                     with self.tx() as con:
+                        if allow is not None:
+                            allow(con)
                         if not con.execute("""SELECT 1 FROM workspace_integration_attempt
                                              WHERE provider=? AND state=? AND claimed=1""", selection).fetchone():
                             abort(409, "This connection request was replaced or cancelled.")
@@ -246,8 +269,8 @@ class Connection:
         with self.lock:
             with self.tx() as con:
                 row = self.connection(con)
-                con.execute("DELETE FROM workspace_integration_attempt WHERE provider=?", (self.config.key,))
-                con.execute("DELETE FROM workspace_integration_connection WHERE provider=?", (self.config.key,))
+                con.execute("DELETE FROM workspace_integration_attempt WHERE provider=?", (self.key,))
+                con.execute("DELETE FROM workspace_integration_connection WHERE provider=?", (self.key,))
                 if clear_related:
                     clear_related(con)
             if not row:
@@ -282,7 +305,7 @@ class Connection:
             with self.tx() as con:
                 self.authorize(con, revision)
                 con.execute("UPDATE workspace_integration_connection SET token=? WHERE provider=?",
-                            (self.cipher.encrypt(json.dumps(updated).encode()), self.config.key))
+                            (self.cipher.encrypt(json.dumps(updated).encode()), self.key))
             return updated["access"]
 
     def api(self, revision, method, url, headers=None, **kwargs):

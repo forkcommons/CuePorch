@@ -32,11 +32,15 @@ const enableWatch = document.querySelector("#enableDropboxWatch");
 const disableWatch = document.querySelector("#disableDropboxWatch");
 const refreshWatch = document.querySelector("#refreshDropboxWatch");
 const params = new URLSearchParams(location.search);
-let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
-if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
-    credential = sessionMarker;
+const personal = document.body.dataset.personal === "1";
+let credential = sessionMarker;
+if (!personal) {
+    credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
+    if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
+        credential = sessionMarker;
+    }
+    sessionStorage.removeItem("cueporchCloudTeam");
 }
-sessionStorage.removeItem("cueporchCloudTeam");
 let integrations = [];
 let onlyConnected = false;
 let cursor = null;
@@ -47,8 +51,15 @@ let source = [];
 let currentWatch;
 const recentFolders = new Map();
 const selectedFiles = new Map();
+function withPersonal(path) {
+    if (!personal)
+        return path;
+    const url = new URL(path, location.origin);
+    url.searchParams.set("personal", "1");
+    return `${url.pathname}${url.search}`;
+}
 function pathFor(item, action) {
-    return `/api/integrations/${encodeURIComponent(item.id)}/${action}`;
+    return withPersonal(`/api/integrations/${encodeURIComponent(item.id)}/${action}`);
 }
 function videoLink(work, title) {
     const link = document.createElement("a");
@@ -136,7 +147,7 @@ function render() {
             if (item.configured) {
                 if (item.publishing) {
                     const library = document.createElement("a");
-                    library.href = "/operator/library";
+                    library.href = personal ? "/team" : "/operator/library";
                     library.textContent = "Choose a video in Library";
                     card.append(library);
                 }
@@ -157,7 +168,7 @@ function render() {
         else if (item.configured) {
             card.append(button(`Connect ${item.name}`, async () => {
                 const result = await api(pathFor(item, "connect"), {});
-                if (credential === sessionMarker)
+                if (!personal && credential === sessionMarker)
                     sessionStorage.setItem("cueporchCloudTeam", "1");
                 location.assign(result.authorization_url);
             }));
@@ -321,12 +332,12 @@ async function navigateSource(path) {
 }
 async function loadDirectory() {
     try {
-        const result = await api("/api/integrations");
+        const result = await api(withPersonal("/api/integrations"));
         integrations = result.integrations;
         category.replaceChildren(new Option("All categories", ""), ...[...new Set(integrations.map(item => item.category))].map(name => new Option(name)));
         directory.hidden = false;
         access.hidden = true;
-        if (credential !== sessionMarker)
+        if (!personal && credential !== sessionMarker)
             sessionStorage.setItem("cueporchOperator", credential);
         render();
         const completed = integrations.find(item => item.id === params.get("connection"));
@@ -341,12 +352,14 @@ async function loadDirectory() {
     }
     catch (error) {
         directory.hidden = true;
-        access.hidden = false;
+        access.hidden = personal;
         message(error);
     }
 }
 access.onsubmit = event => {
     event.preventDefault();
+    if (personal)
+        return;
     credential = key.value;
     void loadDirectory();
 };

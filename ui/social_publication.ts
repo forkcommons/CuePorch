@@ -10,6 +10,8 @@ interface Publication {
   company: string | null;
   pages: {id: string; name: string}[];
   modes: string[];
+  connection_scope: "personal" | "workspace";
+  connection_revision: string | null;
 }
 
 const provider = document.body.dataset.provider!;
@@ -23,6 +25,7 @@ const connect = document.querySelector<HTMLElement>("#socialConnect")!;
 const form = document.querySelector<HTMLFormElement>("#socialForm")!;
 const title = form.querySelector<HTMLInputElement>("[name=title]")!;
 const companyLabel = form.querySelector<HTMLOutputElement>("#socialCompany");
+const connectionScope = form.querySelector<HTMLOutputElement>("#socialConnectionScope");
 const pageSelector = form.querySelector<HTMLSelectElement>("#socialPage");
 const visibility = form.querySelector<HTMLSelectElement>("[name=visibility]");
 const submit = form.querySelector<HTMLButtonElement>("button")!;
@@ -32,6 +35,8 @@ let credential = team ? "team-session" : sessionStorage.getItem("cueporchOperato
 let draft = crypto.randomUUID();
 let cut = "";
 let company: string | null = null;
+let scope: "personal" | "workspace" = "personal";
+let revision: string | null = null;
 let watch = 0;
 
 async function api(body?: object, path = endpoint): Promise<Publication> {
@@ -62,6 +67,9 @@ function render(data: Publication, fresh = false) {
   if (fresh) {
     cut = data.cut;
     company = data.company;
+    scope = data.connection_scope;
+    revision = data.connection_revision;
+    if (connectionScope) connectionScope.value = scope === "workspace" ? "Workspace account" : "Your connected account";
     if (companyLabel) {
       companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
     }
@@ -142,7 +150,7 @@ form.onsubmit = async (event) => {
     const options = provider === "youtube"
       ? {visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids")}
       : {company: pageSelector ? fields.get("company") : company, visibility: fields.has("publicPost") ? "public" : null};
-    render(await api({id: draft, cut, title: fields.get("title"), description: fields.get("description"), ...options}));
+    render(await api({id: draft, cut, title: fields.get("title"), description: fields.get("description"), connection_scope: scope, connection_revision: revision, ...options}));
     draft = crypto.randomUUID();
     notice.textContent = "Upload requested. Follow its progress below.";
   } catch (error) {

@@ -21,7 +21,7 @@ import google_meet_recordings
 import linkedin_upload
 import mail_relay
 import social_publication
-from team_accounts import MANAGERS
+from team_accounts import CONTRIBUTORS, MANAGERS, current as signed_in_member
 import webex_recordings
 import x_upload
 import zoom_recordings
@@ -272,7 +272,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -367,6 +367,22 @@ def register(app, tx, staff, operator, origin, import_video, database):
         site()
         return private(render_template("library_integrations.html"))
 
+    @app.get("/team/integrations")
+    def personal_integrations():
+        secure, _ = site()
+        with tx() as con:
+            personal_owner(con, secure)
+        return private(render_template("library_integrations.html", personal=True))
+
+    def personal_owner(con, secure, expected=None, publishing_grant=False):
+        member = signed_in_member(con, secure)
+        if not member or (expected is not None and member["id"] != expected):
+            abort(403, "Open your own connected apps using your team session.")
+        if publishing_grant and (member["role"] not in (*CONTRIBUTORS, *MANAGERS)
+                                 or not sharing_access(con, member)["outbound"]):
+            abort(403, "Your workspace sharing policy restricts connecting a publishing account.")
+        return member
+
     @app.after_request
     def protect_connection_responses(response):
         if request.path.startswith((CALLBACK_ROOT, "/api/integrations")):
@@ -377,6 +393,18 @@ def register(app, tx, staff, operator, origin, import_video, database):
 
     @app.get("/api/integrations")
     def integrations():
+        if request.args.get("personal") == "1":
+            secure, _ = site()
+            same_origin(secure)
+            with tx() as con:
+                member = personal_owner(con, secure)
+                allowed = member["role"] in (*CONTRIBUTORS, *MANAGERS) and sharing_access(con, member)["outbound"]
+                items = [dict(id=key, name=item.config.name, category="Social publishing",
+                              description="Publish a video using your own connected account.",
+                              configured=allowed and item.configured, publishing=True,
+                              connected=item.for_member(member["id"]).connection(con) is not None)
+                         for key, item in publishing.items()]
+            return private(dict(integrations=items, publishing_allowed=allowed))
         read_api()
         with tx() as con:
             items = [dict(
@@ -400,15 +428,46 @@ def register(app, tx, staff, operator, origin, import_video, database):
 
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):
+        if request.args.get("personal") == "1":
+            secure, current = site()
+            json_mutation(secure, MARKER)
+            if provider not in publishing:
+                abort(404)
+            with tx() as con:
+                uid = personal_owner(con, secure, publishing_grant=True)["id"]
+            return publishing[provider].for_member(uid).prepare(secure, current)
         _, _, secure, current = mutate()
         return configured_provider(provider).prepare(secure, current)
 
     @app.get(CALLBACK_ROOT + "<provider>/callback")
     def oauth_callback(provider):
-        return configured_provider(provider).complete(*site())
+        secure, current = site()
+        connection = configured_provider(provider)
+        if provider in publishing:
+            with tx() as con:
+                member = signed_in_member(con, secure)
+                scoped = connection.for_member(member["id"]) if member else None
+                if scoped and not scoped.started(con, request.args.get("state", "")):
+                    scoped = None
+            if scoped:
+                return scoped.complete(secure, current, allow=lambda con: personal_owner(
+                    con, secure, expected=scoped.owner, publishing_grant=True,
+                ))
+        return connection.complete(secure, current)
 
     @app.post("/api/integrations/<provider>/disconnect")
     def disconnect(provider):
+        if request.args.get("personal") == "1":
+            secure, _ = site()
+            json_mutation(secure, MARKER)
+            if provider not in publishing:
+                abort(404)
+            with tx() as con:
+                uid = personal_owner(con, secure)["id"]
+            revoked = publishing[provider].for_member(uid).disconnect(
+                lambda con: social_publication.disconnect(con, provider, uid),
+            )
+            return private(dict(connected=False, provider_revoked=revoked))
         mutate()
         connection = configured_provider(provider)
         active_watch = watches.get(provider)

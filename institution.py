@@ -223,6 +223,7 @@ def create_app(root, database, operator, institution, simulation=None):
         library_ai_drafts.initialize(db)
         workspace_updates.initialize(db)
         workspace_oauth.migrate_drive_connection(db)
+        social_publication.migrate(db)
         intake_watch.migrate(db)
         folder_slack.migrate(db)
     app = Flask(__name__)
@@ -1345,7 +1346,7 @@ def create_app(root, database, operator, institution, simulation=None):
     library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
     authorize_editor, team_works, can_edit = team_accounts.register(
         app, tx, team_origin, operator, workspace_brand, operator_name, read_library_works,
-        library_actions.title_for, root, public_listing, library_discovery.entry_payload, sharing_access,
+        library_actions.title_for, root, public_listing, library_discovery.entry_payload, sharing_access, social_publication.remove_member,
     )
     workspace_activity.register(app, tx, team_origin, team_member, operator_name, team_works,
                                 library_actions.title_for)
@@ -1376,7 +1377,8 @@ def create_app(root, database, operator, institution, simulation=None):
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
-    publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
+    publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
+                                               sharing_access)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)

@@ -199,7 +199,7 @@ def group_selection(values, available, label):
 
 
 def register(app, tx, origin, key, workspace_brand, operator_name, read_works, title_for, root, public_listing,
-             entry_payload, sharing_access):
+             entry_payload, sharing_access, remove_member_connections):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
     invitation_mail = mail_relay.configured(origin)
@@ -305,6 +305,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
 
     def revoke_member_access(con, uid):
         clear_local_credentials(con, uid)
+        remove_member_connections(con, uid)
         con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
         con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
         con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))

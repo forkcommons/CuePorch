@@ -85,44 +85,66 @@ class YouTubePublication(unittest.TestCase):
                 assert request.args["client_id"] == "cueporch" and request.args["redirect_uri"] == callback
                 assert request.args["scope"] == youtube.OAUTH.scope and request.args["access_type"] == "offline"
                 assert request.args["code_challenge_method"] == "S256"
-                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code="fixture-code")))
+                code = "fixture-code"
+                if request.args.get("fixture_account") == "alice":
+                    code = "fixture-code-alice"
+                elif request.args.get("fixture_account") == "bob":
+                    code = "fixture-code-bob"
+                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code=code)))
 
             @remote.post("/oauth/token")
             def token():
                 assert request.form["client_id"] == "cueporch" and request.form["client_secret"] == "fixture-secret"
                 first = request.form["grant_type"] == "authorization_code"
                 if first:
-                    assert request.form["code"] == "fixture-code" and request.form["redirect_uri"] == callback
+                    code = request.form["code"]
+                    assert code in ("fixture-code", "fixture-code-alice", "fixture-code-bob") and request.form["redirect_uri"] == callback
                     assert request.form["code_verifier"]
+                    access_token = {"fixture-code": "old-access", "fixture-code-alice": "alice-access", "fixture-code-bob": "bob-access"}[code]
+                    refresh_token = {"fixture-code": "fixture-refresh", "fixture-code-alice": "alice-refresh", "fixture-code-bob": "bob-refresh"}[code]
                 else:
-                    assert request.form["refresh_token"] == "fixture-refresh" and not observed["refresh"]
-                    observed["refresh"] = True
-                return dict(access_token="old-access" if first else "fresh-access", refresh_token="fixture-refresh",
+                    token = request.form["refresh_token"]
+                    if token == "fixture-refresh":
+                        assert not observed["refresh"]
+                        observed["refresh"] = True
+                        access_token = "fresh-access"
+                        refresh_token = "fixture-refresh"
+                    else:
+                        assert token in ("alice-refresh", "bob-refresh")
+                        access_token = {"alice-refresh": "alice-access", "bob-refresh": "bob-access"}[token]
+                        refresh_token = token
+                return dict(access_token=access_token, refresh_token=refresh_token,
                             scope=youtube.OAUTH.scope, token_type="Bearer", expires_in=3600)
 
             @remote.post("/oauth/revoke")
             def revoke():
-                assert request.form["token"] == "fixture-refresh"
-                observed["revoked"] = True
+                token = request.form["token"]
+                if token in ("alice-refresh", "bob-refresh"):
+                    observed.setdefault("personal_revoked", []).append(token)
+                else:
+                    assert token == "fixture-refresh"
+                    observed["revoked"] = True
                 return "", 200
 
             @remote.post(api_path)
             def start_upload():
-                if request.headers["Authorization"] == "Bearer old-access":
+                auth = request.headers["Authorization"]
+                if auth == "Bearer old-access":
                     return "expired", 401
-                assert request.headers["Authorization"] == "Bearer fresh-access"
+                assert auth in ("Bearer fresh-access", "Bearer alice-access", "Bearer bob-access")
                 assert request.args["uploadType"] == "resumable" and request.args["notifySubscribers"] == "false"
                 assert request.headers["X-Upload-Content-Type"] == "video/mp4"
                 assert int(request.headers["X-Upload-Content-Length"]) == len(video)
                 uid = str(len(uploads) + 1)
-                uploads[uid] = dict(metadata=request.get_json(), received=bytearray())
+                uploads[uid] = dict(metadata=request.get_json(), received=bytearray(), authorization=auth)
                 return "", 200, {"Location": origin + api_path + "?upload_id=" + uid}
 
             @remote.put(api_path)
             def put_bytes():
-                assert request.headers["Authorization"] == "Bearer fresh-access"
+                auth = request.headers["Authorization"]
                 uid = request.args["upload_id"]
                 item = uploads[uid]
+                assert auth == item["authorization"]
                 received = item["received"]
                 position = request.headers["Content-Range"]
                 data = request.get_data()
@@ -246,7 +268,7 @@ class YouTubePublication(unittest.TestCase):
                     invitation = api.post(base + "/api/team/invitations", headers=auth | team,
                                           data={"email": f"{role}@example.test", "role": role})
                     self.assertEqual(201, invitation.status, invitation.text())
-                    member = browser.new_page()
+                    member = browser.new_context().new_page()
                     member.goto(base + invitation.json()["path"])
                     member.get_by_label("Display name").fill(role)
                     member.get_by_label("Choose a password").fill("A temporary source fixture password!")
@@ -298,6 +320,64 @@ class YouTubePublication(unittest.TestCase):
                 self.assertEqual(digest, hashlib.sha256(uploads["4"]["received"]).hexdigest())
                 self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
 
+                self.assertTrue(api.put(contributor_grant, headers=auth | team, data={"permission": "edit"}).ok)
+                for member, account in ((contributor, "alice"), (plus, "bob")):
+                    member.goto(base + "/team")
+                    member.get_by_role("link", name="My connected apps", exact=True).click()
+                    expect(member.get_by_role("heading", name="My connected apps")).to_be_visible()
+                    expect(member.locator("#integrationAccess")).to_be_hidden()
+                    expect(member.get_by_text("Google Drive")).to_have_count(0)
+                    expect(member.get_by_role("button", name="Connect YouTube")).to_be_visible()
+                    member.route(origin + "/oauth/authorize?**",
+                                 lambda route: route.continue_(url=route.request.url + "&fixture_account=" + account),
+                                 times=1)
+                    member.get_by_role("button", name="Connect YouTube").click()
+                    expect(member.locator("#integrationStatus")).to_have_text("YouTube is connected.")
+                    expect(member.get_by_role("button", name="Disconnect YouTube", exact=True)).to_be_visible()
+                    member.goto(detail)
+                    member.get_by_role("link", name="Publish to YouTube").click()
+                    expect(member.locator("#socialConnectionScope")).to_contain_text("Your connected account")
+                for member in (contributor, plus):
+                    member.get_by_role("button", name="Upload to YouTube").click()
+                    expect(member.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                alice_job = contributor.request.get(endpoint, headers=team_request).json()["jobs"][0]["id"]
+                bob_job = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]["id"]
+                alice_page = contributor.context.new_page()
+                alice_page.goto(base + "/team/integrations")
+                alice_page.get_by_role("button", name="Disconnect YouTube", exact=True).click()
+                expect(alice_page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
+                assert observed["personal_revoked"] == ["alice-refresh"]
+                assert observed["revoked"] is False
+
+                contributor.get_by_role("button", name="Upload to YouTube", exact=True).click()
+                expect(contributor.locator("#socialState")).to_contain_text("publishing account changed")
+
+                alice_result = contributor.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                bob_result = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                self.assertEqual((alice_result["id"], alice_result["state"]), (alice_job, "canceled"))
+                self.assertEqual((bob_result["id"], bob_result["state"]), (bob_job, "waiting for publication approval"))
+                assert api.get(endpoint, headers=auth).json()["connected"] is True
+                suffix = "&fixture_account=alice"
+                alice_page.route(origin + "/oauth/authorize?**", lambda route: route.continue_(url=route.request.url + suffix), times=1)
+                alice_page.get_by_role("button", name="Connect YouTube", exact=True).click()
+                expect(alice_page.get_by_text("YouTube is connected.", exact=True)).to_be_visible()
+                receipt = contributor.request.get(endpoint, headers=team_request)
+                self.assertEqual(receipt.status, 200)
+                self.assertEqual(receipt.json()["connection_scope"], "personal")
+                with contributor.expect_response(lambda response: response.request.method == "POST" and response.url == endpoint) as response_info:
+                    contributor.get_by_role("button", name="Upload to YouTube", exact=True).click()
+                response = response_info.value
+                self.assertEqual(response.status, 409)
+                expect(contributor.locator("#socialState")).to_contain_text("publishing account changed")
+                r = api.put(base + "/api/policy/publication", headers=auth, data={"required": False})
+                assert r.ok
+                expect(plus.locator("#socialJobs a", has_text="Open on YouTube")).to_have_count(2, timeout=20000)
+                job = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                assert (job["id"], job["state"]) == (bob_job, "delivered")
+                assert uploads["5"]["authorization"] == "Bearer bob-access"
+                assert hashlib.sha256(uploads["5"]["received"]).hexdigest() == digest
+                r = api.put(base + "/api/policy/publication", headers=auth, data={"required": True})
+                assert r.ok
                 form.get_by_role("button", name="Upload to YouTube").click()
                 expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
                 page.goto(base + "/operator/integrations")
@@ -305,7 +385,7 @@ class YouTubePublication(unittest.TestCase):
                 expect(page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
                 self.assertTrue(observed["revoked"])
                 self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
-                self.assertEqual(4, len(uploads))
+                self.assertEqual(5, len(uploads))
         print("YouTube OAuth refresh, default private upload, interrupted-session restart and byte-range recovery,"
               " verified bytes and playback, opt-in approval, per-upload cancellation, scoped contributors and disconnect passed.")
 

@@ -9,6 +9,7 @@ const connect = document.querySelector("#socialConnect");
 const form = document.querySelector("#socialForm");
 const title = form.querySelector("[name=title]");
 const companyLabel = form.querySelector("#socialCompany");
+const connectionScope = form.querySelector("#socialConnectionScope");
 const pageSelector = form.querySelector("#socialPage");
 const visibility = form.querySelector("[name=visibility]");
 const submit = form.querySelector("button");
@@ -18,6 +19,8 @@ let credential = team ? "team-session" : sessionStorage.getItem("cueporchOperato
 let draft = crypto.randomUUID();
 let cut = "";
 let company = null;
+let scope = "personal";
+let revision = null;
 let watch = 0;
 async function api(body, path = endpoint) {
     const response = await fetch(path, {
@@ -47,6 +50,10 @@ function render(data, fresh = false) {
     if (fresh) {
         cut = data.cut;
         company = data.company;
+        scope = data.connection_scope;
+        revision = data.connection_revision;
+        if (connectionScope)
+            connectionScope.value = scope === "workspace" ? "Workspace account" : "Your connected account";
         if (companyLabel) {
             companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
         }
@@ -140,7 +147,7 @@ form.onsubmit = async (event) => {
         const options = provider === "youtube"
             ? { visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids") }
             : { company: pageSelector ? fields.get("company") : company, visibility: fields.has("publicPost") ? "public" : null };
-        render(await api({ id: draft, cut, title: fields.get("title"), description: fields.get("description"), ...options }));
+        render(await api({ id: draft, cut, title: fields.get("title"), description: fields.get("description"), connection_scope: scope, connection_revision: revision, ...options }));
         draft = crypto.randomUUID();
         notice.textContent = "Upload requested. Follow its progress below.";
     }
