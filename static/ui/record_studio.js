@@ -347,7 +347,7 @@ async function start() {
                 persisted = false;
             }
         }
-        const session = { recorder, output: stream, draft, started: performance.now(),
+        const session = { recorder, output: stream, draft, started: 0,
             paused: 0, pausedTotal: 0, parts: [], sequence: 0,
             store: persisted, persistence: Promise.resolve(), storageError: false,
             broadcast: null, broadcastIssue: false };
@@ -387,6 +387,8 @@ async function start() {
         film.load();
         scrollTop = prompter.scrollTop = 0;
         recorder.start(broadcast ? 500 : 1000);
+        session.started = performance.now();
+        liveText.textContent = "0:00";
         active = session;
         status.textContent = broadcast ? "Sending the live broadcast and keeping a local recording."
             : persisted ? "Recording." : "Recording. Save this take before leaving Studio.";

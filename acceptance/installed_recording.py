@@ -160,10 +160,51 @@ def check_recording(playwright, base, auth, clip_file):
         assert len(versions.json()) == 2
         page.goto(base + "/operator/record")
         expect(page.get_by_role("button", name="Recover " + title, exact=True)).to_have_count(0)
+        recorded_sizes = {}
+        for quality, width in ((1080, 1920), (1440, 2560), (2160, 3840)):
+            page.get_by_label("Recording title").fill(f"Studio {quality}p format rehearsal")
+            page.get_by_role("combobox", name="Quality").select_option(str(quality))
+            page.get_by_role("button", name="Share screen", exact=True).click()
+            expect(page.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
+            page.wait_for_function("""() => {
+              const canvas = document.querySelector('#recordCanvas');
+              return canvas.getContext('2d').getImageData(160,160,1,1).data[2] > 235;
+            }""")
+            page.get_by_role("button", name="Start recording").click()
+            expect(page.locator("#recordStatus")).to_have_text("Recording.")
+            page.wait_for_function("""() => {
+              const [minutes, seconds] = document.querySelector('#recordTime').textContent.split(':').map(Number);
+              return minutes * 60 + seconds >= 3;
+            }""", timeout=15000)
+            page.get_by_role("button", name="Stop", exact=True).click()
+            expect(page.locator("#recordStatus"), f"{quality}p capture").to_contain_text("Recording ready.", timeout=20000)
+            facts = page.get_by_label("Finished recording").evaluate("""async v => {
+              v.muted = true;
+              return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                  v.cancelVideoFrameCallback(id);
+                  reject(new Error('No recording frame decoded within 10 seconds.'));
+                }, 10000);
+                const id = v.requestVideoFrameCallback((now, frame) => {
+                  clearTimeout(timeout);
+                  const canvas = document.createElement('canvas');
+                  canvas.width = canvas.height = 1;
+                  const context = canvas.getContext('2d');
+                  context.drawImage(v, 160, 160, 1, 1, 0, 0, 1, 1);
+                  v.pause();
+                  resolve({width: frame.width, height: frame.height,
+                           pixel: [...context.getImageData(0,0,1,1).data]});
+                });
+                v.play().catch(reject);
+              });
+            }""")
+            assert (facts["width"], facts["height"]) == (width, quality), facts
+            assert facts["pixel"][2] > 200 and facts["pixel"][0] < 40, facts
+            recorded_sizes[str(quality)] = [facts["width"], facts["height"]]
     finally:
         browser.close()
     return dict(browser_mediarecorder=True, fake_camera_and_microphone=True, simulated_screen_capture_source=True,
                 side_by_side_canvas_720p=True, pause_and_resume=True, recovered_browser_draft=True,
                 saved_to_selected_folder=True, private_before_share=True, installed_library_playback_and_audio=True,
                 editor_clip_upload_and_inline_capture=True, private_clip_sources=True, recovered_three_clip_editor_draft=True,
-                inline_recording_decoded_and_project_rendered=True)
+                inline_recording_decoded_and_project_rendered=True, decoded_recording_canvas_sizes=recorded_sizes)
