@@ -14,6 +14,7 @@ from werkzeug.exceptions import TooManyRequests
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
+import webex_recordings
 import zoom_recordings
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
@@ -223,6 +224,12 @@ def import_zoom_video(import_video, connection, revision, actor, occurrence, fol
     )
 
 
+def import_webex_video(import_video, connection, revision, actor, item, folder, authorize):
+    title, size, url = webex_recordings.select(connection, revision, item)
+    return import_verified(import_video, "webex", actor, item, title, folder, size, None, None,
+                           lambda: webex_recordings.download(url), authorize)
+
+
 def register(app, tx, staff, operator, origin, import_video, database):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
@@ -239,7 +246,11 @@ def register(app, tx, staff, operator, origin, import_video, database):
         zoom_recordings.ORIGIN + "/oauth/revoke", zoom_recordings.SCOPES,
         revoke_style="access-form", public_client=True, authorize_scope=False,
     ), tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom)}
+    webex = Connection(Config(
+        "webex", "Webex", webex_recordings.API + "/authorize", webex_recordings.API + "/access_token",
+        "", webex_recordings.SCOPE,
+    ), tx, operator)
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)}
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -263,8 +274,18 @@ def register(app, tx, staff, operator, origin, import_video, database):
             import_video, zoom, revision, actor, row["id"], folder, authorize, exact=row["rev"],
         ), interval=zoom_recordings.POLL_SECONDS,
     )
-    meetings = {meet.config.key: meet, zoom.config.key: zoom}
-    watches = {dropbox.config.key: watch, meet.config.key: meet_watch, zoom.config.key: zoom_watch}
+    webex_watch = Watch(
+        app, tx, database, webex, lambda state: webex_recordings.scan_new_recordings(webex, state),
+        lambda entry, state: entry,
+        lambda revision, actor, row, folder, authorize: import_webex_video(
+            import_video, webex, revision, actor, row["id"], folder, authorize,
+        ), interval=webex_recordings.POLL_SECONDS,
+    )
+    meetings = {meet.config.key: meet, zoom.config.key: zoom, webex.config.key: webex}
+    watches = {
+        dropbox.config.key: watch, meet.config.key: meet_watch, zoom.config.key: zoom_watch,
+        webex.config.key: webex_watch,
+    }
 
     def stop_watches():
         for active_watch in watches.values():
@@ -433,6 +454,27 @@ def register(app, tx, staff, operator, origin, import_video, database):
         revision = zoom.revision()
         receipt, status = import_zoom_video(import_video, zoom, revision, actor, body.get("file"), folder,
                                             lambda con: zoom.authorize(con, revision))
+        return private(receipt, status)
+
+    @app.get("/api/integrations/webex/files")
+    def webex_files():
+        read_api()
+        revision = webex.revision()
+        cursor = request.args.get("cursor", "")
+        if len(cursor) > 2048:
+            abort(400, "The Webex page token is invalid.")
+        result = webex_recordings.browse(webex, revision, cursor, request.args.get("q", "")[:160].casefold().strip())
+        with tx() as con:
+            webex.authorize(con, revision)
+        return private(result)
+
+    @app.post("/api/integrations/webex/import")
+    def webex_import():
+        actor, body, _, _ = mutate()
+        folder = destination_folder(body.get("folder"))
+        revision = webex.revision()
+        receipt, status = import_webex_video(import_video, webex, revision, actor, body.get("file"), folder,
+                                             lambda con: webex.authorize(con, revision))
         return private(receipt, status)
 
     @app.get("/api/integrations/dropbox/files")
