@@ -195,6 +195,15 @@
           </fieldset>
           <label id="workspaceEmbedLabel" hidden>Embed code <textarea id="workspaceEmbed" rows="3" readonly></textarea></label>
           <button type="button" id="copyEmbed" hidden>Copy embed code</button>
+          <details id="embedWebsites" hidden>
+            <summary>Embed on a website</summary>
+            <ul>
+              <li><strong>WordPress</strong><br> For a public video that allows embedding anywhere, paste the viewer link into an Embed block on a site with oEmbed discovery. You can also paste the embed code into a Custom HTML block where allowed.</li>
+              <li><strong>WooCommerce</strong><br> Paste the embed code into the product description HTML.</li>
+              <li><strong>Wix</strong><br> Paste the embed code into an Embed HTML element on your HTTPS site. Resize the element in the editor.</li>
+              <li><strong>GoDaddy</strong><br> Add an HTML section in Websites + Marketing and paste the embed code there.</li>
+            </ul>
+          </details>
         </div>
         <form id="customLink" hidden>
           <label>Custom link name <input name="slug" minlength="3" maxlength="70" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label>

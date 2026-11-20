@@ -394,6 +394,44 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             allowed=allowed,
         )
 
+    @app.get("/api/public/oembed")
+    def public_oembed():
+        parsed = library_embed.parse_oembed_url(team_origin, request.args.get("url"))
+        if parsed is None or team_origin == "Unknown":
+            abort(404)
+        if request.args.get("format", "json") != "json":
+            abort(501)
+        def _dim(name):
+            v = request.args.get(name)
+            if v is None:
+                return None
+            if not re.fullmatch(r"[1-9][0-9]{0,4}", v, re.ASCII):
+                abort(400)
+            return int(v)
+        maxwidth = _dim("maxwidth")
+        maxheight = _dim("maxheight")
+        uid, start = parsed
+        with tx() as con:
+            work = find_work(uid)
+            if work is None or playback(work) is None:
+                abort(404)
+            row = get_privacy(con, uid)
+            if row is None or blocked(con, uid) or protected_route(con, uid):
+                abort(404)
+            handoff = library_peer_handoff.get(con, uid)
+            if handoff and handoff["state"] == "pending":
+                abort(404)
+            if library_registration.active(con, "video", uid):
+                abort(404)
+            settings = json.loads(row["settings"])
+            if (settings.get("visibility") != "public" or settings.get("embed") != "anywhere"
+                    or not permits(work, settings)):
+                abort(404)
+            body = library_embed.oembed_video(team_origin, uid, title_for(con, work), start, maxwidth, maxheight)
+        response = make_response(body)
+        response.cache_control.no_store = True
+        return response
+
     def watch(uid, embed, frame, alias_slug=None):
         with tx() as con:
             alias = library_share.resolve(con, alias_slug) if alias_slug is not None else None
@@ -518,8 +556,14 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 start = 0
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
             registration_view = library_registration.presentation(con, form, sign_on) if form_token else None
+        oembed_discovery = (
+            library_embed.oembed_url(team_origin, uid)
+            if not embed and mode == "public" and settings["embed"] == "anywhere"
+            and form is None and alias_slug is None
+            else None
+        )
         response = make_response(
-            render_template("library_watch.html", work=uid, title=title, embed=embed,
+            render_template("library_watch.html", work=uid, title=title, oembed_discovery=oembed_discovery, embed=embed,
                             save_kind="work" if mode == "public" and not embed else None, save_slug=uid,
                             creator=creator,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
