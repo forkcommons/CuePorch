@@ -32,6 +32,25 @@ let hls;
 let stopMeasuring;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
+const sharing = document.querySelector("#stopAttendeeSharing");
+if (sharing) {
+    const status = document.querySelector("#attendeeSharingStatus");
+    sharing.onclick = async () => {
+        sharing.disabled = true;
+        try {
+            const reply = await fetch("/api/event-playback/withdraw-sharing", { method: "POST",
+                headers: { "X-CuePorch-Event-Viewer": viewer } });
+            if (!reply.ok)
+                throw new Error("CuePorch couldn't change sharing. Try again.");
+            sharing.hidden = true;
+            status.textContent = "Watch-time sharing stopped for this viewing session.";
+        }
+        catch {
+            sharing.disabled = false;
+            status.textContent = "CuePorch couldn't change sharing. Try again.";
+        }
+    };
+}
 const audienceAccess = lobby.dataset.audienceAccess || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
 const latencyMode = lobby.dataset.latency || "standard";

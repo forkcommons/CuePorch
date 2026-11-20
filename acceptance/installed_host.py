@@ -23,6 +23,7 @@ from installed_event_controls import check_event_controls
 from installed_event_api import check_event_api
 from installed_event_attendance import check_event_attendance
 from installed_event_webhooks import check_event_webhooks, webhook_receiver
+from installed_attendee_watch import check_attendee_watch
 from installed_encoder_preview import check_encoder_preview
 from installed_waiting_replay import check_waiting_replay
 from installed_peer_event_report import check_peer_event_report
@@ -52,6 +53,7 @@ live_modes.add_argument("--event-direct-low", action="store_true", help="Verify 
 live_modes.add_argument("--event-api", action="store_true", help="Verify scoped event API and closed registered delivery")
 live_modes.add_argument("--event-attendance", action="store_true", help="Verify API enrollment and protected personal links")
 live_modes.add_argument("--event-webhooks", action="store_true", help="Verify signed lifecycle notifications and recorded replay")
+live_modes.add_argument("--event-attendee-watch", action="store_true", help="Verify opt-in attendee watch time and withdrawal")
 live_modes.add_argument("--speakers-event", action="store_true", help="Verify browser guests and private speaker chat")
 live_modes.add_argument("--program-graphics", action="store_true", help="Verify audience graphics in real hosted video")
 live_modes.add_argument("--studio-slides", action="store_true", help="Verify PDF and PowerPoint slides in real hosted video")
@@ -74,7 +76,7 @@ a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.event_direct_low or a.event_api or
-        a.event_attendance or a.event_webhooks or
+        a.event_attendance or a.event_webhooks or a.event_attendee_watch or
         a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.event_controls or
         a.waiting_replay or a.peer_event_report or a.simulcast_event or a.encoder_preview or
@@ -207,6 +209,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as fixtures:
                     evidence["event_delivery"] = check_event_attendance(base, keys, ffmpeg)
                 elif a.event_webhooks:
                     evidence["event_delivery"] = check_event_webhooks(base, keys, ffmpeg, receiver)
+                elif a.event_attendee_watch:
+                    evidence["event_delivery"] = check_attendee_watch(base, keys, ffmpeg)
                 elif a.speakers_event:
                     evidence["event_delivery"] = check_speaker_delivery(base, keys, ffmpeg)
                 elif a.program_graphics:

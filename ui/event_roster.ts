@@ -3,7 +3,8 @@ type Download = (path: string, filename: string) => Promise<void>;
 
 interface Roster {
   attendees: {email: string; registered: number | null; source: string;
-    answers: {first_name?: string; last_name?: string}}[];
+    answers: {first_name?: string; last_name?: string};
+    watch_time: {live_seconds: number; replay_seconds: number; plays: number} | null}[];
   total: number;
   offset: number;
   page_size: number;
@@ -11,6 +12,11 @@ interface Roster {
 
 const sourceNames: Record<string, string> = {form: "Registration form", api: "API", csv: "CSV import",
   "retained-link": "Retained join link"};
+
+function watchTime(seconds?: number) {
+  if (seconds === undefined) return "—";
+  return seconds.toLocaleString(undefined, {maximumFractionDigits: 1}) + " s";
+}
 
 export function setupEventRoster(request: Request, download: Download) {
   const panel = document.querySelector<HTMLDetailsElement>("#eventRoster")!;
@@ -45,6 +51,8 @@ export function setupEventRoster(request: Request, download: Download) {
         row.insertCell().textContent = attendee.email;
         row.insertCell().textContent = attendee.registered === null ? "Unknown" : new Date(attendee.registered * 1000).toLocaleString();
         row.insertCell().textContent = sourceNames[attendee.source] ?? attendee.source;
+        row.insertCell().textContent = watchTime(attendee.watch_time?.live_seconds);
+        row.insertCell().textContent = watchTime(attendee.watch_time?.replay_seconds);
       }
       prev.disabled = page === 0;
       next.disabled = page + pageSize >= result.total;

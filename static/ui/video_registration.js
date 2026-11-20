@@ -8,6 +8,7 @@ export function setupRegistration(call, download) {
     const message = form.querySelector("#registrationStatus");
     const save = form.querySelector("button[type=submit]");
     const presets = form.querySelector("[name=preset]");
+    const attendeeAnalytics = form.querySelector("[name=attendance_analytics]");
     const field = (node, name) => node.querySelector(`[name="${name}"]`);
     let current;
     let counter = 0;
@@ -42,6 +43,8 @@ export function setupRegistration(call, download) {
         enabled.disabled = current.protected_public;
         protectedNotice.hidden = !current.protected_public;
         field(form, "collect_utm").checked = settings.collect_utm;
+        if (attendeeAnalytics)
+            attendeeAnalytics.checked = settings.attendance_analytics ?? false;
         for (const key of ["heading", "description", "privacy_url", "layout", "first_name", "last_name"]) {
             field(form, key).value = settings[key];
         }
@@ -94,6 +97,7 @@ export function setupRegistration(call, download) {
             render(await call("/registration", "PUT", { revision: current.revision,
                 preset_name: field(form, "preset_name").value, settings: {
                     enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
+                    ...(attendeeAnalytics ? { attendance_analytics: attendeeAnalytics.checked } : {}),
                     heading: field(form, "heading").value, description: field(form, "description").value,
                     privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
                     last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: draft,

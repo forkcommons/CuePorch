@@ -27,6 +27,12 @@
     {% if registration %}
       {% include 'viewer_registration.html' %}
     {% endif %}
+    {% if attendee_sharing %}
+    <div>
+      <button id="stopAttendeeSharing" type="button">Stop sharing my watch time</button>
+      <p id="attendeeSharingStatus" role="status"></p>
+    </div>
+    {% endif %}
     {% include 'event_waiting.html' %}
     <div id="eventPlayer" data-address="{{ address or '' }}" data-analytics="{{ analytics_token or '' }}"
          data-transport="{{ transport }}">

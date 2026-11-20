@@ -8,6 +8,7 @@ interface Definition {
   first_name: string;
   last_name: string;
   collect_utm: boolean;
+  attendance_analytics?: boolean;
   fields: Field[];
 }
 interface Registrant { email: string; registered: number; answers: Record<string, string | boolean>; }
@@ -30,6 +31,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   const message = form.querySelector<HTMLElement>("#registrationStatus")!;
   const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
   const presets = form.querySelector<HTMLSelectElement>("[name=preset]")!;
+  const attendeeAnalytics = form.querySelector<HTMLInputElement>("[name=attendance_analytics]");
   const field = <T extends HTMLElement = HTMLInputElement>(node: Element, name: string) =>
     node.querySelector<T>(`[name="${name}"]`)!;
   let current: FormDataState;
@@ -67,6 +69,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     enabled.disabled = current.protected_public;
     protectedNotice.hidden = !current.protected_public;
     field(form, "collect_utm").checked = settings.collect_utm;
+    if (attendeeAnalytics) attendeeAnalytics.checked = settings.attendance_analytics ?? false;
     for (const key of ["heading", "description", "privacy_url", "layout", "first_name", "last_name"] as const) {
       field(form, key).value = settings[key];
     }
@@ -119,6 +122,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
       render(await call<FormDataState>("/registration", "PUT", {revision: current.revision,
         preset_name: field(form, "preset_name").value, settings: {
         enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
+        ...(attendeeAnalytics ? {attendance_analytics: attendeeAnalytics.checked} : {}),
         heading: field(form, "heading").value, description: field(form, "description").value,
         privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
         last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: draft,

@@ -14,6 +14,9 @@
         <option value="off">Off</option><option value="optional">Optional</option><option value="required">Required</option>
       </select></label>
       <label><input type="checkbox" name="collect_utm"> Save UTM campaign fields</label>
+      {% if event_registration_editor %}
+      <label><input type="checkbox" name="attendance_analytics"> Offer attendees a choice to share watch time</label>
+      {% endif %}
       <fieldset>
         <legend>Custom fields</legend>
         <ol id="registrationFields"></ol>

@@ -151,7 +151,7 @@
         <table>
           <caption>Attendees registered for the selected occurrence</caption>
           <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th>
-            <th scope="col">Source</th></tr></thead>
+            <th scope="col">Source</th><th scope="col">Live watch time</th><th scope="col">Replay watch time</th></tr></thead>
           <tbody id="eventRosterRows"></tbody>
         </table>
         <button type="button" id="eventRosterPrevious" disabled>Previous attendees</button>
@@ -333,7 +333,7 @@
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
     </section>
-    {% include 'registration_editor.html' %}
+    {% with event_registration_editor = true %}{% include 'registration_editor.html' %}{% endwith %}
   </main>
   <script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>
   <script type="module" src="{{ url_for('static', filename='ui/live_events.js') }}"></script>

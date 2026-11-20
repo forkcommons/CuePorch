@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS viewer_form_preset(
 """
 UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medium")
 DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
-               first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single")
+               first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single",
+               attendance_analytics=False)
 FORM_TYPES = ("text", "select", "checkbox", "description")
 EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 
@@ -41,10 +42,14 @@ def active(con, kind, subject):
     return dict(settings, revision=revision) if settings["enabled"] else None
 
 
-def validation(body):
+def validation(body, kind="video"):
     if not isinstance(body, dict) or any(type(body.get(key)) is not bool for key in ("enabled", "collect_utm")):
         abort(422, "Choose valid registration settings.")
     result = {key: body[key] for key in ("enabled", "collect_utm")}
+    analytics = body.get("attendance_analytics", False)
+    if type(analytics) is not bool:
+        abort(422, "Choose whether to offer attendee watch-time sharing.")
+    result["attendance_analytics"] = kind == "event" and analytics
     for field in ("first_name", "last_name"):
         if body.get(field) not in ("off", "optional", "required"):
             abort(422, "Choose which name fields to ask for.")
@@ -149,7 +154,7 @@ def operator_form(con, kind, uid, protected_public=False):
         body = request.get_json()
         if not isinstance(body, dict) or body.get("revision") != revision:
             abort(409, "The registration form changed. Reopen the editor.")
-        updated = validation(body.get("settings"))
+        updated = validation(body.get("settings"), kind)
         if updated["enabled"] and protected_public:
             abort(409, "Registration cannot gate a designated public record.")
         name = text_field(body.get("preset_name", ""), "a registration preset name", 80)

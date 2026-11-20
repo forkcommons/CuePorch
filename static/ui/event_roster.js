@@ -1,5 +1,10 @@
 const sourceNames = { form: "Registration form", api: "API", csv: "CSV import",
     "retained-link": "Retained join link" };
+function watchTime(seconds) {
+    if (seconds === undefined)
+        return "—";
+    return seconds.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " s";
+}
 export function setupEventRoster(request, download) {
     const panel = document.querySelector("#eventRoster");
     const form = document.querySelector("#eventRosterSearch");
@@ -34,6 +39,8 @@ export function setupEventRoster(request, download) {
                 row.insertCell().textContent = attendee.email;
                 row.insertCell().textContent = attendee.registered === null ? "Unknown" : new Date(attendee.registered * 1000).toLocaleString();
                 row.insertCell().textContent = sourceNames[attendee.source] ?? attendee.source;
+                row.insertCell().textContent = watchTime(attendee.watch_time?.live_seconds);
+                row.insertCell().textContent = watchTime(attendee.watch_time?.replay_seconds);
             }
             prev.disabled = page === 0;
             next.disabled = page + pageSize >= result.total;
