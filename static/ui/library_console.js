@@ -23,6 +23,8 @@ const starFolder = document.querySelector("#starFolder");
 const library = document.querySelector("#library");
 const tree = document.querySelector("#folderTree");
 const heading = document.querySelector("#folderTitle");
+const folderBrowse = document.querySelector("#folderBrowse");
+const folderResults = document.querySelector("#folderResults");
 const items = document.querySelector("#items");
 const empty = document.querySelector("#empty");
 const table = document.querySelector("#workTable");
@@ -51,6 +53,7 @@ let section = "Library";
 let deletions = [];
 let trashTimer;
 const selected = new Set();
+let closeCardPreview;
 function request(path, method = "GET", body) {
     return fetch(path, {
         method,
@@ -205,10 +208,117 @@ function durationText(seconds) {
             ":" +
             String(Math.floor(seconds % 60)).padStart(2, "0");
 }
+function renderFolderResults(query, creatorFilter) {
+    const matching = !creatorFilter && !privacy.value && (assetType.value === "" || assetType.value === "folders")
+        ? folders.filter(folder => (section === "Library" ? folder.parent === current : section === "Starred" && folder.starred)
+            && folder.name.toLocaleLowerCase().includes(query)) : [];
+    if (sort.value === "title-desc")
+        matching.reverse();
+    folderBrowse.hidden = !matching.length;
+    folderResults.dataset.view = view.value;
+    folderResults.replaceChildren();
+    for (const folder of matching) {
+        const row = document.createElement("li");
+        row.style.setProperty("--folder-color", folder.color);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = folder.name;
+        action(open, async () => {
+            if (assetType.value === "folders")
+                assetType.value = "";
+            search.value = "";
+            await navigate("Library", folder.id);
+        });
+        row.append(open);
+        folderResults.append(row);
+    }
+}
+function cardPreview(work) {
+    const area = document.createElement("div");
+    area.className = "work-quick-preview";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Preview";
+    button.setAttribute("aria-label", "Preview " + work.title);
+    button.setAttribute("aria-pressed", "false");
+    const status = document.createElement("span");
+    status.setAttribute("aria-live", "polite");
+    area.append(button, status);
+    let loading;
+    let player;
+    let revision = 0;
+    function close() {
+        revision += 1;
+        window.clearTimeout(loading);
+        loading = undefined;
+        if (closeCardPreview === close)
+            closeCardPreview = undefined;
+        status.textContent = "";
+        button.setAttribute("aria-pressed", "false");
+        player?.pause();
+        player?.removeAttribute("src");
+        player?.load();
+        player?.remove();
+        player = undefined;
+    }
+    async function play() {
+        if (closeCardPreview === close || !area.isConnected)
+            return;
+        closeCardPreview?.();
+        closeCardPreview = close;
+        const attempt = ++revision;
+        status.textContent = "Loading preview…";
+        try {
+            const info = await getWorkInfo(work);
+            if (!info.preview)
+                throw new Error("No retained video to preview.");
+            if (revision !== attempt || !area.isConnected)
+                return;
+            const ticket = await mediaTicket(work, info.preview);
+            if (revision !== attempt || !area.isConnected)
+                return;
+            const video = document.createElement("video");
+            video.muted = true;
+            video.playsInline = true;
+            video.loop = true;
+            video.setAttribute("aria-label", work.title + " preview");
+            video.src = ticket.preview;
+            player = video;
+            area.append(video);
+            await video.play();
+            if (player !== video)
+                return;
+            button.setAttribute("aria-pressed", "true");
+            status.textContent = "";
+        }
+        catch (error) {
+            if (revision !== attempt)
+                return;
+            close();
+            status.textContent = error instanceof Error ? error.message : String(error);
+        }
+    }
+    button.onclick = () => {
+        if (closeCardPreview === close)
+            close();
+        else
+            void play();
+    };
+    area.onpointerenter = event => {
+        if (event.pointerType === "mouse")
+            loading = window.setTimeout(() => void play(), 180);
+    };
+    area.onpointerleave = close;
+    area.onkeydown = event => { if (event.key === "Escape")
+        close(); };
+    return area;
+}
 function renderWorks() {
+    closeCardPreview?.();
     const query = search.value.trim().toLocaleLowerCase();
     const author = creator.value.trim().toLocaleLowerCase();
-    const visible = works.filter((work) => (section === "Starred"
+    renderFolderResults(query, author);
+    const visible = assetType.value === "folders" ? [] : works.filter((work) => (section === "Starred"
         ? work.starred
         : section === "Watch later"
             ? work.watch_later
@@ -237,7 +347,7 @@ function renderWorks() {
     items.replaceChildren();
     table.hidden = !visible.length;
     table.dataset.view = view.value;
-    empty.hidden = !!visible.length;
+    empty.hidden = Boolean(visible.length) || !folderBrowse.hidden;
     for (const work of visible) {
         const row = items.insertRow();
         row.dataset.workId = work.id;
@@ -270,6 +380,8 @@ function renderWorks() {
             .filter(Boolean)
             .join(" · ");
         title.append(info);
+        if (work.asset_type === "video" && work.quality !== "owner file needed")
+            title.append(cardPreview(work));
         const sharing = row.insertCell();
         if (work.editable_privacy) {
             const button = document.createElement("button");

@@ -44,7 +44,7 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
 
     source = root / "file-link-proof.mp4"
     subprocess.run([
-        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=7",
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24:duration=7",
         "-f", "lavfi", "-i", "sine=frequency=440:duration=7", "-threads", "2",
         "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p", str(source),
     ], check=True, timeout=60)
@@ -56,7 +56,8 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
     upload.raise_for_status()
     uid = upload.json()["id"]
     data = prepare_links(page, base, uid, auth)
-    assert [(media["width"], media["height"]) for media in data["files"]] == [(640, 360), (426, 240)]
+    dimensions = [(1920, 1080), (1280, 720), (960, 540), (640, 360), (426, 240)]
+    assert [(media["width"], media["height"]) for media in data["files"]] == dimensions
     assert requests.get(file_link_api(base, uid), timeout=10).status_code == 403
     first = data["files"][0]
     ranged = requests.get(base + first["play"], headers={"Range": "bytes=0-63", "Origin": venue}, timeout=10)
@@ -72,6 +73,21 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
     with browser.new_context() as independent:
         player = independent.new_page()
         player.goto(venue)
+        for media, size in zip(data["files"], dimensions, strict=True):
+            decoded = player.evaluate("""async url => {
+              const video = document.createElement("video");
+              video.crossOrigin = "anonymous";
+              video.muted = true;
+              video.src = url;
+              document.body.replaceChildren(video);
+              try {
+                const decoded = new Promise(resolve => video.requestVideoFrameCallback((_now, frame) =>
+                  resolve([frame.width, frame.height])));
+                await video.play();
+                return await decoded;
+              } finally { video.pause(); video.removeAttribute("src"); video.load(); }
+            }""", base + media["play"])
+            assert tuple(decoded) == size, (decoded, size)
         player.add_script_tag(url=base + "/static/vendor/hls.min.js")
         player.evaluate("""(playlist) => {
           const video = document.createElement("video");
@@ -87,6 +103,11 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
         player.wait_for_function("document.querySelector('video').videoHeight === 240")
         player.evaluate("() => { window.directHls.currentLevel = 1; document.querySelector('video').currentTime = 1; }")
         player.wait_for_function("document.querySelector('video').videoHeight === 360")
+        player.evaluate("""() => {
+          window.directHls.currentLevel = window.directHls.levels.findIndex(level => level.height === 1080);
+          document.querySelector('video').currentTime = 2;
+        }""")
+        player.wait_for_function("document.querySelector('video').videoHeight === 1080")
         player.evaluate("window.directHls.destroy()")
 
     decoder = os.environ.get("CUEPORCH_DASH_DECODER") or "ffmpeg"
@@ -94,7 +115,7 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
         decoder, "-v", "error", "-i", dash, "-map", "0:v:0", "-frames:v", "1",
         "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
     ], timeout=35)
-    assert len(pixels) == 640 * 360 * 3 and len(set(pixels)) > 20
+    assert len(pixels) == 1920 * 1080 * 3 and len(set(pixels[::1024])) > 20
     samples = subprocess.check_output([
         decoder, "-v", "error", "-i", dash, "-ss", "0.25", "-map", "0:a:0", "-t", "0.12",
         "-ac", "1", "-ar", "8000", "-f", "s16le", "-",
@@ -115,6 +136,7 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
     response.raise_for_status()
     assert requests.get(base + replacement["hls"], timeout=10).status_code == 404
     assert requests.get(urljoin(base + replacement["hls"], "init-stream0.m4s"), timeout=10).status_code == 404
-    return dict(cross_origin_hls_heights=[240, 360], dash_rgb_bytes=len(pixels), dash_audio_bytes=len(samples),
+    return dict(cross_origin_hls_heights=[240, 360, 1080], progressive_playback_dimensions=dimensions,
+                dash_rgb_bytes=len(pixels), dash_audio_bytes=len(samples),
                 conditional_mp4_download=True, revoked_manifests_and_segments=True, stricter_privacy_enforced=True,
                 restricted_work_cannot_create_direct_links=True, migrated_video_link=item["play"])

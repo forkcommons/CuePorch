@@ -34,14 +34,30 @@ def check_folders(page, base, auth, works):
 
     root = tree.get_by_role("button", name="Library", exact=True)
     root.click()
+    selector = page.locator("#assetType")
+    selector.select_option("folders")
+    results = page.locator("#folderResults")
+    expect(results.get_by_role("button", name="Station programs")).to_be_visible()
+    expect(page.locator("#workTable")).to_be_hidden()
+    results.get_by_role("button", name="Station programs").click()
+    expect(results.get_by_role("button", name="November meetings")).to_be_visible()
+    expect(selector).to_have_value("")
+    root.click()
+    preview = page.get_by_role("button", name="Preview Station meeting", exact=True)
+    preview.hover()
+    video = page.get_by_label("Station meeting preview", exact=True)
+    expect(video).to_be_visible()
+    assert video.evaluate("v => new Promise(resolve => v.requestVideoFrameCallback(() => resolve(v.videoWidth)))") == 320
+    expect(preview).to_have_attribute("aria-pressed", "true")
     search = page.get_by_label("Search titles")
     search.fill(works[0]["title"])
+    expect(video).to_have_count(0)
     expect(page.locator("#items tr")).to_have_count(sum(work["title"] == works[0]["title"] for work in works))
     search.clear()
     columns = page.locator("#items .work-title")
     page.get_by_label("Sort").select_option("title-desc")
     expect(columns).to_have_text(sorted((work["title"] for work in works), reverse=True))
-    page.locator("#workBrowse").get_by_label("View").select_option("grid")
+    page.locator("#workBrowse").get_by_role("combobox", name="View", exact=True).select_option("grid")
     expect(page.locator("#workTable")).to_have_attribute("data-view", "grid")
 
     boxes = page.locator("#items input[type=checkbox]")
@@ -117,6 +133,8 @@ def check_folders(page, base, auth, works):
         "bulk_move": 2,
         "authorization_and_cycle_check": True,
         "invalid_batch_rejected": True,
+        "folder_type_filter_and_grid_navigation": True,
+        "decoded_authorized_hover_preview": True,
     }
 
 
@@ -144,12 +162,19 @@ def check_bulk_library(page, base, auth, clip):
                       data={"upload_id": str(uuid4()), "privacy": json.dumps(dict(visibility="public", embed="anywhere",
                                                                                  domains=[], download=False))})["id"]
     withheld = copy(public, "Batch private")
+    call("POST", "/api/library/uploads", files={"file": ("Batch handout.txt", b"Station show notes", "text/plain")},
+         data={"upload_id": str(uuid4())})
     first = showcase("Station schedule", "public")
     second = showcase("Archive shortlist", "private")
     page.goto(base + "/operator/library")
     page.get_by_role("button", name="Load library").click()
+    page.locator("#assetType").select_option("files")
+    expect(page.locator("#items .work-title")).to_have_text(["Batch handout"])
+    page.get_by_role("checkbox", name="Select Batch handout", exact=True).check()
     expect(page.locator("#showcaseSelected")).to_be_disabled()
     expect(page.locator("#ratingSelected")).to_be_disabled()
+    page.locator("#assetType").select_option("video")
+    expect(page.get_by_role("checkbox", name="Select Batch handout", exact=True)).to_have_count(0)
     page.get_by_role("checkbox", name="Select Batch public", exact=True).check()
     page.get_by_role("checkbox", name="Select Batch private", exact=True).check()
     page.locator("#showcaseSelected").click()

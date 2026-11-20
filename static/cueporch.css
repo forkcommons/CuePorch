@@ -267,6 +267,11 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 #workTable[data-view="grid"] tbody { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .8rem; }
 #workTable[data-view="grid"] tr { display: block; background: #fff; border: 1px solid #becac7; border-radius: .4rem; padding: .5rem; }
 #workTable[data-view="grid"] td { display: block; padding: .22rem .35rem; border-bottom: 0; }
+#folderResults { list-style: none; padding: 0; }
+#folderResults[data-view="grid"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .55rem; }
+#folderResults li { margin: .25rem 0; padding: .2rem .5rem; border-inline-start: .35rem solid var(--folder-color); }
+.work-quick-preview { margin-block: .25rem; }
+.work-quick-preview video { display: block; width: min(100%, 18rem); aspect-ratio: 16 / 9; background: #152e33; }
 #folderEditor { border: 1px solid #6e8387; border-radius: .5rem; width: min(28rem, 90vw); }
 #folderEditor::backdrop { background: #152e33a0; }
 #folderError:empty { display: none; }

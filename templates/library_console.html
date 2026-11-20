@@ -34,7 +34,7 @@
       <p id="uploadHint">Drop files into this folder or choose Upload.</p>
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
-        <label>Type <select id="assetType"><option value="">All</option><option value="video">Videos</option><option value="files">Files</option></select></label>
+        <label>Type <select id="assetType"><option value="">All</option><option value="video">Videos</option><option value="folders">Folders</option><option value="files">Files</option></select></label>
         <label for="privacy">Privacy</label><select id="privacy"><option value="">All</option></select>
         <label>Created by <input id="creator" type="search" list="creators"></label>
         <datalist id="creators"></datalist>
@@ -54,7 +54,11 @@
         <button type="button" id="showcaseSelected" disabled>Add to showcases</button>
         <button type="button" id="ratingSelected" disabled>Set video rating</button>
       </div>
-      <p id="empty" hidden>No works in this view.</p>
+      <section id="folderBrowse" aria-labelledby="folderBrowseHeading" hidden>
+        <h3 id="folderBrowseHeading">Folders</h3>
+        <ul id="folderResults"></ul>
+      </section>
+      <p id="empty" hidden>No items in this view.</p>
       <table id="workTable">
         <thead><tr><th scope="col">Select</th><th scope="col">Work</th><th scope="col">Privacy</th>
         <th scope="col">Recovery</th><th scope="col">Delivery</th><th scope="col">Actions</th></tr></thead>
