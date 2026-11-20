@@ -23,7 +23,9 @@ const audioPanel = element<HTMLDetailsElement>("studioAudio");
 const film = element<HTMLVideoElement>("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
-const prompter = new StudioPrompter();
+const prompter = new StudioPrompter(
+  () => camera?.stream.getAudioTracks().find(track => track.readyState === "live"), () => key.value,
+);
 const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
@@ -108,7 +110,7 @@ function updateControls() {
   button("releaseScreen").hidden = !screen;
   button("saveRecord").disabled = !take || running || busy;
   button("downloadRecord").disabled = !take || running || busy;
-  prompter.screenSharing(Boolean(screen));
+  prompter.setContext(Boolean(screen), Boolean(active?.paused));
   button("pipRecord").hidden = !document.pictureInPictureEnabled || !canvas.captureStream;
 }
 
@@ -208,7 +210,7 @@ function draw(now: number) {
     const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
     liveText.textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
   }
-  prompter.scroll(now - lastPaint, Boolean(active?.paused));
+  prompter.scroll(now - lastPaint);
   lastPaint = now;
 }
 

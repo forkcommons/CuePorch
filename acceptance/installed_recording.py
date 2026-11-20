@@ -1,5 +1,9 @@
 """Record simulated devices through browser MediaRecorder and open the stored video."""
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import wave
+
 import requests
 from playwright.sync_api import expect
 
@@ -30,7 +34,7 @@ def check_prompter_controls(page):
     view = page.get_by_role("region", name="Teleprompter script")
     expect(view).to_contain_text("Library access")
     speed = page.get_by_role("combobox", name="Scroll speed")
-    assert speed.locator("option").all_text_contents() == ["Off", "0.5×", "1×", "1.5×", "2×"]
+    assert speed.locator("option").all_text_contents() == ["Auto (follow my voice)", "Off", "0.5×", "1×", "1.5×", "2×"]
     play = page.get_by_role("button", name="Play script")
     pause = page.get_by_role("button", name="Pause script")
     speed.select_option("0")
@@ -51,6 +55,58 @@ def check_prompter_controls(page):
     }""") == stationary
     page.get_by_role("button", name="Reset script").click()
     assert view.evaluate("v => v.scrollTop") == 0
+
+
+def check_voice_prompter(playwright, base, operator, speech, studio_path="/operator/record"):
+    endpoint = base + "/api/studio/teleprompter/voice"
+    assert requests.post(endpoint, timeout=10).status_code == 403
+    script = ("The city council meeting\nwill begin at seven\nthis evening.\n"
+              "Welcome to the public session.\n") * 6
+    with TemporaryDirectory() as folder:
+        microphone = Path(folder) / "prompt-microphone.wav"
+        with wave.open(str(speech), "rb") as source, wave.open(str(microphone), "wb") as target:
+            target.setparams(source.getparams())
+            one_second = bytes(source.getframerate() * source.getsampwidth() * source.getnchannels())
+            target.writeframes(one_second * 4 + source.readframes(source.getnframes()) + one_second * 10)
+        flags = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream",
+                 f"--use-file-for-fake-audio-capture={microphone}%noloop"]
+        with chromium(playwright, flags) as browser:
+            context = browser.new_context(permissions=["camera", "microphone"])
+            page = context.new_page()
+            page.goto(base + studio_path)
+            page.evaluate("(key) => sessionStorage.setItem('cueporchOperator', key)", operator["Authorization"][7:])
+            page.reload()
+            page.get_by_text("Teleprompter", exact=True).click()
+            page.get_by_label("Script", exact=True).fill(script)
+            font = page.get_by_role("slider", name="Font size")
+            font.focus()
+            font.press("End")
+            page.get_by_role("combobox", name="Scroll speed").select_option("auto")
+            play = page.get_by_role("button", name="Play script")
+            view = page.get_by_role("region", name="Teleprompter script")
+            notice = page.locator("#recordPrompterVoice")
+            play.click()
+            expect(notice).to_have_text("Connect your microphone to follow your voice.")
+            with page.expect_response(lambda response: response.url == endpoint and response.request.method == "POST") as opened:
+                page.get_by_role("button", name="Connect camera and microphone").click()
+            assert opened.value.status == 201, opened.value.status
+            session = endpoint + "/" + opened.value.json()["session"]
+            assert requests.post(session, timeout=10).status_code == 403
+            assert requests.post(session, headers=operator, data=b"fixture", timeout=10).status_code == 400
+            expect(notice).to_have_text("Following your voice with local TextFlowKit.", timeout=12000)
+            assert view.evaluate("node => node.scrollTop") == 0
+            page.wait_for_function("() => document.querySelector('#recordPrompter').scrollTop > 60", timeout=25000)
+            used = view.evaluate("node => node.scrollTop")
+            with page.expect_response(lambda response: response.url == session and response.request.method == "DELETE") as stopped:
+                page.get_by_role("button", name="Pause script").click()
+            assert stopped.value.status == 204
+            retired = requests.post(session, headers=operator | {"Content-Type": "application/octet-stream"},
+                                    data=bytes(16000), timeout=10)
+            assert retired.status_code in (404, 410)
+            expect(notice).to_have_text("Voice follow paused.")
+            return dict(engine="local TextFlowKit", silent_script_offset=0, spoken_script_offset=used,
+                        unauthorized_and_malformed_audio_denied=True,
+                        stopped_session_rejects_audio=True)
 
 
 def check_recording(playwright, base, auth, clip_file):

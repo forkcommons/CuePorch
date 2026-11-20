@@ -13,6 +13,7 @@ from PIL import Image
 from playwright.sync_api import expect
 import requests
 from installed_recording import DISPLAY_FIXTURE, PROMPTER_SCRIPT
+from installed_recording import check_voice_prompter
 
 
 def check_brand_kits(page, browser, base, auth, directory, fixture):
@@ -144,7 +145,7 @@ def check_brand_kits(page, browser, base, auth, directory, fixture):
                 portable_brand_kit_artwork_verified=True)
 
 
-def check_studio_brand_kits(page, base, auth):
+def check_studio_brand_kits(page, base, auth, playwright=None, speech=None):
     endpoint = base + "/api/library/brand-kits"
     badge = (235, 25, 106)
     logo_stream = BytesIO()
@@ -224,9 +225,9 @@ def check_studio_brand_kits(page, base, auth):
     response.raise_for_status()
     event = response.json()
     suffix = f"{event['id']}/{event['occurrences'][0]['id']}"
-    studio = base + f"/operator/live-events/{suffix}/studio"
+    studio_path = f"/operator/live-events/{suffix}/studio"
     scenes_api = base + f"/api/live-events/{suffix}/scenes"
-    page.goto(studio)
+    page.goto(base + studio_path)
     page.get_by_label("Production mode").select_option("record")
     page.get_by_text("Scenes and graphics", exact=True).click()
     scenes = page.locator("#studioScenes")
@@ -261,6 +262,9 @@ def check_studio_brand_kits(page, base, auth):
     page.get_by_label("Script", exact=True).fill(PROMPTER_SCRIPT)
     page.get_by_text("Teleprompter", exact=True).click()
     event_recording = record_pixel(prompt_running=True)
-    return dict(record_studio_logo_rgb=recording, live_scene_recording_logo_rgb=event_recording,
-                live_scene_font_and_colors_persisted=True, retained_event_logo_after_kit_removal=True,
-                event_artwork_requires_staff=True, teleprompter_reopens_and_scrolls_for_live_studio_recording=True)
+    result = dict(record_studio_logo_rgb=recording, live_scene_recording_logo_rgb=event_recording,
+                  live_scene_font_and_colors_persisted=True, retained_event_logo_after_kit_removal=True,
+                  event_artwork_requires_staff=True, teleprompter_reopens_and_scrolls_for_live_studio_recording=True)
+    if speech:
+        result["voice_prompter"] = check_voice_prompter(playwright, base, auth, speech, studio_path)
+    return result

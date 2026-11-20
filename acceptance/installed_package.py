@@ -41,7 +41,7 @@ from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_embed_policy, check_event_engagement, check_event_setup
 from installed_events import check_event_regions, check_restricted_events
-from installed_recording import check_recording
+from installed_recording import check_recording, check_voice_prompter
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
 from installed_brand_kits import check_brand_kits, check_studio_brand_kits
@@ -612,6 +612,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         continue
                     if args.creator_only:
                         recording = check_recording(pw, base, auth, timeline_green)
+                        if args.caption_speech:
+                            recording["voice_prompter"] = check_voice_prompter(pw, base, auth, args.caption_speech)
                         timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
                                                   home / "institution.sqlite")
                         results.append(dict(recording=recording, timeline=timeline, migrated_playback_width=width))
@@ -623,7 +625,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
                                                   home / "institution.sqlite")
                         brands = check_brand_kits(page, browser, base, auth, home, timeline_green)
-                        studio = check_studio_brand_kits(page, base, auth)
+                        studio = check_studio_brand_kits(page, base, auth, pw, args.caption_speech)
                         results.append(dict(timeline=timeline, brand_kits=brands, studio_brand_kits=studio,
                                             migrated_playback_width=width))
                         browser.close()
@@ -682,6 +684,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                                                   verify_captions=args.analytics_captions)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     recording = check_recording(pw, base, auth, timeline_green)
+                    if args.caption_speech:
+                        recording["voice_prompter"] = check_voice_prompter(pw, base, auth, args.caption_speech)
                     timeline = check_timeline(
                         page, browser, base, auth, editor_master, timeline_green, timeline_music,
                         home / "institution.sqlite",

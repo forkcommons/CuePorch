@@ -43,6 +43,7 @@ from library_privacy import allowed_ancestor, frame_policy, normalize_domain, tr
 import library_registration
 import media_bandwidth
 import regional_availability
+import studio_voice
 
 
 SCHEMA = """
@@ -369,6 +370,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     studio = Studio(database)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
     recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
+    stop_voice = studio_voice.register(app, staff)
 
     def stop():
         outputs.close()
@@ -378,6 +380,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         captions.close()
         replay_captions.close()
         recordings.close()
+        stop_voice()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
