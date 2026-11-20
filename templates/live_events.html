@@ -17,6 +17,25 @@
   <p role="status" id="eventsStatus"></p>
   <main id="eventsWorkspace" hidden>
     <p id="eventsHost" hidden>Connect a live-enabled PeerTube server from CuePorch setup to prepare an encoder.</p>
+    <details id="liveApiAccess">
+      <summary>Developer access</summary>
+      <p>Workspace Owners can issue scoped tokens for the event API. Copy each token when it is created.</p>
+      <form id="liveApiCredential" hidden>
+        <label>Token name <input name="name" maxlength="80" required></label>
+        <label>Expires in days <input name="days" type="number" min="1" max="365" value="90" required></label>
+        <fieldset>
+          <legend>Token permissions</legend>
+          <label><input name="scope" value="read" type="checkbox" checked> Read calendar and stream health</label>
+          <label><input name="scope" value="schedule" type="checkbox"> Create and edit events</label>
+          <label><input name="scope" value="produce" type="checkbox"> Manage encoders and production</label>
+          <label><input name="scope" value="registrations" type="checkbox"> Manage and export registrations</label>
+        </fieldset>
+        <button type="submit">Create token</button>
+      </form>
+      <label id="liveApiReveal" hidden>New event API token <input readonly autocomplete="off" spellcheck="false"></label>
+      <ul id="liveApiCredentials" aria-label="Issued tokens"></ul>
+      <p id="liveApiStatus" role="status"></p>
+    </details>
     <section aria-labelledby="calendarHeading">
       <h2 id="calendarHeading">Event calendar</h2>
       <div class="library-tools">

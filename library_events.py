@@ -316,10 +316,10 @@ def store_access(con, uid, access):
         con.execute("DELETE FROM live_event_access WHERE event=?", (uid,))
 
 
-def viewer_url(row, event, embed, key=None):
+def viewer_url(row, event, embed, key=None, opens=None):
     if event["visibility"] == "embed_only" and not embed:
         return None
-    return url_for("event_embed" if embed else "event_page", slug=row["slug"], key=key)
+    return url_for("event_embed" if embed else "event_page", slug=row["slug"], key=key, occurrence=opens)
 
 
 def summary(con, row, event, first, last):
@@ -495,6 +495,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         with tx() as con:
             _, event = read(con, uid)
             return reuse_setup(con, uid, event)
+
+    @app.get("/api/live-events/<uid>")
+    def event_details(uid):
+        staff()
+        first, last = calendar_window()
+        with tx() as con:
+            row, event = read(con, uid)
+            result = summary(con, row, event, first, last)
+            key = access_settings(con, uid)[0] if event["visibility"] == "unlisted" else None
+            for session in result["occurrences"]:
+                if session["delivery"] == "replay":
+                    session["watch"] = viewer_url(row, event, False, key, session["id"]) if result["watch"] else None
+                    session["embed"] = viewer_url(row, event, True, key, session["id"]) if result["embed"] else None
+        return result
 
     @app.post("/api/live-events/regions/import")
     def event_region_import():

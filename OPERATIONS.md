@@ -45,6 +45,46 @@ The destination must be a new directory and use fresh volumes. The tool verifies
 
 Check failed or waiting jobs in the operator library and approval queue. Retrying an eligible delivery reconciles its local receipt with the destination before a new upload. Use the dry run and delivery report to distinguish absent media, missing metadata and hosting failures. Monitor free disk space, database backups, transcode queue, ingress, egress and support inbox. Before an upgrade, snapshot and restore a private copy, repeat the affected acceptance cases, and retain the last working source bundle and pinned images. Price egress and archival copies using the institution's own traffic and provider rates.
 
+## Live event API
+
+Issue credentials in **Live events → Developer access**. A token belongs to a single CuePorch workspace and is revealed at creation. Send it in the `Authorization: Bearer` header to that workspace's HTTPS origin. Follow the normal watch and embed URLs for audience playback. Registration, privacy, regional restrictions and publication approval apply there as they do in the operator console.
+
+Routes below are relative to `/api/v1/live-events`. The event ID and occurrence timestamp are returned when an event is created or read. Calendar queries accept `from` and `to` as ISO dates, with a range of up to one year. For a finished replay, the event detail response includes watch and embed URLs for the applicable occurrence, subject to the event's publication and embed settings.
+
+| Scope | Routes | Behavior |
+| --- | --- | --- |
+| `read` | `GET` at the base path, `GET /{event}`, `GET /{event}/{opens}/health` | Read the calendar, current revision, playback URLs, occurrences and host health. |
+| `schedule` | `POST` at the base path, `PUT /{event}` | Create or update the same event record as the operator console. The update body supplies the last returned `revision`. An older revision returns HTTP 409. |
+| `produce` | `POST /{event}/{opens}/encoder`, `GET or POST /{event}/{opens}/preview`, `GET or PUT /{event}/{opens}/program`, `DELETE /{event}/{opens}/delivery` | Prepare the encoder, inspect or release a private preview, configure a prerecorded program or withdraw delivery. Encoder credentials are sensitive. |
+| `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export` | Manage the form and retrieve attendee data. Only give this scope to an application authorized to handle those records. |
+
+```sh
+curl --header "Authorization: Bearer $CUEPORCH_EVENT_TOKEN" "https://media.example.org/api/v1/live-events?from=2026-11-01&to=2026-11-30"
+```
+
+Send `application/json` for writes. The event body includes a title, event type, latency, visibility and a schedule. A one-time webinar in the station's local time can use this body.
+
+```json
+{
+  "title": "Community arts program",
+  "slug": "community-arts-program",
+  "type": "webinar",
+  "latency": "standard",
+  "visibility": "public",
+  "save_replay": true,
+  "schedule": {
+    "timezone": "America/Denver",
+    "start": "2026-12-10T19:00",
+    "end": "2026-12-10T20:00",
+    "repeat": "none"
+  }
+}
+```
+
+The response supplies the accepted settings, publication state, stable event links and matching occurrences. Use its event ID to manage registration and its occurrence ID to prepare the encoder. To create a registered webinar, enable its form before preparing the encoder.
+
+The API responds with HTTP 401 for missing, expired or revoked tokens, HTTP 403 for insufficient scope, and HTTP 429 with `Retry-After` after 120 authorized requests in a UTC minute. This limit is per credential. Use the workspace Owner's authenticated panel or `/api/operator/live-api/credentials` to list, issue or revoke tokens. A full private instance backup includes credential records. Portable collection exports exclude them.
+
 ## Source-only validation
 
 Use the versions in requirements.txt for the product. Browser cases additionally need Playwright and a headless Chromium browser. The Windows rehearsal used Edge. The station integration tests use CivicCast's Python package and, for captions, its built portal-public bundle at revision 0b8ab5accac4fc6ebbc6886d5d3d9006bdc0c65f. Run the exact commands in the acceptance record. Run separate copies for different institutions and migrations. A customer Vimeo account is optional.

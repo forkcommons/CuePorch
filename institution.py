@@ -27,6 +27,7 @@ from flask import (
     Flask,
     Response,
     abort,
+    g,
     redirect,
     render_template,
     request,
@@ -44,6 +45,7 @@ import account_email_factor
 import audience_accounts
 import audience_comments
 import content_rating
+import event_api
 from browser_account_security import same_origin, secure_site
 import community_analytics
 import creator_profiles
@@ -183,6 +185,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
             + library_events.SCHEMA
+            + event_api.SCHEMA
             + library_showcases.SCHEMA
             + library_analytics.SCHEMA
             + media_bandwidth.SCHEMA
@@ -256,6 +259,8 @@ def create_app(root, database, operator, institution, simulation=None):
         return member
 
     def operator_name(con=None):
+        if actor := g.get("event_api_actor"):
+            return actor
         actor = next(
             (
                 name
@@ -273,6 +278,13 @@ def create_app(root, database, operator, institution, simulation=None):
         actor = operator_name()
         if not actor:
             abort(403)
+        return actor
+
+    def credential_owner():
+        actor = staff()
+        member = team_member()
+        if member and member["role"] != "owner":
+            abort(403, "Only the workspace Owner can manage event API credentials.")
         return actor
 
     workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
@@ -1319,6 +1331,7 @@ def create_app(root, database, operator, institution, simulation=None):
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor)
+    event_api.register(app, tx, team_origin, credential_owner)
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

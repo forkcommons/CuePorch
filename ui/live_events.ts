@@ -4,6 +4,7 @@ import {setupProducerEngagement} from "./event_engagement.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
 import {waitingPlayer} from "./event_waiting.js";
 import {playerColors, playerSwitches, type EventAppearance} from "./event_controls.js";
+import {setupLiveApi} from "./live_api.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -174,6 +175,8 @@ async function request<T>(path: string, method = "GET", body?: object): Promise<
   }
   return result.status === 204 ? undefined as T : result.json();
 }
+
+setupLiveApi(request);
 
 async function action(work: () => Promise<void>, message = "") {
   if (pending) return;
