@@ -141,6 +141,8 @@ For Webex, connect an account with cloud recordings. You can copy accessible MP4
 
 For any of the meeting archives, select a different **Library destination** and choose **Change archive destination**. Future and pending copies go to the new folder. Previously imported copies stay in their original folders, and their receipts stay in the archive history.
 
+When workspace mail is configured, CuePorch emails a completion link after it prepares the private copy. Team administrators receive the notice at their verified workspace address. The link opens the regular signed-in video workspace and follows that video's access rules.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.
@@ -487,6 +489,8 @@ For Google Meet, enable the Meet and Drive APIs in a Google Cloud project and re
 For Zoom, register a user-authorized General App with public client OAuth enabled. Add `cloud_recording:read:list_user_recordings` and `cloud_recording:read:list_recording_files`, register the callback ending in `/integration/oauth/zoom/callback`, and set `CUEPORCH_ZOOM_CLIENT_ID` to the public client ID. CuePorch uses PKCE for this connection. For media copies, CuePorch checks the byte length reported by Zoom and retains its own SHA-256 checksum. [Zoom public client OAuth](https://developers.zoom.us/docs/integrations/PKCE/) · [Zoom recordings API](https://developers.zoom.us/docs/api/meetings/)
 
 For Webex, create a user integration with `meeting:recordings_read`. Register the callback ending in `/integration/oauth/webex/callback` and set `CUEPORCH_WEBEX_CLIENT_ID` and `CUEPORCH_WEBEX_CLIENT_SECRET`. CuePorch takes each direct download link from the current recording detail response, checks the listed file size and records its own SHA-256 checksum. Webex’s administrative token-revocation API requires separate admin scopes. [Webex integrations](https://developer.webex.com/admin/docs/integrations) · [Webex recording scopes](https://developer.webex.com/meeting/docs/meetings) · [Webex authorization management](https://developer.webex.com/admin/docs/api/v1/authorizations)
+
+Meeting completion notices reuse the [workspace SMTP relay](OPERATIONS.md#webinar-email-relay). Set `CUEPORCH_MEETING_ARCHIVE_EMAIL` if you also want notices for archives configured with the bootstrap operator credential. If relay delivery fails, CuePorch retries the email independently of the saved recording. The archive history shows whether the relay accepted the message.
 
 Use `Authorization: Bearer <credential>` with the credential for the operation. Send mutation bodies as JSON except for file uploads. The institution origin and the video-host origin serve different APIs.
 

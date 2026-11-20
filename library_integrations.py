@@ -1,8 +1,11 @@
 """Workspace integration directory and verified cloud video intake."""
 
+from email.errors import HeaderParseError
+from email.headerregistry import Address
 import hashlib
 import hmac
 import json
+import os
 import re
 from urllib.parse import urlsplit
 import uuid
@@ -14,6 +17,8 @@ from werkzeug.exceptions import TooManyRequests
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
+import mail_relay
+from team_accounts import MANAGERS
 import webex_recordings
 import zoom_recordings
 from library_analytics import source_origin
@@ -230,6 +235,38 @@ def import_webex_video(import_video, connection, revision, actor, item, folder, 
                            lambda: webex_recordings.download(url), authorize)
 
 
+def meeting_archive_notifier(tx, origin):
+    relay = mail_relay.configured(origin)
+    if not relay:
+        return None
+    try:
+        configured = Address(addr_spec=os.environ.get("CUEPORCH_MEETING_ARCHIVE_EMAIL", "").strip())
+        operator_email = configured.addr_spec if configured.domain else None
+    except (ValueError, HeaderParseError):
+        operator_email = None
+
+    def notify(actor, provider, work):
+        with tx() as con:
+            if con.execute("SELECT 1 FROM library_deleted_item WHERE kind='work' AND item=?", (work,)).fetchone():
+                return None
+            if actor.startswith("team:"):
+                member = con.execute("""SELECT m.email,m.role FROM team_member m
+                    JOIN account_verified_email v ON v.scope='team' AND v.account=m.id AND v.address=m.email
+                    WHERE m.id=? AND m.removed IS NULL""", (actor.removeprefix("team:"),)).fetchone()
+                address = member["email"] if member and member["role"] in MANAGERS else None
+                path = f"/team/video/{work}/details"
+            else:
+                address = operator_email
+                path = f"/operator/videos/{work}"
+        if not address:
+            return None
+        return mail_relay.deliver(relay, address, f"Your {provider} recording is ready",
+                                  f"CuePorch saved your {provider} recording to the private Library.\n\n"
+                                  f"Open the recording in CuePorch:\n{origin}{path}\n")
+
+    return notify
+
+
 def register(app, tx, staff, operator, origin, import_video, database):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
@@ -260,26 +297,27 @@ def register(app, tx, staff, operator, origin, import_video, database):
             import_video, dropbox, revision, actor, row, folder, authorize,
         ),
     )
+    notify = meeting_archive_notifier(tx, origin)
     meet_watch = Watch(
         app, tx, database, meet, lambda state: google_meet_recordings.scan_new_recordings(meet, state),
         lambda entry, state: entry,
         lambda revision, actor, row, folder, authorize: import_google_video(
             import_video, meet, revision, actor, row["rev"], folder, authorize,
-        ), interval=google_meet_recordings.POLL_SECONDS,
+        ), interval=google_meet_recordings.POLL_SECONDS, notify=notify,
     )
     zoom_watch = Watch(
         app, tx, database, zoom, lambda state: zoom_recordings.scan_new_recordings(zoom, state),
         lambda entry, state: entry,
         lambda revision, actor, row, folder, authorize: import_zoom_video(
             import_video, zoom, revision, actor, row["id"], folder, authorize, exact=row["rev"],
-        ), interval=zoom_recordings.POLL_SECONDS,
+        ), interval=zoom_recordings.POLL_SECONDS, notify=notify,
     )
     webex_watch = Watch(
         app, tx, database, webex, lambda state: webex_recordings.scan_new_recordings(webex, state),
         lambda entry, state: entry,
         lambda revision, actor, row, folder, authorize: import_webex_video(
             import_video, webex, revision, actor, row["id"], folder, authorize,
-        ), interval=webex_recordings.POLL_SECONDS,
+        ), interval=webex_recordings.POLL_SECONDS, notify=notify,
     )
     meetings = {meet.config.key: meet, zoom.config.key: zoom, webex.config.key: webex}
     watches = {

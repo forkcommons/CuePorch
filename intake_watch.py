@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS workspace_intake_queue(
  id INTEGER PRIMARY KEY, watch TEXT NOT NULL, file TEXT NOT NULL, version TEXT NOT NULL,
  entry TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'waiting', work TEXT,
  attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0, error TEXT,
+ notice_due INTEGER, notice_attempts INTEGER NOT NULL DEFAULT 0, notice_state TEXT, notice_actor TEXT,
  UNIQUE(watch,file,version));
 """
 POLL_SECONDS = 30
@@ -29,6 +30,11 @@ class CursorReset(Exception):
 
 
 def migrate(con):
+    queue_columns = {row[1] for row in con.execute("PRAGMA table_info(workspace_intake_queue)")}
+    for name, sql_type in (("notice_due", "INTEGER"), ("notice_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                           ("notice_state", "TEXT"), ("notice_actor", "TEXT")):
+        if name not in queue_columns:
+            con.execute(f"ALTER TABLE workspace_intake_queue ADD COLUMN {name} {sql_type}")
     if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_dropbox_watch'").fetchone():
         return
     columns = {row[1] for row in con.execute("PRAGMA table_info(workspace_dropbox_watch)")}
@@ -36,7 +42,8 @@ def migrate(con):
     con.execute(f"""INSERT INTO workspace_intake_watch
                     SELECT 'dropbox',revision,connection,source,destination,actor,cursor,checked,error,{dates}
                     FROM workspace_dropbox_watch WHERE id=1""")
-    con.execute("INSERT INTO workspace_intake_queue SELECT * FROM workspace_dropbox_queue")
+    fields = "id,watch,file,version,entry,state,work,attempts,next_attempt,error"
+    con.execute(f"INSERT INTO workspace_intake_queue ({fields}) SELECT {fields} FROM workspace_dropbox_queue")
     con.execute("DROP TABLE workspace_dropbox_queue")
     con.execute("DROP TABLE workspace_dropbox_watch")
 
@@ -52,10 +59,11 @@ def changed_since(row, cutoff):
 
 
 class Watch:
-    def __init__(self, app, tx, database, connection, list_changes, queue_entry, ingest, interval=None):
+    def __init__(self, app, tx, database, connection, list_changes, queue_entry, ingest, interval=None, notify=None):
         self.app, self.tx, self.connection = app, tx, connection
         self.list_changes, self.queue_entry, self.ingest = list_changes, queue_entry, ingest
         self.provider = connection.config.key
+        self.notify = notify
         self.interval = interval if interval is not None else POLL_SECONDS
         self.lock = FileLock(str(database.with_suffix(f".{self.provider}-watch.lock")), timeout=0)
         self.wake, self.closed = Event(), Event()
@@ -112,12 +120,13 @@ class Watch:
             row = self.current(con)
             if not row:
                 return {"enabled": False, "jobs": []}
-            jobs = con.execute("""SELECT id,entry,state,work,error FROM workspace_intake_queue
+            jobs = con.execute("""SELECT id,entry,state,work,error,notice_state FROM workspace_intake_queue
                                   WHERE watch=? ORDER BY id DESC LIMIT 50""", (row["revision"],)).fetchall()
         return dict(enabled=True, source=row["source"], destination=row["destination"],
                     checked=row["checked"], error=row["error"],
                     jobs=[dict(id=job["id"], name=json.loads(job["entry"])["name"], state=job["state"],
-                               work=job["work"], error=job["error"]) for job in jobs])
+                               work=job["work"], error=job["error"],
+                               **({"email": job["notice_state"]} if job["notice_state"] else {})) for job in jobs])
 
     def retry(self, job):
         with self.tx() as con:
@@ -190,9 +199,30 @@ class Watch:
                              error.description, job["id"], watch["revision"]))
             return True
         with self.tx() as con:
-            con.execute("""UPDATE workspace_intake_queue SET state='imported',work=?,error=NULL
-                           WHERE id=? AND watch=?""", (work["id"], job["id"], watch["revision"]))
+            due = int(time.time()) if self.notify else None
+            con.execute("""UPDATE workspace_intake_queue SET state='imported',work=?,error=NULL,notice_due=?,
+                           notice_state=?,notice_actor=? WHERE id=? AND watch=?""",
+                        (work["id"], due, "queued" if due is not None else None,
+                         watch["actor"] if due is not None else None, job["id"], watch["revision"]))
         return True
+
+    def send_notice(self, watch):
+        with self.tx() as con:
+            self.authorized(con, watch)
+            job = con.execute("""SELECT id,work,notice_attempts,notice_actor FROM workspace_intake_queue
+                                 WHERE watch=? AND notice_due<=? ORDER BY notice_due,id LIMIT 1""",
+                              (watch["revision"], int(time.time()))).fetchone()
+        if not job:
+            return
+        accepted = self.notify(job["notice_actor"], self.connection.config.name, job["work"])
+        attempts = job["notice_attempts"] + 1
+        due = int(time.time()) + 30 * attempts if accepted is False and attempts < 3 else None
+        state = {True: "accepted", False: "queued" if due else "failed", None: None}[accepted]
+        with self.tx() as con:
+            con.execute("""UPDATE workspace_intake_queue SET notice_due=?,notice_attempts=?,notice_state=?
+                           WHERE id=? AND work=? AND watch IN (
+                               SELECT revision FROM workspace_intake_watch WHERE provider=? AND connection=?)""",
+                        (due, attempts, state, job["id"], job["work"], self.provider, watch["connection"]))
 
     def tick(self):
         for _ in range(5):
@@ -207,6 +237,8 @@ class Watch:
         for _ in range(5):
             if self.closed.is_set() or not self.import_next(watch):
                 break
+        if self.notify and not self.closed.is_set():
+            self.send_notice(watch)
 
     def run(self):
         while not self.closed.is_set():

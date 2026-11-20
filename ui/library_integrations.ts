@@ -12,7 +12,10 @@ interface Integration {
 }
 interface DriveFile {id: string; name: string}
 interface Folder {id: string; name: string; parent: string | null}
-interface WatchJob {id: number; name: string; state: string; work: string | null; error: string | null}
+interface WatchJob {
+  id: number; name: string; state: string; work: string | null; error: string | null;
+  email?: "queued" | "accepted" | "failed";
+}
 interface WatchReceipt {
   enabled: boolean;
   source?: string;
@@ -294,6 +297,9 @@ function renderWatch(data: WatchReceipt) {
     const line = document.createElement("li");
     line.append(job.work ? videoLink(job.work, job.name) : job.name, ` — ${job.state}`);
     if (job.error) line.append(`. ${job.error}`);
+    if (job.email === "queued") line.append(". Completion email queued.");
+    if (job.email === "accepted") line.append(". Completion email accepted by the relay.");
+    if (job.email === "failed") line.append(". The relay could not send the completion email.");
     if (job.state === "failed") line.append(button(`Retry ${job.name}`, async () => {
       renderWatch(await api<WatchReceipt>(pathFor(active, `watch/${job.id}/retry`), {}));
     }));

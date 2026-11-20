@@ -272,6 +272,12 @@ function renderWatch(data) {
         line.append(job.work ? videoLink(job.work, job.name) : job.name, ` — ${job.state}`);
         if (job.error)
             line.append(`. ${job.error}`);
+        if (job.email === "queued")
+            line.append(". Completion email queued.");
+        if (job.email === "accepted")
+            line.append(". Completion email accepted by the relay.");
+        if (job.email === "failed")
+            line.append(". The relay could not send the completion email.");
         if (job.state === "failed")
             line.append(button(`Retry ${job.name}`, async () => {
                 renderWatch(await api(pathFor(active, `watch/${job.id}/retry`), {}));

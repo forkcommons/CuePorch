@@ -7,10 +7,13 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+from socketserver import TCPServer
 import sqlite3
+import ssl
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
@@ -21,7 +24,9 @@ from playwright.sync_api import expect, sync_playwright
 import requests
 from werkzeug.serving import make_server
 from browser import chromium
+from installed_simulcast import tls_certificate
 from test_drive_import import QuietHandler, service_worker
+from test_team_invitation_delivery import Relay
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
@@ -44,6 +49,19 @@ class WebexImport(unittest.TestCase):
             provider_url = f"http://127.0.0.1:{provider.server_port}"
             observed = dict(downloads=[], automatic=[], refreshed=False, foreign_cursor=False)
             request_media = webex.provider_request
+            cert, key = tls_certificate(root)
+            relay = cleanup.enter_context(TCPServer(("127.0.0.1", 0), Relay))
+            relay.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            relay.tls.load_cert_chain(cert, key)
+            relay.deliveries = []
+            relay.delivered = Event()
+            listener = Thread(target=relay.serve_forever, daemon=True)
+            listener.start()
+            cleanup.callback(listener.join)
+            cleanup.callback(relay.shutdown)
+            service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True,
+                                  ssl_context=(str(cert), str(key)))
+            base = f"https://127.0.0.1:{service.server_port}"
 
             def fixture_media(method, url, **fields):
                 self.assertEqual("recordings.webex.com", urlsplit(url).hostname)
@@ -54,7 +72,10 @@ class WebexImport(unittest.TestCase):
             ))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_WEBEX_CLIENT_ID": "fixture-webex", "CUEPORCH_WEBEX_CLIENT_SECRET": "fixture-secret",
-                "CUEPORCH_PUBLIC_URL": "",
+                "CUEPORCH_PUBLIC_URL": base, "CUEPORCH_SMTP_HOST": "127.0.0.1",
+                "CUEPORCH_SMTP_PORT": str(relay.server_address[1]), "CUEPORCH_SMTP_FROM": "crew@example.test",
+                "CUEPORCH_SMTP_USER": "fixture", "CUEPORCH_SMTP_PASSWORD": "mail-credential",
+                "CUEPORCH_MEETING_ARCHIVE_EMAIL": "archivist@example.test", "SSL_CERT_FILE": str(cert),
             }))
             operator = secrets.token_urlsafe(32)
             with patch("institution.library_worker.start", return_value=lambda: None):
@@ -62,8 +83,7 @@ class WebexImport(unittest.TestCase):
             for name, stop in app.extensions.items():
                 if name.startswith("stop_"):
                     cleanup.callback(stop)
-            service = make_server("127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True)
-            base = f"http://127.0.0.1:{service.server_port}"
+            service.app = app
             callback = base + "/integration/oauth/webex/callback"
 
             @remote.get("/v1/authorize")
@@ -129,6 +149,7 @@ class WebexImport(unittest.TestCase):
             cleanup.enter_context(service_worker(provider))
             cleanup.enter_context(service_worker(service))
             api = cleanup.enter_context(requests.Session())
+            api.verify = str(cert)
             api.headers["Authorization"] = "Bearer " + operator
             watch = base + "/api/integrations/webex/watch"
             files = base + "/api/integrations/webex/files"
@@ -141,13 +162,13 @@ class WebexImport(unittest.TestCase):
                 deadline = monotonic() + 15
                 while monotonic() < deadline:
                     jobs = api.get(watch, timeout=5).json()["jobs"]
-                    if len(jobs) == count and all(job["state"] == "imported" for job in jobs):
+                    if len(jobs) == count and all(job.get("email") == "accepted" for job in jobs):
                         return jobs
                     sleep(.1)
                 self.fail(f"Expected {count} completed Webex jobs, got {jobs!r}.")
 
             with sync_playwright() as playwright, chromium(playwright) as browser:
-                page = browser.new_page()
+                page = browser.new_page(ignore_https_errors=True)
                 page.goto(base + "/operator/integrations")
                 page.get_by_label("Operator credential").fill(operator)
                 page.get_by_role("button", name="Open integrations").click()
@@ -164,6 +185,7 @@ class WebexImport(unittest.TestCase):
                 video = page.locator("#workspacePreview")
                 expect(video).to_be_visible()
                 self.assertEqual(320, video.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
+                self.assertEqual([], relay.deliveries)
 
                 observed["foreign_cursor"] = True
                 self.assertEqual(502, api.get(files, timeout=5).status_code)
@@ -176,6 +198,12 @@ class WebexImport(unittest.TestCase):
                 observed["automatic"] = [recording("automatic", now), recording("shared", now, shared=True)]
                 previous = archived(1)[0]
                 self.assertEqual(["first", "automatic"], observed["downloads"])
+                notice, = relay.deliveries
+                self.assertEqual("archivist@example.test", str(notice["To"]))
+                self.assertEqual("Your Webex recording is ready", notice["Subject"])
+                self.assertIn(base + "/operator/videos/" + previous["work"], notice.get_content())
+                for confidential in ("fixture-secret", "recordings.webex.com", "Community planning"):
+                    self.assertNotIn(confidential, notice.get_content())
                 page.get_by_label("Library destination").select_option(folder_id)
                 page.get_by_role("button", name="Change archive destination").click()
                 expect(page.locator("#dropboxWatchStatus")).to_contain_text("Archived meetings")
@@ -188,12 +216,16 @@ class WebexImport(unittest.TestCase):
                     placement = database.execute("SELECT folder FROM library_placement WHERE work=?",
                                                  (follow_up["work"],)).fetchone()
                 self.assertEqual((folder_id,), placement)
+                self.assertEqual(2, len(relay.deliveries))
+                self.assertIn(follow_up["work"], relay.deliveries[1].get_content())
+                page.get_by_role("button", name="Refresh watch status").click()
+                expect(page.get_by_text("Completion email accepted by the relay.", exact=False)).to_have_count(2)
                 page.get_by_role("button", name="Disconnect Webex", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("remove CuePorch access in your Webex account")
                 self.assertEqual(409, api.get(files, timeout=5).status_code)
                 self.assertEqual({"enabled": False, "jobs": []}, api.get(watch, timeout=5).json())
         print("Webex PKCE, token refresh, checked continuation, 320px private playback, signed CDN without bearer,"
-              " owned-recording automatic archive, destination change with queue retention and disconnect passed.")
+              " owned-recording autoarchive, TLS completion email, destination change and disconnect passed.")
 
 
 if __name__ == "__main__":
