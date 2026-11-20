@@ -82,9 +82,9 @@ jobs:
           decoder="$GITHUB_WORKSPACE/build/media-tools/ffmpeg"
           formats="$("$decoder" -hide_banner -demuxers)"
           if ! grep -Eq '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"; then
-            echo 'The bundled encoder has no DASH demuxer. Use Homebrew FFmpeg for the independent playback client.'
-            brew list --versions ffmpeg >/dev/null || brew install ffmpeg
-            decoder="$(brew --prefix ffmpeg)/bin/ffmpeg"
+            echo 'The bundled encoder has no DASH demuxer. Use the libxml2-enabled Homebrew ffmpeg-full for playback.'
+            brew list --versions ffmpeg-full >/dev/null || brew install ffmpeg-full
+            decoder="$(brew --prefix ffmpeg-full)/bin/ffmpeg"
           fi
           formats="$("$decoder" -hide_banner -demuxers)"
           grep -E '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"
