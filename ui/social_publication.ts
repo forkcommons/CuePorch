@@ -1,7 +1,7 @@
 export {};
 
 interface Upload {
-  state: string; sent: number; bytes: number; requested_privacy: string;
+  id: string; state: string; sent: number; bytes: number; requested_privacy: string; cancelable: boolean;
   privacy: string | null; error: string | null; link: string | null;
 }
 interface Publication {
@@ -23,8 +23,8 @@ let draft = crypto.randomUUID();
 let cut = "";
 let watch = 0;
 
-async function api(body?: object): Promise<Publication> {
-  const response = await fetch(endpoint, {
+async function api(body?: object, path = endpoint): Promise<Publication> {
+  const response = await fetch(path, {
     method: body ? "POST" : "GET",
     headers: {Authorization: `Bearer ${credential}`, "Content-Type": "application/json", "X-CuePorch-Social": "1"},
     body: body ? JSON.stringify(body) : undefined,
@@ -58,6 +58,23 @@ function render(data: Publication, fresh = false) {
       link.rel = "noreferrer";
       link.textContent = "Open on YouTube";
       item.append(" · ", link);
+    }
+    if (job.cancelable) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel upload";
+      cancel.onclick = async () => {
+        cancel.disabled = true;
+        try {
+          clearTimeout(watch);
+          render(await api({}, `${endpoint}/${encodeURIComponent(job.id)}/cancel`));
+          notice.textContent = "Upload canceled.";
+        } catch (error) {
+          try { render(await api()); } catch { cancel.disabled = false; }
+          notice.textContent = error instanceof Error ? error.message : String(error);
+        }
+      };
+      item.append(" ", cancel);
     }
     return item;
   }));

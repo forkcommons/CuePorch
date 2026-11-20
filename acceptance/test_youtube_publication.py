@@ -227,6 +227,16 @@ class YouTubePublication(unittest.TestCase):
                 self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
                 form.get_by_role("button", name="Upload to YouTube").click()
                 expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                cancel_id = api.get(endpoint, headers=auth).json()["jobs"][0]["id"]
+                self.assertEqual(403, api.post(endpoint + f"/{cancel_id}/cancel", headers=auth, data={}).status)
+                page.get_by_role("button", name="Cancel upload").click()
+                expect(page.locator("#socialState")).to_have_text("Upload canceled.")
+                self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
+                self.assertEqual(409, api.post(base + f"/api/actions/{cancel_id}/decision", headers=auth,
+                                               data={"decision": "approve"}).status)
+                self.assertEqual(3, len(uploads))
+                form.get_by_role("button", name="Upload to YouTube").click()
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect YouTube", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
@@ -234,7 +244,7 @@ class YouTubePublication(unittest.TestCase):
                 self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
                 self.assertEqual(3, len(uploads))
         print("YouTube OAuth refresh, default private upload, interrupted-session restart and byte-range recovery,"
-              " verified bytes and playback, opt-in approval and disconnect passed.")
+              " verified bytes and playback, opt-in approval, per-upload cancellation and disconnect passed.")
 
 
 if __name__ == "__main__":

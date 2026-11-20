@@ -64,7 +64,10 @@ def transferable(con, work, visibility):
 
 
 def disconnect(con, provider):
-    con.execute("""UPDATE social_publication SET state='canceled',session=NULL,error=?
+    con.execute("""UPDATE action SET status='canceled',decision='disconnect' WHERE status IN ('waiting','eligible')
+                   AND id IN (SELECT id FROM social_publication WHERE provider=? AND state='queued')""", (provider,))
+    con.execute("""UPDATE social_publication SET state=CASE WHEN final_sent THEN 'unconfirmed' ELSE 'canceled' END,
+                   session=NULL,error=?
                    WHERE provider=? AND state='queued'""",
                 ("The destination account disconnected. Check its channel for any transfer already accepted.", provider))
 
@@ -152,7 +155,7 @@ class YoutubePublisher:
                     "YouTube did not confirm the requested privacy. Check the video in its channel."
                 )
                 con.execute("""UPDATE social_publication SET state='delivered',session=NULL,offset=bytes,
-                               remote=?,remote_privacy=?,error=? WHERE id=?""",
+                               remote=?,remote_privacy=?,error=? WHERE id=? AND state IN ('queued','unconfirmed')""",
                             (result["id"], result["privacy"], warning, job["id"]))
             elif result.get("expired"):
                 if job["final_sent"] or (body and offset + len(body) == size):
@@ -221,7 +224,7 @@ def register(app, tx, database, root, origin, connection, read_works, title_for,
         return private(render_template("social_publication.html", work=str(work)))
 
     def receipt(con, uid, work):
-        entries = con.execute("""SELECT p.id,p.state,p.offset,p.bytes,p.metadata,p.remote,p.remote_privacy,p.error,
+        entries = con.execute("""SELECT p.id,p.state,p.offset,p.bytes,p.metadata,p.remote,p.remote_privacy,p.error,p.final_sent,
                                   a.status AS approval FROM social_publication p JOIN action a ON a.id=p.id
                                   WHERE p.work=? AND p.provider='youtube' ORDER BY p.rowid DESC LIMIT 20""",
                               (uid,)).fetchall()
@@ -231,6 +234,7 @@ def register(app, tx, database, root, origin, connection, read_works, title_for,
             if state == "queued" and job["approval"] in ("waiting", "rejected"):
                 state = "waiting for publication approval" if job["approval"] == "waiting" else "rejected"
             jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"],
+                             cancelable=job["state"] == "queued" and not job["final_sent"],
                              requested_privacy=json.loads(job["metadata"])["status"]["privacyStatus"],
                              privacy=job["remote_privacy"], error=job["error"],
                              link=f"https://www.youtube.com/watch?v={job['remote']}" if job["remote"] else None))
@@ -276,3 +280,22 @@ def register(app, tx, database, root, origin, connection, read_works, title_for,
                             (request_id, "youtube", revision, actor, uid, cut, file["sha256"], file["bytes"],
                              MIME[file["format"]], encoded, int(time())))
             return private(receipt(con, uid, item), 200 if prior else 202)
+
+    @app.post("/api/library/work/<uuid:work>/social/youtube/<job>/cancel")
+    def cancel_upload(work, job):
+        secure = secure_site(origin)
+        actor = staff()
+        json_mutation(secure, MARKER)
+        uid = str(work)
+        with tx() as con:
+            item = find_work(uid)
+            if item is None or library_privacy.blocked(con, uid):
+                abort(404, "The selected video is unavailable.")
+            canceled = con.execute("""UPDATE social_publication SET state='canceled',session=NULL,error=NULL
+                                       WHERE id=? AND work=? AND provider='youtube' AND state='queued' AND final_sent=0""",
+                                   (job, uid)).rowcount
+            if not canceled:
+                abort(409, "The upload can no longer be canceled. Check its current status.")
+            con.execute("""UPDATE action SET status='canceled',decision='cancel',actor=?
+                           WHERE id=? AND status IN ('waiting','eligible')""", (actor, job))
+            return private(receipt(con, uid, item))

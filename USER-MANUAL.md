@@ -147,7 +147,7 @@ Open a Library folder and choose **Slack notifications**. Select uploads, review
 
 The same dialog can include subfolders, change the message language between English and Spanish and send notices for title, thumbnail, removal, privacy and showcase changes. Clear **Send Slack notifications** and save to pause delivery and keep the channel for later.
 
-To send a native video to YouTube, connect its channel in **Integrations**, then choose **Publish to YouTube** from a video’s Share controls. Choose the destination title, description, visibility and audience. Visibility starts at Private. If the workspace enables Publication approval, the upload waits there. The upload history shows confirmed bytes, the destination link and the visibility returned by YouTube. Changing or removing the local CuePorch copy leaves the uploaded copy on its destination channel. [Vimeo’s social publishing workflow](https://help.vimeo.com/hc/en-us/articles/12427472505873-How-to-publish-my-video-on-social-media)
+To send a native video to YouTube, connect its channel in **Integrations**, then choose **Publish to YouTube** from a video’s Share controls. Choose the destination title, description, visibility and audience. Visibility starts at Private. If the workspace enables Publication approval, the upload waits there. The upload history shows confirmed bytes, the destination link and the visibility returned by YouTube. Choose **Cancel upload** before the last part is sent. Once YouTube has received the full copy, manage it on the destination channel. [Vimeo’s social publishing workflow](https://help.vimeo.com/hc/en-us/articles/12427472505873-How-to-publish-my-video-on-social-media)
 
 ### Work actions
 
