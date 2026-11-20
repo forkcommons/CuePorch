@@ -8,6 +8,8 @@ const deleteWorks = document.querySelector("#deleteWorks");
 const privacySelected = document.querySelector("#privacySelected");
 const showcaseSelected = document.querySelector("#showcaseSelected");
 const ratingSelected = document.querySelector("#ratingSelected");
+const translateSelected = document.querySelector("#translateSelected");
+const translationBatches = document.querySelector("#translationBatches");
 const uploadDefaults = document.querySelector("#uploadDefaults");
 const workBrowse = document.querySelector("#workBrowse");
 const trashBrowse = document.querySelector("#trashBrowse");
@@ -35,6 +37,7 @@ const sort = document.querySelector("#sort");
 const view = document.querySelector("#view");
 const editFolder = document.querySelector("#editFolder");
 const folderPrivacy = document.querySelector("#folderPrivacy");
+const translateFolder = document.querySelector("#translateFolder");
 const destination = document.querySelector("#destination");
 const move = document.querySelector("#move");
 const editor = document.querySelector("#folderEditor");
@@ -52,6 +55,7 @@ let editing;
 let section = "Library";
 let deletions = [];
 let trashTimer;
+let translationTimer;
 const selected = new Set();
 let closeCardPreview;
 function request(path, method = "GET", body) {
@@ -96,6 +100,8 @@ function updateMove() {
     privacySelected.disabled = !selected.size || ![...selected].every((uid) => works.some((work) => work.id === uid && work.editable_privacy));
     showcaseSelected.disabled = ratingSelected.disabled = !selected.size || selected.size > 50 ||
         ![...selected].every(uid => works.some(work => work.id === uid && work.asset_type === "video"));
+    translateSelected.disabled = !selected.size || selected.size > 500 ||
+        ![...selected].some(uid => works.some(work => work.id === uid && work.asset_type === "video"));
 }
 function renderTree() {
     function branch(parent) {
@@ -138,11 +144,13 @@ function renderTree() {
         section === "Library" ? folder?.name || "Library" : section;
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     folderPrivacy.hidden = !folder;
+    translateFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
         action(starFolder, () => setStar("folder", folder.id, !folder.starred));
         action(deleteFolder, () => removeItems("folder", [folder.id]));
         action(folderPrivacy, () => editFolderPrivacy(folder));
+        action(translateFolder, async () => requestTranslations([], folder));
     }
     folderOptions(destination);
     destination.value = current || "";
@@ -499,6 +507,8 @@ function cardMenu(work) {
     return menu;
 }
 function openWorkDialog(title) {
+    clearTimeout(translationTimer);
+    delete workDialogBody.dataset.translationBatch;
     workDialogTitle.textContent = title;
     workDialogBody.replaceChildren();
     workDialogStatus.textContent = "";
@@ -509,7 +519,7 @@ function openWorkDialog(title) {
 function videoBatch(title, label, count, submit) {
     const body = openWorkDialog(title);
     const summary = document.createElement("p");
-    summary.textContent = `${count} selected ${count === 1 ? "video" : "videos"}`;
+    summary.textContent = typeof count === "string" ? count : `${count} selected ${count === 1 ? "video" : "videos"}`;
     const form = document.createElement("form");
     form.className = "library-batch-form";
     const save = document.createElement("button");
@@ -586,8 +596,106 @@ function editRatings(works) {
     const fields = form.querySelector("fieldset");
     mode.onchange = () => { fields.disabled = fields.hidden = mode.value === "none"; };
 }
+const translationEndpoint = "/api/library/subtitle-translations";
+const translationLabels = {
+    queued: "Queued", running: "Translating", waiting: "Waiting for approval", complete: "Complete",
+    rejected: "Rejected", superseded: "Source or destination changed", failed: "Failed", skipped: "Skipped",
+};
+function requestTranslations(works, folder) {
+    let requestId = crypto.randomUUID();
+    let languages = "";
+    const scope = folder ? `${folder.name} and its subfolders` : works.length;
+    const { form } = videoBatch("Translate subtitles", "Queue translations", scope, async (fields) => {
+        const source = String(fields.get("source") || "").trim();
+        const target = String(fields.get("target") || "").trim();
+        const pair = source + ":" + target;
+        if (languages && languages !== pair)
+            requestId = crypto.randomUUID();
+        languages = pair;
+        const response = await completed(await request(translationEndpoint, "POST", {
+            id: requestId, works, folder: folder?.id, source_language: source, target_language: target,
+        }));
+        if (form.isConnected)
+            showTranslations(await response.json());
+        return "";
+    });
+    const fields = document.querySelector("#batchTranslationFields");
+    form.prepend(fields.content.cloneNode(true));
+}
+async function translationReport(id, method = "GET") {
+    return (await completed(await request(`${translationEndpoint}/${id}`, method))).json();
+}
+function showTranslations(batch) {
+    const body = openWorkDialog(`Subtitle translations · ${batch.source} → ${batch.target}`);
+    body.dataset.translationBatch = batch.id;
+    const list = document.createElement("ul");
+    for (const item of batch.items) {
+        const row = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = `/operator/videos/${encodeURIComponent(item.work)}/languages`;
+        link.textContent = item.title;
+        row.append(link, ` · ${translationLabels[item.state] || item.state}`);
+        if (item.reason)
+            row.append(` · ${item.reason}`);
+        list.append(row);
+    }
+    const finished = batch.items.filter(item => item.state === "complete").length;
+    workDialogStatus.textContent = `${finished} of ${batch.items.length} complete.`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry failed or skipped";
+    retry.disabled = !batch.items.some(item => ["failed", "superseded", "rejected", "skipped"].includes(item.state));
+    const pending = batch.items.some(item => ["queued", "running", "waiting"].includes(item.state));
+    let generation = 0;
+    function schedule() {
+        if (pending)
+            translationTimer = window.setTimeout(() => { if (workDialog.open)
+                void refresh("GET"); }, 1200);
+    }
+    async function refresh(method) {
+        clearTimeout(translationTimer);
+        const attempt = ++generation;
+        try {
+            const next = await translationReport(batch.id, method);
+            if (attempt !== generation || !workDialog.open || body.dataset.translationBatch !== batch.id)
+                return;
+            if (method === "GET" && JSON.stringify(next.items) === JSON.stringify(batch.items))
+                schedule();
+            else
+                showTranslations(next);
+        }
+        catch (error) {
+            if (workDialog.open && body.dataset.translationBatch === batch.id) {
+                retry.disabled = false;
+                workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+            }
+        }
+    }
+    retry.onclick = () => { retry.disabled = true; void refresh("PUT"); };
+    body.append(retry, list);
+    schedule();
+}
+async function recentTranslations() {
+    const { batches } = await (await completed(await request(translationEndpoint))).json();
+    const body = openWorkDialog("Subtitle translation batches");
+    if (!batches.length) {
+        workDialogStatus.textContent = "No subtitle translation batches yet.";
+        return;
+    }
+    for (const batch of batches) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${batch.source} → ${batch.target} · ${batch.items} items · ${new Date(batch.created * 1000).toLocaleString()}`;
+        action(button, async () => showTranslations(await translationReport(batch.id)));
+        const row = document.createElement("p");
+        row.append(button);
+        body.append(row);
+    }
+}
 action(showcaseSelected, () => addShowcaseMembers([...selected]));
 action(ratingSelected, async () => editRatings([...selected]));
+action(translateSelected, async () => requestTranslations([...selected]));
+action(translationBatches, recentTranslations);
 function publicAddress(path) {
     return new URL(path, document.body.dataset.publicUrl || location.origin).href;
 }

@@ -24,6 +24,7 @@
       <button type="button" id="newFolder">New folder</button>
       <button type="button" id="editFolder" hidden>Edit folder</button>
       <button type="button" id="folderPrivacy" hidden>Folder privacy</button>
+      <button type="button" id="translateFolder" hidden>Translate this folder</button>
       <button type="button" id="starFolder" hidden>Star folder</button>
       <button type="button" id="deleteFolder" hidden>Delete folder</button>
     </aside>
@@ -32,6 +33,7 @@
       <div id="workBrowse">
       <button type="button" id="uploadLibrary">Upload</button>
       <button type="button" id="uploadDefaults">Upload defaults</button>
+      <button type="button" id="translationBatches">Subtitle translation batches</button>
       <p id="uploadHint">Drop files into this folder or choose Upload.</p>
       <div class="library-tools">
         <label>Search titles <input id="search" type="search"></label>
@@ -54,6 +56,7 @@
         <button type="button" id="privacySelected" disabled>Privacy for selected</button>
         <button type="button" id="showcaseSelected" disabled>Add to showcases</button>
         <button type="button" id="ratingSelected" disabled>Set video rating</button>
+        <button type="button" id="translateSelected" disabled>Translate selected subtitles</button>
       </div>
       <section id="folderBrowse" aria-labelledby="folderBrowseHeading" hidden>
         <h3 id="folderBrowseHeading">Folders</h3>
@@ -103,6 +106,10 @@
       <label>Rating prompt <input name="prompt" maxlength="42" value="How was this video?" required></label>
       <label>Show after (seconds) <input name="start" type="number" min="0" max="999999999" step="1" value="0" required></label>
     </fieldset>
+  </template>
+  <template id="batchTranslationFields">
+    <label>Source language <input name="source" placeholder="en" required maxlength="40"></label>
+    <label>Target language <input name="target" placeholder="es" required maxlength="40"></label>
   </template>
   <dialog id="workDialog" class="library-dialog" aria-labelledby="workDialogTitle">
     <h2 id="workDialogTitle">Video info</h2>

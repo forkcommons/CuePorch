@@ -14,6 +14,7 @@ import library_appearance
 import library_audio
 import library_languages
 import library_caption_jobs
+import subtitle_translation_batches
 import library_interactivity
 import library_ratings
 import library_registration
@@ -104,6 +105,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
     team_brand_kits.register(app, tx, staff, team_origin, root, get_work, library_timeline.video_source)
     start_editor = timeline_jobs.register(app, tx, staff, get_work, root, remember_work)
     library_caption_jobs.register(app, tx, staff, get_work, action)
+    subtitle_translation_batches.register(app, tx, staff, read_works, action)
     library_languages.register(
         app, tx, staff, get_work, root, remember_work, title_for,
         lambda con, work: library_caption_jobs.queue(con, action, work, require_missing=True),

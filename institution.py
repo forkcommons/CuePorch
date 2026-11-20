@@ -74,6 +74,7 @@ import library_worker
 import media_bandwidth
 import review_links
 import review_push
+import subtitle_translation_batches
 import team_accounts
 import team_saml
 import team_scim
@@ -149,6 +150,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_actions.SCHEMA
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
+            + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA

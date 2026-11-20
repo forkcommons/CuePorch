@@ -43,17 +43,19 @@ class SubtitleTranslation(unittest.TestCase):
                             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(root / "video.mp4")], check=True)
             manifest, collection = root / "intake.json", root / "library"
             manifest.write_text(json.dumps(dict(institution="station", works=[dict(
-                title="Station captions", provider="cueporch-upload", source_id="local-video", source_url="",
+                title=title, provider="cueporch-upload", source_id=title, source_url="",
                 files=[dict(role="playback", format="mp4", path="video.mp4")],
-            )])), encoding="utf8")
+            ) for title in ("Station captions", "Nested interview", "Outside the folder")])), encoding="utf8")
             import_collection(manifest, collection)
-            work = json.loads((collection / "manifest.json").read_text(encoding="utf8"))["works"][0]["id"]
+            imported = json.loads((collection / "manifest.json").read_text(encoding="utf8"))["works"]
+            work, nested, outside = [item["id"] for item in imported]
 
             mock = Flask("local-translation-model")
             calls = []
             control = {"available": True}
             responses = {"es": "1. Bienvenidos al Consejo.\n2. La sesión pública comienza ahora.",
                          "fr": "1. Bienvenue au Conseil.\n2. La séance publique commence maintenant."}
+            responses.update({"es-mx": responses["es"], "fr-ca": responses["fr"]})
 
             @mock.post("/api/generate")
             def complete():
@@ -156,7 +158,79 @@ class SubtitleTranslation(unittest.TestCase):
                 expect(status).to_have_text("Translated subtitles are ready.", timeout=20000)
                 self.assertEqual(api.get(track + "fr", headers=headers).json()["cues"][0]["text"], "Bienvenue au Conseil.")
                 self.assertEqual(calls, ["es", "fr", "fr"])
+                self.verify_batches(page, origin, headers, work, nested, outside, calls, subtitles_path)
                 browser.close()
+
+    def verify_batches(self, page, origin, headers, work, nested, outside, calls, vtt):
+        api = page.request
+        path = origin + "/api/library/subtitle-translations"
+        folder_api = origin + "/api/library/folders"
+        gate = origin + "/api/policy/translation"
+        dialog = page.get_by_role("dialog")
+        status = page.locator("#workDialogStatus")
+        self.assertEqual(api.get(path).status, 403)
+
+        def submit(target):
+            dialog.get_by_label("Source language").fill("en")
+            dialog.get_by_label("Target language").fill(target)
+            dialog.get_by_role("button", name="Queue translations").click()
+
+        page.goto(origin + "/operator/library")
+        page.get_by_role("button", name="Load library").click()
+        page.get_by_role("checkbox", name="Select Station captions").check()
+        page.get_by_role("button", name="Translate selected subtitles").click()
+        submit("es-mx")
+        expect(status).to_have_text("1 of 1 complete.", timeout=15000)
+        self.assertEqual(calls[-1], "es-mx")
+        dialog.get_by_role("button", name="Close").click()
+
+        parent = api.post(folder_api, headers=headers, data=dict(name="Council archive", color="#345678")).json()["id"]
+        child = api.post(folder_api, headers=headers,
+                         data=dict(name="Interviews", color="#345678", parent=parent)).json()["id"]
+        for folder, member in ((parent, work), (child, nested)):
+            self.assertTrue(api.put(origin + "/api/library/placement", headers=headers,
+                                    data=dict(works=[member], folder=folder)).ok)
+        self.assertTrue(api.put(gate, headers=headers, data={"required": True}).ok)
+        page.reload()
+        page.get_by_role("button", name="Load library").click()
+        page.locator("#folderTree").get_by_role("button", name="Council archive").click()
+        page.get_by_role("button", name="Translate this folder").click()
+        submit("fr-ca")
+        expect(dialog.get_by_text("Station captions · Waiting for approval")).to_be_visible()
+        expect(dialog.get_by_text("Nested interview · Skipped · This cut has no subtitle track in the source language.")).to_be_visible()
+        self.assertNotIn("fr-ca", calls)
+        self.assertTrue(api.put(gate, headers=headers, data={"required": False}).ok)
+        expect(status).to_have_text("1 of 2 complete.", timeout=15000)
+
+        batch = next(item for item in api.get(path, headers=headers).json()["batches"] if item["target"] == "fr-ca")
+        batch_path = path + "/" + batch["id"]
+        records = {item["work"]: item for item in api.get(batch_path, headers=headers).json()["items"]}
+        self.assertEqual(set(records), {work, nested})
+        self.assertNotIn(outside, records)
+        replay = api.post(path, headers=headers, data=dict(id=batch["id"], folder=parent, source_language="en",
+                                                            target_language="fr-ca"))
+        self.assertEqual(replay.status, 200)
+        self.assertEqual({item["work"]: item for item in replay.json()["items"]}, records)
+
+        languages = origin + f"/api/library/work/{nested}/languages"
+        version = api.get(languages, headers=headers).json()["version"]
+        upload = api.post(languages, headers=headers, multipart={
+            "version": version, "language": "en", "kind": "subtitles",
+            "track": {"name": "English.vtt", "mimeType": "text/vtt", "buffer": vtt.read_bytes()},
+        })
+        self.assertTrue(upload.ok)
+        dialog.get_by_role("button", name="Retry failed or skipped").click()
+        expect(status).to_have_text("2 of 2 complete.", timeout=15000)
+        self.assertEqual(calls.count("fr-ca"), 2)
+        finished = {item["work"]: item for item in api.get(batch_path, headers=headers).json()["items"]}
+        self.assertEqual(finished[work]["job"], records[work]["job"])
+        self.assertTrue(api.get(languages + "/fr-ca", headers=headers).ok)
+
+        page.reload()
+        page.get_by_role("button", name="Load library").click()
+        page.get_by_role("button", name="Subtitle translation batches").click()
+        dialog.get_by_role("button", name="en → fr-ca · 2 items", exact=False).click()
+        expect(status).to_have_text("2 of 2 complete.")
 
 
 if __name__ == "__main__":
