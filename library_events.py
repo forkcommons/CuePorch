@@ -14,6 +14,7 @@ from filelock import FileLock, Timeout
 from flask import abort, make_response, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
 import requests
+from werkzeug.exceptions import Conflict, UnprocessableEntity
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from browser_account_security import private, same_origin, secure_site
@@ -48,8 +49,10 @@ import library_registration
 import mail_relay
 import media_bandwidth
 import regional_availability
+import registration_csv
 import studio_voice
 import studio_scripts
+from team_accounts import note
 
 
 SCHEMA = """
@@ -679,27 +682,67 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(404)
         return candidate
 
+    def registration_intake(con, uid, opens):
+        row, event = read(con, uid)
+        slot = selected_open(event, opens)
+        delivery = occurrence(con, uid, opens)
+        form = library_registration.active(con, "event", uid)
+        if (not form or event["visibility"] not in event_mail.WATCHABLE
+                or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn", "replay"))):
+            abort(409, "Choose a current watchable occurrence with registration enabled.")
+        if event_attendance.expires_at(slot) <= datetime.now(timezone.utc).timestamp():
+            abort(409, "This occurrence has ended.")
+        return row, slot, form
+
+    def enroll_attendee(con, row, slot, form, body, *, send_confirmation):
+        uid, opens = row["id"], slot["id"]
+        registrant, created = event_attendance.enroll(
+            con, uid, row["revision"], slot, form, body,
+            on_create=lambda email_key: event_webhooks.registration_created(con, uid, opens, email_key))
+        if mail_configured:
+            _, rules = event_mail.settings(con, uid)
+            event_mail.schedule(con, registrant["id"], opens, registrant["expires_at"], rules,
+                                int(datetime.now(timezone.utc).timestamp()), confirmation=created and send_confirmation)
+        return registrant, created
+
     @app.post("/api/live-events/<uid>/<int:opens>/registrants")
     def add_event_registrant(uid, opens):
         staff()
         body = request.get_json()
         with tx() as con:
-            row, event = read(con, uid)
-            slot = selected_open(event, opens)
-            delivery = occurrence(con, uid, opens)
-            form = library_registration.active(con, "event", uid)
-            if not form or event["visibility"] in ("private", "embed_only") or (delivery and delivery["delivery"] in (
-                    "withdrawing", "withdrawn", "replay")):
-                abort(409, "Choose a current watchable occurrence with registration enabled.")
-            registrant, created = event_attendance.enroll(
-                con, uid, row["revision"], slot, form, body,
-                on_create=lambda email_key: event_webhooks.registration_created(con, uid, opens, email_key))
-            if mail_configured:
-                _, rules = event_mail.settings(con, uid)
-                event_mail.schedule(con, registrant["id"], opens, registrant["expires_at"], rules,
-                                    int(datetime.now(timezone.utc).timestamp()), confirmation=created)
+            row, slot, form = registration_intake(con, uid, opens)
+            registrant, created = enroll_attendee(con, row, slot, form, body, send_confirmation=True)
         address = url_for("event_attendance_join", slug=row["slug"])
         return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/import")
+    def import_event_registrants(uid, opens):
+        secure_site(mail_origin)
+        actor = staff()
+        request.max_content_length = registration_csv.MAX_BYTES + 32768
+        headers, rows = registration_csv.read_file(request.files.get("attendees"))
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            available = registration_csv.destinations(form)
+            if request.form.get("preview") == "1":
+                return private(dict(headers=headers, fields=available, mapping=registration_csv.suggested(available, headers),
+                                    rows=len(rows), revision=form["revision"]))
+            if request.form.get("revision", form["revision"]) != form["revision"]:
+                abort(409, "The registration form changed. Reopen the CSV mapping.")
+            assigned = registration_csv.mapping(request.form.get("mapping"), available, headers)
+            contacts = {}
+            for line, cells in rows:
+                fields = registration_csv.attendee_fields(line, cells, assigned)
+                contacts[fields["email"].casefold()] = (line, fields)
+            added = 0
+            for line, fields in contacts.values():
+                try:
+                    _, created = enroll_attendee(con, row, slot, form, fields, send_confirmation=False)
+                    added += int(created)
+                except (Conflict, UnprocessableEntity) as error:
+                    abort(error.code, f"CSV line {line}: {error.description}")
+            note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} attendees")
+        return private(dict(added=added, existing=len(contacts) - added, duplicates=len(rows) - len(contacts), occurrence=opens))
 
     @app.get("/api/live-events/<uid>/registrants/<registrant>")
     def event_registrant_details(uid, registrant):

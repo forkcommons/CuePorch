@@ -6,6 +6,7 @@ import { waitingPlayer } from "./event_waiting.js";
 import { playerColors, playerSwitches } from "./event_controls.js";
 import { setupLiveApi } from "./live_api.js";
 import { setupEventMail } from "./event_mail.js";
+import { setupAttendeeCsv } from "./attendee_csv.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -113,6 +114,7 @@ async function request(path, method = "GET", body) {
 }
 setupLiveApi(request);
 const chooseEmailEvent = setupEventMail(request);
+const chooseCsvOccurrence = setupAttendeeCsv(request);
 async function action(work, message = "") {
     if (pending)
         return;
@@ -230,6 +232,7 @@ function choose(event, instance) {
     }
     active = { event, instance };
     chooseEmailEvent(event.id);
+    chooseCsvOccurrence(event.id, instance.id);
     closeEngagement();
     chatPanel.open = false;
     chatMessages.replaceChildren();

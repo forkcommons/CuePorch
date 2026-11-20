@@ -6,6 +6,7 @@ import {waitingPlayer} from "./event_waiting.js";
 import {playerColors, playerSwitches, type EventAppearance} from "./event_controls.js";
 import {setupLiveApi} from "./live_api.js";
 import {setupEventMail} from "./event_mail.js";
+import {setupAttendeeCsv} from "./attendee_csv.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -179,6 +180,7 @@ async function request<T>(path: string, method = "GET", body?: object): Promise<
 
 setupLiveApi(request);
 const chooseEmailEvent = setupEventMail(request);
+const chooseCsvOccurrence = setupAttendeeCsv(request);
 
 async function action(work: () => Promise<void>, message = "") {
   if (pending) return;
@@ -297,6 +299,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   }
   active = {event, instance};
   chooseEmailEvent(event.id);
+  chooseCsvOccurrence(event.id, instance.id);
   closeEngagement();
   chatPanel.open = false;
   chatMessages.replaceChildren();

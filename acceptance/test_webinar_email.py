@@ -50,6 +50,76 @@ def wait_until(check, seconds=12):
     raise AssertionError("A scheduled delivery or state change did not arrive.")
 
 
+def check_csv(origin, api, client, certificate, operator, relay, clock, create):
+    clock[0] = None
+    event, email_settings = create("csv-webinar", "CSV webinar", recurring=True)
+    uid = event["id"]
+    opens = event["occurrences"][1]["id"]
+    registration = f"{api}/{uid}/registration"
+    form = client.get(registration, timeout=8).json()
+    form["settings"]["first_name"] = "required"
+    client.put(registration, json=form, timeout=8).raise_for_status()
+    client.put(email_settings, json=dict(revision=None, settings=dict(
+        confirmation=True, reminder_minutes=[1], follow_up_hours=None)), timeout=8).raise_for_status()
+    endpoint = f"{api}/{uid}/{opens}/registration/import"
+
+    def import_csv(data, fields=None, address=endpoint, session=client):
+        return session.post(address, data=fields, files={"attendees": ("attendees.csv", data, "text/csv")}, timeout=15)
+
+    bad = import_csv(b"Email,First name\r\nvalid@example.invalid,Valid\r\ninvalid,Bad\r\n")
+    assert bad.status_code == 422 and "CSV line 3" in bad.text
+    assert client.get(registration, timeout=8).json()["registrants"] == []
+    assert import_csv(b"Email,First name\r\none@example.invalid,Name\r\n", {"revision": "stale"}).status_code == 409
+    content = '\ufeffRecipient,Preferred name,Source\r\nlia@example.invalid,First,old\r\n' \
+              'LIA@example.invalid,"Lia, D’Ávila",current\r\nlee@example.invalid,李,current\r\n'
+    with sync_playwright() as pw, chromium(pw) as browser:
+        organizer = browser.new_page(ignore_https_errors=True)
+        organizer.goto(origin + "/operator/live-events")
+        organizer.get_by_label("Operator credential").fill(operator)
+        organizer.get_by_role("button", name="Open live events").click()
+        organizer.get_by_role("button", name="Open production for CSV webinar", exact=False).nth(1).click()
+        panel = organizer.locator("#eventCsvSettings")
+        panel.get_by_text("Import attendee CSV", exact=True).click()
+        panel.get_by_label("Attendee CSV").set_input_files(
+            dict(name="attendees.csv", mimeType="text/csv", buffer=content.encode("utf-8")))
+        expect(panel.locator("#eventCsvStatus")).to_contain_text("3 attendee rows")
+        panel.locator('select[name="email"]').select_option(label="Recipient")
+        panel.locator('select[name="first_name"]').select_option(label="Preferred name")
+        panel.get_by_role("button", name="Import attendees").click()
+        expect(panel.locator("#eventCsvStatus")).to_have_text("2 added, 0 already registered, 1 duplicate row combined.")
+        panel.get_by_role("button", name="Import attendees").click()
+        expect(panel.locator("#eventCsvStatus")).to_have_text("0 added, 2 already registered, 1 duplicate row combined.")
+    assert len(relay.deliveries) == 8
+    stored = client.get(registration, timeout=8).json()["registrants"]
+    assert {row["answers"]["first_name"] for row in stored} == {"Lia, D’Ávila", "李"}
+    clock[0] = opens - 59
+    wait_until(lambda: len(relay.deliveries) >= 10)
+    imported = relay.deliveries[8:]
+    assert len(imported) == 2 and all(mail["Subject"] == "Reminder about CSV webinar" for mail in imported)
+    assert {str(mail["To"]).casefold() for mail in imported} == {"lia@example.invalid", "lee@example.invalid"}
+    clock[0] = None
+
+    bulk, _ = create("bulk-webinar", "Bulk webinar")
+    bulk_opens = bulk["occurrences"][0]["id"]
+    versioned = f"{origin}/api/v1/live-events/{bulk['id']}/{bulk_opens}/registration/import"
+    for scope in ("read", "registrations"):
+        token = client.post(origin + "/api/operator/live-api/credentials", json=dict(name=scope, scopes=[scope]), timeout=8)
+        token.raise_for_status()
+        with requests.Session() as integration:
+            integration.verify = str(certificate)
+            integration.headers.update(Authorization="Bearer " + token.json()["token"])
+            content = "Email address,Given name\r\n" + "".join(f"attendee-{i}@example.invalid,Guest {i}\r\n" for i in range(1000))
+            result = import_csv(content, address=versioned, session=integration)
+            if scope == "read":
+                assert result.status_code == 403
+            else:
+                result.raise_for_status()
+                assert result.json() == dict(added=1000, existing=0, duplicates=0, occurrence=bulk_opens)
+                largest = import_csv(content + "extra@example.invalid,Guest\r\n", address=versioned, session=integration)
+                assert largest.status_code == 422 and "1000 attendee rows" in largest.json()["error"]["message"]
+    print("Verified mapped UTF-8 CSV in the browser, rollback, idempotent import, no confirmation, target occurrence reminder, scopes, and the 1000-row limit.")
+
+
 class WebinarEmail(unittest.TestCase):
     def test_webinar_email(self):
         with ExitStack() as cleanup:
@@ -93,11 +163,11 @@ class WebinarEmail(unittest.TestCase):
             when = datetime.now(timezone.utc).replace(second=0, microsecond=0) + timedelta(minutes=6)
             end = when + timedelta(minutes=4)
 
-            def create(slug, title):
+            def create(slug, title, recurring=False):
                 picked = client.post(api, json=dict(title=title, slug=slug, type="webinar", visibility="public",
                                      latency="standard", save_replay=False, schedule=dict(timezone="UTC",
                                      start=when.strftime("%Y-%m-%dT%H:%M"), end=end.strftime("%Y-%m-%dT%H:%M"),
-                                     repeat="none")), timeout=8)
+                                     repeat="days" if recurring else "none", count=2 if recurring else None)), timeout=8)
                 picked.raise_for_status()
                 event = picked.json()
                 form_url = f"{api}/{event['id']}/registration"
@@ -199,6 +269,7 @@ class WebinarEmail(unittest.TestCase):
             wait_until(lambda: len(relay.deliveries) == 8)
             assert relay.deliveries[-1]["Subject"] == "You're registered for Held webinar"
             print("Verified 8 messages over TLS, default-off and revocation, expiry, and release after disabling optional approval.")
+            check_csv(origin, api, client, certificate, operator, relay, clock, create)
 
 
 if __name__ == "__main__":
