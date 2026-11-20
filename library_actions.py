@@ -24,6 +24,7 @@ import library_versions
 import library_privacy
 import library_share
 import library_peer_handoff
+import media_bandwidth
 import review_links
 import timeline_jobs
 from catalog import copy_work
@@ -283,7 +284,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.cache_control.no_store = True
         response.cache_control.private = True
-        return response
+        return media_bandwidth.measure(response, tx, work["id"]) if asset_type == "video" else response
 
     return start_editor
 

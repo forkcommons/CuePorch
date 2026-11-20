@@ -57,6 +57,7 @@ import library_timeline
 import library_trash
 import library_upload
 import library_worker
+import media_bandwidth
 import review_links
 import review_push
 import timeline_jobs
@@ -127,6 +128,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_events.SCHEMA
             + library_showcases.SCHEMA
             + library_analytics.SCHEMA
+            + media_bandwidth.SCHEMA
             + library_timeline.SCHEMA
             + timeline_jobs.SCHEMA
             + library_thumbnail.SCHEMA
@@ -870,6 +872,7 @@ def create_app(root, database, operator, institution, simulation=None):
             response.headers["Content-Length"] = str(stop - first)
             if ranges:
                 response.headers["Content-Range"] = f"bytes {first}-{stop - 1}/{size}"
+            response = media_bandwidth.measure(response, tx, grant["work"])
         else:
             referring = urlsplit(request.referrer or "")
             if f"{referring.scheme}://{referring.netloc}" != grant["origin"]:

@@ -13,6 +13,7 @@ from catalog import video_version_key
 import library_peer_handoff
 import library_privacy as privacy
 import library_registration
+import media_bandwidth
 from library_analytics import source_origin
 from library_appearance import brand_image
 from library_interactivity import image_id, text_field, web_link
@@ -385,4 +386,4 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.cache_control.no_store = True
         response.cache_control.private = True
-        return response
+        return media_bandwidth.measure(response, tx, work_id) if kind == "video/mp4" else response

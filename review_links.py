@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import review_feedback
 from library_languages import tracks_for
+import media_bandwidth
 import review_notifications
 import review_push
 import review_settings
@@ -511,7 +512,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         path = root / "objects" / item["sha256"]
         if not path.is_file():
             abort(404)
-        return confidential(
+        response = confidential(
             send_file(
                 path,
                 mimetype=media_type,
@@ -520,6 +521,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 download_name="review-video.mp4" if download else None,
             )
         )
+        return media_bandwidth.measure(response, tx, work["id"]) if track is None else response
 
     @app.post("/review/<uid>/unlock")
     def unlock(uid):

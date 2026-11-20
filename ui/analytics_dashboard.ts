@@ -11,12 +11,12 @@ type Metric = keyof typeof metricNames;
 type Counts = Record<Metric, number>;
 interface Entry extends Counts { category: string; breakdown: string; video: string | null }
 interface Bucket extends Counts { period: string }
-interface Video { id: string; title: string }
+interface Video { id: string; title: string; event?: boolean }
 interface Report {
   filters: {group: string; breakdown: string};
   totals: Counts; overview: Bucket[]; rows: Entry[];
 }
-type ReportType = "video" | "engagement" | "rating" | "region" | "source" | "device" | "date";
+type ReportType = "video" | "engagement" | "rating" | "region" | "source" | "device" | "date" | "bandwidth";
 interface EngagementMetrics {
   views: number; measured: number; finishes: number; average_watched: number | null; completion: number;
   points: Record<number, number>;
@@ -30,10 +30,17 @@ interface RatingReport {
   totals: RatingMetrics[];
   rows: (RatingMetrics & {title: string; video: string})[];
 }
+interface TransferMetrics {live_bytes: number; vod_bytes: number; total_bytes: number}
+interface BandwidthReport {
+  group: "month" | "video";
+  totals: TransferMetrics;
+  rows: (TransferMetrics & {label: string; video: string | null})[];
+}
 
 const parts = Object.keys(metricNames) as Metric[];
 const count = new Intl.NumberFormat(undefined, {maximumFractionDigits: 1});
 const percent = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
+const gigabytes = new Intl.NumberFormat(undefined, {maximumFractionDigits: 9});
 const identity = document.querySelector<HTMLFormElement>("#reportIdentity")!;
 const key = document.querySelector<HTMLInputElement>("#reportKey")!;
 const panel = document.querySelector<HTMLElement>("#analyticsDashboard")!;
@@ -43,6 +50,7 @@ const reportPanels = {
   video: document.querySelector<HTMLElement>("#videoReport")!,
   engagement: document.querySelector<HTMLElement>("#engagementReport")!,
   rating: document.querySelector<HTMLElement>("#ratingReport")!,
+  bandwidth: document.querySelector<HTMLElement>("#bandwidthReport")!,
 };
 const message = document.querySelector<HTMLElement>("#reportStatus")!;
 const search = document.querySelector<HTMLInputElement>("#reportSearch")!;
@@ -72,13 +80,21 @@ async function call(path: string, filters?: object) {
 }
 
 function selectedCount() {
-  selectedLabel.textContent = chosen.size ? `${count.format(chosen.size)} selected` : "All videos";
+  const everything = reportType.value === "bandwidth" ? "All videos and events" : "All videos";
+  selectedLabel.textContent = chosen.size ? `${count.format(chosen.size)} selected` : everything;
 }
 
 function videoOptions() {
   const query = search.value.trim().toLocaleLowerCase();
   const list = document.createDocumentFragment();
+  const allowEvents = reportType.value === "bandwidth";
+  document.querySelector<HTMLElement>("#reportVideoLabel")!.textContent = allowEvents ? "Videos and events" : "Videos";
+  document.querySelector<HTMLElement>("#reportSearchLabel")!.textContent = allowEvents ? "Search videos and events" : "Search library videos";
   for (const item of catalog) {
+    if (item.event && !allowEvents) {
+      chosen.delete(item.id);
+      continue;
+    }
     if (!query || chosen.has(item.id) || item.title.toLocaleLowerCase().includes(query)) {
       list.append(new Option(item.title, item.id, false, chosen.has(item.id)));
     }
@@ -89,7 +105,7 @@ function videoOptions() {
 
 videos.onchange = () => {
   if (videos.selectedOptions.length > 10000) {
-    message.textContent = "Choose up to 10,000 videos.";
+    message.textContent = "Choose up to 10,000 items.";
     videoOptions();
     return;
   }
@@ -116,7 +132,7 @@ input("from").oninput = input("to").oninput = () => { select("dates").value = ""
 for (const [name, label] of Object.entries(dimensionNames)) select("group").add(new Option(label, name));
 
 function usesVideoMetrics(kind: ReportType) {
-  return kind !== "engagement" && kind !== "rating";
+  return kind !== "engagement" && kind !== "rating" && kind !== "bandwidth";
 }
 
 function breakdownOptions() {
@@ -270,12 +286,26 @@ function renderRatings(report: RatingReport) {
   }
 }
 
+function renderBandwidth(report: BandwidthReport) {
+  document.querySelector<HTMLElement>("#bandwidthLabel")!.textContent = report.group === "month" ? "Month (UTC)" : "Content";
+  const table = document.querySelector<HTMLTableSectionElement>("#bandwidthRows")!;
+  table.replaceChildren();
+  for (const entry of [{...report.totals, label: "Total", video: null}, ...report.rows]) {
+    const row = table.insertRow();
+    videoLink(row.insertCell(), entry.label, entry.video);
+    for (const bytes of [entry.live_bytes, entry.vod_bytes, entry.total_bytes]) {
+      row.insertCell().textContent = gigabytes.format(bytes / 1_000_000_000);
+    }
+  }
+}
+
 function syncReportFilters(kind: ReportType) {
-  for (const label of controls.querySelectorAll<HTMLElement>("[data-video-filter], [data-playback-filter]")) {
+  for (const label of controls.querySelectorAll<HTMLElement>("[data-video-filter], [data-playback-filter], [data-bandwidth-filter]")) {
     const field = label.querySelector<HTMLInputElement | HTMLSelectElement>("input,select")!;
-    field.disabled = label.hasAttribute("data-video-filter")
-      ? !usesVideoMetrics(kind) || (field.name === "group" && kind !== "video")
-      : kind === "rating";
+    if (label.hasAttribute("data-bandwidth-filter")) field.disabled = kind !== "bandwidth";
+    else if (label.hasAttribute("data-video-filter")) {
+      field.disabled = !usesVideoMetrics(kind) || (field.name === "group" && kind !== "video");
+    } else field.disabled = kind === "rating" || kind === "bandwidth";
     label.hidden = field.disabled;
   }
   if (usesVideoMetrics(kind)) breakdownOptions();
@@ -299,6 +329,7 @@ async function apply() {
   if (request !== requestNumber) return;
   if (usesVideoMetrics(kind)) renderVideo(report);
   else if (kind === "engagement") renderEngagement(report);
+  else if (kind === "bandwidth") renderBandwidth(report);
   else renderRatings(report);
   const activePanel = usesVideoMetrics(kind) ? "video" : kind;
   for (const [name, section] of Object.entries(reportPanels)) section.hidden = name !== activePanel;
@@ -309,7 +340,7 @@ function showError(error: unknown) {
 }
 
 async function open() {
-  catalog = await (await call("videos")).json();
+  catalog = await (await call("videos?events=1")).json();
   const initial = new URLSearchParams(location.search).get("video");
   if (initial && catalog.some(item => item.id === initial)) chosen.add(initial);
   videoOptions();
@@ -322,7 +353,7 @@ async function open() {
 
 identity.onsubmit = (event) => { event.preventDefault(); void open().catch(showError); };
 controls.onsubmit = (event) => { event.preventDefault(); void apply().catch(showError); };
-reportType.onchange = () => { void apply().catch(showError); };
+reportType.onchange = () => { videoOptions(); void apply().catch(showError); };
 document.querySelector<HTMLButtonElement>("#downloadReport")!.onclick = async () => {
   if (!controls.reportValidity()) return;
   try {

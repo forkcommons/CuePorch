@@ -14,18 +14,18 @@ from playwright.sync_api import expect
 from installed_versions import generate_replacement
 
 
-def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, verify_region=False):
+def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, verify_region=False, verify_bandwidth=False):
     endpoint = base + "/api/analytics/video-report"
     today = datetime.now(timezone.utc).date().isoformat()
     title_a, title_b = "Advanced report station", "Advanced report festival"
 
-    def upload(title, video):
+    def upload(title, video, downloads=False):
         with video.open("rb") as stream:
             response = requests.post(
                 base + "/api/library/uploads", headers=auth, timeout=30,
                 files={"file": (title + ".mp4", stream, "video/mp4")},
                 data=dict(upload_id=str(uuid.uuid4()), privacy=json.dumps({
-                    "visibility": "public", "embed": "anywhere", "domains": [], "download": False,
+                    "visibility": "public", "embed": "anywhere", "domains": [], "download": downloads,
                 })),
             )
         response.raise_for_status()
@@ -196,4 +196,8 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, ver
         from installed_regions import check_regions
 
         results["regions_and_privacy"] = check_regions(page, browser, base, auth, museum, venue, a, b)
+    if verify_bandwidth:
+        from installed_bandwidth import check_bandwidth
+
+        results["bandwidth"] = check_bandwidth(page, base, auth, upload("Bandwidth fixture", clip, downloads=True))
     return results

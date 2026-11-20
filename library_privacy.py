@@ -24,6 +24,7 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import media_bandwidth
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
 from library_trash import hidden
@@ -551,8 +552,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         path = root / "objects" / item["sha256"]
         if not path.is_file():
             abort(404)
-        return send_file(path, mimetype=media_type, conditional=True,
-                         as_attachment=download, download_name="video.mp4" if download else None)
+        response = send_file(path, mimetype=media_type, conditional=True,
+                             as_attachment=download, download_name="video.mp4" if download else None)
+        return media_bandwidth.measure(response, tx, work["id"]) if track is None else response
 
     @app.get("/shared-video/<token>/poster")
     def shared_poster(token):

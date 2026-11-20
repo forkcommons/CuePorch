@@ -11,6 +11,7 @@ from flask import Response, abort, request
 from catalog import video_version_key
 from library_analytics import COUNTS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
 from library_registration import csv_cell
+import media_bandwidth
 
 
 DIMENSIONS = {
@@ -41,6 +42,15 @@ def row_metrics(row):
     return dict(values, average_watched_seconds=values["watched_seconds"] / values["views"] if values["views"] else 0)
 
 
+def content_selection(options, include_events=False):
+    selected = options.get("videos", [])
+    content_id = r"(?:[a-f0-9-]{36}|[a-f0-9]{32})" if include_events else r"[a-f0-9-]{36}"
+    if (not isinstance(selected, list) or len(selected) > 10000 or any(
+            not isinstance(item, str) or not re.fullmatch(content_id, item) for item in selected)):
+        abort(422, "Choose up to 10,000 library items.")
+    return list(dict.fromkeys(selected))
+
+
 def filter_settings(options):
     first, last, start, end = bounds(options)
     primary, secondary = options.get("group", "video"), options.get("breakdown", "")
@@ -51,11 +61,7 @@ def filter_settings(options):
             or period not in PERIODS or surface not in ("", *SURFACES) or device not in ("", *DEVICES)
             or len(source) > 270 or (region not in ("", "Unknown") and not REGION_CODE.fullmatch(region))):
         abort(422, "Choose valid report filters and distinct breakdowns.")
-    selected = options.get("videos", [])
-    if (not isinstance(selected, list) or len(selected) > 10000 or any(
-            not isinstance(item, str) or not re.fullmatch(r"[a-f0-9-]{36}", item) for item in selected)):
-        abort(422, "Choose up to 10,000 library videos.")
-    selected = list(dict.fromkeys(selected))
+    selected = content_selection(options)
     clause = " WHERE s.created>=? AND s.created<? AND d.item IS NULL"
     params = [start, end]
     for dimension, value in (("surface", surface), ("device", device), ("source", source), ("region", region)):
@@ -194,15 +200,20 @@ def register(app, tx, staff, read_works):
         return {work["id"]: renamed.get(work["id"], work["title"]) for work in works
                 if work.get("asset_type", "video") == "video" and work["id"] not in hidden}
 
+    def event_titles(con):
+        return dict(con.execute("SELECT id,coalesce(json_extract(settings,'$.title'),id) FROM live_event"))
+
     @app.get("/api/analytics/videos")
     def analytics_videos():
         staff()
         with tx() as con:
             works = catalog(con, read_works())
-        return [dict(id=uid, title=title) for uid, title in
-                sorted(works.items(), key=lambda item: (item[1].casefold(), item[0]))]
+            events = event_titles(con) if request.args.get("events") == "1" else {}
+        entries = [dict(id=uid, title=title) for uid, title in works.items()]
+        entries.extend(dict(id=uid, title=title, event=True) for uid, title in events.items())
+        return sorted(entries, key=lambda item: (item["title"].casefold(), item["id"]))
 
-    @app.post("/api/analytics/<any(video,date,device,source,region,engagement,rating):kind>-report")
+    @app.post("/api/analytics/<any(video,date,device,source,region,engagement,rating,bandwidth):kind>-report")
     def report_view(kind):
         staff()
         request.max_content_length = 512 * 1024
@@ -218,6 +229,13 @@ def register(app, tx, staff, read_works):
                 result = summarize(con, options, titles)
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))
+            elif kind == "bandwidth":
+                first, last, _, _ = bounds(options)
+                group = options.get("bandwidth_group", "month")
+                if group not in ("month", "video"):
+                    abort(422, "Group bandwidth by month or content.")
+                result = media_bandwidth.report(con, first, last, content_selection(options, include_events=True),
+                                                group, titles, event_titles(con))
             else:
                 result = rating_summary(con, options, titles)
         if request.args.get("format") != "csv":
@@ -235,6 +253,11 @@ def register(app, tx, staff, read_works):
                 (csv_cell(row["title"]), row["video"], row["mode"], row["votes"], row["average"],
                  *(row["scores"] + [None] * 5 if row["mode"] == "thumbs" else [None, None] + row["scores"]))
                 for row in [*(dict(total, title="Total", video="") for total in result["totals"]), *result["rows"]]
+            ))
+        if kind == "bandwidth":
+            return csv_download(kind, (result["group"], "content_id", "live_bytes", "on_demand_bytes", "total_bytes"), (
+                (csv_cell(row["label"]), row["item"] or "", row["live_bytes"], row["vod_bytes"], row["total_bytes"])
+                for row in [dict(result["totals"], label="Total", item=None), *result["rows"]]
             ))
         filters = result["filters"]
         return csv_download(kind, (filters["group"], filters["breakdown"] or "breakdown", "video_id", *METRICS), (

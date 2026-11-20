@@ -10,11 +10,12 @@ from playwright.sync_api import expect, sync_playwright
 import requests
 
 from browser import chromium
+from installed_bandwidth import bandwidth
 from installed_embed_builder import PublisherPage
 from installed_events import play_event, send_signal, wait_for_delivery
 
 
-def check_waiting_replay(base, keys, ffmpeg):
+def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
     auth = {"Authorization": "Bearer " + keys["operator"]}
 
     def api(method, path, data=None):
@@ -29,6 +30,13 @@ def check_waiting_replay(base, keys, ffmpeg):
         save_replay=True, archive_replay=False, schedule=dict(timezone="UTC", repeat="days", interval=1, count=2,
             start=(now - timedelta(days=1, minutes=2)).strftime("%Y-%m-%dT%H:%M"),
             end=(now + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M"))))
+
+    def event_bytes():
+        result = bandwidth(base, auth, event["id"], bandwidth_group="video")
+        return result["totals"], result["rows"]
+
+    if verify_bandwidth:
+        assert event_bytes()[0]["total_bytes"] == 0
     older, upcoming = [item["id"] for item in event["occurrences"]]
     operator_path = f"/api/live-events/{event['id']}"
     old_path = f"{operator_path}/{older}"
@@ -107,6 +115,10 @@ def check_waiting_replay(base, keys, ffmpeg):
             _, old_width, duration = play_event(watch_page, watch, "Replay", navigate=False)
             _, old_embed_width, _ = play_event(frame, embed, "Replay", navigate=False)
             assert (old_width, old_embed_width) == (320, 320) and duration >= 30
+            if verify_bandwidth:
+                replay_bytes, rows = event_bytes()
+                assert replay_bytes["live_bytes"] == 0 < replay_bytes["vod_bytes"]
+                assert rows == [replay_bytes | {"label": title, "item": event["id"], "video": None}]
             for page in (watch_page, frame):
                 page.get_by_role("button", name="Show replay captions").click(timeout=18000)
                 page.get_by_text("Replay transcript", exact=True).click()
@@ -132,10 +144,18 @@ def check_waiting_replay(base, keys, ffmpeg):
                 assert 320 < live_width <= 640 and 320 < live_embed_width <= 640
                 assert watch_page.url == watch and frame.url == embed
                 assert process.wait(timeout=65) == 0
-            return dict(approval_and_registration_gate_replay=True, direct_unauthorized_replay_denied=True,
-                        independent_embed_replay=True, recorded_width=old_width, recorded_duration=round(duration, 1),
-                        replay_captions_decoded_on_both_surfaces=True, opt_out_restored_schedule=True,
-                        live_preempted_replay=True, live_watch_width=live_width, live_embed_width=live_embed_width, stable_links=True)
+            evidence = dict(approval_and_registration_gate_replay=True, direct_unauthorized_replay_denied=True,
+                            independent_embed_replay=True, recorded_width=old_width, recorded_duration=round(duration, 1),
+                            replay_captions_decoded_on_both_surfaces=True, opt_out_restored_schedule=True,
+                            live_preempted_replay=True, live_watch_width=live_width, live_embed_width=live_embed_width, stable_links=True)
+            if verify_bandwidth:
+                delivered, _ = event_bytes()
+                assert delivered["live_bytes"] > 0 and delivered["vod_bytes"] >= replay_bytes["vod_bytes"]
+                assert delivered["total_bytes"] == delivered["live_bytes"] + delivered["vod_bytes"]
+                content = api("GET", "/api/analytics/videos?events=1")
+                assert {"id": event["id"], "title": title, "event": True} in content
+                evidence["gateway_bandwidth"] = delivered | {"vod_before_live_bytes": replay_bytes["vod_bytes"]}
+            return evidence
         finally:
             browser.close()
             publisher.shutdown()

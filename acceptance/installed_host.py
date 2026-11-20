@@ -54,6 +54,7 @@ live_modes.add_argument("--event-waiting", action="store_true", help="Verify eve
 live_modes.add_argument("--event-controls", action="store_true", help="Verify customized live playback controls on watch and embed")
 live_modes.add_argument("--encoder-preview", action="store_true", help="Verify private external RTMP and SRT previews and release")
 live_modes.add_argument("--waiting-replay", action="store_true", help="Verify registered replay and live transition on the same event player")
+p.add_argument("--event-bandwidth", action="store_true", help="Measure the replay and live gateway response bodies")
 live_modes.add_argument("--simulcast-event", action="store_true", help="Verify real RTMP and RTMPS event receivers")
 p.add_argument("--caption-speech", type=Path, help="Use a spoken audio fixture for live caption acceptance")
 live_modes.add_argument("--srt-event", action="store_true", help="Test encrypted SRT through the installed production controls")
@@ -68,6 +69,8 @@ if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnosti
     p.error("Live acceptance modes require --live-rtmp-port")
 if (a.captions_event or a.replay_captions) and (not a.caption_speech or not a.caption_speech.is_file()):
     p.error("Caption acceptance requires the --caption-speech audio fixture")
+if a.event_bandwidth and not a.waiting_replay:
+    p.error("--event-bandwidth requires --waiting-replay")
 
 
 def check_station_review(base, keys, package):
@@ -197,7 +200,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 elif a.encoder_preview:
                     evidence["event_delivery"] = check_encoder_preview(base, keys, ffmpeg, root, a.report)
                 elif a.waiting_replay:
-                    evidence["event_delivery"] = check_waiting_replay(base, keys, ffmpeg)
+                    evidence["event_delivery"] = check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=a.event_bandwidth)
                 elif a.simulcast_event:
                     evidence["event_delivery"] = check_simulcast(base, keys, ffmpeg, root, material)
                 elif a.captions_event:

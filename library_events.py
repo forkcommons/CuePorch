@@ -32,6 +32,7 @@ from catalog import video_version_key
 from library_actions import title_for
 from library_interactivity import text_field
 import library_registration
+import media_bandwidth
 
 
 SCHEMA = """
@@ -1047,9 +1048,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         with tx() as con:
             delivery = delivered(con, uid, revision, opens, form_revision, remote, replay)
         try:
-            return media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
+            response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
         except (ValueError, requests.RequestException):
             abort(404)
+        return media_bandwidth.measure(response, tx, uid, "vod" if replay else "live")
 
 
 def valid_ticket(signer, token, scope, age):

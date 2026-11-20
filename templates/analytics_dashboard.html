@@ -20,6 +20,7 @@
         <option value="video">Video</option><option value="engagement">Engagement</option>
         <option value="region">Region</option><option value="source">Source URL</option>
         <option value="device">Device</option><option value="date">Date</option><option value="rating">Video ratings</option>
+        <option value="bandwidth">Bandwidth</option>
       </select></label>
       <fieldset>
         <legend>Filters</legend>
@@ -43,10 +44,10 @@
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
-          <label>Search library videos <input id="reportSearch" type="search"></label>
-          <label for="reportVideos">Videos</label>
+          <label><span id="reportSearchLabel">Search library videos</span> <input id="reportSearch" type="search"></label>
+          <label id="reportVideoLabel" for="reportVideos">Videos</label>
           <select id="reportVideos" multiple size="7" aria-describedby="reportVideoHelp"></select>
-          <p id="reportVideoHelp">Select up to 10,000 videos. Clear the selection to report across the library.</p>
+          <p id="reportVideoHelp">Select up to 10,000 items. Clear the selection to include all available content.</p>
           <button id="clearVideos" type="button">Clear selection</button>
         </details>
       </fieldset>
@@ -58,6 +59,9 @@
           <label data-video-filter>Time scale <select name="period">
             <option value="day">Day</option><option value="week">Week</option>
             <option value="month">Month</option><option value="year">Year</option>
+          </select></label>
+          <label data-bandwidth-filter hidden>Bandwidth by <select name="bandwidth_group" disabled>
+            <option value="month">Month</option><option value="video">Content</option>
           </select></label>
           <button type="submit">Apply filters</button>
           <button id="downloadReport" type="button">Download CSV</button>
@@ -100,6 +104,15 @@
         <table><thead><tr><th scope="col">Video</th><th scope="col">Rating type</th><th scope="col">Votes</th>
           <th scope="col">Positive rate or average stars</th><th scope="col">Vote breakdown</th></tr></thead>
           <tbody id="ratingRows"></tbody></table>
+      </div>
+    </section>
+    <section id="bandwidthReport" aria-labelledby="bandwidthHeading" hidden>
+      <h2 id="bandwidthHeading">Media delivered by CuePorch</h2>
+      <p>Gigabytes use the decimal definition. The CSV gives exact response bytes.</p>
+      <div class="analytics-table">
+        <table><thead><tr><th id="bandwidthLabel" scope="col">Month (UTC)</th><th scope="col">Live GB</th>
+          <th scope="col">On-demand GB</th><th scope="col">Total GB</th></tr></thead>
+          <tbody id="bandwidthRows"></tbody></table>
       </div>
     </section>
   </main>
