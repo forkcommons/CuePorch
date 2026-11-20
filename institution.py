@@ -92,6 +92,7 @@ from review_settings import new_upload as create_upload_review
 STEPS = (
     "intake",
     "caption",
+    "translation",
     "publication",
     "replay",
     "migration",
@@ -185,6 +186,7 @@ def create_app(root, database, operator, institution, simulation=None):
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
         team_accounts.initialize_permissions(db)
         team_sessions.initialize(db)
+        library_caption_jobs.initialize(db)
         workspace_updates.initialize(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
@@ -744,6 +746,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     AND j.status IN ('queued','waiting'))""",
                     (step,),
                 )
+                if step in ("caption", "translation"):
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM caption_job WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1578,7 +1584,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return {"queued": queued}, 202
 
     library_worker.start(app, root, database, tx, action, apply_routes)
-    library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_caption_jobs"] = library_caption_jobs.start(app, root, tx, remember_work)
     app.extensions["stop_editor"] = start_editor()
     app.extensions["stop_file_links"] = start_file_links()
     review_push.start(app, tx, database)

@@ -25,6 +25,12 @@
       <h2 id="automaticSubtitles">Automatic subtitles</h2>
       <button type="button" id="generateCaptions" disabled>Generate subtitles with TextFlowKit</button>
       <p id="captionJobStatus" aria-live="polite"></p>
+      <form id="translateSubtitles">
+        <label>Source subtitle track <select name="source" required></select></label>
+        <label>Target language <input name="target" required placeholder="es" maxlength="40"></label>
+        <button type="submit" disabled>Translate subtitles</button>
+        <p id="subtitleTranslationStatus" aria-live="polite"></p>
+      </form>
     </section>
     <form id="uploadSubtitle">
       <label>Text track type <select name="kind"><option value="subtitles">Subtitles</option><option value="captions">Captions</option></select></label>
