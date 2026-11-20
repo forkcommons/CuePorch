@@ -96,7 +96,7 @@ def check_audience_accounts(browser, base, staff, sample):
         expect(details.get_by_label("Display name")).to_have_value("Maya")
         details.get_by_label("Display name").fill("Maya Gallery")
         details.get_by_label("Pronouns").fill("she/her")
-        details.get_by_label("Email").fill(new_email)
+        details.get_by_label("Email", exact=True).fill(new_email)
         details.get_by_label("Current password to change email").fill(original)
         details.get_by_role("button", name="Save account details").click()
         expect(first.locator("#viewerAccountStatus")).to_have_text("Account details saved.")
