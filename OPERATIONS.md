@@ -56,7 +56,7 @@ Routes below are relative to `/api/v1/live-events`. The event ID and occurrence 
 | `read` | `GET` at the base path, `GET /{event}`, `GET /{event}/{opens}/health` | Read the calendar, current revision, playback URLs, occurrences and host health. |
 | `schedule` | `POST` at the base path, `PUT /{event}` | Create or update the same event record as the operator console. The update body supplies the last returned `revision`. An older revision returns HTTP 409. |
 | `produce` | `POST /{event}/{opens}/encoder`, `GET or POST /{event}/{opens}/preview`, `GET or PUT /{event}/{opens}/program`, `DELETE /{event}/{opens}/delivery` | Prepare the encoder, inspect or release a private preview, configure a prerecorded program or withdraw delivery. Encoder credentials are sensitive. |
-| `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export`, `POST /{event}/{opens}/registrants`, `DELETE /{event}/{opens}/registrants/{id}/join` | Manage the form, retrieve attendee data, enroll for an occurrence and revoke its personal link. Only give this scope to an application authorized to handle those records. |
+| `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export`, `POST /{event}/{opens}/registrants`, `DELETE /{event}/{opens}/registrants/{id}/join`, `GET /{event}/registrants/{id}` | Manage the form, export registrations, enroll for an occurrence, revoke its personal link or retrieve the attendee referenced by a webhook. Only give this scope to an application authorized to handle those records. |
 
 ```sh
 curl --header "Authorization: Bearer $CUEPORCH_EVENT_TOKEN" "https://media.example.org/api/v1/live-events?from=2026-11-01&to=2026-11-30"
@@ -86,6 +86,24 @@ The response supplies the accepted settings, publication state, stable event lin
 To register someone through a trusted attendee application, supply `email`, applicable `first_name` and `last_name` values, and the enabled form's required answer keys in the registrant request. Supply checkbox answers as booleans or as `"yes"` and `"no"`. A retry for the same address and occurrence updates the stored answers and returns the same join link. The response includes the registrant identifier, the relative `join` URL and `expires_at` in epoch seconds. Deliver the full URL, including its fragment, privately to that attendee. The browser redeems it using a first-party cookie for the occurrence. An event password still applies. The event's ordinary form serves embedded viewers. When the occurrence ends, the personal link and its playback grants expire. Revoking the link immediately invalidates media URLs issued through it. Registration data remains available to the authorized organizer.
 
 The API responds with HTTP 401 for missing, expired or revoked tokens, HTTP 403 for insufficient scope, and HTTP 429 with `Retry-After` after 120 authorized requests in a UTC minute. This limit is per credential. Use the workspace Owner's authenticated panel or `/api/operator/live-api/credentials` to list, issue or revoke tokens. A full private instance backup includes credential records. Portable collection exports exclude them.
+
+When moving a Vimeo Live integration, issue a CuePorch workspace token and map Vimeo event URIs to CuePorch event IDs. Use the event calendar to select the occurrence before asking for encoder settings, health or delivery controls. Read the replay's `watch` and `embed` values from the occurrence after publication. Store those URLs separately from the series URL. Update callback verification and field names using the contract below. [Vimeo event integration reference](https://developer.vimeo.com/api/live/events)
+
+### Live event webhooks
+
+Set `CUEPORCH_EVENT_WEBHOOK_ORIGINS` to a space-separated list of exact HTTPS receiver origins, including a port when needed, and restart CuePorch. The receiver needs a TLS certificate trusted by CuePorch. Callback URLs may include a path. CuePorch rejects query strings, fragments and embedded credentials, and does not follow redirects.
+
+As workspace Owner, `POST /api/operator/live-api/webhooks` with `endpoint` and a `topics` array. Copy the `signing_secret` from the creation response into your receiver's secret storage. `GET` on the same path lists subscription IDs and supported topics. `GET /api/operator/live-api/webhooks/{id}` lists recent deliveries, attempt counts and HTTP status codes. `DELETE` at that path revokes the subscription and removes its delivery queue and history. To rotate the secret, create a replacement subscription and revoke the old one after switching the receiver.
+
+| Topic | CuePorch sends it when |
+| --- | --- |
+| `live-event-updated` | An operator or API client saves a new event or revision. |
+| `live-event-clip-created` | CuePorch provisions a live clip on the delivery host. |
+| `live-event-started`, `live-event-ended` | CuePorch observes the start and end of the occurrence on the delivery host, or an operator withdraws a live occurrence. |
+| `live-event-archive-available` | The retained replay is ready and the event's publication rules allow access. |
+| `registration-created` | The first registration for a new attendee is stored. The payload includes an opaque `data.registrant` ID. Look up the attendee with `GET /api/v1/live-events/{event}/registrants/{id}` and a token with the `registrations` scope. |
+
+Each JSON delivery contains `id`, `type`, `event`, `occurrence`, `occurred_at` and `data`. The occurrence is null for event-wide changes. Verify the `X-CuePorch-Signature` header against `v1=` followed by the hexadecimal HMAC-SHA256 of the `X-CuePorch-Timestamp` value, a literal period and the raw request body, using the subscription secret. Compare in constant time and reject stale timestamps. Store the `X-CuePorch-Delivery` ID to make processing idempotent, then return HTTP 2xx. CuePorch retries other statuses and connection failures with the same ID and payload, using a fresh timestamp and signature. The five retry delays are 10, 30, 120, 300 and 900 seconds.
 
 ## Source-only validation
 

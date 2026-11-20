@@ -46,6 +46,7 @@ import audience_accounts
 import audience_comments
 import content_rating
 import event_api
+import event_webhooks
 from browser_account_security import same_origin, secure_site
 import community_analytics
 import creator_profiles
@@ -186,6 +187,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_registration.SCHEMA
             + library_events.SCHEMA
             + event_api.SCHEMA
+            + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
             + library_analytics.SCHEMA
             + media_bandwidth.SCHEMA
@@ -1332,6 +1334,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor)
     event_api.register(app, tx, team_origin, credential_owner)
+    app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

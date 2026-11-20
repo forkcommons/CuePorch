@@ -45,7 +45,7 @@ def decode(signer, value):
     return item if isinstance(item, str) and IDENTIFIER.fullmatch(item) else None
 
 
-def enroll(con, event, revision, slot, form, body):
+def enroll(con, event, revision, slot, form, body, on_create=None):
     if not isinstance(body, dict) or not isinstance(body.get("email"), str):
         abort(422, "Enter an attendee email address and registration answers.")
     values = {}
@@ -56,7 +56,7 @@ def enroll(con, event, revision, slot, form, body):
             values[name] = value
         else:
             abort(422, "Send registration answers as text or checkbox values.")
-    failure = library_registration.enroll(con, "event", event, form, values, {}, replace=True)
+    failure = library_registration.enroll(con, "event", event, form, values, {}, replace=True, on_create=on_create)
     if failure:
         abort(422, failure)
     now, expires = int(time()), expires_at(slot)

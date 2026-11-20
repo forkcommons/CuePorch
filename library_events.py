@@ -36,6 +36,7 @@ import event_scenes
 import event_simulcast
 import event_slide_decks
 import event_speakers
+import event_webhooks
 from catalog import video_version_key
 import content_rating
 from library_actions import title_for
@@ -90,6 +91,48 @@ def publication(con, row, event):
 
 def occurrence(con, uid, opens):
     return con.execute("SELECT * FROM live_occurrence WHERE event=? AND opens=?", (uid, opens)).fetchone()
+
+
+def find_open(event, opens):
+    try:
+        instant = datetime.fromtimestamp(opens, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
+                 if value["id"] == opens), None)
+
+
+def observe_delivery(tx, database, origin, connect):
+    now = datetime.now(timezone.utc)
+    with tx() as con:
+        if not event_webhooks.subscribed(con, ("live-event-started", "live-event-ended")):
+            return
+        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed FROM live_occurrence o
+                             JOIN live_event e ON e.id=o.event LEFT JOIN live_webhook_feed f
+                             ON f.event=o.event AND f.occurrence=o.opens WHERE o.origin=? AND o.delivery='ready'
+                             AND o.opens<=? AND (f.state IS NULL OR f.state='live')""", (origin, now.timestamp())).fetchall()
+    for item in entries:
+        uid, opens = item["event"], item["opens"]
+        slot = find_open(json.loads(item["settings"]), opens)
+        if not slot:
+            continue
+        try:
+            with lock_event(database, uid, timeout=0):
+                with tx() as con:
+                    current = occurrence(con, uid, opens)
+                    if not current or current["delivery"] != "ready" or current["remote"] != item["remote"]:
+                        continue
+                state = event_peer.observe(connect(origin), item["remote"])["state"]
+                with tx() as con:
+                    if state == "waiting_for_encoder" and datetime.fromisoformat(slot["end"]) <= now:
+                        if item["observed"] == "live":
+                            event_webhooks.observe(con, uid, opens, "ended")
+                        else:
+                            con.execute("INSERT OR IGNORE INTO live_webhook_feed VALUES(?,?,'closed')", (uid, opens))
+                    else:
+                        event_webhooks.observe(con, uid, opens, state)
+        except (Timeout, ValueError, requests.RequestException, KeyError):
+            continue
 
 
 def private_delivery(con, event, uid, opens):
@@ -168,6 +211,7 @@ def publish_replays(tx, database, origin, connect, action):
                         host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
+                        event_webhooks.enqueue(con, "live-event-archive-available", uid, opens, data=dict(clip=remote))
         except (Timeout, ValueError, requests.RequestException, KeyError):
             continue
 
@@ -377,6 +421,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     def stop():
         app.extensions["account_reset_delivery"].stop()
+        if stop_webhooks := app.extensions.get("stop_event_webhooks"):
+            stop_webhooks()
         outputs.close()
         preview_outputs.close()
         programs.close()
@@ -489,8 +535,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if con.execute("SELECT 1 FROM live_event WHERE slug=?", (slug,)).fetchone():
                 abort(409, "This event link name is already used.")
             approval = publishing_action(con, action, uid, event)
-            con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, uuid.uuid4().hex,
+            revision = uuid.uuid4().hex
+            con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, revision,
                         json.dumps(event), approval, datetime.now(timezone.utc).isoformat()))
+            event_webhooks.enqueue(con, "live-event-updated", uid, marker=revision, data=dict(change="created", revision=revision))
             store_access(con, uid, access)
             if setup:
                 apply_setup(con, uid, event, setup, reference)
@@ -580,8 +628,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     abort(409, "Withdraw prepared occurrences before changing this event.")
                 supersede_publication(con, row["publication"])
                 approval = publishing_action(con, action, uid, changed)
+                revision = uuid.uuid4().hex
                 con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
-                            (uuid.uuid4().hex, json.dumps(changed), approval, uid))
+                            (revision, json.dumps(changed), approval, uid))
+                event_webhooks.enqueue(con, "live-event-updated", uid, marker=revision, data=dict(change="updated", revision=revision))
                 store_access(con, uid, access)
                 row, _ = read(con, uid)
                 if prior["schedule"] != changed["schedule"]:
@@ -616,14 +666,6 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             read(con, uid)
             return library_registration.export(con, "event", uid)
 
-    def find_open(event, opens):
-        try:
-            instant = datetime.fromtimestamp(opens, timezone.utc)
-        except (ValueError, OverflowError, OSError):
-            return None
-        return next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
-                     if value["id"] == opens), None)
-
     def selected_open(event, opens):
         candidate = find_open(event, opens)
         if not candidate:
@@ -642,9 +684,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if not form or event["visibility"] in ("private", "embed_only") or (delivery and delivery["delivery"] in (
                     "withdrawing", "withdrawn", "replay")):
                 abort(409, "Choose a current watchable occurrence with registration enabled.")
-            registrant, created = event_attendance.enroll(con, uid, row["revision"], slot, form, body)
+            registrant, created = event_attendance.enroll(
+                con, uid, row["revision"], slot, form, body,
+                on_create=lambda email_key: event_webhooks.registration_created(con, uid, opens, email_key))
         address = url_for("event_attendance_join", slug=row["slug"])
         return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
+
+    @app.get("/api/live-events/<uid>/registrants/<registrant>")
+    def event_registrant_details(uid, registrant):
+        staff()
+        with tx() as con:
+            read(con, uid)
+            found = con.execute("""SELECT r.email,r.registered,r.answers FROM live_webhook_registrant a
+                                   JOIN viewer_registrant r ON r.subject=a.event AND r.email_key=a.email_key
+                                   WHERE a.id=? AND a.event=? AND r.kind='event'""", (registrant, uid)).fetchone()
+            if not found:
+                abort(404)
+            return dict(id=registrant, email=found["email"], registered=found["registered"], answers=json.loads(found["answers"]))
 
     @app.delete("/api/live-events/<uid>/<int:opens>/registrants/<registrant>/join")
     def revoke_event_join(uid, opens, registrant):
@@ -849,6 +905,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                             con.execute("INSERT OR IGNORE INTO live_encoder_preview(event,opens) VALUES(?,?)", (uid, opens))
                         con.execute("UPDATE live_occurrence SET delivery=? WHERE event=? AND opens=?",
                                     ("preview" if preview else "ready", uid, opens))
+                        if not preview:
+                            event_webhooks.enqueue(con, "live-event-clip-created", uid, opens, data=dict(clip=remote))
                 if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
                     abort(409, "This event already has a live or finished signal.")
                 return dict(event_peer.encoder(host, remote), public=broadcast and not preview, preview=preview)
@@ -1059,6 +1117,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 with tx() as con:
                     con.execute("UPDATE live_occurrence SET delivery='withdrawn' WHERE event=? AND opens=?",
                                 (uid, opens))
+                    if con.execute("SELECT 1 FROM live_webhook_feed WHERE event=? AND occurrence=? AND state='live'",
+                                   (uid, opens)).fetchone():
+                        event_webhooks.observe(con, uid, opens, "ended")
                 return "", 204
         except Timeout:
             abort(409, "Another operation is preparing this event.")
@@ -1122,6 +1183,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         con.execute("UPDATE live_encoder_preview SET source=?,cutoff=?,server=?,key=? WHERE event=? AND opens=?",
                                     (source, cutoff, server, protected_key, uid, opens))
                         con.execute("UPDATE live_occurrence SET delivery='ready',remote=? WHERE event=? AND opens=?", (remote, uid, opens))
+                        event_webhooks.enqueue(con, "live-event-clip-created", uid, opens, data=dict(clip=remote))
                     return dict(state="released", address=None)
 
             revision, _, _, delivery, _ = target()
@@ -1295,7 +1357,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if request.method == "POST" and not withdrawn and not just_unlocked:
                     if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
                         abort(403, "Open the registration form again.")
-                    form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
+                    form_error = library_registration.enroll(
+                        con, "event", row["id"], form, request.form, request.args,
+                        on_create=lambda email_key: event_webhooks.registration_created(con, row["id"], shown["id"], email_key))
                     if not form_error:
                         grant = guests.dumps(scope)
                 else:

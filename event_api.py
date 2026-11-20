@@ -31,6 +31,7 @@ ROUTES = (
     ("/<uid>", "revise_event", {"PUT": "schedule"}),
     ("/<uid>/registration", "event_registration", {"GET": "registrations", "PUT": "registrations"}),
     ("/<uid>/registration/export", "export_event_registration", {"GET": "registrations"}),
+    ("/<uid>/registrants/<registrant>", "event_registrant_details", {"GET": "registrations"}),
     ("/<uid>/<int:opens>/registrants", "add_event_registrant", {"POST": "registrations"}),
     ("/<uid>/<int:opens>/registrants/<registrant>/join", "revoke_event_join", {"DELETE": "registrations"}),
     ("/<uid>/<int:opens>/health", "event_health", {"GET": "read"}),
