@@ -52,6 +52,7 @@ import library_appearance
 import library_caption_jobs
 import library_ai_drafts
 import library_video_questions
+import studio_scripts
 import team_ai_policy
 import library_details
 import library_discovery
@@ -98,6 +99,7 @@ STEPS = (
     "caption",
     "translation",
     *library_ai_drafts.FEATURES,
+    studio_scripts.STEP,
     "publication",
     "replay",
     "migration",
@@ -156,6 +158,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_caption_jobs.SCHEMA
             + library_ai_drafts.SCHEMA
             + library_video_questions.SCHEMA
+            + studio_scripts.SCHEMA
             + team_ai_policy.SCHEMA
             + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
@@ -764,6 +767,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM library_ai_draft WHERE state='queued')""", (step,))
+                if step == studio_scripts.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM studio_script_job WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1309,7 +1316,8 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
-                            operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing)
+                            operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
+                            ai_actor)
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
@@ -1507,7 +1515,8 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/operator/record")
     def record_studio():
         embedded = request.args.get("timeline") == "1"
-        response = Response(render_template("record_studio.html", embedded=embedded), mimetype="text/html")
+        response = Response(render_template("record_studio.html", embedded=embedded, **studio_scripts.CONTROLS),
+                            mimetype="text/html")
         response.headers["Content-Security-Policy"] = "frame-ancestors 'self'" if embedded else "frame-ancestors 'none'"
         return response
 

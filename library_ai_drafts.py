@@ -2,11 +2,10 @@
 
 import hashlib
 import json
-from threading import Event, Thread
 import time
 import uuid
 
-from filelock import FileLock, Timeout
+from filelock import FileLock
 from flask import abort, request
 from werkzeug.exceptions import HTTPException
 
@@ -219,10 +218,6 @@ def register(app, tx, root, get_work, title_for, save_title, remember_work, acti
                      if item["id"] == job["work"]), None)
 
     def start():
-        if not local_model.runtime():
-            return lambda: None
-        stopping = Event()
-
         def status(con, job, state, error=None, result=None):
             con.execute("UPDATE library_ai_draft SET state=?,error=?,result=? WHERE id=?",
                         (state, error, json.dumps(result) if result else None, job["id"]))
@@ -238,7 +233,7 @@ def register(app, tx, root, get_work, title_for, save_title, remember_work, acti
                 return None
             return work
 
-        def process():
+        def process(stopping):
             with tx() as con:
                 job = con.execute("""SELECT j.*,a.status AS gate FROM library_ai_draft j JOIN action a ON a.id=j.id
                     WHERE j.state IN ('queued','running') AND a.status IN ('eligible','rejected')
@@ -272,24 +267,6 @@ def register(app, tx, root, get_work, title_for, save_title, remember_work, acti
                     with tx() as con:
                         status(con, job, "superseded" if conflict else "failed", error)
 
-        def run():
-            lock = FileLock(str(root / ".ai-draft-run.lock"), timeout=0)
-            while not stopping.wait(1):
-                try:
-                    with lock:
-                        process()
-                except Timeout:
-                    pass
-                except Exception:
-                    app.logger.exception("Video draft worker could not process its queue")
-
-        worker = Thread(target=run, name="CuePorch video draft worker", daemon=True)
-        worker.start()
-
-        def stop():
-            stopping.set()
-            worker.join(timeout=6)
-
-        return stop
+        return local_model.start_worker(app, root / ".ai-draft-run.lock", "CuePorch video draft worker", process)
 
     return start

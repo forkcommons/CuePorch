@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS team_ai_policy(
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision TEXT NOT NULL, settings TEXT NOT NULL);
 """
 FEATURES = {"caption": "Generate captions", "translation": "Translate subtitles",
-            "ai_details": "Generate video details", "ai_chapters": "Generate chapters"}
+            "ai_details": "Generate video details", "ai_chapters": "Generate chapters", "ai_script": "Generate scripts"}
 DEFAULTS = {
     "features": {key: {"enabled": True, "administrators": True} for key in FEATURES},
     "dictionary": [],
@@ -110,13 +110,14 @@ def usage_report(con):
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(("requested_at_utc", "workflow", "job_id", "work_id", "requested_by", "language", "status",
-                     "published_cues"))
+                     "published_cues", "event_id"))
     for job in con.execute("""WITH jobs AS (
         SELECT j.id,j.work,j.language,j.created,j.requested_by,j.state,
             CASE WHEN j.requested_by IS NULL AND j.state='complete' AND j.cue_count=0
-                THEN NULL ELSE j.cue_count END AS cue_count
+                THEN NULL ELSE j.cue_count END AS cue_count,NULL AS event
         FROM caption_job j
-        UNION ALL SELECT id,work,source_language,created,requested_by,state,NULL FROM library_ai_draft
+        UNION ALL SELECT id,work,source_language,created,requested_by,state,NULL,NULL FROM library_ai_draft
+        UNION ALL SELECT id,NULL,NULL,created,requested_by,state,NULL,event FROM studio_script_job
         )
         SELECT j.*,a.step,CASE
             WHEN a.status='rejected' AND j.state='queued' THEN 'rejected'
@@ -129,7 +130,7 @@ def usage_report(con):
         if actor.lstrip()[:1] in ("=", "+", "-", "@") or actor.startswith(("\t", "\r", "\n")):
             actor = "'" + actor
         writer.writerow((datetime.fromtimestamp(job["created"], timezone.utc).isoformat(), job["step"], job["id"],
-                         job["work"], actor, job["language"], job["public_state"], job["cue_count"]))
+                         job["work"], actor, job["language"], job["public_state"], job["cue_count"], job["event"]))
     response = private(output.getvalue())
     response.mimetype = "text/csv"
     response.headers["Content-Disposition"] = 'attachment; filename="cueporch-ai-usage.csv"'

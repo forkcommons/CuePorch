@@ -2,8 +2,10 @@
 
 import json
 import os
+from threading import Event, Thread
 from urllib.parse import urlsplit
 
+from filelock import FileLock, Timeout
 import requests
 
 
@@ -56,3 +58,29 @@ def generate(prompt, schema):
             raise ModelError("The configured local model is unavailable. Start it and retry.") from exc
         except (json.JSONDecodeError, UnicodeError, KeyError, TypeError) as exc:
             raise ModelError("The configured local model returned invalid JSON.") from exc
+
+
+def start_worker(app, lock_path, label, process):
+    if not runtime():
+        return lambda: None
+    stopping = Event()
+
+    def run():
+        lock = FileLock(str(lock_path), timeout=0)
+        while not stopping.wait(1):
+            try:
+                with lock:
+                    process(stopping)
+            except Timeout:
+                pass
+            except Exception:
+                app.logger.exception("%s could not process its queue", label)
+
+    worker = Thread(target=run, name=label, daemon=True)
+    worker.start()
+
+    def stop():
+        stopping.set()
+        worker.join(timeout=6)
+
+    return stop

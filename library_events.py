@@ -44,6 +44,7 @@ import library_registration
 import media_bandwidth
 import regional_availability
 import studio_voice
+import studio_scripts
 
 
 SCHEMA = """
@@ -365,7 +366,7 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing):
+             sharing_access, enforce_sharing, ai_actor):
     media = Gateway()
     studio = Studio(database)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
@@ -382,6 +383,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         replay_captions.close()
         recordings.close()
         stop_voice()
+        stop_scripts()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
@@ -434,7 +436,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                health_endpoint=url_for("event_health", uid=uid, opens=opens),
                                speaker_endpoint=url_for("event_speakers", event=uid, opens=opens),
                                engagement_endpoint=url_for("operator_event_engagement", uid=uid, opens=opens),
-                               speaker_public_url=public_url)
+                               script_endpoint=url_for("studio_event_scripts", uid=uid, opens=opens),
+                               speaker_public_url=public_url, **studio_scripts.CONTROLS)
 
     @app.route("/api/live-events", methods=["GET", "POST"])
     def list_events():
@@ -606,6 +609,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def operator_chat(con, uid, opens):
         _, event = read(con, uid)
         selected_open(event, opens)
+
+    stop_scripts = studio_scripts.register(app, tx, database, action, ai_actor, operator_chat)
 
     def library_recording_access(con, uid, opens):
         _, event = read(con, uid)

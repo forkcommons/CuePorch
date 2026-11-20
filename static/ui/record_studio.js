@@ -8,6 +8,7 @@ import { StudioAudio } from "./studio_audio.js";
 import { setupStudioEngagement } from "./studio_engagement.js";
 import { setupSpeakers } from "./studio_speakers.js";
 import { StudioPrompter } from "./studio_prompter.js";
+import { studioScriptGenerator } from "./studio_script_generator.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const select = (id) => element(id);
@@ -22,6 +23,7 @@ const film = element("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
 const prompter = new StudioPrompter(() => camera?.stream.getAudioTracks().find(track => track.readyState === "live"), () => key.value);
+const loadScripts = studioScriptGenerator(() => key.value);
 const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
@@ -539,6 +541,7 @@ async function open() {
     sessionStorage.setItem("cueporchOperator", key.value);
     identity.hidden = true;
     element("recordStudio").hidden = false;
+    void loadScripts();
     if (!navigator.mediaDevices) {
         element("recordSources").disabled = true;
         status.textContent = "Open Studio on localhost or HTTPS to access recording devices.";
