@@ -16,6 +16,7 @@ import account_email
 import account_email_factor
 import team_saml
 import team_scim
+import team_group_roles
 import account_recovery
 import account_totp
 import creator_profiles
@@ -94,7 +95,8 @@ def permission_from(body):
 
 
 def current(con, secure):
-    return con.execute("""SELECT m.id,m.name,m.email,m.role FROM team_session s JOIN team_member m ON m.id=s.member
+    return con.execute(f"""SELECT m.id,m.name,m.email,{team_group_roles.EFFECTIVE_ROLE} AS role
+        FROM team_session s JOIN team_member m ON m.id=s.member
         WHERE s.token_hash=? AND s.expires>? AND m.removed IS NULL AND
         (m.role<>'owner' OR NOT EXISTS(SELECT 1 FROM team_saml_session f WHERE f.token_hash=s.token_hash))""",
         (workspace_session("team", secure), time.time())).fetchone()
@@ -130,8 +132,10 @@ def ownership(con, actor):
 
 
 def roster(con):
-    members = [dict(row) for row in con.execute("""SELECT id,email,name,role,joined,removed
-        FROM team_member ORDER BY removed IS NOT NULL,name,email""")]
+    members = [dict(row, role_override=bool(row["role_override"])) for row in con.execute(f"""
+        SELECT m.id,m.email,m.name,m.role,m.joined,m.removed,{team_group_roles.EFFECTIVE_ROLE} AS effective_role,
+            EXISTS(SELECT 1 FROM team_member_role_override direct WHERE direct.member=m.id) AS role_override
+        FROM team_member m ORDER BY m.removed IS NOT NULL,m.name,m.email""")]
     invitations = [dict(row) for row in con.execute("SELECT id,email,role,expires FROM team_invitation ORDER BY email")]
     return members, invitations
 
@@ -293,6 +297,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
             WHERE id IN (SELECT team_group FROM team_group_member WHERE member=?)""", (uid,))
         con.execute("DELETE FROM team_group_member WHERE member=?", (uid,))
+        team_group_roles.set_direct_role(con, uid, False)
 
     def delete_group(con, uid):
         con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
@@ -301,6 +306,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             WHERE id IN (SELECT workspace FROM team_workspace_link_group WHERE team_group=?)""", (uid,))
         con.execute("DELETE FROM team_workspace_link_group WHERE team_group=?", (uid,))
         con.execute("DELETE FROM team_scim_group WHERE team_group=?", (uid,))
+        con.execute("DELETE FROM team_saml_group WHERE team_group=?", (uid,))
+        con.execute("DELETE FROM team_group_role WHERE team_group=?", (uid,))
         con.execute("DELETE FROM team_group WHERE id=?", (uid,))
 
     team_scim.register(app, tx, origin, operator_name, ownership, mutation, note, revoke_member_access, delete_group)
@@ -378,8 +385,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         if not check_password_hash(row["password_hash"] if row and row["password_hash"] else dummy, entered) or row is None:
             abort(401, "The email or password did not match an active team member.")
         with tx() as con:
-            logged_in = con.execute("""SELECT id,email,name,role FROM team_member
-                WHERE id=? AND email=? AND password_hash=? AND removed IS NULL""",
+            logged_in = con.execute(f"""SELECT m.id,m.email,m.name,{team_group_roles.EFFECTIVE_ROLE} AS role FROM team_member m
+                WHERE m.id=? AND m.email=? AND m.password_hash=? AND m.removed IS NULL""",
                 (row["id"], email, row["password_hash"])).fetchone()
             if logged_in is None:
                 abort(401, "The email or password did not match an active team member.")
@@ -446,7 +453,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         writer.writerow(("Email", "Name", "Role", "Date added (UTC)", "Status"))
         for row in members:
             joined = datetime.fromtimestamp(row["joined"], timezone.utc).isoformat()
-            writer.writerow((spreadsheet_cell(row["email"]), spreadsheet_cell(row["name"]), row["role"],
+            writer.writerow((spreadsheet_cell(row["email"]), spreadsheet_cell(row["name"]), row["effective_role"],
                              joined, "Removed" if row["removed"] is not None else "Accepted"))
         now = time.time()
         for row in invitations:
@@ -475,6 +482,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(409, "Choose a member who can recover the workspace with a local account.")
             if current_owner:
                 con.execute("UPDATE team_member SET role='admin' WHERE id=?", (current_owner,))
+                team_group_roles.set_direct_role(con, current_owner, True)
             con.execute("UPDATE team_member SET role='owner' WHERE id=?", (uid,))
             note(con, actor, "owner_changed", uid, current_owner)
         return private("", 204)
@@ -529,9 +537,17 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 revoke_member_access(con, uid)
                 note(con, actor, "removed", uid, previous)
-            elif (role := role_from(body)) != previous:
-                con.execute("UPDATE team_member SET role=? WHERE id=?", (role, uid))
-                note(con, actor, "role_changed", uid, previous + " → " + role)
+            else:
+                role = role_from(body)
+                direct = body.get("role_override")
+                if "role_override" in body and not isinstance(direct, bool):
+                    abort(400, "Choose whether this member's direct role overrides group defaults.")
+                if role != previous:
+                    con.execute("UPDATE team_member SET role=? WHERE id=?", (role, uid))
+                    note(con, actor, "role_changed", uid, previous + " → " + role)
+                if direct is not None or role != previous:
+                    team_group_roles.set_direct_role(con, uid, direct is not False)
+                    note(con, actor, "role_source_changed", uid, "direct" if direct is not False else "group")
         return private("", 204)
 
     @app.get("/api/team/audit")
@@ -549,8 +565,11 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 WHERE removed IS NULL ORDER BY name COLLATE NOCASE,email""")]
             folders = [dict(row) for row in visible_folders(con)]
             groups = {row["id"]: dict(row, managed=bool(row["managed"]), members=[], folders=[], edit_folders=[]) for row in con.execute(
-                """SELECT g.id,g.name,g.revision,(s.team_group IS NOT NULL) AS managed
-                    FROM team_group g LEFT JOIN team_scim_group s ON s.team_group=g.id ORDER BY g.name COLLATE NOCASE""")}
+                """SELECT g.id,g.name,g.revision,defaults.role AS default_role,
+                           (scim.team_group IS NOT NULL OR saml.team_group IS NOT NULL) AS managed
+                    FROM team_group g LEFT JOIN team_scim_group scim ON scim.team_group=g.id
+                    LEFT JOIN team_saml_group saml ON saml.team_group=g.id
+                    LEFT JOIN team_group_role defaults ON defaults.team_group=g.id ORDER BY g.name COLLATE NOCASE""")}
             for group_id, member_id in con.execute("SELECT team_group,member FROM team_group_member"):
                 if group_id in groups:
                     groups[group_id]["members"].append(member_id)
@@ -580,7 +599,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                     abort(404)
                 if body.get("revision") != current["revision"]:
                     abort(409, "This group changed. Reload it before saving.")
-                managed = con.execute("SELECT 1 FROM team_scim_group WHERE team_group=?", (uid,)).fetchone() is not None
+                managed = con.execute("""SELECT 1 FROM team_scim_group WHERE team_group=?
+                    UNION ALL SELECT 1 FROM team_saml_group WHERE team_group=?""", (uid, uid)).fetchone() is not None
             if request.method == "DELETE":
                 if managed:
                     abort(409, "Remove this group from the identity provider.")
@@ -602,6 +622,9 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 JOIN library_folder f ON f.id=g.folder WHERE g.team_group=?""", (uid,))}
             folders = group_selection(body.get("folders"), available | existing, "folders")
             editors = group_selection(body.get("edit_folders", []), folders, "folders with edit access")
+            default_role = body.get("default_role")
+            if default_role is not None and default_role not in team_group_roles.ROLES:
+                abort(400, "Choose a valid group role.")
             revision = uuid.uuid4().hex
             con.execute("""INSERT INTO team_group VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,revision=excluded.revision""", (uid, name, revision))
@@ -612,6 +635,14 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             con.executemany("INSERT INTO team_group_folder VALUES(?,?,?)", [
                 (uid, folder, "edit" if folder in editors else "view") for folder in folders
             ])
+            if "default_role" in body:
+                previous_role = con.execute("SELECT role FROM team_group_role WHERE team_group=?", (uid,)).fetchone()
+                if default_role:
+                    con.execute("INSERT OR REPLACE INTO team_group_role VALUES(?,?)", (uid, default_role))
+                else:
+                    con.execute("DELETE FROM team_group_role WHERE team_group=?", (uid,))
+                if default_role != (previous_role["role"] if previous_role else None):
+                    note(con, actor, "group_role_changed", uid, default_role or "member roles")
             note(con, actor, "group_updated" if group else "group_created", uid, name)
         return private(dict(id=uid, revision=revision), 200 if group else 201)
 

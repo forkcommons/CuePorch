@@ -77,6 +77,7 @@ import review_push
 import team_accounts
 import team_saml
 import team_scim
+import team_group_roles
 import team_brand_kits
 import team_branding
 import team_sharing_policy
@@ -156,6 +157,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + team_accounts.SCHEMA
             + team_saml.SCHEMA
             + team_scim.SCHEMA
+            + team_group_roles.SCHEMA
             + team_branding.SCHEMA
             + team_brand_kits.SCHEMA
             + team_sharing_policy.SCHEMA

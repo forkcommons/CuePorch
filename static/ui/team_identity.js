@@ -19,10 +19,10 @@ function field(name) {
 function render(result) {
     revision = result.revision;
     if (field("enabled")) {
-        for (const key of ["enabled", "jit", "force", "idp_initiated"]) {
+        for (const key of ["enabled", "jit", "force", "idp_initiated", "sync_groups"]) {
             field(key).checked = result.settings[key];
         }
-        for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "default_role"]) {
+        for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "groups_attribute", "default_role"]) {
             field(key).value = result.settings[key];
         }
         field("domains").value = result.settings.domains.join("\n");
@@ -96,6 +96,8 @@ settings.onsubmit = event => {
         jit: field("jit").checked,
         force: field("force").checked,
         idp_initiated: field("idp_initiated").checked,
+        sync_groups: field("sync_groups").checked,
+        groups_attribute: field("groups_attribute").value,
         default_role: field("default_role").value,
         domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
     });

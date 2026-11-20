@@ -22,6 +22,7 @@ from onelogin.saml2.utils import OneLogin_Saml2_Error, OneLogin_Saml2_Utils
 
 from browser_account_security import TOKEN, email_key, private, same_origin, secure_site, token_hash
 from library_analytics import source_origin
+from team_group_roles import ROLES
 
 
 SCHEMA = """
@@ -35,14 +36,17 @@ CREATE TABLE IF NOT EXISTS team_saml_identity(
  issuer TEXT NOT NULL, subject TEXT NOT NULL, member TEXT NOT NULL, PRIMARY KEY(issuer,subject),
  UNIQUE(issuer,member));
 CREATE TABLE IF NOT EXISTS team_saml_session(token_hash TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS team_saml_group(
+ team_group TEXT PRIMARY KEY REFERENCES team_group(id), issuer TEXT NOT NULL, source_name TEXT NOT NULL COLLATE NOCASE,
+ UNIQUE(issuer,source_name));
 """
 CALLBACK = "/team/sso/acs"
 METADATA = "/team/sso/metadata"
 STATE_SECONDS = 300
 MAX_ASSERTION_AGE = 300
 DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email",
-               jit=False, force=False, idp_initiated=False, default_role="viewer")
-PROVISIONED_ROLES = ("viewer", "contributor", "contributor_plus", "admin")
+               jit=False, force=False, idp_initiated=False, sync_groups=False, groups_attribute="groups",
+               default_role="viewer")
 DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
@@ -121,15 +125,19 @@ def validated_settings(body, origin):
     if any(not isinstance(value, str) or not DOMAIN.fullmatch(value.strip().lower()) for value in domains):
         abort(400, "Enter exact email domains such as example.org.")
     settings["domains"] = sorted({value.strip().lower() for value in domains})
-    for key in ("jit", "force", "idp_initiated"):
+    for key in ("jit", "force", "idp_initiated", "sync_groups"):
         value = body.get(key, DEFAULT[key])
         if not isinstance(value, bool):
             abort(400, "Choose which single sign-on policies to enable.")
         settings[key] = value
     role = body.get("default_role", DEFAULT["default_role"])
-    if role not in PROVISIONED_ROLES:
+    if role not in ROLES:
         abort(400, "Choose a default role for new members.")
     settings["default_role"] = role
+    attribute = body.get("groups_attribute", DEFAULT["groups_attribute"])
+    if not isinstance(attribute, str) or not 1 <= len(attribute.strip()) <= 256:
+        abort(400, "Enter the signed attribute that contains group names.")
+    settings["groups_attribute"] = attribute.strip()
     try:
         saml_settings(settings, origin)
     except OneLogin_Saml2_Error:
@@ -198,7 +206,11 @@ def assertion_for(settings, origin, encoded, expected):
         name = " ".join(value for key in ("firstName", "lastName") for value in attributes.get(key, [])[:1]).strip()
         if not 1 <= len(name) <= 120 or any(ord(char) < 32 for char in name):
             name = address[0][:120]
-        return subject, address[0], name, assertion_id, min(expiry, issued + MAX_ASSERTION_AGE), session_expiry
+        groups = [group.strip() for value in attributes.get(settings["groups_attribute"], [])
+                  for group in value.split(",") if group.strip()] if settings["sync_groups"] else []
+        if len(groups) > 100 or any(len(group) > 64 or any(ord(char) < 32 for char in group) for group in groups):
+            return None
+        return subject, address[0], name, groups, assertion_id, min(expiry, issued + MAX_ASSERTION_AGE), session_expiry
     except (OneLogin_Saml2_Error, XMLSyntaxError, ValueError, TypeError, AttributeError, OverflowError):
         return None
 
@@ -228,6 +240,30 @@ def team_for_assertion(con, settings, subject, address, name, note):
         return None
     result = con.execute("INSERT OR IGNORE INTO team_saml_identity VALUES(?,?,?)", (issuer, subject, member["id"]))
     return member if result.rowcount else None
+
+
+def sync_group_claims(con, issuer, member, names, note):
+    existing = {row["team_group"] for row in con.execute("""SELECT g.team_group FROM team_saml_group g
+        JOIN team_group_member m ON m.team_group=g.team_group WHERE g.issuer=? AND m.member=?""", (issuer, member))}
+    incoming = set()
+    for name in dict.fromkeys(names):
+        group = con.execute("SELECT team_group FROM team_saml_group WHERE issuer=? AND source_name=?",
+                            (issuer, name)).fetchone()
+        if group:
+            incoming.add(group["team_group"])
+        elif not con.execute("SELECT 1 FROM team_group WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+            uid = str(uuid4())
+            con.execute("INSERT INTO team_group VALUES(?,?,?)", (uid, name, secrets.token_hex(16)))
+            con.execute("INSERT INTO team_saml_group VALUES(?,?,?)", (uid, issuer, name))
+            incoming.add(uid)
+    con.executemany("DELETE FROM team_group_member WHERE team_group=? AND member=?",
+                    [(uid, member) for uid in existing - incoming])
+    con.executemany("INSERT OR IGNORE INTO team_group_member VALUES(?,?)",
+                    [(uid, member) for uid in incoming - existing])
+    changed = existing ^ incoming
+    if changed:
+        con.executemany("UPDATE team_group SET revision=lower(hex(randomblob(16))) WHERE id=?", [(uid,) for uid in changed])
+        note(con, "saml", "saml_groups_synchronized", member, str(len(incoming)))
 
 
 def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note, limit):
@@ -269,6 +305,12 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             con.execute("DELETE FROM team_saml_session")
             if not configuration["enabled"] or configuration["entity_id"] != old["entity_id"]:
                 con.execute("DELETE FROM team_scim_token")
+            if (not configuration["enabled"] or not configuration["sync_groups"]
+                    or configuration["entity_id"] != old["entity_id"]
+                    or configuration["groups_attribute"] != old["groups_attribute"]):
+                con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
+                            WHERE id IN (SELECT team_group FROM team_saml_group)""")
+                con.execute("DELETE FROM team_group_member WHERE team_group IN (SELECT team_group FROM team_saml_group)")
             if configuration["enabled"] and configuration["force"]:
                 members = con.execute("SELECT id,email,role FROM team_member WHERE removed IS NULL AND role<>'owner'")
                 con.executemany("DELETE FROM team_session WHERE member=?",
@@ -337,7 +379,7 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
         verified = assertion_for(settings, origin, encoded, pending["request"] if pending else None)
         if not verified:
             abort(403, "The identity provider's sign-in could not be verified.")
-        subject, address, name, assertion, expires, session_expiry = verified
+        subject, address, name, groups, assertion, expires, session_expiry = verified
         if session_expiry is not None and session_expiry <= time():
             abort(403, "This single sign-on session has expired.")
         address = email_key(address)
@@ -354,6 +396,8 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             member = team_for_assertion(con, settings, subject, address, name, note)
             if not member:
                 abort(403, "This identity is not linked to an eligible workspace member.")
+            if settings["sync_groups"]:
+                sync_group_claims(con, settings["entity_id"], member["id"], groups, note)
             token = issue(con, member["id"], True)
             mark_session(con, token, session_expiry)
             note(con, "team:" + member["id"], "saml_signed_in", member["id"])

@@ -63,6 +63,13 @@
       <form id="teamGroupForm">
         <label>Group name <input name="name" required maxlength="64"></label>
         <p id="teamGroupManagement" hidden>The identity provider manages this group's name and members. You can set its folder permissions here.</p>
+        <label>Default group role
+          <select name="default_role">
+            <option value="">Use member roles</option><option value="viewer">Viewer</option>
+            <option value="contributor">Contributor</option><option value="contributor_plus">Contributor Plus</option>
+            <option value="admin">Administrator</option>
+          </select>
+        </label>
         <fieldset>
           <legend>Group members</legend>
           <div id="teamGroupMembers"></div>

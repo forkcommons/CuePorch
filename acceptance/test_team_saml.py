@@ -49,7 +49,7 @@ def signing_material():
             cert.public_bytes(serialization.Encoding.PEM).decode())
 
 
-def saml_document(origin, request_id, email, subject, private_key, certificate, *, audience=None, expired=False):
+def saml_document(origin, request_id, email, subject, private_key, certificate, *, audience=None, expired=False, groups=()):
     now = datetime.now(UTC) - (timedelta(minutes=10) if expired else timedelta())
     issued = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     expires = (now + timedelta(minutes=4 if expired else 60)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -80,6 +80,11 @@ def saml_document(origin, request_id, email, subject, private_key, certificate, 
       </saml:Assertion>
     </samlp:Response>""".encode())
     assertion = xml.find("saml:Assertion", SAML.NSMAP)
+    if groups:
+        statement = assertion.find("saml:AttributeStatement", SAML.NSMAP)
+        attribute = etree.SubElement(statement, "{" + SAML.NS_SAML + "}Attribute", Name="groups")
+        for group in groups:
+            etree.SubElement(attribute, "{" + SAML.NS_SAML + "}AttributeValue").text = group
     signed = Toolkit.add_sign(etree.tostring(assertion), private_key, certificate)
     xml.replace(assertion, etree.fromstring(signed))
     return b64encode(etree.tostring(xml)).decode()
@@ -122,7 +127,7 @@ class TeamSAML(unittest.TestCase):
                 cleanup.callback(app.extensions[name])
             self.server(cleanup, app, port, tls)
             idp = Flask("fixture-identity-provider")
-            policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False)
+            policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False, groups=())
             pending, provider_assertion = {}, {}
 
             def show_assertion(response, state):
@@ -142,7 +147,7 @@ class TeamSAML(unittest.TestCase):
                 self.assertRegex(state, re.compile(r"^[A-Za-z0-9_-]{43}$"))
                 sign_key, sign_cert = (foreign_key, foreign_cert) if policy["foreign"] else (private_key, certificate)
                 response = saml_document(origin, document.get("ID"), policy["email"], policy["subject"], sign_key, sign_cert,
-                                         audience=policy["audience"], expired=policy["expired"])
+                                         audience=policy["audience"], expired=policy["expired"], groups=policy["groups"])
                 pending.clear()
                 pending.update(RelayState=state, SAMLResponse=response)
                 return show_assertion(response, state)
@@ -290,6 +295,8 @@ class TeamSAML(unittest.TestCase):
                                 expect(portal_page).to_have_url(origin + "/team")
                                 show_portal().click()
                                 expect(portal_page.get_by_text("This sign-in has already been used.")).to_be_visible()
+                            self.verify_group_claims(page, admin, federated, unrelated, start, origin, policy,
+                                                     operator_headers, work)
 
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
                     self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
@@ -395,6 +402,59 @@ class TeamSAML(unittest.TestCase):
         page.get_by_role("button", name="Revoke provisioning token").click()
         expect(status).to_have_text("Provisioning is off.")
         self.assertEqual(api.get(base + "/Users", headers=rotated_auth).status, 401)
+
+    def verify_group_claims(self, page, admin, federated, refreshed, start, origin, policy, operator, work):
+        api = admin.request
+        checkbox = page.get_by_label("Synchronize groups from signed SAML assertions")
+        save = page.get_by_role("button", name="Save single sign-on settings")
+
+        def enable(enabled):
+            checkbox.set_checked(enabled)
+            with page.expect_response(lambda response: response.url == origin + "/api/team/identity"
+                                      and response.request.method == "PUT") as settings:
+                save.click()
+            self.assertTrue(settings.value.ok)
+
+        def sign_in(context):
+            workspace = start(context)
+            workspace.get_by_role("button", name="Continue as station crew").click()
+            expect(workspace).to_have_url(origin + "/team")
+            return workspace
+
+        enable(True)
+        policy.update(subject="fixture-user", email=EMAIL, groups=("Programming, Broadcast",))
+        workspace = sign_in(federated)
+        expect(workspace.get_by_text("Station crew · Contributor")).to_be_visible()
+        account = origin + "/api/team/account"
+        uid = federated.request.get(account).json()["id"]
+        team_groups = origin + "/api/team/groups"
+        groups = api.get(team_groups, headers=operator).json()
+        managed = {group["name"]: group for group in groups["groups"]}
+        folder = next(row["id"] for row in groups["folders"] if row["title"] == "Station work")
+        for name, role, folders in (("Programming", "contributor_plus", [folder]), ("Broadcast", "viewer", [])):
+            group = managed[name]
+            self.assertTrue(group["managed"])
+            self.assertEqual(group["members"], [uid])
+            self.assertTrue(api.put(team_groups + "/" + group["id"], headers=operator,
+                                    data=dict(group, default_role=role, folders=folders)).ok)
+        media = origin + f"/team/video/{work}/media"
+        self.assertEqual(federated.request.get(account).json()["role"], "contributor_plus")
+        self.assertTrue(federated.request.get(media).ok)
+        member = origin + "/api/team/members/" + uid
+        self.assertTrue(api.put(member, headers=operator, data=dict(role="contributor", role_override=True)).ok)
+        self.assertEqual(federated.request.get(account).json()["role"], "contributor")
+        self.assertTrue(api.put(member, headers=operator, data=dict(role="contributor", role_override=False)).ok)
+        self.assertEqual(federated.request.get(account).json()["role"], "contributor_plus")
+        policy["groups"] = ("Broadcast",)
+        workspace = sign_in(refreshed)
+        expect(workspace.get_by_text("Station crew · Viewer")).to_be_visible()
+        self.assertEqual(federated.request.get(account).json()["role"], "viewer")
+        self.assertEqual(federated.request.get(media).status, 404)
+        self.assertEqual(refreshed.request.get(media).status, 404)
+        enable(False)
+        self.assertEqual(federated.request.get(account).status, 401)
+        managed = api.get(team_groups, headers=operator).json()["groups"]
+        self.assertTrue(all(not group["members"] for group in managed if group["managed"]))
 
 
 if __name__ == "__main__":

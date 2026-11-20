@@ -4,7 +4,7 @@ interface Invitation {id: string; email: string; role: Role; expires: number}
 type Permission = "view" | "edit";
 interface Share {id: string; title: string; shared: boolean; permission: Permission | null}
 interface Roster {
-  members: (Member & {removed: number | null})[];
+  members: (Member & {removed: number | null; effective_role?: Role; role_override?: boolean})[];
   invitations: Invitation[];
   ownership: {owner: string | null; can_transfer: boolean};
 }
@@ -13,6 +13,7 @@ interface GroupFolder {id: string; title: string}
 interface Group {
   id: string; name: string; revision: string; members: string[]; folders: string[]; edit_folders: string[];
   managed?: boolean;
+  default_role?: Role | null;
   unavailable_folders?: GroupFolder[];
 }
 interface GroupOptions {
@@ -45,6 +46,7 @@ const activity = document.querySelector<HTMLDetailsElement>("#teamMembershipActi
 const groupSelector = document.querySelector<HTMLSelectElement>("#teamGroup")!;
 const groupForm = document.querySelector<HTMLFormElement>("#teamGroupForm")!;
 const groupName = groupForm.querySelector<HTMLInputElement>("[name=name]")!;
+const groupRole = groupForm.querySelector<HTMLSelectElement>("[name=default_role]")!;
 const groupMembers = document.querySelector<HTMLElement>("#teamGroupMembers")!;
 const groupFolders = document.querySelector<HTMLElement>("#teamGroupFolders")!;
 const deleteGroup = document.querySelector<HTMLButtonElement>("#removeTeamGroup")!;
@@ -167,6 +169,7 @@ function selectedGroup() {
 function showGroup() {
   const group = selectedGroup();
   groupName.value = group?.name ?? "";
+  groupRole.value = group?.default_role ?? "";
   groupName.readOnly = Boolean(group?.managed);
   deleteGroup.disabled = !group || Boolean(group.managed);
   document.querySelector<HTMLElement>("#teamGroupManagement")!.hidden = !group?.managed;
@@ -204,6 +207,7 @@ groupForm.onsubmit = event => {
       folders: folders.filter(folder => folder.value).map(folder => folder.name),
       edit_folders: folders.filter(folder => folder.value === "edit").map(folder => folder.name),
       revision: group?.revision,
+      default_role: groupRole.value || null,
     };
     const {id}: {id: string} = await (await call(
       group ? `groups/${group.id}` : "groups", group ? "PUT" : "POST", body)).json();
@@ -262,15 +266,21 @@ async function loadMembers() {
   }
   for (const member of roster.members) {
     const item = document.createElement("li");
-    item.append(`${member.name} · ${member.email} · ${roleLabels[member.role]} `);
+    item.append(`${member.name} · ${member.email} · ${roleLabels[member.effective_role ?? member.role]} `);
     if (member.removed) item.append("· Access removed");
     else if (member.role !== "owner") {
       const role = document.createElement("select");
       role.setAttribute("aria-label", `Role for ${member.name}`);
       for (const [value, label] of Object.entries(roleLabels)) if (value !== "owner") role.add(new Option(label, value));
       role.value = member.role;
-      item.append(role, button("Save role", () => void task(async () => {
-        await call(`members/${member.id}`, "PUT", {role: role.value});
+      const override = document.createElement("input");
+      override.type = "checkbox";
+      override.checked = Boolean(member.role_override);
+      const overrideLabel = document.createElement("label");
+      overrideLabel.append(override, " Use this member's direct role");
+      role.onchange = () => { override.checked = true; };
+      item.append(role, overrideLabel, button("Save role", () => void task(async () => {
+        await call(`members/${member.id}`, "PUT", {role: role.value, role_override: override.checked});
         await loadMembers();
       }, "Member role saved.")), button("Manage media access", () => void task(async () => {
         selected = member;
