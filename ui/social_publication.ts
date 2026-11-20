@@ -8,6 +8,7 @@ interface Upload {
 }
 interface Publication {
   cut: string; title: string; connected: boolean; configured: boolean; allowed: boolean; jobs: Upload[];
+  shop: string;
   company: string | null;
   pages: {id: string; name: string}[];
   modes: string[];
@@ -29,7 +30,7 @@ const companyLabel = form.querySelector<HTMLOutputElement>("#socialCompany");
 const connectionScope = form.querySelector<HTMLOutputElement>("#socialConnectionScope");
 const pageSelector = form.querySelector<HTMLSelectElement>("#socialPage");
 const visibility = form.querySelector<HTMLSelectElement>("[name=visibility]");
-const submit = form.querySelector<HTMLButtonElement>("button")!;
+const submit = form.querySelector<HTMLButtonElement>("button:not([type]),button[type=submit]")!;
 const historySection = document.querySelector<HTMLElement>("#socialHistory")!;
 const jobs = document.querySelector<HTMLUListElement>("#socialJobs")!;
 let credential = team ? "team-session" : sessionStorage.getItem("cueporchOperator") || "";
@@ -40,7 +41,7 @@ let scope: "personal" | "workspace" = "personal";
 let revision: string | null = null;
 let watch = 0;
 
-async function api(body?: object, path = endpoint): Promise<Publication> {
+async function api<T = Publication>(body?: object, path = endpoint): Promise<T> {
   const response = await fetch(path, {
     method: body ? "POST" : "GET",
     headers: {Authorization: `Bearer ${credential}`, "Content-Type": "application/json", "X-CuePorch-Social": "1",
@@ -70,7 +71,7 @@ function render(data: Publication, fresh = false) {
     company = data.company;
     scope = data.connection_scope;
     revision = data.connection_revision;
-    if (connectionScope) connectionScope.value = scope === "workspace" ? "Workspace account" : "Your connected account";
+    if (connectionScope) connectionScope.value = provider === "shopify" ? data.shop : scope === "workspace" ? "Workspace account" : "Your connected account";
     if (companyLabel) {
       companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
     }
@@ -129,9 +130,70 @@ function render(data: Publication, fresh = false) {
   }
 }
 
+const shopifySearch = form.querySelector<HTMLInputElement>('#shopifySearch');
+const shopifyFind = form.querySelector<HTMLButtonElement>('#shopifyFind');
+const shopifyMore = form.querySelector<HTMLButtonElement>('#shopifyMore');
+const confirmBox = form.querySelector<HTMLInputElement>('input[type="checkbox"]');
+let lastQuery = '';
+let nextCursor: string | null = null;
+let loading = false;
+
+async function loadProducts(more = false): Promise<void> {
+  if (loading || !shopifySearch || !shopifyFind || !shopifyMore) return;
+  const q = more ? lastQuery : shopifySearch.value.trim();
+  const params = new URLSearchParams({ q });
+  if (revision) params.set('revision', revision);
+  if (more && nextCursor) params.set('cursor', nextCursor);
+  if (!more) {
+    lastQuery = q;
+    nextCursor = null;
+    shopifyMore.hidden = true;
+    if (pageSelector) {
+      pageSelector.length = 0;
+      pageSelector.add(new Option('Choose a product', ''));
+      pageSelector.selectedIndex = 0;
+    }
+    if (confirmBox) confirmBox.checked = false;
+  }
+  loading = true;
+  shopifyFind.disabled = shopifyMore.disabled = true;
+  notice.textContent = 'Loading…';
+  try {
+    const data = await api<{ products: { id: string; title: string }[]; cursor: string | null }>(
+      undefined,
+      `${endpoint}/products?${params}`,
+    );
+    if (pageSelector) {
+      const keep = more ? pageSelector.value : '';
+      for (const p of data.products) pageSelector.add(new Option(p.title, p.id));
+      if (keep) pageSelector.value = keep;
+    }
+    nextCursor = data.cursor;
+    shopifyMore.hidden = !data.cursor;
+    notice.textContent = data.products.length
+      ? ''
+      : more ? 'No more products' : 'No products found';
+  } catch (e) {
+    notice.textContent = (e as Error)?.message || 'Failed to load products';
+  } finally {
+    loading = false;
+    shopifyFind.disabled = shopifyMore.disabled = false;
+  }
+}
+
+if (shopifySearch && shopifyFind && shopifyMore) {
+  shopifySearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); void loadProducts(); }
+  });
+  shopifyFind.addEventListener('click', () => void loadProducts());
+  shopifyMore.addEventListener('click', () => void loadProducts(true));
+}
+
 async function open() {
   try {
-    render(await api(), true);
+    const data = await api();
+    render(data, true);
+    if (provider === "shopify" && data.connected && data.configured && data.allowed) void loadProducts();
     if (!team) sessionStorage.setItem("cueporchOperator", credential);
   } catch (error) {
     access.hidden = team;

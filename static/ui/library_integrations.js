@@ -166,8 +166,19 @@ function render() {
             }));
         }
         else if (item.configured) {
+            let shopifyDomain;
+            if (item.name === "Shopify") {
+                const label = document.createElement("label");
+                label.textContent = "Shopify store domain";
+                shopifyDomain = document.createElement("input");
+                shopifyDomain.placeholder = "your-store.myshopify.com";
+                shopifyDomain.maxLength = 130;
+                shopifyDomain.autocomplete = "off";
+                label.append(shopifyDomain);
+                card.prepend(label);
+            }
             card.append(button(`Connect ${item.name}`, async () => {
-                const result = await api(pathFor(item, "connect"), {});
+                const result = await api(pathFor(item, "connect"), shopifyDomain ? { shop: shopifyDomain.value.trim() } : {});
                 if (!personal && credential === sessionMarker)
                     sessionStorage.setItem("cueporchCloudTeam", "1");
                 location.assign(result.authorization_url);

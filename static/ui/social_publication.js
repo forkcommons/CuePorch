@@ -12,7 +12,7 @@ const companyLabel = form.querySelector("#socialCompany");
 const connectionScope = form.querySelector("#socialConnectionScope");
 const pageSelector = form.querySelector("#socialPage");
 const visibility = form.querySelector("[name=visibility]");
-const submit = form.querySelector("button");
+const submit = form.querySelector("button:not([type]),button[type=submit]");
 const historySection = document.querySelector("#socialHistory");
 const jobs = document.querySelector("#socialJobs");
 let credential = team ? "team-session" : sessionStorage.getItem("cueporchOperator") || "";
@@ -53,7 +53,7 @@ function render(data, fresh = false) {
         scope = data.connection_scope;
         revision = data.connection_revision;
         if (connectionScope)
-            connectionScope.value = scope === "workspace" ? "Workspace account" : "Your connected account";
+            connectionScope.value = provider === "shopify" ? data.shop : scope === "workspace" ? "Workspace account" : "Your connected account";
         if (companyLabel) {
             companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
         }
@@ -126,9 +126,76 @@ function render(data, fresh = false) {
         }, 1500);
     }
 }
+const shopifySearch = form.querySelector('#shopifySearch');
+const shopifyFind = form.querySelector('#shopifyFind');
+const shopifyMore = form.querySelector('#shopifyMore');
+const confirmBox = form.querySelector('input[type="checkbox"]');
+let lastQuery = '';
+let nextCursor = null;
+let loading = false;
+async function loadProducts(more = false) {
+    if (loading || !shopifySearch || !shopifyFind || !shopifyMore)
+        return;
+    const q = more ? lastQuery : shopifySearch.value.trim();
+    const params = new URLSearchParams({ q });
+    if (revision)
+        params.set('revision', revision);
+    if (more && nextCursor)
+        params.set('cursor', nextCursor);
+    if (!more) {
+        lastQuery = q;
+        nextCursor = null;
+        shopifyMore.hidden = true;
+        if (pageSelector) {
+            pageSelector.length = 0;
+            pageSelector.add(new Option('Choose a product', ''));
+            pageSelector.selectedIndex = 0;
+        }
+        if (confirmBox)
+            confirmBox.checked = false;
+    }
+    loading = true;
+    shopifyFind.disabled = shopifyMore.disabled = true;
+    notice.textContent = 'Loading…';
+    try {
+        const data = await api(undefined, `${endpoint}/products?${params}`);
+        if (pageSelector) {
+            const keep = more ? pageSelector.value : '';
+            for (const p of data.products)
+                pageSelector.add(new Option(p.title, p.id));
+            if (keep)
+                pageSelector.value = keep;
+        }
+        nextCursor = data.cursor;
+        shopifyMore.hidden = !data.cursor;
+        notice.textContent = data.products.length
+            ? ''
+            : more ? 'No more products' : 'No products found';
+    }
+    catch (e) {
+        notice.textContent = e?.message || 'Failed to load products';
+    }
+    finally {
+        loading = false;
+        shopifyFind.disabled = shopifyMore.disabled = false;
+    }
+}
+if (shopifySearch && shopifyFind && shopifyMore) {
+    shopifySearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            void loadProducts();
+        }
+    });
+    shopifyFind.addEventListener('click', () => void loadProducts());
+    shopifyMore.addEventListener('click', () => void loadProducts(true));
+}
 async function open() {
     try {
-        render(await api(), true);
+        const data = await api();
+        render(data, true);
+        if (provider === "shopify" && data.connected && data.configured && data.allowed)
+            void loadProducts();
         if (!team)
             sessionStorage.setItem("cueporchOperator", credential);
     }

@@ -22,6 +22,7 @@ import linkedin_upload
 import mail_relay
 import social_publication
 from team_accounts import CONTRIBUTORS, MANAGERS, current as signed_in_member
+import shopify_product_media
 import tiktok_business
 import webex_recordings
 import x_upload
@@ -298,8 +299,10 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
+    shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | publishing
+    outbound = publishing | {"shopify": shopify}
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | outbound
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -411,14 +414,17 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category=("Social publishing" if item.config.key in publishing else
+                category=("Commerce" if item.config.key == "shopify" else
+                          "Social publishing" if item.config.key in outbound else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
-                description=("Upload a native video from the Library to your channel."
-                             if item.config.key in publishing else "Copy meeting recordings into your private Library."
+                description=("Add a Library video to a Shopify product's media."
+                             if item.config.key == "shopify" else
+                             "Upload a native video from the Library to your channel."
+                             if item.config.key in outbound else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
                 browse_folders=item in (dropbox, box, meet), meeting=item.config.key in meetings,
-                publishing=item.config.key in publishing,
+                publishing=item.config.key in outbound,
             ) for item in connections.values()]
             slack = con.execute("""SELECT 1 FROM folder_slack s WHERE NOT EXISTS(
                 SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=s.folder) LIMIT 1""").fetchone()
@@ -438,8 +444,11 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             with tx() as con:
                 uid = personal_owner(con, secure, publishing_grant=True)["id"]
             return publishing[provider].for_member(uid).prepare(secure, current)
-        _, _, secure, current = mutate()
-        return configured_provider(provider).prepare(secure, current)
+        _, body, secure, current = mutate()
+        connection = configured_provider(provider)
+        if provider == "shopify":
+            return connection.prepare(secure, current, context={"shop": body.get("shop")})
+        return connection.prepare(secure, current)
 
     @app.get(CALLBACK_ROOT + "<provider>/callback")
     def oauth_callback(provider):
@@ -474,7 +483,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         connection = configured_provider(provider)
         active_watch = watches.get(provider)
         cleanup = active_watch.clear if active_watch else None
-        if provider in publishing:
+        if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
         return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
 
@@ -741,4 +750,4 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                                           lambda con: box.authorize(con, revision))
         return private(receipt, status)
 
-    return publishing
+    return outbound

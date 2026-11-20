@@ -116,18 +116,23 @@ def api_data(response):
 class MultipartVideo:
     _CHUNK = 1024 * 1024
 
-    def __init__(self, media, size, fields, media_type):
+    def __init__(self, media, size, fields, media_type, *, file_field="video_file"):
         self.media = media
         self.size = size
         boundary = uuid.uuid4().hex
-        filename = "clip.mov" if media_type == "video/quicktime" else "clip.mp4"
+        if media_type == "video/webm":
+            filename = "clip.webm"
+        elif media_type == "video/quicktime":
+            filename = "clip.mov"
+        else:
+            filename = "clip.mp4"
         parts = []
         for name, value in fields.items():
             parts.append(
                 f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode("utf-8")
             )
         parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="video_file"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode("utf-8")
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\nContent-Type: {media_type}\r\n\r\n'.encode("utf-8")
         )
         self._prefix = b"".join(parts)
         self._suffix = f"\r\n--{boundary}--\r\n".encode("ascii")

@@ -17,7 +17,7 @@
     <button>Open publication</button>
   </form>
   <p id="socialState" role="status" aria-live="polite"></p>
-  <p id="socialConnect" hidden>{% if team %}<a href="/team/integrations">Connect {{ provider_name }} in My connected apps</a>{% else %}<a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a>{% endif %}</p>
+  <p id="socialConnect" hidden>{% if team and provider == "shopify" %}Contact your workspace manager to connect the shared Shopify store.{% elif team %}<a href="/team/integrations">Connect {{ provider_name }} in My connected apps</a>{% else %}<a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a>{% endif %}</p>
   <form id="socialForm" method="post" hidden>
     <p>Destination account <output id="socialConnectionScope"></output></p>
     <label>Title <input name="title" maxlength="100" required></label>
@@ -27,6 +27,14 @@
     <p>Find the video under Assets > Videos in the selected TikTok Ads Manager account.</p>
     <label><input type="checkbox" name="confirmAsset" required> Send to this Asset Library</label>
     <button>Send to TikTok Ads Manager</button>
+    {% elif provider == "shopify" %}
+    <label>Product name <input id="shopifySearch" maxlength="120" autocomplete="off"></label>
+    <button type="button" id="shopifyFind">Find products</button>
+    <button type="button" id="shopifyMore" hidden>More products</button>
+    <label for="socialPage">Shopify product</label>
+    <select name="company" id="socialPage" required></select>
+    <label><input type="checkbox" name="publicPost" required> Add this video to the selected product</label>
+    <button>Add to Shopify product</button>
     {% elif provider != "youtube" %}
     <label>Post text <textarea name="description" maxlength="{{ 280 if provider == 'x' else 3000 }}" rows="4"></textarea></label>
     {% if provider == "linkedin" %}

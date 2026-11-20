@@ -16,6 +16,7 @@ from catalog import video_version_key
 import facebook_upload
 import library_privacy
 import linkedin_upload
+import shopify_product_media
 import tiktok_business
 import team_accounts
 from team_group_roles import EFFECTIVE_ROLE
@@ -58,6 +59,14 @@ def metadata_for(body, provider, pages):
                 or visibility != "public" or not isinstance(page, str) or page not in pages):
             abort(400, "Check the title, post text, connected destination and public visibility.")
         return dict(title=title.strip(), description=description, company=page, visibility=visibility)
+    if provider == "shopify":
+        company = body.get("company")
+        if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100
+                or any(c in title for c in "\n\r\0")
+                or visibility != "public" or not isinstance(company, str)
+                or not shopify_product_media.PRODUCT_ID.fullmatch(company)):
+            abort(400, "Check the Shopify title, product destination and public visibility.")
+        return dict(title=title.strip(), company=company, visibility="public")
     category = body.get("category", "22")
     if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "<>\n\r\0")
             or not isinstance(description, str) or len(description.encode("utf8", errors="replace")) > 5000
@@ -81,11 +90,14 @@ def transferable(con, work, visibility, provider):
             abort(403, "The Vimeo source privacy restricts this video to a narrower destination audience.")
     if provider == "tiktok":
         formats = ("mp4", "mov")
+    elif provider == "shopify":
+        formats = ("mp4", "mov", "webm")
     else:
         formats = ("mp4",) if provider in ("linkedin", "x") else MIME
     limits = {"linkedin": (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES),
               "facebook": (1, facebook_upload.MAX_BYTES), "x": (1, x_upload.MAX_BYTES),
-              "tiktok": (1, tiktok_business.MAX_BYTES)}
+              "tiktok": (1, tiktok_business.MAX_BYTES),
+              "shopify": (1, 1000**3)}
     minimum, maximum = limits.get(provider, (1, 256 * 1000**3))
     for role in ("original", "playback"):
         for file in work["files"]:
@@ -100,6 +112,8 @@ def transferable(con, work, visibility, provider):
         abort(409, "X needs a retained MP4 up to 512 MiB.")
     if provider == "tiktok":
         abort(409, f"TikTok needs a retained MP4 or MOV up to {tiktok_business.MAX_BYTES} bytes.")
+    if provider == "shopify":
+        abort(409, "Shopify needs a retained MP4, MOV or WebM up to 1 GB.")
     abort(409, "This version needs a retained video file before it can be published.")
 
 
@@ -442,6 +456,75 @@ class TikTokPublisher(Publisher):
             source, job["bytes"], job["sha256"], job["media_type"])
         self.finalize_public_post(job, send, destination, visibility="private")
 
+class ShopifyPublisher(Publisher):
+    DESTINATION = "Shopify Files and the selected product"
+
+    def post_next(self, job):
+        if job["final_sent"]:
+            self.unconfirmed(job, self.DESTINATION)
+            return
+        with self.tx() as con:
+            metadata = self.authorize(con, job)
+        grant = self.grant(job)
+        revision = job["connection"]
+        product_id = metadata["company"]
+        size = job["bytes"]
+
+        if not job["session"]:
+            shopify_product_media.product(grant, revision, product_id)
+            source = self.root / "objects" / job["sha256"]
+            url = shopify_product_media.stage_media(
+                grant, revision, source, size, job["sha256"], job["media_type"]
+            )
+            self.save_session(job, {"resource": url}, size)
+            return
+
+        session = self.saved_session(job)
+        if "video" not in session:
+            with self.tx() as con:
+                self.authorize(con, job)
+                con.execute("UPDATE social_publication SET final_sent=1 WHERE id=?", (job["id"],))
+            try:
+                video_id, _ = shopify_product_media.create_video(
+                    grant, revision, session["resource"], metadata["title"]
+                )
+            except HTTPException as error:
+                if error.code >= 500:
+                    self.unconfirmed(job, self.DESTINATION)
+                    return
+                with self.tx() as con:
+                    con.execute("UPDATE social_publication SET final_sent=0 WHERE id=? AND state='queued'",
+                                (job["id"],))
+                    if error.code == 429:
+                        con.execute("""UPDATE action SET status='waiting',decision=NULL
+                                       WHERE id=? AND decision='automatic'
+                                       AND EXISTS(SELECT 1 FROM policy WHERE step='publication' AND required=1)""",
+                                    (job["id"],))
+                raise
+            with self.tx() as con:
+                con.execute("""UPDATE social_publication SET session=?,final_sent=0,attempts=0,error=NULL
+                               WHERE id=? AND state='queued'""",
+                            (grant.cipher.encrypt(json.dumps({"video": video_id, "started": int(time())}).encode()),
+                             job["id"]))
+            return
+
+        video_id = session["video"]
+        started = session["started"]
+        status = shopify_product_media.file_status(grant, revision, video_id)
+        if status == "FAILED":
+            abort(422, "Shopify could not process the video file. Check Shopify Files before publishing again.")
+        if status == "READY":
+            self.finalize_public_post(
+                job,
+                lambda: shopify_product_media.attach_product(grant, revision, video_id, product_id),
+                self.DESTINATION
+            )
+            return
+        if time() - started > 15 * 60:
+            abort(409, "Shopify is still processing the video. Check Shopify Files before publishing again.")
+        self.save_session(job, session, size, 3)
+        return
+
 def register(app, tx, database, root, origin, connections, read_works, title_for, operator_name,
              team_member, authorize_editor, can_edit, action, sharing_access, enforce_sharing):
     def find_work(uid):
@@ -449,7 +532,8 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
 
     workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access, can_edit)
                for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher),
-                                     ("facebook", FacebookPublisher), ("x", XPublisher), ("tiktok", TikTokPublisher))]
+                                     ("facebook", FacebookPublisher), ("x", XPublisher), ("tiktok", TikTokPublisher),
+                                     ("shopify", ShopifyPublisher))]
 
     def close():
         for worker in workers:
@@ -480,7 +564,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
 
     def selected_connection(con, provider, actor):
         connection = destination(provider)
-        if actor.startswith("team:"):
+        if provider != "shopify" and actor.startswith("team:"):
             personal = connection.for_member(actor[5:])
             if personal.connection(con):
                 return personal
@@ -517,13 +601,15 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                     link = x_upload.link(remote)
                 elif provider == "tiktok":
                     link = "https://ads.tiktok.com/"
+                elif provider == "shopify":
+                    link = f"https://{shopify_product_media.shop_domain(metadata['shop'])}/admin/products/{metadata['company'].rsplit('/', 1)[-1]}"
                 else:
                     link = f"https://www.youtube.com/watch?v={remote}"
             jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"], company=metadata.get("company"),
                              cancelable=job["state"] == "queued" and not job["final_sent"],
                              requested_privacy=visibility_for(metadata),
                              privacy=job["remote_privacy"], error=job["error"], link=link,
-                             remote_id=remote if provider == "tiktok" else None))
+                             remote_id=remote if provider in ("tiktok", "shopify") else None))
         policy = sharing_access(con)
         modes = [mode for mode in youtube_upload.PRIVACY if mode in policy["modes"]]
         if provider == "youtube":
@@ -538,8 +624,26 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                     configured=connection.configured, connected=bool(grant), jobs=jobs,
                     allowed=allowed, modes=modes, connection_scope="personal" if connection.owner else "workspace",
                     connection_revision=grant["revision"] if grant else None,
+                    shop=connection.store_for(con) if provider == "shopify" and grant else "",
                     company=next(iter(pages), None) if provider in ("linkedin", "x") else None,
                     pages=[dict(id=page, name=name) for page, name in pages.items()])
+
+    @app.get("/api/library/work/<uuid:work>/social/shopify/products")
+    def shopify_products(work):
+        secure = secure_site(origin)
+        same_origin(secure)
+        uid = str(work)
+        with tx() as con:
+            identity(con, uid)
+            connection = destination("shopify")
+            item = find_work(uid)
+            if item is None or item.get("asset_type", "video") != "video" or library_privacy.blocked(con, uid):
+                abort(404, "The selected video is unavailable.")
+            enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": "public"})
+            connection.require_configured()
+            revision = connection.authorize(con, request.args.get("revision"))["revision"]
+        result = shopify_product_media.products(connection, revision, request.args.get("q", ""), request.args.get("cursor"))
+        return private(result)
 
     @app.route("/api/library/work/<uuid:work>/social/<provider>", methods=("GET", "POST"))
     def publication(work, provider):
@@ -566,8 +670,13 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
             if not grant:
                 abort(409, "Connect this provider to continue.")
             revision = grant["revision"]
-            if "connection_revision" in body and body["connection_revision"] != revision:
+            if provider == "shopify":
+                if body.get("connection_revision") != revision:
+                    abort(409, "The publishing account changed. Reopen this video to confirm the destination.")
+            elif "connection_revision" in body and body["connection_revision"] != revision:
                 abort(409, "The publishing account changed. Reopen this video to confirm the destination.")
+            if provider == "shopify":
+                metadata["shop"] = connection.store_for(con)
             file = transferable(con, item, visibility, provider)
             cut = video_version_key(item)
             if cut != body.get("cut"):
