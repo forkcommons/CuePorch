@@ -14,6 +14,7 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
   const endpoint = "comments/" + video.path;
   const signIn = section.querySelector<HTMLElement>("[data-comment-signin]")!;
   const form = section.querySelector<HTMLFormElement>("[data-comment-post]")!;
+  const input = form.querySelector<HTMLTextAreaElement>("textarea")!;
   const submit = form.querySelector<HTMLButtonElement>("button")!;
   const search = section.querySelector<HTMLFormElement>("[data-comment-search]")!;
   const own = section.querySelector<HTMLElement>("[data-comment-own]")!;
@@ -112,9 +113,11 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
   more.onclick = () => void load(page + 1);
   form.onsubmit = async event => {
     event.preventDefault();
-    submit.disabled = true;
+    const body = input.value;
+    submit.disabled = input.disabled = true;
+    status.textContent = "";
     try {
-      const response = await viewerRequest(endpoint, "POST", Object.fromEntries(new FormData(form)));
+      const response = await viewerRequest(endpoint, "POST", {body});
       if (response.status === 401) { location.assign(video.account); return; }
       if (response.status === 429) { status.textContent = "Too many comments. Try again later."; return; }
       if (!response.ok) throw new Error();
@@ -124,7 +127,7 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
     } catch {
       status.textContent = "Could not post the comment. Try again.";
     } finally {
-      submit.disabled = false;
+      submit.disabled = input.disabled = false;
     }
   };
   void load();

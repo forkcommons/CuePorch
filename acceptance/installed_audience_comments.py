@@ -32,9 +32,12 @@ def check_audience_comments(browser, base, staff, sample):
         form.get_by_role("button", name="Create account").click()
 
     def post(page, text, message):
-        page.get_by_label("Write a public comment").fill(text)
+        field = page.get_by_label("Write a public comment")
+        field.fill(text)
         page.get_by_role("button", name="Post comment").click()
         expect(page.locator("[data-comment-status]")).to_have_text(message)
+        expect(field).to_have_value("")
+        expect(field).to_be_enabled()
 
     def search(page, text, sort="newest"):
         page.get_by_label("Search comments").fill(text)
