@@ -18,6 +18,15 @@ main { max-width: 65rem; }
 .operator-navigation nav { display: flex; flex-wrap: wrap; gap: .25rem .9rem; padding-block-start: .55rem; }
 .operator-navigation a { color: #184943; padding: .2rem .35rem; text-underline-offset: .22em; }
 .operator-navigation a[aria-current="page"] { font-weight: 700; background: #cde2d6; border-radius: .25rem; }
+.workspace-activity { margin-block: .65rem; }
+.workspace-activity summary { cursor: pointer; font-weight: 650; }
+.workspace-activity section { padding: .55rem .65rem; border: 1px solid #becac7; border-radius: .5rem; background: #fcfcf8; }
+.workspace-activity p { margin: 0; }
+.workspace-activity p:empty { display: none; }
+.workspace-activity ul { list-style: none; margin: 0; padding: 0; max-block-size: 24rem; overflow: auto; }
+.workspace-activity li { padding-block: .45rem; border-block-end: 1px solid #d2ded7; overflow-wrap: anywhere; }
+.workspace-activity li a, .workspace-activity time { display: block; }
+.workspace-activity button { margin-block-start: .25rem; }
 .workspace-search, .workspace-home-actions { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem 1rem; margin-block: 1rem; }
 .workspace-search label { align-self: center; }
 .workspace-home-actions > * { align-self: baseline; }

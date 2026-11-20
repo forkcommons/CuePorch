@@ -94,6 +94,7 @@ import team_sharing_policy
 import team_workspaces
 import timeline_jobs
 import vimeo_privacy
+import workspace_activity
 import workspace_help
 import workspace_updates
 from review_settings import new_upload as create_upload_review
@@ -182,6 +183,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + team_sharing_policy.SCHEMA
             + team_workspaces.SCHEMA
             + workspace_help.SCHEMA
+            + workspace_activity.SCHEMA
             + workspace_updates.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
@@ -1318,9 +1320,12 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
     )
     library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
-    authorize_editor = team_accounts.register(app, tx, team_origin, operator, workspace_brand, operator_name,
-                                               read_library_works, library_actions.title_for, root,
-                                               public_listing, library_discovery.entry_payload, sharing_access)
+    authorize_editor, team_works = team_accounts.register(
+        app, tx, team_origin, operator, workspace_brand, operator_name, read_library_works,
+        library_actions.title_for, root, public_listing, library_discovery.entry_payload, sharing_access,
+    )
+    workspace_activity.register(app, tx, team_origin, team_member, operator_name, team_works,
+                                library_actions.title_for)
     library_folders.register(app, tx, staff, action, read_library_works, enforce_sharing)
     library_folder_privacy.register(app, tx, staff, action, read_library_works, sharing_access, enforce_sharing)
     library_trash.register(app, tx, staff, read_library_works)

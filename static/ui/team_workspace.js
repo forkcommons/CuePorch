@@ -27,6 +27,11 @@ async function task(action, form) {
 function reveal(member) {
     if (!library || !signIn || !upload)
         return;
+    if (!member) {
+        const activity = library.querySelector(".workspace-activity");
+        if (activity)
+            activity.open = false;
+    }
     signIn.hidden = Boolean(member);
     library.hidden = !member;
     const nav = library.querySelector("#teamAdminLinks");

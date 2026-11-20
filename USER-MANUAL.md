@@ -20,6 +20,8 @@ Enter your institution name, select **Save setup**, then open the operator conso
 
 Select **Open workspace overview** to see recent uploads and imports alongside the last 30 days of observed playback. Choose **Upload** or drop a file onto Home, then select a destination in the upload dialog. Use **Create** to start a project from an existing video or open the upload, import, recording, event or showcase workflows. **Search videos** can look through your authorized Library or public Watch. Use **Workspace navigation** to reach the Library, Recently deleted, Analytics and other operator screens. The menu remembers whether you collapsed it in this browser.
 
+Open **Activity** in Workspace navigation or on your signed-in Team page. It shows the last 30 days of support messages and status changes, direct video shares to your account, and new live events if you manage the workspace. Choose an item's title to open the support request, video or event editor. Use **Mark as read** to save your read status across browsers, and **Show older activity** to see more items within the same 30-day window.
+
 ### Browse public videos and curate Staff Picks
 
 Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** links to the institution’s published channel pages. Each result opens its existing watch address.

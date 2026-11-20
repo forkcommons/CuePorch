@@ -839,4 +839,4 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     team_workspaces.register(app, tx, origin, manager, note)
     creator_profiles.register(app, tx, origin, member, mutation, public_listing, entry_payload, read_works,
                               title_for, note)
-    return authorize_editor
+    return authorize_editor, access

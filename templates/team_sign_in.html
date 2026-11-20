@@ -25,6 +25,7 @@
   </form>
   <section id="teamLibrary" hidden>
     <h2 id="teamIdentity"></h2>
+    {% with activity_team=true %}{% include "workspace_activity.html" %}{% endwith %}
     <a href="{{ url_for('help_center', team=1) }}">Help center</a>
     <a href="{{ url_for('whats_new', team=1) }}">What's New</a>
     <a href="{{ url_for('team_security_page') }}">Account security</a>

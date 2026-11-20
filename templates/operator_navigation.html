@@ -19,5 +19,6 @@
       <a href="{{ address }}"{% if selected %} aria-current="page"{% endif %}>{{ title }}</a>
     {% endfor %}
   </nav>
+  {% with activity_team=false %}{% include "workspace_activity.html" %}{% endwith %}
 </details>
 <script type="module" src="{{ url_for('static', filename='ui/operator_navigation.js') }}"></script>

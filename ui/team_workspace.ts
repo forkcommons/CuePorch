@@ -25,6 +25,10 @@ async function task(action: () => Promise<void>, form?: HTMLFormElement) {
 
 function reveal(member?: Member) {
   if (!library || !signIn || !upload) return;
+  if (!member) {
+    const activity = library.querySelector<HTMLDetailsElement>(".workspace-activity");
+    if (activity) activity.open = false;
+  }
   signIn.hidden = Boolean(member);
   library.hidden = !member;
   const nav = library.querySelector<HTMLElement>("#teamAdminLinks")!;

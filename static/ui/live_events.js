@@ -464,20 +464,31 @@ function readCalendar(value) {
             choose(event, instance);
     }
 }
-let startNew = new URL(location.href).searchParams.get("create") === "1";
+const entry = new URL(location.href).searchParams;
+let startNew = entry.get("create") === "1";
+let activityEvent = entry.get("event");
 async function load() {
     const query = new URLSearchParams();
     if (starting.value)
         query.set("from", starting.value);
     if (ending.value)
         query.set("to", ending.value);
-    readCalendar(await request(root + "?" + query));
+    const calendar = await request(root + "?" + query);
+    readCalendar(calendar);
     sessionStorage.setItem("cueporchOperator", credential.value);
     identify.hidden = true;
     workspace.hidden = false;
     if (startNew) {
         startNew = false;
         openEditor();
+    }
+    else if (activityEvent) {
+        const match = calendar.events.find(event => event.id === activityEvent);
+        activityEvent = null;
+        if (match)
+            openEditor(match);
+        else
+            throw new Error("This event is unavailable.");
     }
 }
 identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
