@@ -9,10 +9,11 @@ interface CommentEntry {
   status: "eligible" | "waiting" | "rejected";
 }
 
-for (const section of document.querySelectorAll<HTMLElement>("[data-watch-comments]")) {
+export function setupWatchComments(section: HTMLElement) {
   const video = viewerVideo(section);
   const endpoint = "comments/" + video.path;
   const signIn = section.querySelector<HTMLElement>("[data-comment-signin]")!;
+  if (section.dataset.next) signIn.querySelector<HTMLAnchorElement>("a")!.href = video.account;
   const form = section.querySelector<HTMLFormElement>("[data-comment-post]")!;
   const input = form.querySelector<HTMLTextAreaElement>("textarea")!;
   const submit = form.querySelector<HTMLButtonElement>("button")!;
@@ -53,7 +54,7 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
         remove.disabled = true;
         try {
           const response = await viewerRequest(`${endpoint}/${entry.id}`, "DELETE");
-          if (response.status === 401) { location.assign(video.account); return; }
+          if (response.status === 401) { if (section.isConnected) location.assign(video.account); return; }
           if (!response.ok) throw new Error();
           await load(1, "Comment deleted.");
         } catch {
@@ -118,7 +119,7 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
     status.textContent = "";
     try {
       const response = await viewerRequest(endpoint, "POST", {body});
-      if (response.status === 401) { location.assign(video.account); return; }
+      if (response.status === 401) { if (section.isConnected) location.assign(video.account); return; }
       if (response.status === 429) { status.textContent = "Too many comments. Try again later."; return; }
       if (!response.ok) throw new Error();
       const result = await response.json();
@@ -131,4 +132,8 @@ for (const section of document.querySelectorAll<HTMLElement>("[data-watch-commen
     }
   };
   void load();
+}
+
+for (const section of document.querySelectorAll<HTMLElement>("[data-watch-comments]")) {
+  setupWatchComments(section);
 }

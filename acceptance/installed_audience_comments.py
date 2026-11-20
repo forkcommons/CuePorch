@@ -3,6 +3,7 @@
 import json
 import uuid
 from contextlib import ExitStack
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect
 import requests
@@ -128,9 +129,44 @@ def check_audience_comments(browser, base, staff, sample):
         expect(moderation.get_by_role("status")).to_have_text("Comment removed.")
         assert held not in guest.request.get(api).text()
 
+        with sample.open("rb") as media:
+            encore = requests.post(base + "/api/library/uploads", headers=staff, timeout=30,
+                                   files={"file": ("Second screening.mp4", media, "video/mp4")},
+                                   data={"upload_id": str(uuid.uuid4()), "privacy": json.dumps(public)})
+        encore.raise_for_status()
+        gallery = requests.post(base + "/api/showcases", headers=staff, timeout=15)
+        gallery.raise_for_status()
+        gallery = gallery.json()
+        showcase = requests.put(base + "/api/showcases/" + gallery["id"], headers=staff, timeout=15,
+            json=dict(slug="audience-discussion", revision=gallery["revision"], settings=gallery["settings"] | dict(
+                visibility="public", videos=[uid, encore.json()["id"]], comments=True, likes=True)))
+        showcase.raise_for_status()
+        gallery_watch = base + showcase.json()["watch"]
+        visitor.goto(gallery_watch)
+        sign_in = visitor.get_by_role("link", name="Sign in to comment")
+        expect(sign_in).to_be_visible()
+        assert parse_qs(urlsplit(sign_in.get_attribute("href")).query)["next"] == [showcase.json()["watch"] + "?video=" + uid]
+        writer.goto(gallery_watch)
+        expect(published(writer)).to_have_text([automatic, "Loved the animation", first])
+        writer.get_by_role("button", name="Like video").click()
+        expect(writer.get_by_role("button", name="Like video")).to_have_attribute("aria-pressed", "true")
+        post(writer, "Watched in the gallery", "Comment posted.")
+        assert guest.request.get(api).json()["comments"][0]["body"] == "Watched in the gallery"
+        writer.get_by_role("button", name="Second screening", exact=True).click()
+        expect(writer.locator("[data-like-count]")).to_have_text("0 likes")
+        expect(published(writer)).to_have_count(0)
+        expect(writer.locator("[data-comment-status]")).to_have_text("No comments found.")
+        writer.get_by_role("button", name="Public screening", exact=True).click()
+        expect(writer.get_by_role("button", name="Like video")).to_have_attribute("aria-pressed", "true")
+        expect(published(writer).first).to_have_text("Watched in the gallery")
+
         requests.put(privacy, headers=staff, timeout=15, json=dict(visibility="private", embed="disabled")).raise_for_status()
         assert guest.request.get(api).status == author.request.get(api).status == 404
         assert author.request.post(api, headers=MUTATION, data={"body": "Private video"}).status == 404
+        visitor.reload()
+        expect(visitor.locator("#nowPlaying")).to_have_text("Second screening")
+        expect(visitor.locator("[data-like-count]")).to_have_text("0 likes")
+        expect(published(visitor)).to_have_count(0)
         requests.put(privacy, headers=staff, timeout=15, json=public).raise_for_status()
         assert guest.request.get(api).ok
         assert author.request.delete(base + "/api/viewer/account", headers=MUTATION, data={"password": password}).status == 204
@@ -138,4 +174,5 @@ def check_audience_comments(browser, base, staff, sample):
         return dict(playback_width=width, automatic_default=True, search_body_and_author=True, both_sort_orders=True,
                     pending_and_rejected_author_only=True, operator_can_approve_reject_and_remove=True,
                     off_releases_only_pending=True, withdrawn_removes_queue_entry=True, privacy_revokes_discussion=True,
-                    ownership_and_account_cleanup=True, escaped_text=True)
+                    ownership_and_account_cleanup=True, escaped_text=True, showcase_shared_public_discussion=True,
+                    showcase_active_video_engagement=True, showcase_withdrawal=True)

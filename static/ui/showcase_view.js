@@ -1,5 +1,7 @@
 import { playbackObservation } from "./playback_analytics.js";
 import { setupVideoQuestions } from "./video_questions.js";
+import { setupVideoLikes } from "./video_community.js";
+import { setupWatchComments } from "./watch_comments.js";
 function copyLink(id, makeLink, confirmation) {
     const button = document.querySelector("#" + id);
     if (!button)
@@ -18,6 +20,11 @@ function copyLink(id, makeLink, confirmation) {
 }
 const galleryLink = () => new URL(location.pathname, location.origin);
 copyLink("showcaseCopy", galleryLink, "Showcase link copied.");
+function videoLink(id) {
+    const link = galleryLink();
+    link.searchParams.set("video", id);
+    return link;
+}
 const contents = document.querySelector("#showcaseContents");
 if (contents) {
     const items = JSON.parse(contents.textContent);
@@ -31,11 +38,35 @@ if (contents) {
     const observe = items.map((item) => item.analytics ? playbackObservation(item.analytics, true) : undefined);
     const questions = document.querySelector("#showcaseQuestions");
     const setQuestions = questions ? setupVideoQuestions(questions, () => video || clips[current]) : undefined;
-    copyLink("showcaseCopyVideo", () => {
-        const link = galleryLink();
-        link.searchParams.set("video", items[current].id);
-        return link;
-    }, "Link to this video copied.");
+    const community = document.querySelector("#showcaseCommunity");
+    const communityTemplate = document.querySelector("#showcaseCommunityTemplate");
+    copyLink("showcaseCopyVideo", () => videoLink(items[current].id), "Link to this video copied.");
+    function renderCommunity(item) {
+        if (!community || !communityTemplate)
+            return;
+        community.replaceChildren();
+        if (!item.likes && !item.comments)
+            return;
+        const controls = communityTemplate.content.cloneNode(true);
+        const link = videoLink(item.id);
+        const next = link.pathname + link.search;
+        const likes = controls.querySelector("[data-showcase-likes]");
+        const comments = controls.querySelector("[data-watch-comments]");
+        if (likes && !item.likes)
+            likes.remove();
+        if (comments && !item.comments)
+            comments.remove();
+        community.append(controls);
+        if (likes?.isConnected) {
+            Object.assign(likes.dataset, { slug: item.id, next });
+            setupVideoLikes(likes);
+        }
+        if (comments?.isConnected) {
+            Object.assign(comments.dataset, { slug: item.id, next });
+            setupWatchComments(comments);
+        }
+    }
+    renderCommunity(items[current]);
     function setCurrent(index) {
         if (index === current)
             return;
@@ -52,6 +83,7 @@ if (contents) {
         else
             download.removeAttribute("href");
         setQuestions?.(item.questions);
+        renderCommunity(item);
     }
     function advance(playItem) {
         if (document.body.dataset.next !== "yes")

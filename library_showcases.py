@@ -45,7 +45,7 @@ DEFAULTS = dict(
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
     feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
-    download=False, questions=False,
+    download=False, questions=False, likes=False, comments=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
@@ -130,7 +130,7 @@ def validate_settings(con, raw, lookup):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
     for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled",
-                 "navigation", "product_brand", "download", "questions"):
+                 "navigation", "product_brand", "download", "questions", "likes", "comments"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
@@ -437,6 +437,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
                         questions = (question_session(con, work, token, "embed" if embed else "watch")
                                      if not internal and values["questions"] else None)
+                        community = not embed and not internal and sharing["visibility"] == "public"
                         entries.append(dict(id=uid, title=title_for(con, work),
                                             description=details.get("description", ""),
                                             media=url_for("showcase_file", token=token),
@@ -444,6 +445,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                             if not internal and values["download"] and sharing.get("download") else None,
                                             analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
                                             questions=questions,
+                                            likes=community and values["likes"],
+                                            comments=community and values["comments"],
                                             poster=url_for("showcase_file", token=token, poster=1)
                                             if selected_thumbnail(con, work) else None,
                                             captions=[dict(language=track.get("language") or "und", key=track_key(track),

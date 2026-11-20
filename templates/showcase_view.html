@@ -94,6 +94,21 @@
           <p id="showcaseNoMatches" hidden>No videos match your search.</p>
         </section>
       </div>
+      {% if entries | selectattr("comments") | list or entries | selectattr("likes") | list %}
+      <div id="showcaseCommunity"></div>
+      <template id="showcaseCommunityTemplate">
+        {% if settings.likes %}
+        <div class="save-video" data-showcase-likes data-kind="work">
+          <button type="button" data-like-toggle hidden aria-pressed="false">Like video</button>
+          <span data-like-count hidden></span>
+          <span role="status" data-like-status></span>
+        </div>
+        {% endif %}
+        {% if settings.comments %}
+          {% with save_kind="work", save_slug="" %}{% include "watch_comments.html" %}{% endwith %}
+        {% endif %}
+      </template>
+      {% endif %}
       <script type="application/json" id="showcaseContents">{{ entries | tojson }}</script>
       {% else %}<p>No videos are available in this showcase.</p>{% endif %}
     {% endif %}

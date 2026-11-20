@@ -1,5 +1,7 @@
 import {playbackObservation} from "./playback_analytics.js";
 import {setupVideoQuestions} from "./video_questions.js";
+import {setupVideoLikes} from "./video_community.js";
+import {setupWatchComments} from "./watch_comments.js";
 
 interface Item {
   id: string;
@@ -9,6 +11,8 @@ interface Item {
   download: string | null;
   analytics: string | null;
   questions: string | null;
+  likes: boolean;
+  comments: boolean;
   poster: string | null;
   captions: { language: string; url: string; key: string }[];
 }
@@ -30,6 +34,11 @@ function copyLink(id: string, makeLink: () => URL, confirmation: string) {
 
 const galleryLink = () => new URL(location.pathname, location.origin);
 copyLink("showcaseCopy", galleryLink, "Showcase link copied.");
+function videoLink(id: string) {
+  const link = galleryLink();
+  link.searchParams.set("video", id);
+  return link;
+}
 
 const contents = document.querySelector<HTMLScriptElement>("#showcaseContents");
 if (contents) {
@@ -44,11 +53,32 @@ if (contents) {
   const observe = items.map((item) => item.analytics ? playbackObservation(item.analytics, true) : undefined);
   const questions = document.querySelector<HTMLDetailsElement>("#showcaseQuestions");
   const setQuestions = questions ? setupVideoQuestions(questions, () => video || clips[current]) : undefined;
-  copyLink("showcaseCopyVideo", () => {
-    const link = galleryLink();
-    link.searchParams.set("video", items[current].id);
-    return link;
-  }, "Link to this video copied.");
+  const community = document.querySelector<HTMLElement>("#showcaseCommunity");
+  const communityTemplate = document.querySelector<HTMLTemplateElement>("#showcaseCommunityTemplate");
+  copyLink("showcaseCopyVideo", () => videoLink(items[current].id), "Link to this video copied.");
+
+  function renderCommunity(item: Item) {
+    if (!community || !communityTemplate) return;
+    community.replaceChildren();
+    if (!item.likes && !item.comments) return;
+    const controls = communityTemplate.content.cloneNode(true) as DocumentFragment;
+    const link = videoLink(item.id);
+    const next = link.pathname + link.search;
+    const likes = controls.querySelector<HTMLElement>("[data-showcase-likes]");
+    const comments = controls.querySelector<HTMLElement>("[data-watch-comments]");
+    if (likes && !item.likes) likes.remove();
+    if (comments && !item.comments) comments.remove();
+    community.append(controls);
+    if (likes?.isConnected) {
+      Object.assign(likes.dataset, {slug: item.id, next});
+      setupVideoLikes(likes);
+    }
+    if (comments?.isConnected) {
+      Object.assign(comments.dataset, {slug: item.id, next});
+      setupWatchComments(comments);
+    }
+  }
+  renderCommunity(items[current]);
 
   function setCurrent(index: number) {
     if (index === current) return;
@@ -63,6 +93,7 @@ if (contents) {
     if (item.download) download.href = item.download;
     else download.removeAttribute("href");
     setQuestions?.(item.questions);
+    renderCommunity(item);
   }
 
   function advance(playItem: (index: number) => void) {
