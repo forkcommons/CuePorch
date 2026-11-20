@@ -12,6 +12,7 @@ from flask import abort, request
 
 from catalog import build_intake, merge_collection
 from cueporch import checksum, work_id
+import folder_slack
 from library_folder_privacy import closest as folder_privacy
 from library_privacy import DEFAULTS, actor_defaults, apply_pending, apply_settings, get_privacy, requested_settings
 from library_trash import hidden
@@ -191,6 +192,8 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                     new_upload(con, work)
                     apply_settings(con, action, work, choices, password)
                     apply_pending(con)
+                    if folder:
+                        folder_slack.enqueue(con, uid, "upload")
                 receipt = upload_receipt(con, uid, kind)
             remember_work(work)
         return receipt, 201

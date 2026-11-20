@@ -126,7 +126,13 @@ function render() {
         const state = document.createElement("p");
         state.textContent = item.connected ? "Connected" : item.configured ? "Available" : "Setup required";
         card.append(name, description, state);
-        if (item.connected) {
+        if (item.manage_path) {
+            const manage = document.createElement("a");
+            manage.href = item.manage_path;
+            manage.textContent = "Open Library to manage Slack";
+            card.append(manage);
+        }
+        else if (item.connected) {
             if (item.configured) {
                 card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
             }

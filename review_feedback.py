@@ -9,6 +9,7 @@ import uuid
 
 from flask import Response, abort, request
 
+import folder_slack
 import review_notifications
 import review_push
 
@@ -54,10 +55,13 @@ def editorial_status(con, work, version):
 def set_editorial_status(con, work, version, status):
     if status not in STATUSES:
         abort(400, "Choose an available editorial status.")
+    approved = status == "Approved" and editorial_status(con, work, version) != status
     con.execute(
         "INSERT OR REPLACE INTO video_editorial_status VALUES(?,?,?)",
         (work, version, status),
     )
+    if approved:
+        folder_slack.enqueue(con, work, "approval")
 
 
 def reviewer_token():
@@ -227,6 +231,8 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 con, uid, version, comment, reviewer_actor(), parent, targets
             )
             review_push.enqueue(con, uid, version, comment)
+            work = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
+            folder_slack.enqueue(con, work["work"], "comment")
         return confidential(({"id": comment}, 201))
 
     @app.put("/review/<uid>/feedback/<version>/notices")

@@ -66,6 +66,7 @@ import library_events
 import library_folder_privacy
 import library_folders
 import library_file_links
+import folder_slack
 import library_languages
 import library_interactivity
 import library_ratings
@@ -192,6 +193,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_updates.SCHEMA
             + workspace_oauth.SCHEMA
             + intake_watch.SCHEMA
+            + folder_slack.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -1367,6 +1369,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
     library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
+    app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,

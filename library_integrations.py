@@ -369,14 +369,21 @@ def register(app, tx, staff, operator, origin, import_video, database):
     def integrations():
         read_api()
         with tx() as con:
-            return private(dict(integrations=[dict(
+            items = [dict(
                 id=item.config.key, name=item.config.name,
                 category="Communications" if item.config.key in meetings else "Cloud storage",
                 description=("Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
                 browse_folders=item in (dropbox, box, meet), meeting=item.config.key in meetings,
-            ) for item in connections.values()]))
+            ) for item in connections.values()]
+            slack = con.execute("""SELECT 1 FROM folder_slack s WHERE NOT EXISTS(
+                SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=s.folder) LIMIT 1""").fetchone()
+        items.append(dict(id="slack", name="Slack", category="Collaboration",
+                          description="Send upload, review and approval notices from a Library folder.",
+                          configured=origin.startswith("https://"), connected=bool(slack),
+                          browse_folders=False, meeting=False, manage_path="/operator/library"))
+        return private(dict(integrations=items))
 
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):

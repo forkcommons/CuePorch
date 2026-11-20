@@ -37,6 +37,7 @@ const sort = document.querySelector("#sort");
 const view = document.querySelector("#view");
 const editFolder = document.querySelector("#editFolder");
 const folderPrivacy = document.querySelector("#folderPrivacy");
+const folderSlack = document.querySelector("#folderSlack");
 const translateFolder = document.querySelector("#translateFolder");
 const destination = document.querySelector("#destination");
 const move = document.querySelector("#move");
@@ -58,12 +59,13 @@ let trashTimer;
 let translationTimer;
 const selected = new Set();
 let closeCardPreview;
-function request(path, method = "GET", body) {
+function request(path, method = "GET", body, headers = {}) {
     return fetch(path, {
         method,
         headers: {
             Authorization: "Bearer " + key.value,
             "Content-Type": "application/json",
+            ...headers,
         },
         body: body ? JSON.stringify(body) : undefined,
     });
@@ -144,12 +146,14 @@ function renderTree() {
         section === "Library" ? folder?.name || "Library" : section;
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     folderPrivacy.hidden = !folder;
+    folderSlack.hidden = !folder;
     translateFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
         action(starFolder, () => setStar("folder", folder.id, !folder.starred));
         action(deleteFolder, () => removeItems("folder", [folder.id]));
         action(folderPrivacy, () => editFolderPrivacy(folder));
+        action(folderSlack, () => editFolderSlack(folder));
         action(translateFolder, async () => requestTranslations([], folder));
     }
     folderOptions(destination);
@@ -842,6 +846,75 @@ async function editFolderPrivacy(folder) {
     }
     fields.form.onsubmit = (event) => { event.preventDefault(); void save(true); };
     remove.onclick = () => { void save(false); };
+}
+async function editFolderSlack(folder) {
+    const path = `/api/library/folders/${folder.id}/slack`;
+    const settings = await (await completed(await request(path))).json();
+    const body = openWorkDialog(`Slack notifications for ${folder.name}`);
+    const note = document.createElement("p");
+    note.textContent = settings.configured
+        ? "Add an incoming webhook for the Slack channel. Posts link to the team video and follow CuePorch access rules."
+        : "Set the workspace HTTPS address to connect a Slack channel.";
+    body.append(note);
+    if (!settings.configured)
+        return;
+    const fields = document.createElement("form");
+    fields.method = "post";
+    const addressLabel = document.createElement("label");
+    addressLabel.textContent = settings.revision ? "Replace webhook (optional)" : "Slack incoming webhook";
+    const webhook = document.createElement("input");
+    webhook.type = "password";
+    webhook.required = !settings.revision;
+    webhook.maxLength = 220;
+    webhook.autocomplete = "off";
+    addressLabel.append(webhook);
+    fields.append(addressLabel);
+    const topics = { upload: "New uploads", comment: "Review comments", approval: "Approvals" };
+    for (const [value, label] of Object.entries(topics)) {
+        const wrapper = document.createElement("label");
+        const option = document.createElement("input");
+        option.type = "checkbox";
+        option.name = "topics";
+        option.value = value;
+        option.checked = !settings.revision || settings.topics.includes(value);
+        wrapper.append(option, label);
+        fields.append(wrapper);
+    }
+    const save = document.createElement("button");
+    save.textContent = "Save Slack settings";
+    const disconnect = document.createElement("button");
+    disconnect.type = "button";
+    disconnect.textContent = "Disconnect Slack";
+    disconnect.hidden = !settings.revision;
+    fields.append(save, disconnect);
+    body.append(fields);
+    const receipts = document.createElement("ul");
+    receipts.setAttribute("aria-label", "Recent Slack deliveries");
+    for (const entry of settings.deliveries) {
+        const item = document.createElement("li");
+        item.textContent = `${topics[entry.topic]} · ${entry.state}`;
+        receipts.append(item);
+    }
+    body.append(receipts);
+    async function store(method) {
+        save.disabled = disconnect.disabled = true;
+        try {
+            const selected = new FormData(fields).getAll("topics");
+            await completed(await request(path, method, {
+                revision: settings.revision, topics: selected, webhook: webhook.value.trim(),
+            }, { "X-CuePorch-Slack": "1" }));
+            await editFolderSlack(folder);
+            workDialogStatus.textContent = method === "PUT" ? "Slack settings saved." : "Slack disconnected.";
+        }
+        catch (error) {
+            workDialogStatus.textContent = String(error);
+        }
+        finally {
+            save.disabled = disconnect.disabled = false;
+        }
+    }
+    fields.onsubmit = (event) => { event.preventDefault(); void store("PUT"); };
+    disconnect.onclick = () => { void store("DELETE"); };
 }
 const editUploadDefaults = () => openPrivacy({
     title: "Your upload defaults",
