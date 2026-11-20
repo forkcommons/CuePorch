@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="showcase-operator" data-public-url="{{ public_url }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/analytics">Analytics</a></nav>
+  {% include "operator_navigation.html" %}
   <h1>Showcases</h1>
   <form id="showcaseIdentify">
     <label>Operator credential <input type="password" name="credential" autocomplete="current-password" required></label>

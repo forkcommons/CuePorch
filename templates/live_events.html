@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="live-events" data-public-url="{{ public_url }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/record">Record Studio</a></nav>
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Production"><a href="/operator/record">Record Studio</a></nav>
   <h1>Live events</h1>
   <form id="eventsIdentify">
     <label>Operator credential <input name="credential" type="password" autocomplete="current-password" required></label>

@@ -10,7 +10,8 @@
   {% if team_preview %}
   <nav aria-label="Team"><a href="/team/video/{{ work }}">Back to video</a></nav>
   {% else %}
-  <nav aria-label="Operator">
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Video">
     <a href="/operator/videos/{{ work }}">Video workspace</a>
     <a href="/operator/analytics?video={{ work }}">Advanced report</a>
   </nav>

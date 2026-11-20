@@ -10,7 +10,7 @@
   {% if team_editor %}
   <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/video/{{ work }}">Play video</a></nav>
   {% else %}
-  <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
+  {% include "operator_navigation.html" %}
   {% endif %}
   <h1 id="videoHeading">Video details</h1>
   <form id="identify"{% if team_editor %} hidden{% endif %}>
@@ -31,7 +31,7 @@
       <a href="/operator/videos/{{ work }}/appearance">Player and page appearance</a>
       <a href="/operator/videos/{{ work }}/languages">Languages and subtitles</a>
       <a href="/operator/videos/{{ work }}/interactivity">Interactivity</a>
-      <a href="/operator/videos/{{ work }}/analytics">Analytics</a>
+      <a href="/operator/videos/{{ work }}/analytics">Video analytics</a>
       <a href="/operator/videos/{{ work }}/editing">Edit video</a>
       <a href="/operator/videos/{{ work }}/timeline">Timeline editor</a>
       <a href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>

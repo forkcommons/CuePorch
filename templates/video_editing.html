@@ -7,7 +7,8 @@
   <title>Edit video · CuePorch</title>
 </head>
 <body data-work="{{ work }}">
-  <nav aria-label="Operator">
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Video">
     <a href="/operator/videos/{{ work }}">Video details</a>
     <a href="/operator/videos/{{ work }}/timeline">Timeline editor</a>
     <a href="/operator/library?work={{ work }}&amp;action=versions">Versions</a>

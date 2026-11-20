@@ -16,6 +16,10 @@ Open the macOS arm64 package on an Apple Silicon Mac or install the amd64 Debian
 
 Enter your institution name, select **Save setup**, then open the operator console. To publish video, connect a PeerTube host using its address and publishing account, or use **Set up a local video host** with a running Docker-compatible engine. The local desktop console opens on this computer. The operations guide describes the separate deployment for a public institutional site.
 
+### Use the operator Home
+
+Select **Open workspace overview** to see recent uploads and imports alongside the last 30 days of observed playback. Choose **Upload** or drop a file onto Home, then select a destination in the upload dialog. Use **Create** to start a project from an existing video or open the upload, import, recording, event or showcase workflows. **Search videos** can look through your authorized Library or public Watch. Use **Workspace navigation** to reach the Library, Recently deleted, Analytics and other operator screens. The menu remembers whether you collapsed it in this browser.
+
 ### Browse public videos and curate Staff Picks
 
 Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** links to the institution’s published channel pages. Each result opens its existing watch address.

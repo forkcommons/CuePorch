@@ -10,7 +10,8 @@
   {% if team_preview %}
   <nav aria-label="Team"><a href="/team/video/{{ work }}">Back to video</a></nav>
   {% else %}
-  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Video"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
   {% endif %}
   <h1 id="interactivityTitle">Video interactivity</h1>
   <form id="identify"{% if team_preview %} hidden{% endif %}>

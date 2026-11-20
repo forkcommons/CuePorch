@@ -459,6 +459,8 @@ function readCalendar(value: Calendar) {
   }
 }
 
+let startNew = new URL(location.href).searchParams.get("create") === "1";
+
 async function load() {
   const query = new URLSearchParams();
   if (starting.value) query.set("from", starting.value);
@@ -467,6 +469,10 @@ async function load() {
   sessionStorage.setItem("cueporchOperator", credential.value);
   identify.hidden = true;
   workspace.hidden = false;
+  if (startNew) {
+    startNew = false;
+    openEditor();
+  }
 }
 
 identify.onsubmit = (event) => { event.preventDefault(); void action(load); };

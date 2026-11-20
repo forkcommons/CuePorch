@@ -31,6 +31,7 @@ from flask import (
     render_template,
     request,
     stream_with_context,
+    url_for,
 )
 from waitress import serve
 
@@ -299,7 +300,19 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator")
     def console():
-        return render_template("console.html", brand=workspace_brand())
+        with tx() as con:
+            brand = team_branding.read(con, institution)
+            _, picks = library_discovery.picks(con)
+            entries = public_listing(con) if picks else {}
+            featured = [library_discovery.entry_payload(entries[item]) for item in picks if item in entries]
+        return render_template("console.html", brand=brand, featured=featured[:6])
+
+    @app.get("/operator/search")
+    def operator_search():
+        query = request.args.get("q", "").strip()[:120]
+        if request.args.get("scope") == "watch":
+            return redirect(url_for("catalog", q=query))
+        return redirect(url_for("library_console", q=query))
 
     # Keep credentials in process memory. After a process restart a new request can
     # resume from disk using the same source identity and work checkpoints.

@@ -1,5 +1,5 @@
 import { renderCommentText } from "./review_comment_text.js";
-import { libraryUploader } from "./library_upload.js";
+import { folderChoices, libraryUploader, readUploadPrivacy } from "./library_upload.js";
 import { saveEmbedMap } from "./embed_map.js";
 import { openPrivacy, privateSettings, sharingFields } from "./library_privacy.js";
 const key = document.querySelector("#key");
@@ -88,17 +88,7 @@ function action(button, run) {
     };
 }
 function folderOptions(select) {
-    select.replaceChildren(new Option("Library", ""));
-    function append(parent, prefix) {
-        for (const folder of folders.filter((entry) => entry.parent === parent)) {
-            if (select === folderParent && folder.id === editing?.id)
-                continue;
-            const label = prefix + folder.name;
-            select.append(new Option(label, folder.id));
-            append(folder.id, label + " / ");
-        }
-    }
-    append(null, "");
+    folderChoices(select, folders, select === folderParent ? editing?.id : undefined);
 }
 function updateMove() {
     destination.disabled = !selected.size;
@@ -134,6 +124,15 @@ function renderTree() {
     document.querySelector("#uploadLibrary").hidden = section !== "Library";
     uploadDefaults.hidden = section !== "Library";
     trashBrowse.hidden = section !== "Recently deleted";
+    for (const link of document.querySelectorAll(".operator-navigation a")) {
+        if (!["/operator/library", "/operator/library?view=deleted"].includes(link.getAttribute("href")))
+            continue;
+        const isDeletedView = link.getAttribute("href").includes("?view=deleted");
+        if (isDeletedView === (section === "Recently deleted"))
+            link.setAttribute("aria-current", "page");
+        else
+            link.removeAttribute("aria-current");
+    }
     const folder = folders.find((entry) => entry.id === current);
     heading.textContent =
         section === "Library" ? folder?.name || "Library" : section;
@@ -322,7 +321,7 @@ function renderWorks() {
         ? work.starred
         : section === "Watch later"
             ? work.watch_later
-            : work.folder === current) &&
+            : (workspaceSearch && Boolean(query) && current === null) || work.folder === current) &&
         (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
         work.title.toLocaleLowerCase().includes(query) &&
         (!assetType.value || (assetType.value === "video") === (work.asset_type === "video")) &&
@@ -695,15 +694,6 @@ function workPrivacy(work) {
 async function folderPolicy(id) {
     const response = await completed(await request(`/api/library/folders/${id}/privacy`));
     return response.json();
-}
-async function uploadPrivacy(folder) {
-    if (folder) {
-        const policy = await folderPolicy(folder);
-        if (policy.settings) {
-            return { ...privateSettings, ...policy.settings, has_password: policy.has_password, folder_override: true };
-        }
-    }
-    return defaultPrivacy();
 }
 async function editFolderPrivacy(folder) {
     const existing = await folderPolicy(folder.id);
@@ -1553,14 +1543,20 @@ libraryUploader({
     folder: () => current,
     folderOptions,
     credential: () => key.value,
-    defaults: uploadPrivacy,
+    defaults: folder => readUploadPrivacy(folder, path => request(path).then(completed)),
     reload: () => load(),
 });
 const loadButton = document.querySelector("#load");
 const linked = new URL(location.href).searchParams;
+const workspaceSearch = linked.has("q");
+if (workspaceSearch)
+    search.value = (linked.get("q") ?? "").slice(0, 120);
+if (linked.get("view") === "deleted")
+    section = "Recently deleted";
 let workspaceAction = linked.get("action");
 action(loadButton, async () => {
     await load();
+    sessionStorage.setItem("cueporchOperator", key.value);
     result.textContent = "Library loaded.";
     const uid = linked.get("work");
     if (uid && workspaceAction) {
@@ -1572,8 +1568,9 @@ action(loadButton, async () => {
         await fromWorkspace(work, next);
     }
 });
-if (linked.has("work") && workspaceAction && key.value)
+if (key.value && (workspaceSearch || section === "Recently deleted" || linked.has("work") && workspaceAction)) {
     loadButton.click();
+}
 async function fromWorkspace(work, next) {
     const actions = {
         versions: () => versionsDialog(work),

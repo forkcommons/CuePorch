@@ -23,27 +23,7 @@
     </nav>
   </header>
   <main>
-    {% if featured %}
-      <section class="watch-featured" aria-labelledby="featuredHeading" data-watch-carousel>
-        <h2 id="featuredHeading"><a href="{{ url_for('catalog', section='picks') }}">Staff Picks</a></h2>
-        {% for item in featured %}
-          <article class="watch-featured-item" data-watch-slide{% if not loop.first %} hidden{% endif %}>
-            {% if item.cover %}<img src="{{ item.cover }}" alt=""{% if not loop.first %} loading="lazy"{% endif %}>{% endif %}
-            <div>
-              <h3><a href="{{ item.watch }}">{{ item.title }}</a></h3>
-              {% if item.categories %}<p>{{ item.categories | join(' · ') }}</p>{% endif %}
-            </div>
-          </article>
-        {% endfor %}
-        {% if featured | length > 1 %}
-          <div class="watch-carousel-controls" data-watch-navigation hidden>
-            <button type="button" data-watch-previous>Previous pick</button>
-            <output aria-live="polite" data-watch-count></output>
-            <button type="button" data-watch-next>Next pick</button>
-          </div>
-        {% endif %}
-      </section>
-    {% endif %}
+    {% include "watch_featured.html" %}
     <section class="watch-results" aria-labelledby="resultsHeading">
       <h2 id="resultsHeading">{% if section == 'picks' %}Staff Picks{% elif section == 'channels' %}Channels{% elif category %}{{ category }}{% elif section == 'categories' %}Categories{% else %}Public videos{% endif %}</h2>
       <form class="watch-search" method="get" action="{{ url_for('catalog', section=section if section != 'explore' else none) }}">
@@ -84,6 +64,5 @@
       {% endif %}
     </section>
   </main>
-  {% if featured | length > 1 %}<script type="module" src="{{ url_for('static', filename='ui/watch_carousel.js') }}"></script>{% endif %}
 </body>
 </html>

@@ -7,8 +7,9 @@
   <link rel="stylesheet" href="/static/cueporch.css">
 </head>
 <body data-public-url="{{ public_url }}">
+  {% include "operator_navigation.html" %}
   <nav aria-label="Operator">
-    <a href="/operator">Operator console</a> · <a href="/operator/migration">Move from Vimeo</a> · <a href="/operator/analytics">Analytics</a> · <a href="/operator/record">Record Studio</a> · <a href="/operator/showcases">Showcases</a> · <a href="/operator/live-events">Live events</a> · <a href="{{ url_for('operator_picks') }}">Staff Picks</a>
+    <a href="/operator/migration">Move from Vimeo</a> · <a href="/operator/record">Record Studio</a>
   </nav>
   <h1>Library</h1>
   <label>Operator credential <input type="password" id="key"></label>
@@ -82,21 +83,7 @@
     </section>
   </div>
 
-  <dialog id="uploadDialog" class="library-dialog" aria-labelledby="uploadHeading">
-    <h2 id="uploadHeading">Upload files</h2>
-    <label>Upload to <select id="uploadFolder"></select></label>
-    <label>Choose files <input type="file" id="libraryFiles" multiple accept=".mp4,.mov,.webm,.mkv,.jpg,.jpeg,.png,.webp,.mp3,.wav,.flac,.ogg,.m4a,.pdf,.docx,.txt"></label>
-    <div id="uploadDrop">Drop video, audio, images or documents here.</div>
-    <p id="uploadVisibility">New files start private.</p>
-    <details id="uploadPrivacy">
-      <summary>Customize privacy for these videos</summary>
-      <div id="uploadSharingFields"></div>
-    </details>
-    <ul id="uploadFiles"></ul>
-    <p id="uploadStatus" role="status"></p>
-    <button type="button" id="startUpload" disabled>Upload selected files</button>
-    <button type="button" id="closeUpload">Close</button>
-  </dialog>
+  {% include "library_upload_dialog.html" %}
 
   <dialog id="folderEditor" aria-labelledby="folderEditorTitle">
     <form id="folderForm">
@@ -131,27 +118,6 @@
       <div><button type="submit" id="saveTitle">Save title</button><button type="button" id="cancelTitle">Cancel</button></div>
     </form>
   </dialog>
-
-  <template id="privacySettings">
-    <form>
-      <label>Link privacy <select name="visibility">
-        <option value="private">Private</option>
-        <option value="password">Password</option>
-        <option value="unlisted">Unlisted</option>
-        <option value="public">Public</option>
-        <option value="embed_only">Embed only</option>
-      </select></label>
-      <label>Viewer password <input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
-      <label>Embedding <select name="embed">
-        <option value="disabled">Off</option><option value="anywhere">Anywhere</option>
-        <option value="domains">Specific domains</option>
-      </select></label>
-      <label>Allowed embed domains <textarea name="domains" rows="3"></textarea></label>
-      <label><input type="checkbox" name="download"> Allow viewers to download</label>
-      <button type="submit">Save privacy</button>
-    </form>
-    <div data-privacy-links></div>
-  </template>
 
   <script type="module" src="/static/ui/library_console.js"></script>
 </body>
