@@ -2,6 +2,7 @@
 
 import csv
 from datetime import date, datetime, time, timedelta, timezone
+import hmac
 from io import StringIO
 from ipaddress import ip_address
 import json
@@ -25,6 +26,8 @@ CREATE TABLE IF NOT EXISTS video_analytics_context(
  session TEXT PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS video_analytics_region(
  session TEXT PRIMARY KEY, region TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS video_analytics_viewer(
+ session TEXT PRIMARY KEY, viewer TEXT NOT NULL);
 """
 SURFACES = ("watch", "embed")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
@@ -82,7 +85,7 @@ def observed_region(trusted_proxies):
     return code if REGION_CODE.fullmatch(code) else None
 
 
-def record(con, work, nonce, surface, body, context=None):
+def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
     seq, played, finished = body.get("sequence"), body.get("played"), body.get("completed")
@@ -117,6 +120,10 @@ def record(con, work, nonce, surface, body, context=None):
         con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, source, device))
         if region and region[0]:
             con.execute("INSERT OR IGNORE INTO video_analytics_region VALUES(?,?)", (nonce, region[0]))
+    viewer = body.get("viewer")
+    if viewer_key and isinstance(viewer, str) and re.fullmatch(r"[a-f0-9]{32}", viewer):
+        identity = hmac.digest(viewer_key, b"cueporch-video-analytics:" + viewer.encode("ascii"), "sha256").hex()
+        con.execute("INSERT OR IGNORE INTO video_analytics_viewer VALUES(?,?)", (nonce, identity))
 
 
 def bounds(filters=None):

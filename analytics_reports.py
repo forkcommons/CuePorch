@@ -29,7 +29,14 @@ PERIODS = {
     "month": "strftime('%Y-%m-01',s.created,'unixepoch')",
     "year": "strftime('%Y-01-01',s.created,'unixepoch')",
 }
-METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds")
+METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds",
+           "unique_impressions", "unique_viewers", "average_watched_fraction")
+VIDEO_COUNTS = COUNTS + """,
+    count(DISTINCT identity.viewer) AS unique_impressions,
+    count(DISTINCT identity.viewer) FILTER (WHERE s.played=1) AS unique_viewers,
+    count(identity.viewer) AS identified_impressions,
+    count(identity.viewer) FILTER (WHERE s.played=1) AS identified_views,
+    avg(cueporch_watched_fraction(s.work,s.version,s.watched)) FILTER (WHERE s.played=1) AS average_watched_fraction"""
 MILESTONES = (1, 25, 50, 75, 100)
 PLAYBACK_TABLES = """ FROM video_analytics_session s
     LEFT JOIN video_analytics_context c ON c.session=s.id
@@ -39,7 +46,9 @@ PLAYBACK_TABLES = """ FROM video_analytics_session s
 
 def row_metrics(row):
     values = metrics(row)
-    return dict(values, average_watched_seconds=values["watched_seconds"] / values["views"] if values["views"] else 0)
+    return dict(values, average_watched_seconds=values["watched_seconds"] / values["views"] if values["views"] else 0,
+                **{name: row[name] for name in ("unique_impressions", "unique_viewers", "identified_impressions",
+                                                "identified_views", "average_watched_fraction")})
 
 
 def content_selection(options, include_events=False):
@@ -76,18 +85,24 @@ def filter_settings(options):
     return filters, clause, tuple(params)
 
 
-def summarize(con, options, catalog):
+def summarize(con, options, catalog, lengths):
     filters, clause, params = filter_settings(options)
-    scope = PLAYBACK_TABLES + clause
+    scope = PLAYBACK_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id" + clause
+
+    def watched_fraction(uid, version, watched):
+        duration = lengths.get((uid, version))
+        return watched / duration if duration else None
+
+    con.create_function("cueporch_watched_fraction", 3, watched_fraction, deterministic=True)
     period = PERIODS[filters["period"]]
     primary, secondary = filters["group"], filters["breakdown"]
     group = DIMENSIONS[primary] or period
     detail = (DIMENSIONS[secondary] or period) if secondary else "''"
-    totals = con.execute(f"SELECT {COUNTS} {scope}", params).fetchone()
-    trend = con.execute(f"""SELECT {period} AS period,{COUNTS} {scope}
+    totals = con.execute(f"SELECT {VIDEO_COUNTS} {scope}", params).fetchone()
+    trend = con.execute(f"""SELECT {period} AS period,{VIDEO_COUNTS} {scope}
                          GROUP BY period ORDER BY period""", params)
     overview = [dict(period=row["period"], **row_metrics(row)) for row in trend]
-    rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{COUNTS} {scope}
+    rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{VIDEO_COUNTS} {scope}
                         GROUP BY category,breakdown ORDER BY views DESC,impressions DESC,category,breakdown""", params)
     items = []
     for row in rows:
@@ -224,9 +239,9 @@ def register(app, tx, staff, read_works):
             works = read_works()
             titles = catalog(con, works)
             if kind in GROUP_REPORTS:
-                result = summarize(con, options | {"group": kind}, titles)
+                result = summarize(con, options | {"group": kind}, titles, durations(works))
             elif kind == "video":
-                result = summarize(con, options, titles)
+                result = summarize(con, options, titles, durations(works))
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))
             elif kind == "bandwidth":

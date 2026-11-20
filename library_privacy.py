@@ -293,6 +293,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
     registration_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-registration")
     analytics_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-analytics")
+    viewer_key = operator.encode("utf-8")
     analytics_proxies = {
         ipaddress.ip_address(address.strip())
         for address in os.getenv("CUEPORCH_ANALYTICS_PROXIES", "").split(",") if address.strip()
@@ -590,7 +591,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if video_version_key(work) != version:
                 abort(404)
             if library_analytics.permitted():
-                library_analytics.record(con, work, nonce, surface, request.get_json(), context[0] if context else None)
+                library_analytics.record(con, work, nonce, surface, request.get_json(),
+                                         context[0] if context else None, viewer_key=viewer_key)
         return "", 204
 
     return watch

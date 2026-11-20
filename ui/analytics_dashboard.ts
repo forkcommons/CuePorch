@@ -6,15 +6,17 @@ const dimensionNames: Record<string, string> = {
 const metricNames = {
   impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
   watched_seconds: "Seconds watched", average_watched_seconds: "Average seconds watched",
+  unique_impressions: "Unique impressions", unique_viewers: "Unique viewers", average_watched_fraction: "Average percent watched",
 };
 type Metric = keyof typeof metricNames;
-type Counts = Record<Metric, number>;
+type Counts = Record<Metric, number | null>;
 interface Entry extends Counts { category: string; breakdown: string; video: string | null }
 interface Bucket extends Counts { period: string }
 interface Video { id: string; title: string; event?: boolean }
 interface Report {
   filters: {group: string; breakdown: string};
-  totals: Counts; overview: Bucket[]; rows: Entry[];
+  totals: Counts & {identified_impressions: number; identified_views: number};
+  overview: Bucket[]; rows: Entry[];
 }
 type ReportType = "video" | "engagement" | "rating" | "region" | "source" | "device" | "date" | "bandwidth";
 interface EngagementMetrics {
@@ -153,7 +155,7 @@ metric.value = "views";
 
 function renderTrend() {
   const name = metric.value as Metric;
-  const maximum = overview.reduce((max, row) => Math.max(max, row[name]), 1);
+  const maximum = overview.reduce((max, row) => Math.max(max, row[name] ?? 0), 1);
   const table = document.querySelector<HTMLTableSectionElement>("#reportTrend")!;
   table.replaceChildren();
   for (const bucket of overview) {
@@ -162,15 +164,16 @@ function renderTrend() {
     const cell = row.insertCell();
     const bar = document.createElement("meter");
     bar.max = maximum;
-    bar.value = bucket[name];
+    bar.value = bucket[name] ?? 0;
     bar.setAttribute("aria-hidden", "true");
     cell.append(bar, " ", formatted(name, bucket[name]));
   }
 }
 metric.onchange = renderTrend;
 
-function formatted(name: Metric, value: number) {
-  return (name === "view_rate" ? percent : count).format(value);
+function formatted(name: Metric, value: number | null) {
+  if (value === null) return "—";
+  return (name === "view_rate" || name === "average_watched_fraction" ? percent : count).format(value);
 }
 
 function videoLink(cell: HTMLTableCellElement, title: string, uid: string | null) {
@@ -197,6 +200,10 @@ function renderVideo(report: Report) {
     item.append(heading, data);
     totals.append(item);
   }
+  const {identified_impressions, identified_views, impressions, views} = report.totals;
+  const coverage = document.querySelector<HTMLElement>("#uniqueCoverage")!;
+  coverage.hidden = identified_impressions === impressions && identified_views === views;
+  coverage.textContent = `Browser identity available for ${count.format(identified_impressions)} of ${count.format(impressions ?? 0)} impressions and ${count.format(identified_views)} of ${count.format(views ?? 0)} views.`;
   overview = report.overview;
   renderTrend();
   const columns = document.querySelector<HTMLTableRowElement>("#reportColumns")!;

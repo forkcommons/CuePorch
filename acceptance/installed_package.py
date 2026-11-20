@@ -56,6 +56,7 @@ p.add_argument("--analytics-only", action="store_true", help="Test migration and
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
+p.add_argument("--analytics-unique", action="store_true", help="Check distinct viewers and browser identity coverage")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
@@ -364,7 +365,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     if args.analytics_only:
                         advanced = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
                                                             verify_region=args.analytics_region_proxy,
-                                                            verify_bandwidth=args.analytics_bandwidth)
+                                                            verify_bandwidth=args.analytics_bandwidth,
+                                                            verify_unique=args.analytics_unique)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
                                             missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
                                             playback_width=width, setup_seconds=setup_seconds,
@@ -406,7 +408,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
                     advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
                                                                   verify_region=args.analytics_region_proxy,
-                                                                  verify_bandwidth=args.analytics_bandwidth)
+                                                                  verify_bandwidth=args.analytics_bandwidth,
+                                                                  verify_unique=args.analytics_unique)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     recording = check_recording(pw, base, auth)
                     timeline = check_timeline(

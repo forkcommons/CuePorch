@@ -14,7 +14,8 @@ from playwright.sync_api import expect
 from installed_versions import generate_replacement
 
 
-def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, verify_region=False, verify_bandwidth=False):
+def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
+                             verify_region=False, verify_bandwidth=False, verify_unique=False):
     endpoint = base + "/api/analytics/video-report"
     today = datetime.now(timezone.utc).date().isoformat()
     title_a, title_b = "Advanced report station", "Advanced report festival"
@@ -200,4 +201,8 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, ver
         from installed_bandwidth import check_bandwidth
 
         results["bandwidth"] = check_bandwidth(page, base, auth, upload("Bandwidth fixture", clip, downloads=True))
+    if verify_unique:
+        from installed_unique_viewers import check_unique_viewers
+
+        results["unique_viewers"] = check_unique_viewers(page, browser, base, auth, upload("Unique viewer fixture", clip))
     return results

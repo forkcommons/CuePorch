@@ -1,4 +1,5 @@
 const video = document.querySelector("video[data-analytics]");
+const viewer = browserIdentity();
 let sequence = 0;
 let played = !video.paused || video.played.length > 0;
 let completed = video.ended;
@@ -6,6 +7,21 @@ let watched = 0;
 let position = video.currentTime;
 let last = performance.now();
 let lastSent = 0;
+function browserIdentity() {
+    const key = "cueporchAnalyticsViewer";
+    try {
+        const saved = localStorage.getItem(key);
+        if (saved && /^[a-f0-9]{32}$/.test(saved))
+            return saved;
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        const id = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        localStorage.setItem(key, id);
+        return id;
+    }
+    catch {
+        return undefined;
+    }
+}
 function sample() {
     const now = performance.now();
     const delta = video.currentTime - position;
@@ -32,7 +48,7 @@ function send() {
         method: "POST",
         keepalive: true,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sequence: ++sequence, played, completed, watched: Math.round(watched * 1000), intervals }),
+        body: JSON.stringify({ sequence: ++sequence, played, completed, watched: Math.round(watched * 1000), intervals, viewer }),
     }).catch(() => { });
 }
 video.addEventListener("playing", () => {
