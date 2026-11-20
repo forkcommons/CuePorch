@@ -81,8 +81,15 @@
             <button type="button" id="deleteStudioScene">Delete scene</button>
           </form>
           <form id="studioBrandForm">
+            <label for="studioBrandKit">Reusable brand kit</label>
+            <select id="studioBrandKit"><option value="">Choose a brand kit</option></select>
+            <button type="button" id="applyStudioBrandKit" disabled>Use brand kit</button>
             <label>Graphic color <input name="primary" type="color"></label>
             <label>Graphic text color <input name="text" type="color"></label>
+            <label for="studioGraphicFont">Graphic font</label>
+            <select name="font" id="studioGraphicFont">
+              <option value="sans">Sans-serif</option><option value="serif">Serif</option><option value="mono">Monospace</option>
+            </select>
             <label>Event logo <select name="logo"></select></label>
             <button type="submit" id="saveStudioBrand" disabled>Save brand</button>
           </form>
@@ -132,6 +139,10 @@
           </select></label>
           <label>Background <select id="recordBackground"><option value="solid">Solid</option><option value="gradient">Gradient</option></select></label>
           <label>Canvas color <input type="color" id="recordColor" value="#244b4d"></label>
+          {% if not scene_endpoint %}
+          <label for="recordBrandKit">Recording brand kit</label>
+          <select id="recordBrandKit"><option value="">None</option></select>
+          {% endif %}
         </fieldset>
         <details id="recordPrompterSettings">
           <summary>Teleprompter</summary>

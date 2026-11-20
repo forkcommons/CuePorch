@@ -1,4 +1,4 @@
-import { drawRecording, drawTileGrid, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
+import { drawRecording, drawStudioLogo, drawTileGrid, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
 import { openRecordingStorage } from "./recording_draft.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { BrowserBroadcast } from "./event_broadcast.js";
@@ -29,6 +29,7 @@ const broadcastEndpoint = document.body.dataset.eventBroadcast || "";
 const healthEndpoint = document.body.dataset.eventHealth;
 const relayHealth = document.querySelector("#studioRelayHealth");
 const mode = document.querySelector("#browserProductionMode");
+const recordKit = document.querySelector("#recordBrandKit");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
 const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, sceneChanged, selectClipAudio) : null;
 const speakerEndpoint = document.body.dataset.speakerEndpoint;
@@ -46,6 +47,8 @@ let busy = false;
 let pictureStream = null;
 let lastPaint = performance.now();
 let scrollTop = 0;
+let recordingLogo = null;
+let kitLoading = false;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 title.value = "Recording " + new Date().toLocaleDateString();
 function message(error) {
@@ -64,7 +67,7 @@ function closeSource(source) {
 }
 function updateControls() {
     const running = Boolean(active);
-    button("beginRecord").disabled = busy || running || !ready();
+    button("beginRecord").disabled = busy || running || kitLoading || !ready();
     const live = mode?.value === "broadcast";
     button("beginRecord").textContent = live ? "Go live" : "Start recording";
     button("pauseRecord").hidden = !running || Boolean(active?.broadcast);
@@ -178,6 +181,8 @@ function draw(now) {
     else if (!painted) {
         drawRecording(context, options, presenter, screen?.preview || null);
     }
+    if (recordingLogo)
+        drawStudioLogo(context, recordingLogo);
     if (graphic)
         engagement?.paint(context, graphic);
     audio?.updateMeters();
@@ -554,7 +559,51 @@ async function open() {
         await listDevices();
     if (scenes)
         await scenes.load().catch(message);
+    if (recordKit)
+        void loadRecordKits(recordKit).catch(message);
     requestAnimationFrame(draw);
+}
+async function loadRecordKits(picker) {
+    const response = await fetch("/api/library/brand-kits", { headers: { Authorization: "Bearer " + key.value } });
+    if (!response.ok)
+        throw new Error("Brand kits could not be loaded.");
+    const shelf = await response.json();
+    picker.replaceChildren(new Option("None", ""), ...shelf.kits.map(kit => new Option(kit.name, kit.id)));
+    const color = input("recordColor");
+    let unbrandedColor;
+    let applied = "";
+    picker.onchange = () => run(async () => {
+        const kit = shelf.kits.find(item => item.id === picker.value);
+        kitLoading = picker.disabled = true;
+        updateControls();
+        try {
+            const source = kit?.style.logo && shelf.logos[kit.style.logo];
+            let logo = null;
+            if (source) {
+                logo = new Image();
+                logo.src = source;
+                await logo.decode();
+            }
+            if (kit) {
+                unbrandedColor ??= color.value;
+                color.value = kit.style.background;
+            }
+            else if (unbrandedColor) {
+                color.value = unbrandedColor;
+                unbrandedColor = undefined;
+            }
+            recordingLogo = logo;
+            applied = picker.value;
+        }
+        catch (error) {
+            picker.value = applied;
+            throw error;
+        }
+        finally {
+            kitLoading = picker.disabled = false;
+            updateControls();
+        }
+    });
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)

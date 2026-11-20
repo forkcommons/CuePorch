@@ -43,7 +43,7 @@ from installed_events import check_event_calendar, check_event_chat, check_event
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
-from installed_brand_kits import check_brand_kits
+from installed_brand_kits import check_brand_kits, check_studio_brand_kits
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -621,7 +621,9 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
                                                   home / "institution.sqlite")
                         brands = check_brand_kits(page, browser, base, auth, home, timeline_green)
-                        results.append(dict(timeline=timeline, brand_kits=brands, migrated_playback_width=width))
+                        studio = check_studio_brand_kits(page, base, auth)
+                        results.append(dict(timeline=timeline, brand_kits=brands, studio_brand_kits=studio,
+                                            migrated_playback_width=width))
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         save_report()

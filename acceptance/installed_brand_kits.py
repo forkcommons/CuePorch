@@ -1,6 +1,7 @@
 """Apply a shared logo, colors and retained bookends through product entry points."""
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ import uuid
 from PIL import Image
 from playwright.sync_api import expect
 import requests
+from installed_recording import DISPLAY_FIXTURE
 
 
 def check_brand_kits(page, browser, base, auth, directory, fixture):
@@ -140,3 +142,119 @@ def check_brand_kits(page, browser, base, auth, directory, fixture):
     return dict(reused_player_palette_font_and_logo=True, original_private_asset_stayed_private=True,
                 render_pixels_intro_program_outro=samples["result"], versioned_kit_survived_update_and_removal=True,
                 portable_brand_kit_artwork_verified=True)
+
+
+def check_studio_brand_kits(page, base, auth):
+    endpoint = base + "/api/library/brand-kits"
+    badge = (235, 25, 106)
+    logo_stream = BytesIO()
+    Image.new("RGB", (40, 40), badge).save(logo_stream, "PNG")
+    artwork = logo_stream.getvalue()
+    uploaded = requests.post(base + "/api/review-logos", headers=auth, timeout=10,
+                             files={"logo": ("studio-kit.png", artwork, "image/png")})
+    uploaded.raise_for_status()
+    settings = dict(name="Studio rehearsal", style={"logo": uploaded.json()["logo"], "font": "mono",
+                    "primary": "#a40047", "text": "#eeeebb", "background": "#21114f"})
+    created = requests.post(endpoint, headers=auth, timeout=10, json=settings)
+    created.raise_for_status()
+    kit = created.json()
+    page.add_init_script("(" + DISPLAY_FIXTURE + ")()")
+
+    def expect_logo_on_canvas():
+        page.wait_for_function("""expected => {
+          const c = document.querySelector('#recordCanvas');
+          const actual = c.getContext('2d').getImageData(c.width * .91, c.height * .89, 1, 1).data;
+          return expected.every((value, index) => Math.abs(actual[index] - value) < 10);
+        }""", arg=badge)
+
+    def record_pixel():
+        page.get_by_role("button", name="Start recording", exact=True).click()
+        expect(page.locator("#recordStatus")).to_have_text("Recording.")
+        expect(page.locator("#recordTime")).to_have_text("0:02", timeout=6500)
+        page.get_by_role("button", name="Stop", exact=True).click()
+        expect(page.locator("#recordStatus")).to_contain_text("Recording ready.")
+        result = page.get_by_label("Finished recording").evaluate("""async (video, expected) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = 1;
+          const paint = canvas.getContext('2d');
+          const decoded = await new Promise((resolve, reject) => {
+            let request, rgb = null;
+            const finish = () => {
+              video.cancelVideoFrameCallback(request);
+              clearTimeout(timeout);
+              resolve({rgb, width: video.videoWidth, time: video.currentTime});
+            };
+            const sample = () => {
+              paint.drawImage(video, Math.floor(video.videoWidth * .91), Math.floor(video.videoHeight * .89), 1, 1, 0, 0, 1, 1);
+              rgb = Array.from(paint.getImageData(0,0,1,1).data).slice(0, 3);
+              if (expected.every((value, index) => Math.abs(rgb[index] - value) < 24)) finish();
+              else request = video.requestVideoFrameCallback(sample);
+            };
+            const timeout = setTimeout(finish, 4500);
+            request = video.requestVideoFrameCallback(sample);
+            video.muted = true;
+            video.play().catch(reject);
+          });
+          video.pause();
+          return decoded;
+        }""", badge)
+        assert result["rgb"] and result["width"] == 1280, result
+        assert all(abs(actual - expected) < 24 for actual, expected in zip(result["rgb"], badge, strict=True)), result
+        return result["rgb"]
+
+    page.goto(base + "/operator/record")
+    picker = page.get_by_label("Recording brand kit")
+    picker.select_option(kit["id"])
+    expect(page.get_by_label("Canvas color")).to_have_value("#21114f")
+    expect_logo_on_canvas()
+    page.get_by_role("button", name="Share screen", exact=True).click()
+    expect(page.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
+    recording = record_pixel()
+
+    now = datetime.now(timezone.utc)
+    schedule = {name: (now + timedelta(minutes=offset)).strftime("%Y-%m-%dT%H:%M")
+                for name, offset in (("start", -1), ("end", 18))}
+    response = requests.post(base + "/api/live-events", headers=auth, timeout=10, json={
+        "title": "Scene kit rehearsal", "visibility": "private", "type": "live", "latency": "standard",
+        "schedule": schedule | {"timezone": "UTC", "repeat": "none"}, "save_replay": False,
+    })
+    response.raise_for_status()
+    event = response.json()
+    suffix = f"{event['id']}/{event['occurrences'][0]['id']}"
+    studio = base + f"/operator/live-events/{suffix}/studio"
+    scenes_api = base + f"/api/live-events/{suffix}/scenes"
+    page.goto(studio)
+    page.get_by_label("Production mode").select_option("record")
+    page.get_by_text("Scenes and graphics", exact=True).click()
+    scenes = page.locator("#studioScenes")
+    scenes.get_by_label("Reusable brand kit").select_option(kit["id"])
+    scenes.get_by_role("button", name="Use brand kit").click()
+    status = scenes.locator("#studioSceneStatus")
+    expect(status).to_have_text("Scenes saved.")
+    brand = requests.get(scenes_api, headers=auth, timeout=10).json()["brand"]
+    assert brand == {"primary": "#a40047", "text": "#eeeebb", "logo": "kit-" + kit["revision"], "font": "mono"}
+    image = scenes_api + "/image/" + brand["logo"]
+    assert requests.get(image, timeout=10).status_code == 403
+    assert requests.get(image, headers=auth, timeout=10).content == artwork
+    scenes.get_by_label("Scene template").select_option(label="Opening title")
+    scenes.get_by_role("button", name="Add scene", exact=True).click()
+    expect(scenes.get_by_role("button", name="Opening title", exact=True)).to_be_visible()
+    scenes.get_by_role("button", name="Take scene").click()
+    expect(status).to_have_text("On stage: Opening title")
+    expect_logo_on_canvas()
+
+    removal = requests.delete(endpoint + "/" + kit["id"], headers=auth, timeout=10, json={"revision": kit["revision"]})
+    assert removal.status_code == 204
+    page.reload()
+    if not scenes.evaluate("panel => panel.open"):
+        page.get_by_text("Scenes and graphics", exact=True).click()
+    scenes.get_by_role("button", name="Opening title", exact=True).click()
+    expect(scenes.get_by_label("Graphic font")).to_have_value("mono")
+    expect(scenes.get_by_label("Event logo")).to_have_value(brand["logo"])
+    scenes.get_by_role("button", name="Take scene").click()
+    expect_logo_on_canvas()
+    page.get_by_label("Production mode").select_option("record")
+    event_recording = record_pixel()
+    return dict(record_studio_logo_rgb=recording, live_scene_recording_logo_rgb=event_recording,
+                live_scene_font_and_colors_persisted=True, retained_event_logo_after_kit_removal=True,
+                event_artwork_requires_staff=True)

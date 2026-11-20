@@ -1,4 +1,4 @@
-import { drawRecording } from "./recording_composition.js";
+import { drawRecording, drawStudioLogo } from "./recording_composition.js";
 import { readStudioImage } from "./live_slides.js";
 import { speakerRequest } from "./speaker_connection.js";
 const element = (id) => document.getElementById(id);
@@ -12,6 +12,7 @@ function placeImage(context, image, x, y, w, h) {
 function paint(context, frame, camera, screen, lowerThird) {
     const { scene, brand, image, logo, video, slide } = frame;
     const { width, height } = context.canvas;
+    const font = brand.font === "mono" ? "monospace" : brand.font === "serif" ? "serif" : "system-ui";
     const isTitle = scene.layout === "title";
     const layout = scene.layout === "title" ? "screen" : scene.layout;
     drawRecording(context, { layout, color: scene.color, background: scene.background }, isTitle ? null : camera, video || slide?.image || (isTitle ? null : screen));
@@ -22,21 +23,21 @@ function paint(context, frame, camera, screen, lowerThird) {
         placeImage(context, image, 0, 0, width, height);
     else if (!video && !slide && isTitle) {
         context.textAlign = "center";
-        context.font = `600 ${Math.max(14, height * .09)}px system-ui`;
+        context.font = `600 ${Math.max(14, height * .09)}px ${font}`;
         context.fillText(scene.title, width / 2, height * .44, width * .90);
-        context.font = `${Math.max(10, height * .045)}px system-ui`;
+        context.font = `${Math.max(10, height * .045)}px ${font}`;
         context.fillText(scene.subtitle, width / 2, height * .56, width * .84);
     }
     if (logo)
-        placeImage(context, logo, width * .85, height * .82, width * .12, height * .14);
+        drawStudioLogo(context, logo);
     if (lowerThird && scene.headline) {
         context.textAlign = "left";
         context.fillStyle = brand.primary;
         context.fillRect(width * .035, height * .78, width * .69, height * .155);
         context.fillStyle = brand.text;
-        context.font = `600 ${Math.max(11, height * .045)}px system-ui`;
+        context.font = `600 ${Math.max(11, height * .045)}px ${font}`;
         context.fillText(scene.headline, width * .061, height * .823, width * .63);
-        context.font = `${Math.max(9, height * .031)}px system-ui`;
+        context.font = `${Math.max(9, height * .031)}px ${font}`;
         context.fillText(scene.credit, width * .061, height * .885, width * .63);
     }
     context.restore();
@@ -45,6 +46,8 @@ export function setupSceneDeck(path, credential, changed, useAudio) {
     const panel = element("studioScenes");
     const form = element("studioSceneForm");
     const brandForm = element("studioBrandForm");
+    const brandKit = element("studioBrandKit");
+    const applyKit = button("applyStudioBrandKit");
     const uploadForm = element("studioSlideUpload");
     const presentationChoice = field(form, "presentation");
     const selectedTemplate = element("studioTemplate");
@@ -103,6 +106,8 @@ export function setupSceneDeck(path, credential, changed, useAudio) {
         choosePresentations(value.presentations);
         for (const [key, setting] of Object.entries(value.brand))
             field(brandForm, key).value = setting || "";
+        brandKit.replaceChildren(new Option("Choose a brand kit", ""), ...value.brand_kits.map(kit => new Option(kit.name, kit.id)));
+        applyKit.disabled = true;
         const list = element("studioSceneList");
         list.replaceChildren();
         for (const [index, scene] of value.scenes.entries()) {
@@ -288,10 +293,17 @@ export function setupSceneDeck(path, credential, changed, useAudio) {
         event.preventDefault();
         run(async () => {
             const brand = { primary: field(brandForm, "primary").value, text: field(brandForm, "text").value,
-                logo: field(brandForm, "logo").value || null };
+                logo: field(brandForm, "logo").value || null, font: field(brandForm, "font").value };
             await save(deck.scenes, brand);
         });
     };
+    brandKit.onchange = () => { applyKit.disabled = !brandKit.value; };
+    applyKit.onclick = () => run(async () => {
+        const chosen = deck?.brand_kits.find(kit => kit.id === brandKit.value);
+        if (!chosen || !deck)
+            return;
+        await save(deck.scenes, { primary: chosen.primary, text: chosen.text, logo: chosen.logo, font: chosen.font });
+    });
     uploadForm.onsubmit = (event) => {
         event.preventDefault();
         run(async () => {

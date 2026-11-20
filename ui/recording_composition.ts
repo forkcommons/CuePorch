@@ -22,6 +22,11 @@ function fit(
   context.drawImage(source, left + (width - w) / 2, top + (height - h) / 2, w, h);
 }
 
+export function drawStudioLogo(context: CanvasRenderingContext2D, logo: HTMLImageElement) {
+  const {width, height} = context.canvas;
+  fit(context, logo, width * .85, height * .82, width * .12, height * .14);
+}
+
 export function drawRecording(
   context: CanvasRenderingContext2D, options: Composition,
   camera: HTMLVideoElement | null, screen: VisualSource | null,

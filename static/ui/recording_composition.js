@@ -10,6 +10,10 @@ function fit(context, source, left, top, width, height) {
     const h = scale * sourceHeight;
     context.drawImage(source, left + (width - w) / 2, top + (height - h) / 2, w, h);
 }
+export function drawStudioLogo(context, logo) {
+    const { width, height } = context.canvas;
+    fit(context, logo, width * .85, height * .82, width * .12, height * .14);
+}
 export function drawRecording(context, options, camera, screen) {
     const { width, height } = context.canvas;
     if (options.background === "gradient") {

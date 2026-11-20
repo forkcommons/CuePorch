@@ -4,13 +4,14 @@ import json
 import re
 import uuid
 
-from flask import abort, request, send_file
+from flask import Response, abort, request, send_file
 
 from catalog import video_version_key
 from event_slide_decks import decks
 from library_actions import title_for
 from library_interactivity import text_field
 from library_privacy import blocked
+from team_brand_kits import current_kits
 
 
 SCHEMA = """
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS live_scene_deck(
 ID = re.compile("[0-9a-f]{32}")
 COLOR = re.compile("#[0-9a-fA-F]{6}")
 MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+KIT_LOGO = re.compile(r"kit-([0-9a-f]{32})")
 TEMPLATES = (
     dict(title="Opening title", layout="title", background="gradient", color="#244b4d", subtitle=""),
     dict(title="Presenter", layout="screen", background="solid", color="#203235", subtitle=""),
@@ -39,6 +41,18 @@ def images(con, works):
         if selected:
             available[uid] = dict(title=title_for(con, work), object=selected["sha256"], format=selected["format"])
     return available
+
+
+def selected_kit(con, asset):
+    match = KIT_LOGO.fullmatch(asset or "")
+    if match:
+        row = con.execute("SELECT settings FROM team_brand_kit_revision WHERE revision=?", (match[1],)).fetchone()
+        return json.loads(row[0]) if row else None
+    return None
+
+
+def kit_logo(kit):
+    return "kit-" + kit["revision"] if kit["style"]["logo"] else None
 
 
 def color(value):
@@ -74,7 +88,11 @@ def settings(body, choices, playable, presentations):
     if not isinstance(body, dict) or not isinstance(body.get("brand"), dict):
         abort(422, "Enter studio scene settings.")
     brand = body["brand"]
-    brand = dict(primary=color(brand.get("primary")), text=color(brand.get("text")), logo=picture(brand.get("logo"), choices))
+    font = brand.get("font", "sans")
+    if font not in ("sans", "serif", "mono"):
+        abort(422, "Choose an available graphic font.")
+    brand = dict(primary=color(brand.get("primary")), text=color(brand.get("text")),
+                 logo=picture(brand.get("logo"), choices), font=font)
     raw = body.get("scenes")
     if not isinstance(raw, list) or len(raw) > 50:
         abort(422, "Save up to 50 scenes per event.")
@@ -117,7 +135,20 @@ def register(app, tx, staff, root, read_works, occurrence_access):
             choices = images(con, works)
             presentations = decks(con, uid)
             revision = row["revision"] if row else None
-            contents = json.loads(row["settings"]) if row else dict(brand=dict(primary="#203235", text="#ffffff", logo=None), scenes=[])
+            contents = json.loads(row["settings"]) if row else dict(brand=dict(primary="#203235", text="#ffffff",
+                                                                               logo=None, font="sans"), scenes=[])
+            contents["brand"].setdefault("font", "sans")
+            kits = current_kits(con)
+            available_kits = []
+            for kit in kits:
+                logo = kit_logo(kit)
+                if logo:
+                    choices[logo] = {"title": kit["name"] + " logo"}
+                available_kits.append(dict(id=kit["id"], name=kit["name"], primary=kit["style"]["primary"],
+                                           text=kit["style"]["text"], font=kit["style"]["font"], logo=logo))
+            for asset in [contents["brand"]["logo"], *(scene.get("image") for scene in contents["scenes"])]:
+                if asset and asset not in choices and (kit := selected_kit(con, asset)) and kit_logo(kit):
+                    choices[asset] = {"title": kit["name"] + " logo (retained)"}
             body = request.get_json() if request.method == "PUT" else None
             submitted = body.get("scenes") if isinstance(body, dict) else []
             scene_lists = (contents["scenes"], submitted if isinstance(submitted, list) else [])
@@ -136,6 +167,7 @@ def register(app, tx, staff, root, read_works, occurrence_access):
                     contents, revision = changed, uuid.uuid4().hex
                     con.execute("INSERT OR REPLACE INTO live_scene_deck VALUES(?,?,?)", (uid, revision, json.dumps(contents)))
             return dict(contents, revision=revision, templates=TEMPLATES, presentations=list(presentations.values()),
+                        brand_kits=available_kits,
                         images=sorted((dict(id=key, title=image["title"]) for key, image in choices.items()),
                                       key=lambda image: image["title"].casefold()),
                         videos=sorted((dict(work=key[0], cut=key[1], title=title) for key, title in playable.items()),
@@ -146,6 +178,15 @@ def register(app, tx, staff, root, read_works, occurrence_access):
         staff()
         with tx() as con:
             occurrence_access(con, uid, opens)
+            kit = selected_kit(con, asset)
+            if kit:
+                logo = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (kit["style"]["logo"],)).fetchone()
+                if logo is None:
+                    abort(404)
+                response = Response(logo["content"], mimetype=logo["mime"])
+                response.cache_control.no_store = True
+                response.headers["X-Content-Type-Options"] = "nosniff"
+                return response
             selected = images(con, (work for work in read_works() if work["id"] == asset)).get(asset)
         if not selected:
             abort(404)

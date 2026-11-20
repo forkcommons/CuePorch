@@ -32,7 +32,13 @@ export class StudioAudio {
   private readonly clipNodes = new WeakMap<HTMLVideoElement, MediaElementAudioSourceNode>();
   private readonly samples = new Float32Array(256);
 
-  constructor(private list: HTMLElement, private empty: HTMLElement) {}
+  constructor(private list: HTMLElement, private empty: HTMLElement) {
+    // Supply audio frames while the stage has only a title card or other silent source.
+    const silence = this.context.createConstantSource();
+    silence.offset.value = 0;
+    silence.connect(this.output);
+    silence.start();
+  }
 
   get hasProgramInput() {
     return Array.from(this.channels.values()).some(channel => channel.onAir);
