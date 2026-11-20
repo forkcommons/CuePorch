@@ -26,6 +26,8 @@ main { max-width: 65rem; }
 .workspace-overview dl { display: flex; flex-wrap: wrap; gap: .8rem 2rem; padding: 0; margin: .6rem 0; }
 .workspace-overview dd { margin: 0; font-size: 1.2rem; font-weight: 650; }
 .help-conversation p { margin-block: .2rem .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.announcement-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-update-votes] button[aria-pressed="true"] { outline: 2px solid #176b69; outline-offset: 1px; }
 .watch-featured { --watch-ink: #162e33; }
 @media (min-width: 66rem) {
   body:has(> .operator-navigation[open]) { padding-inline-start: 14.8rem; }

@@ -595,6 +595,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             base, auth, admin, contributor_page, successor, second_work, owned[0]["id"], uid, parent, replacement,
         )
         support = check_support_requests(base, auth, contributor_page, successor)
+        updates = check_workspace_updates(base, contributor_page, successor)
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
@@ -612,7 +613,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
                 private_feed_follows_publication_order_and_account_removal=True,
-                sharing_restrictions=sharing_restrictions, support_requests=support), email("contributor")
+                sharing_restrictions=sharing_restrictions, support_requests=support, workspace_updates=updates), email("contributor")
 
 
 def check_sharing_restrictions(base, auth, admin, contributor, owner, own, pending, foreign, folder, sample):
@@ -776,3 +777,80 @@ def check_support_requests(base, auth, contributor, owner):
     expect(contributor.get_by_text("You · Request reopened", exact=True)).to_be_visible()
     return dict(searched_help=True, member_scope_and_private_cache=True, owner_reply_and_resolve=True,
                 stale_update_denied=True, durable_thread_and_reopen=True)
+
+
+def check_workspace_updates(base, contributor, owner):
+    hub = base + "/whats-new"
+    endpoint = base + "/api/team/updates"
+    assert contributor.request.get(endpoint, headers=TEAM).status == 403
+    contributor.goto(base + "/team")
+    contributor.get_by_role("link", name="What's New", exact=True).click()
+    expect(contributor.get_by_text("No released announcements match.")).to_be_visible()
+    expect(contributor.get_by_role("link", name="Manage announcements")).to_be_hidden()
+    contributor.get_by_role("link", name="Up next").click()
+    expect(contributor.get_by_role("link", name="Vimeo account move")).to_be_visible()
+    contributor.get_by_role("searchbox", name="Search announcements").fill("equirectangular")
+    contributor.get_by_role("combobox", name="Product area").select_option("Playback")
+    contributor.get_by_role("combobox", name="Category").select_option("New feature")
+    contributor.get_by_role("button", name="Filter").click()
+    expect(contributor.get_by_role("link", name="Vimeo account move")).to_have_count(0)
+    expect(contributor.get_by_role("link", name="Panoramic playback")).to_be_visible()
+
+    owner.goto(hub + "?team=1")
+    owner.get_by_role("link", name="Manage announcements").click()
+    owner.get_by_role("button", name="New announcement").click()
+    slug = "screening-rehearsal-note"
+    title = "Screening rehearsal update"
+    entry = endpoint + "/" + slug
+    public = hub + "/" + slug
+    owner.get_by_label("Link name").fill(slug)
+    form = owner.locator("#editAnnouncement")
+    form.get_by_label("Title", exact=True).fill(title)
+    form.get_by_label("Announcement", exact=True).fill("The new community program has a dated rehearsal note.")
+    form.get_by_label("Announcement date").fill("2026-11-20")
+    form.get_by_label("Product area").select_option("Community")
+    form.get_by_label("Category").select_option("Improvement")
+    form.get_by_role("button", name="Save announcement").click()
+    expect(owner.locator("#updateSaveStatus")).to_have_text("Announcement saved.")
+    assert requests.get(public, timeout=10).status_code == 404
+    original = owner.request.get(entry, headers=TEAM).json()
+    assert original["state"] == "draft"
+    form.get_by_label("Publication state").select_option("up-next")
+    form.get_by_role("button", name="Save announcement").click()
+    expect(owner.locator("#updateSaveStatus")).to_have_text("Announcement saved.")
+    assert requests.get(public, timeout=10).ok
+    assert requests.get(hub + "?view=up-next&area=Community&category=Improvement", timeout=10).text.count(title) == 1
+    assert owner.request.put(entry, headers=TEAM, data=original).status == 409
+    form.get_by_label("Publication state").select_option("released")
+    form.get_by_role("button", name="Save announcement").click()
+    expect(owner.locator("#updateSaveStatus")).to_have_text("Announcement saved.")
+    assert requests.get(public, timeout=10).ok
+    assert title in requests.get(hub + "?view=released", timeout=10).text
+    assert title not in requests.get(hub + "?view=up-next", timeout=10).text
+    assert contributor.request.put(entry, headers=TEAM, data=original).status == 403
+
+    contributor.goto(public + "?team=1")
+    expect(contributor.get_by_role("heading", name=title)).to_be_visible()
+    expect(contributor.locator("article time")).to_have_attribute("datetime", "2026-11-20")
+    up = contributor.get_by_role("button", name="Thumbs up")
+    up.click()
+    expect(up).to_have_attribute("aria-pressed", "true")
+    assert contributor.request.put(entry + "/feedback", headers=TEAM, data={"vote": "up"}).ok
+    assert owner.request.get(entry, headers=TEAM).json()["feedback"] == {"up": 1}
+    assert owner.request.put(entry + "/feedback", headers=TEAM, data={"vote": "down"}).ok
+    contributor.reload()
+    expect(up).to_have_attribute("aria-pressed", "true")
+    up.click()
+    expect(up).to_have_attribute("aria-pressed", "false")
+    assert owner.request.get(entry, headers=TEAM).json()["feedback"] == {"down": 1}
+    assert requests.put(entry + "/feedback", headers={"X-CuePorch-Team": "1"},
+                        json={"vote": "up"}, timeout=10).status_code == 403
+    contributor.get_by_role("link", name="Send feedback").click()
+    expect(contributor.get_by_label("Subject", exact=True)).to_have_value("What's New feedback")
+    form.get_by_label("Publication state").select_option("draft")
+    form.get_by_role("button", name="Save announcement").click()
+    expect(owner.locator("#updateSaveStatus")).to_have_text("Announcement saved.")
+    assert requests.get(public, timeout=10).status_code == 404
+    assert contributor.request.get(entry + "/feedback", headers=TEAM).status == 404
+    return dict(filtered_and_dated_entries=True, authorized_draft_and_release=True,
+                stable_link_and_draft_withdrawal=True, duplicate_vote_and_own_removal=True, support_feedback_link=True)

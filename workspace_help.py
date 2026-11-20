@@ -47,6 +47,18 @@ def text_field(body, key, limit, label):
     return value.strip()
 
 
+def workspace_identity(con, team_member, operator_name):
+    if request.headers.get("Authorization") == f"Bearer {SESSION_MARKER}":
+        member = team_member(con)
+        if member is None:
+            abort(401, "Sign in to your team.")
+        return actor_id(member), member["role"] in MANAGERS
+    actor = operator_name(con)
+    if not actor:
+        abort(403, "Enter an operator credential.")
+    return "operator:" + actor, True
+
+
 def register(app, tx, origin, team_member, operator_name, contact, hours):
     @app.get("/help")
     def help_center():
@@ -61,17 +73,6 @@ def register(app, tx, origin, team_member, operator_name, contact, hours):
         secure_site(origin)
         return private(render_template("help_requests.html", team=request.args.get("team") == "1",
                                        contact=contact, hours=hours))
-
-    def identity(con):
-        if request.headers.get("Authorization") == f"Bearer {SESSION_MARKER}":
-            member = team_member(con)
-            if member is None:
-                abort(401, "Sign in to your team to view requests.")
-            return actor_id(member), member["role"] in MANAGERS
-        actor = operator_name(con)
-        if not actor:
-            abort(403, "Enter an operator credential to view requests.")
-        return "operator:" + actor, True
 
     def input_for_request():
         secure = secure_site(origin)
@@ -101,7 +102,7 @@ def register(app, tx, origin, team_member, operator_name, contact, hours):
     def help_requests_api():
         body = input_for_request()
         with tx() as con:
-            actor, supervisor = identity(con)
+            actor, supervisor = workspace_identity(con, team_member, operator_name)
             if request.method == "POST":
                 subject = text_field(body, "subject", 120, "a subject")
                 message = text_field(body, "message", 8000, "a description")
@@ -126,7 +127,7 @@ def register(app, tx, origin, team_member, operator_name, contact, hours):
     def help_thread_api(uid):
         body = input_for_request()
         with tx() as con:
-            actor, supervisor = identity(con)
+            actor, supervisor = workspace_identity(con, team_member, operator_name)
             ticket = con.execute("SELECT * FROM help_request WHERE id=?", (uid,)).fetchone()
             if ticket is None or (not supervisor and ticket["requester"] != actor):
                 abort(404, "This request is unavailable.")

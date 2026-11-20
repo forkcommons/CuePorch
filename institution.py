@@ -76,6 +76,7 @@ import team_workspaces
 import timeline_jobs
 import vimeo_privacy
 import workspace_help
+import workspace_updates
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
@@ -145,6 +146,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + team_sharing_policy.SCHEMA
             + team_workspaces.SCHEMA
             + workspace_help.SCHEMA
+            + workspace_updates.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -163,6 +165,7 @@ def create_app(root, database, operator, institution, simulation=None):
             raise ValueError("Policy database belongs to another institution")
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
         team_accounts.initialize_permissions(db)
+        workspace_updates.initialize(db)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 65536
     app.config["WORKSPACE_COOKIE_SCOPE"] = hmac.digest(
@@ -240,6 +243,7 @@ def create_app(root, database, operator, institution, simulation=None):
     workspace_help.register(app, tx, team_origin, team_member, operator_name,
                             os.environ.get("CUEPORCH_SUPPORT_CONTACT", "Institutional support inbox"),
                             os.environ.get("CUEPORCH_SUPPORT_HOURS", ""))
+    workspace_updates.register(app, tx, team_origin, team_member, operator_name)
 
     def action(con, uid, step, payload):
         if step not in STEPS:

@@ -9,6 +9,7 @@
   ('Showcases', '/operator/showcases', active == '/operator/showcases'),
   ('Analytics', '/operator/analytics', active == '/operator/analytics'),
   ('Recently deleted', '/operator/library?view=deleted', deleted),
+  ("What's New", '/whats-new', active.startswith('/whats-new')),
   ('Help', '/help', active.startswith('/help'))
 ] %}
 <details class="operator-navigation" open>

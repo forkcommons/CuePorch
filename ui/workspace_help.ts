@@ -121,8 +121,14 @@ async function openWorkspace() {
   workspace.hidden = false;
   if (signIn) signIn.hidden = true;
   access.hidden = true;
-  const active = new URL(location.href).searchParams.get("request");
+  const params = new URL(location.href).searchParams;
+  const active = params.get("request");
+  const suggested = params.get("subject");
   if (active) showThread(await call<Thread>(requestPath(active)));
+  else if (suggested) {
+    (create.elements.namedItem("subject") as HTMLInputElement).value = suggested.slice(0, 120);
+    create.closest("details")!.open = true;
+  }
 }
 
 access.onsubmit = event => { event.preventDefault(); void doWork(openWorkspace); };
