@@ -10,7 +10,7 @@ from flask import abort, request, send_file
 from catalog import video_version_key
 from cueporch import checksum
 from library_languages import language_tag, update
-from media_tools import LOCAL_FFMPEG, run_media
+from media_tools import LOCAL_FFMPEG, run_media, video_properties
 
 
 KINDS = {"dubbed": "Dubbed audio", "description": "Audio description", "commentary": "Commentary"}
@@ -27,12 +27,15 @@ def get_track(tracks, language, kind):
 
 
 def render_audio(video, alternate, target, decoder):
+    duration = video_properties(video).get("duration")
+    if not duration:
+        raise ValueError("Unable to determine the playback duration.")
+    audio = f"asetpts=N/SR/TB,apad=whole_dur={duration:.3f},atrim=duration={duration:.3f}"
     result = run_media([
         *LOCAL_FFMPEG, "-v", "error", "-xerror", "-i", str(video),
         "-f", decoder, "-i", str(alternate), "-map", "0:V:0", "-map", "1:a:0",
         "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", "copy",
-        "-af", "asetpts=N/SR/TB,apad", "-c:a", "aac", "-ac", "2", "-b:a", "192k",
-        "-shortest", "-movflags", "+faststart", str(target),
+        "-af", audio, "-c:a", "aac", "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", str(target),
     ], timeout=3600)
     if result.returncode or not target.is_file() or not target.stat().st_size:
         raise ValueError("Unable to prepare the alternate audio.")
