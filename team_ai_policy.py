@@ -25,6 +25,7 @@ FEATURES = {"caption": "Generate captions", "translation": "Translate subtitles"
 DEFAULTS = {
     "features": {key: {"enabled": True, "administrators": True} for key in FEATURES},
     "dictionary": [],
+    "viewer_questions": False,
 }
 MAX_TERMS = 200
 
@@ -33,7 +34,7 @@ def load(con):
     row = con.execute("SELECT revision,settings FROM team_ai_policy WHERE singleton=1").fetchone()
     if not row:
         return "", DEFAULTS
-    settings = json.loads(row["settings"])
+    settings = DEFAULTS | json.loads(row["settings"])
     settings["features"] = DEFAULTS["features"] | settings["features"]
     return row["revision"], settings
 
@@ -41,6 +42,8 @@ def load(con):
 def validate(settings):
     if not isinstance(settings, dict) or settings.keys() != DEFAULTS.keys():
         abort(400, "Supply generation settings and the subtitle dictionary.")
+    if type(settings["viewer_questions"]) is not bool:
+        abort(400, "Choose whether viewers can ask video questions.")
     features = settings["features"]
     if not isinstance(features, dict) or features.keys() != FEATURES.keys():
         abort(400, "Choose settings for the listed generation workflows.")
@@ -65,7 +68,7 @@ def validate(settings):
             abort(400, "Each original phrase can appear once per language.")
         seen.add(key)
         terms.append(dict(language=language, source=source, preferred=preferred))
-    return dict(features=features, dictionary=terms)
+    return dict(features=features, dictionary=terms, viewer_questions=settings["viewer_questions"])
 
 
 def restriction(con, feature, member, settings=None):

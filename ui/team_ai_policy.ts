@@ -2,7 +2,7 @@ import {checked, sessionMarker, teamRequest} from "./team_api.js";
 
 interface Rule { enabled: boolean; administrators: boolean }
 interface Term { language: string; source: string; preferred: string }
-interface Settings { features: Record<string, Rule>; dictionary: Term[] }
+interface Settings { features: Record<string, Rule>; dictionary: Term[]; viewer_questions: boolean }
 interface Policy { revision: string; settings: Settings }
 
 const access = document.querySelector<HTMLFormElement>("#aiAccess")!;
@@ -12,6 +12,7 @@ const status = document.querySelector<HTMLElement>("#aiStatus")!;
 const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
 const usage = document.querySelector<HTMLButtonElement>("#aiUsage")!;
 const dictionary = document.querySelector<HTMLTextAreaElement>("#aiDictionary")!;
+const questions = document.querySelector<HTMLInputElement>("#enableViewerQuestions")!;
 const workflows = Array.from(form.querySelectorAll<HTMLFieldSetElement>("[data-feature]"), row => ({
   feature: row.dataset.feature!,
   enabled: row.querySelector<HTMLInputElement>("[name=enabled]")!,
@@ -29,6 +30,7 @@ function show(policy: Policy) {
   }
   dictionary.value = policy.settings.dictionary.map(({language, source, preferred}) =>
     [language, source, preferred].join("\t")).join("\n");
+  questions.checked = policy.settings.viewer_questions;
   access.hidden = true;
   form.hidden = false;
 }
@@ -70,7 +72,7 @@ form.onsubmit = async event => {
       row.feature, {enabled: row.enabled.checked, administrators: row.administrators.checked},
     ]));
     const response = await checked(await teamRequest("ai", "PUT", {
-      revision, settings: {features, dictionary: entries},
+      revision, settings: {features, dictionary: entries, viewer_questions: questions.checked},
     }, credential));
     show(await response.json());
     status.textContent = "AI settings saved.";

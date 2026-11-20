@@ -71,7 +71,15 @@ class SubtitleTranslation(unittest.TestCase):
                     transcript = json.loads(payload["prompt"].split("\nTranscript:\n", 1)[1])
                     self.assertIn("Welcome to the Council.", transcript[0]["text"])
                     fields = payload["format"]["properties"]
-                    if "chapters" in fields:
+                    if "answer" in fields:
+                        question = json.loads(payload["prompt"].split("\nQuestion:\n", 1)[1].split("\nTranscript:\n", 1)[0])
+                        if question == "What equipment was used?":
+                            result = dict(answer=None, cues=[])
+                        elif "using the language code es" in payload["prompt"]:
+                            result = dict(answer="La sesión pública está comenzando.", cues=[2])
+                        else:
+                            result = dict(answer="The Council is opening the public session.", cues=[2])
+                    elif "chapters" in fields:
                         draft_calls.append("chapters")
                         result = {"chapters": [{"cue": 1, "title": "Welcome"}, {"cue": 2, "title": "Public session"}]}
                     else:
@@ -186,6 +194,7 @@ class SubtitleTranslation(unittest.TestCase):
                 self.verify_batches(page, origin, headers, work, nested, outside, calls, subtitles_path)
                 self.verify_ai_policy(browser, page, origin, headers, work, calls, model_started, release_model)
                 self.verify_video_drafts(page, viewer, origin, headers, work, draft_calls)
+                self.verify_video_questions(cleanup, page, viewer, origin, headers, work)
                 browser.close()
 
     def verify_batches(self, page, origin, headers, work, nested, outside, calls, vtt):
@@ -445,6 +454,89 @@ class SubtitleTranslation(unittest.TestCase):
         self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_details"], ["superseded", "saved"])
         self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_chapters"], ["saved"])
         print("Video draft verification: automatic details, stale-edit protection, persisted chapter draft and decoded chapter seek.")
+
+    def verify_video_questions(self, cleanup, operator, viewer, origin, headers, work):
+        api = operator.request
+        video = origin + f"/api/library/work/{work}"
+        settings_path = origin + "/api/team/ai"
+        questions_path = origin + "/api/viewer/video-questions"
+        watch = origin + f"/watch/work/{work}"
+        panel = viewer.locator("#videoQuestions")
+        marker = {"X-CuePorch-Questions": "1"}
+        expect(panel).to_have_count(0)
+        self.assertEqual(viewer.request.post(questions_path, headers=marker,
+                         data=dict(session="invalid", question="What is this about?")).status, 404)
+
+        operator.goto(origin + "/team/ai")
+        operator.get_by_label("Allow authorized viewers to ask questions about videos").check()
+        operator.get_by_role("button", name="Save AI settings").click()
+        expect(operator.locator("#aiStatus")).to_have_text("AI settings saved.")
+        viewer.reload()
+        panel.get_by_text("Ask about this video", exact=True).click()
+        panel.get_by_role("button", name="What is this video about?").click()
+        expect(panel.locator("[data-answer-text]")).to_have_text("The Council is opening the public session.", timeout=15000)
+        expect(panel.get_by_role("list", name="Answer sources")).to_contain_text("The public session starts now.")
+        panel.get_by_role("button", name="Play from 0:01").click()
+        viewer.wait_for_function("() => document.querySelector('video').currentTime >= 0.99")
+        self.assertEqual(viewer.locator("video").evaluate("video => video.videoWidth"), 256)
+        key = panel.get_attribute("data-session")
+        query = dict(session=key, question="What equipment was used?")
+        panel.get_by_label("Your question").fill(query["question"])
+        panel.get_by_role("button", name="Ask", exact=True).click()
+        expect(panel.get_by_role("status")).to_have_text("The subtitles do not contain an answer to this question.")
+        expect(panel.locator("[data-answer-text]")).to_be_hidden()
+
+        self.assertTrue(api.put(video + "/appearance/watch", headers=headers, data=dict(captions=False)).ok)
+        self.assertEqual(viewer.request.post(questions_path, headers=marker, data=query).status, 404)
+        viewer.reload()
+        expect(panel).to_have_count(0)
+        self.assertTrue(api.delete(video + "/appearance/watch", headers=headers).ok)
+
+        frame_site = Flask("cueporch-question-embed")
+
+        @frame_site.get("/")
+        def embed():
+            return f'<iframe title="Council video" src="{origin}/embed/work/{work}"></iframe>'
+
+        embed_site = self.serve(cleanup, frame_site)
+        viewer.goto(embed_site)
+        frame = viewer.frame_locator("iframe")
+        embedded = frame.locator("#videoQuestions")
+        embedded.get_by_text("Ask about this video", exact=True).click()
+        embedded.get_by_label("Answer language").select_option("es")
+        embedded.get_by_label("Your question").fill("¿Qué sucede en el video?")
+        embedded.get_by_role("button", name="Ask", exact=True).click()
+        expect(embedded.locator("[data-answer-text]")).to_have_text("La sesión pública está comenzando.", timeout=15000)
+        embed_key = embedded.get_attribute("data-session")
+        self.assertTrue(api.put(video + "/appearance/embed", headers=headers, data=dict(allow_seek=False)).ok)
+        embedded.get_by_role("button", name="Ask", exact=True).click()
+        expect(embedded.locator("[data-answer-text]")).to_have_text("La sesión pública está comenzando.")
+        expect(embedded.get_by_role("button", name="Play from 0:01")).to_have_count(0)
+
+        settings = api.get(settings_path, headers=headers).json()
+        settings["settings"]["viewer_questions"] = False
+        self.assertTrue(api.put(settings_path, headers=headers | {"X-CuePorch-Team": "1"}, data=settings).ok)
+        self.assertEqual(viewer.request.post(questions_path, headers=marker,
+                         data=dict(query, session=embed_key)).status, 404)
+        settings = api.get(settings_path, headers=headers).json()
+        settings["settings"]["viewer_questions"] = True
+        self.assertTrue(api.put(settings_path, headers=headers | {"X-CuePorch-Team": "1"}, data=settings).ok)
+
+        self.assertTrue(api.put(video + "/privacy", headers=headers,
+                                data=dict(visibility="password", embed="anywhere", password="screening fixture")).ok)
+        self.assertEqual(viewer.request.post(questions_path, headers=marker, data=query).status, 404)
+        viewer.goto(watch)
+        expect(panel).to_have_count(0)
+        viewer.get_by_label("Video password").fill("screening fixture")
+        viewer.get_by_role("button", name="Watch video").click()
+        panel.get_by_text("Ask about this video", exact=True).click()
+        panel.get_by_role("button", name="What is this video about?").click()
+        expect(panel.locator("[data-answer-text]")).to_have_text("The Council is opening the public session.", timeout=15000)
+        locked_key = panel.get_attribute("data-session")
+        with patch("library_video_questions.QUESTIONS_PER_MINUTE", 1):
+            self.assertEqual(viewer.request.post(questions_path, headers=marker,
+                             data=dict(query, session=locked_key)).status, 429)
+        print("Video questions: exact transcript sources, decoded seek, embed language, authorization, withdrawal and budget verified.")
 
 
 if __name__ == "__main__":

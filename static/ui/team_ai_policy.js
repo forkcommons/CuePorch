@@ -6,6 +6,7 @@ const status = document.querySelector("#aiStatus");
 const save = form.querySelector("button[type=submit]");
 const usage = document.querySelector("#aiUsage");
 const dictionary = document.querySelector("#aiDictionary");
+const questions = document.querySelector("#enableViewerQuestions");
 const workflows = Array.from(form.querySelectorAll("[data-feature]"), row => ({
     feature: row.dataset.feature,
     enabled: row.querySelector("[name=enabled]"),
@@ -21,6 +22,7 @@ function show(policy) {
         row.administrators.checked = rule.administrators;
     }
     dictionary.value = policy.settings.dictionary.map(({ language, source, preferred }) => [language, source, preferred].join("\t")).join("\n");
+    questions.checked = policy.settings.viewer_questions;
     access.hidden = true;
     form.hidden = false;
 }
@@ -61,7 +63,7 @@ form.onsubmit = async (event) => {
             row.feature, { enabled: row.enabled.checked, administrators: row.administrators.checked },
         ]));
         const response = await checked(await teamRequest("ai", "PUT", {
-            revision, settings: { features, dictionary: entries },
+            revision, settings: { features, dictionary: entries, viewer_questions: questions.checked },
         }, credential));
         show(await response.json());
         status.textContent = "AI settings saved.";

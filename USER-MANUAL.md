@@ -94,6 +94,8 @@ The workspace Owner or installation operator can open **Team settings → AI set
 
 Use **Subtitle dictionary** to correct names or preferred terms in newly generated tracks. Enter the output language code, the phrase to replace and the preferred phrase on each line, separated by tabs. Use `*` for all languages. A language-specific entry takes precedence for the same phrase. CuePorch applies the dictionary after generation without changing cue timing. **Download 90-day usage CSV** reports jobs, requesters, status and published cue counts for the current workspace.
 
+When a local Ollama model is configured, the Owner or installation operator can enable **Allow authorized viewers to ask questions about videos**. It starts off. Eligible watch pages and embeds offer questions based on the saved subtitle track, with quotations and links to the cited moments when seeking is allowed. Use **Player and page appearance → Video questions** to hide this feature on either surface for a video. Changing playback access also removes access to questions through the old player. CuePorch sends the question and transcript to the local model and does not store the question or answer.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

@@ -51,6 +51,7 @@ import library_actions
 import library_appearance
 import library_caption_jobs
 import library_ai_drafts
+import library_video_questions
 import team_ai_policy
 import library_details
 import library_discovery
@@ -154,6 +155,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
             + library_ai_drafts.SCHEMA
+            + library_video_questions.SCHEMA
             + team_ai_policy.SCHEMA
             + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
@@ -1318,7 +1320,8 @@ def create_app(root, database, operator, institution, simulation=None):
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
         vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
-        operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences,
+        operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
+        lambda con: team_ai_policy.load(con)[1]["viewer_questions"],
     )
 
     @app.get("/api/library")

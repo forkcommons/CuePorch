@@ -22,7 +22,7 @@ SWITCHES = {
     "show_title": True, "show_chrome": True, "ambient": False, "crop": False,
     "description": True, "credits": True, "tags": True, "categories": True, "license": True,
     "progress": True, "volume": True, "captions": True, "audio_tracks": True, "chapters": True, "speed": True, "fullscreen": True, "pip": True,
-    "allow_seek": True, "right_click": True, "autoplay": False, "muted": False, "loop": False,
+    "allow_seek": True, "right_click": True, "autoplay": False, "muted": False, "loop": False, "viewer_questions": True,
 }
 DEFAULTS = dict(COLORS) | SWITCHES | dict(theme="light", font="serif", play_position="bottom", logo=None)
 PAGE_FIELDS = {

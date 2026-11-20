@@ -32,7 +32,7 @@ def runtime():
 def generate(prompt, schema):
     configured = runtime()
     if not configured:
-        raise ModelError("Configure a local Ollama model before generating video details or chapters.")
+        raise ModelError("Configure a local Ollama model before using generation or video questions.")
     origin, model = configured
     with requests.Session() as session:
         session.trust_env = False

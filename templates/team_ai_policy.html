@@ -19,6 +19,7 @@
         <label><input type="checkbox" name="administrators"> Allow Administrators to run this workflow</label>
       </fieldset>
     {% endfor %}
+    <label><input type="checkbox" id="enableViewerQuestions"> Allow authorized viewers to ask questions about videos</label>
     <label for="aiDictionary">Subtitle dictionary</label>
     <p id="dictionaryHelp">Enter up to {{ max_terms }} lines as language code, original phrase and preferred phrase,
       separated by tabs. Use * for all languages. CuePorch applies replacements to newly generated tracks.</p>

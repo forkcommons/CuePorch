@@ -24,6 +24,7 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import library_video_questions
 import content_rating
 import media_bandwidth
 from catalog import video_version_key
@@ -300,7 +301,8 @@ def apply_settings(con, action, work, settings, password_hash):
 
 
 def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
-             operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences):
+             operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
+             questions_enabled):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -478,6 +480,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if grant:
                 payload.append(grant)
             token = serializer.dumps(payload) if can_watch else None
+            questions = question_session(con, work, token, surface) if token else None
             title = "Protected video" if locked else title_for(con, work)
             creator = creator_for_work(con, uid) if can_watch and mode == "public" and not embed else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
@@ -520,7 +523,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             descriptor_labels=content_rating.DESCRIPTORS,
                             panorama=panorama if panorama != "flat" else None,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
-                            presentation=presentation, poster=poster, rating=rating, analytics=analytics,
+                            presentation=presentation, poster=poster, rating=rating, analytics=analytics, questions=questions,
                             share=share_paths(uid, row)["watch"], registration=form if form_token else None,
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
@@ -528,7 +531,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        if analytics or form or not embed:
+        if analytics or form or questions or not embed:
             response.cache_control.private = True
             response.cache_control.no_store = True
         return response
@@ -557,6 +560,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if video is None or video["sha256"] != digest or not permits(work, settings):
             abort(404)
         return work, video, settings, extra
+
+    question_session = library_video_questions.register(
+        app, tx, root, viewer_key, team_origin, questions_enabled, authorized_playback,
+    )
 
     @app.get("/shared-video/<token>")
     @app.get("/shared-video/<token>/caption/<int:track>")
