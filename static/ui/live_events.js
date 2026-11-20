@@ -484,6 +484,7 @@ function openEditor(current) {
     else {
         field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     }
+    showEmbedPolicy(values?.embed_policy);
     recurrence();
     syncArchiveOption();
     form.hidden = false;
@@ -496,6 +497,16 @@ function recurrence() {
 function syncArchiveOption() {
     field("archive_replay").disabled = !field("save_replay").checked;
 }
+function syncEmbedPolicy() {
+    const domains = field("embed_mode").value === "domains";
+    element("eventEmbedDomains").hidden = !domains;
+    field("embed_domains").required = domains;
+}
+function showEmbedPolicy(policy) {
+    field("embed_mode").value = policy?.mode ?? "anywhere";
+    field("embed_domains").value = policy?.domains.join("\n") ?? "";
+    syncEmbedPolicy();
+}
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -507,6 +518,7 @@ button("configureEventRegistration").onclick = () => void action(async () => {
 button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
+field("embed_mode").onchange = syncEmbedPolicy;
 function showStartingOptions(options) {
     field("method").value = options.method;
     field("registration").checked = options.registration;
@@ -555,6 +567,7 @@ preset.onchange = () => void action(async () => {
     syncArchiveOption();
     field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
     field("timezone").value = value.schedule.timezone;
+    showEmbedPolicy(value.embed_policy);
     showStartingOptions(options);
 }, "Event settings loaded.");
 form.onsubmit = (event) => {
@@ -580,6 +593,8 @@ form.onsubmit = (event) => {
             starting_options: setup, reuse_event: !editing && mode.value === "reuse" ? preset.value : undefined,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
+            embed_policy: { mode: field("embed_mode").value,
+                domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean) },
             save_replay: field("save_replay").checked,
             archive_replay: field("archive_replay").checked,
             dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,

@@ -62,6 +62,8 @@
         <legend>Production and viewers</legend>
         <label>Preferred streaming method <select name="method"><option value="browser">Browser studio</option><option value="encoder">External encoder</option></select></label>
         <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
+        <label>Where may this event be embedded? <select name="embed_mode"><option value="anywhere">Anywhere</option><option value="disabled">Nowhere</option><option value="domains">Specific domains</option></select></label>
+        <label id="eventEmbedDomains" hidden>Allowed domains, one per line <textarea name="embed_domains" rows="3" placeholder="example.org"></textarea></label>
         <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
         <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
         <small id="eventDvrHelp">Leave blank for the host default. Enter 0 to turn DVR off. The host sets the maximum.</small>

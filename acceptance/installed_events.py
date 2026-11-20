@@ -268,6 +268,72 @@ def check_event_setup(page, base, auth):
                 new_event_has_no_transferred_attendees=True, setup_staff_only=True)
 
 
+def check_event_embed_policy(page, browser, base, auth, exhibition, venue):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="New event").click()
+    editor = page.locator("#newEventForm")
+    editor.get_by_label("Title", exact=True).fill("Ticketed community screening")
+    editor.get_by_label("Link name").fill("domain-screening")
+    editor.get_by_label("Time zone").fill("America/Denver")
+    editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T12:00")
+    editor.get_by_label("End", exact=True).fill(f"{tomorrow}T13:00")
+    editor.get_by_role("combobox", name="Visibility", exact=True).select_option("public")
+    scope = editor.get_by_role("combobox", name="Where may this event be embedded?")
+    scope.select_option("domains")
+    editor.get_by_label("Allowed domains, one per line").fill(urlsplit(venue).netloc)
+    editor.get_by_label("Require event registration").check()
+    editor.get_by_role("button", name="Save event").click()
+    expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+    listing = requests.get(portal, headers=auth, timeout=10)
+    listing.raise_for_status()
+    event = next(item for item in listing.json()["events"] if item["slug"] == "domain-screening")
+    watch, embed = base + event["watch"], base + event["embed"]
+    assert requests.get(watch, timeout=10).status_code == 200
+    assert requests.get(embed, timeout=10).status_code == 404
+    denied = dict(Referer=base + "/", **{"Sec-Fetch-Dest": "iframe"})
+    assert requests.get(embed, headers=denied, timeout=10).status_code == 404
+    allowed = dict(Referer=venue + "/", **{"Sec-Fetch-Dest": "iframe"})
+    response = requests.get(embed, headers=allowed, timeout=10)
+    assert response.ok and urlsplit(venue).netloc in response.headers["Content-Security-Policy"]
+    assert requests.get(embed, headers=allowed | {"Accept": "application/json"}, timeout=10).status_code == 404
+    assert requests.post(embed, headers=allowed, data={"email": "outsider@example.invalid"}, timeout=10).status_code == 404
+
+    previous = exhibition.embed
+    exhibition.embed = embed
+    guest = browser.new_page()
+    try:
+        guest.goto(venue)
+        frame = guest.frame_locator("iframe")
+        expect(frame.locator("#eventStatus")).to_have_text("Registration required")
+        grant = frame.locator("#eventLobby").get_attribute("data-frame-grant")
+        assert grant
+        frame.get_by_label("Email").fill("venue-attendee@example.invalid")
+        frame.get_by_role("button", name="Register and watch").click()
+        expect(frame.locator("#eventStatus")).to_have_text("Scheduled")
+        with guest.expect_response(lambda value: value.url == embed and value.request.headers.get("accept") == "application/json") as refresh:
+            frame.get_by_role("button", name="Check stream status").click()
+        assert refresh.value.status == 200
+        assert refresh.value.json()["status"] == "Scheduled"
+
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        expect(scope).to_have_value("domains")
+        scope.select_option("disabled")
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        expect(page.locator("#eventEmbedField")).to_be_hidden()
+        assert requests.get(watch, timeout=10).status_code == 200
+        assert requests.get(embed, headers=allowed | {"X-CuePorch-Event-Frame": grant, "Accept": "application/json"},
+                            timeout=10).status_code == 404
+        expect(frame.locator("#eventStatus")).to_have_text("This event is unavailable", timeout=13000)
+    finally:
+        guest.close()
+        exhibition.embed = previous
+    return dict(allowed_venue_registration_and_status=True, unrelated_site_denied=True, watch_link_stable=True,
+                frame_ancestors=True, unsigned_status_and_form_denied=True, embed_off_revokes_old_frame=True)
+
+
 def check_live_delivery(base, origin, keys, home, ffmpeg, port):
     assert urlsplit(origin).hostname in ("localhost", "127.0.0.1")
     assert ffmpeg.is_file(), "Bundled encoder is missing"

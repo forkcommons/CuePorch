@@ -175,6 +175,7 @@ async function checkStatus() {
   try {
     const headers: Record<string, string> = {Accept: "application/json"};
     if (viewer) headers["X-CuePorch-Event-Viewer"] = viewer;
+    if (lobby.dataset.frameGrant) headers["X-CuePorch-Event-Frame"] = lobby.dataset.frameGrant;
     if (lobby.dataset.analyticsContext) headers["X-CuePorch-Event-Context"] = lobby.dataset.analyticsContext;
     const response = await fetch(requested, {cache: "no-store", headers});
     if (requested !== location.href) return;

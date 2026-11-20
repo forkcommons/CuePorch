@@ -34,6 +34,7 @@ from catalog import video_version_key
 from library_actions import title_for
 import library_analytics
 from library_interactivity import text_field
+from library_privacy import allowed_ancestor, frame_policy, normalize_domain
 import library_registration
 import media_bandwidth
 
@@ -57,6 +58,7 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 PUBLIC_MODES = ("public", "private")
 DELIVERED = ("ready", "replay")
+UNRESTRICTED_EMBED = dict(mode="anywhere", domains=[])
 
 
 def read(con, value, by_slug=False):
@@ -183,7 +185,32 @@ def edit(raw):
         value["dvr_seconds"] = dvr
     if "archive_replay" in raw:
         value["archive_replay"] = raw["archive_replay"]
+    if "embed_policy" in raw:
+        value["embed_policy"] = embed_policy(raw["embed_policy"])
     return value
+
+
+def embed_policy(body):
+    if not isinstance(body, dict) or body.get("mode") not in ("anywhere", "disabled", "domains"):
+        abort(422, "Choose where the event can be embedded.")
+    domains = body.get("domains", [])
+    if not isinstance(domains, list) or len(domains) > 50:
+        abort(422, "Enter up to 50 allowed embed domains.")
+    mode = body["mode"]
+    if mode != "domains":
+        return dict(mode=mode, domains=[])
+    try:
+        domains = sorted(set(map(normalize_domain, domains)))
+    except (ValueError, UnicodeError):
+        abort(422, "Use domain names such as example.org, with an optional port.")
+    if not domains:
+        abort(422, "Enter at least one allowed embed domain.")
+    return dict(mode=mode, domains=domains)
+
+
+def sharing_settings(event):
+    policy = event.get("embed_policy", UNRESTRICTED_EMBED)
+    return dict(visibility=event["visibility"], embed=policy["mode"], domains=policy["domains"])
 
 
 def validate_setup(raw):
@@ -239,6 +266,7 @@ def apply_setup(con, uid, event, setup, reference):
 
 def summary(con, row, event, first, last):
     visible = publication(con, row, event)
+    can_embed = visible == "eligible" and event.get("embed_policy", UNRESTRICTED_EMBED)["mode"] != "disabled"
     sessions = []
     for upcoming in event_schedule.occurrences(event["schedule"], first, last):
         target = occurrence(con, row["id"], upcoming["id"])
@@ -250,7 +278,7 @@ def summary(con, row, event, first, last):
                 preview_encoder=encoder_preview_enabled(con, row["id"]),
                 publication=visible, occurrences=sessions,
                 watch=url_for("event_page", slug=row["slug"]) if visible == "eligible" else None,
-                embed=url_for("event_embed", slug=row["slug"]) if visible == "eligible" else None)
+                embed=url_for("event_embed", slug=row["slug"]) if can_embed else None)
 
 
 def calendar_window():
@@ -296,6 +324,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
+    frames = URLSafeTimedSerializer(signing_key, salt="cueporch-event-frame")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
@@ -354,6 +383,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 _, previous = read(con, reference)
                 if setup is None:
                     setup = reuse_setup(con, reference, previous)
+                if "embed_policy" in previous:
+                    event.setdefault("embed_policy", previous["embed_policy"])
+            enforce_sharing(con, settings=sharing_settings(event))
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
             if setup:
@@ -394,12 +426,15 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     changed["cueporch_delivery"] = True
                 if "archive_replay" in prior:
                     changed.setdefault("archive_replay", prior["archive_replay"])
+                if "embed_policy" in prior:
+                    changed.setdefault("embed_policy", prior["embed_policy"])
                 if "setup" in prior:
                     changed["setup"] = prior["setup"]
                 if "preferred_method" in body:
                     if body["preferred_method"] not in ("browser", "encoder"):
                         abort(422, "Choose a preferred method for the event.")
                     changed["setup"] = prior.get("setup", {}) | {"method": body["preferred_method"]}
+                enforce_sharing(con, settings=sharing_settings(changed), prior=sharing_settings(prior))
                 if changed == prior:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):
@@ -943,6 +978,26 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             status = "The stream is unavailable"
         return address, analytics_token, status
 
+    def event_frame(row, event, embed, status_request):
+        if not embed:
+            return "'none'", None
+        policy = event.get("embed_policy", UNRESTRICTED_EMBED)
+        if policy["mode"] == "disabled":
+            abort(404)
+        if policy["mode"] == "anywhere":
+            return "*", None
+        scope = [row["id"], row["revision"]]
+        supplied = request.form.get("frame") or request.headers.get("X-CuePorch-Event-Frame", "")
+        if request.method == "POST" or status_request:
+            if not valid_ticket(frames, supplied, scope, 12 * 3600):
+                abort(404)
+        else:
+            if (request.headers.get("Sec-Fetch-Dest") not in (None, "iframe", "frame")
+                    or not allowed_ancestor(request.referrer or "", policy["domains"])):
+                abort(404)
+            supplied = frames.dumps(scope)
+        return frame_policy(policy["domains"]), supplied
+
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
         grant = None
@@ -955,6 +1010,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
                 abort(404)
+            ancestors, frame_grant = event_frame(row, event, embed, json_status)
             context_key = [row["id"], row["revision"], embed]
             now = datetime.now(timezone.utc)
             upcoming = list(event_schedule.occurrences(event["schedule"], now - timedelta(days=1), now + timedelta(days=366)))
@@ -1080,6 +1136,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
+                                     unlock_token=frame_grant,
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
                                      if can_participate else None,
@@ -1087,7 +1144,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      if can_participate else None))
         response = make_response(view, 422 if form_error else 200)
         response.headers["Vary"] = "Accept"
-        response.headers["Content-Security-Policy"] = "frame-ancestors " + ("*" if embed else "'none'")
+        response.headers["Content-Security-Policy"] = "frame-ancestors " + ancestors
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
