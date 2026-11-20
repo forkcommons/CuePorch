@@ -1,6 +1,8 @@
 # CuePorch by ForkCommons
 Version 0.2.0 · Windows, macOS and Linux
 
+Project site source: [docs/index.html](docs/index.html). Plain static HTML and CSS with no build step. To preview it, run `python -m http.server -d docs` and open http://localhost:8000/. It is written to be served by GitHub Pages from `/docs` on the default branch.
+
 CuePorch preserves and publishes video for public media stations and arts institutions. TypeScript drives the operator, creator and screening interfaces. Python owns the institutional service, Vimeo importer, grants and publication queue. The Rust desktop launcher starts the bundled service and opens your browser. PeerTube provides public hosting. CivicCast is optional.
 
 ## Release baseline
