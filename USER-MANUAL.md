@@ -28,6 +28,10 @@ In **Viewer account**, you can change your display name, pronouns or sign-in ema
 
 On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.
 
+On a public watch page, read the discussion under **Comments**. Search by text or author and sort newest or oldest first. Sign in to post under your display name or delete one of your own comments. If the operator requires approval, see the comment’s status under **Your unpublished comments**.
+
+New public comments publish automatically by default. In the operator console, select **Load settings and review queue**, then turn on **Require approval for public comments** to review new posts. Read each comment in the queue and choose **approve** or **reject**. Turning the setting off releases comments that are still waiting. Use **Public comments** on the same screen to find and remove published comments.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

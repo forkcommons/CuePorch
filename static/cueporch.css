@@ -12,6 +12,13 @@ main { max-width: 65rem; }
   --watch-sea: #e0ece7;
 }
 .watch-catalog main { max-width: none; }
+.watch-comments { max-width: 43rem; margin-block: 1.75rem; }
+.watch-comments textarea { display: block; width: 100%; margin-block: .3rem; }
+.watch-comments [role="search"] { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; margin-block: 1rem; }
+.watch-comments [role="search"] label { display: grid; }
+.watch-comments ol, #public-comments ul { padding-inline-start: 1.3rem; }
+.watch-comments li, #public-comments li { margin-block: 1rem; }
+.watch-comment-body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .watch-banner { margin-block-end: 2rem; }
 .watch-banner p { margin: 0; color: #37585a; }
 .watch-banner h1 { margin: 0 0 .55rem; font-size: clamp(2.9rem, 8vw, 5.6rem); line-height: 1; }

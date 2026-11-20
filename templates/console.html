@@ -2,4 +2,13 @@
 <h1>{{ institution }} &middot; CuePorch</h1><p><a href="/operator/migration">Move from Vimeo</a></p><label>Operator credential <input id="key" type="password"></label>
 <p><a href="/operator/library">Manage library and embeds</a> · <a href="/operator/exhibitions">Exhibitions</a> · <a href="/support">Support and appeals</a> · <a href="/submit">Submit a work</a></p>
 <button id="load">Load settings and review queue</button><div id="settings"></div><h2>Awaiting approval</h2><div id="queue"></div><p role="status" id="result"></p>
+<section id="public-comments" aria-labelledby="public-comments-title" hidden>
+  <h2 id="public-comments-title">Public comments</h2>
+  <form role="search" aria-label="Published comments">
+    <label>Search published comments <input name="q" type="search" maxlength="120"></label>
+    <button type="submit">Search</button>
+  </form>
+  <ul></ul><p role="status"></p>
+  <button type="button" data-more-comments hidden>Load more published comments</button>
+</section>
 <script type="module" src="/static/ui/console.js"></script>

@@ -1,0 +1,23 @@
+<section class="watch-comments" data-watch-comments data-kind="{{ save_kind }}" data-slug="{{ save_slug }}"
+         aria-labelledby="watchCommentsHeading" hidden>
+  <h2 id="watchCommentsHeading">Comments</h2>
+  <p data-comment-signin hidden><a href="{{ url_for('viewer_account_page', next=request.path) }}">Sign in to comment</a></p>
+  <form data-comment-post hidden>
+    <label>Write a public comment <textarea name="body" rows="3" maxlength="2000" required></textarea></label>
+    <p>Your display name appears with your comment.</p>
+    <button type="submit">Post comment</button>
+  </form>
+  <div data-comment-own hidden>
+    <h3>Your unpublished comments</h3>
+    <ol data-comment-own-list></ol>
+  </div>
+  <form data-comment-search role="search" aria-label="Video comments">
+    <label>Search comments <input type="search" name="q" maxlength="120"></label>
+    <label>Sort comments <select name="sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+    <button type="submit">Search</button>
+  </form>
+  <p role="status" data-comment-status></p>
+  <ol data-comment-list></ol>
+  <button type="button" data-comment-more hidden>Load more comments</button>
+</section>
+<script type="module" src="{{ url_for('static', filename='ui/watch_comments.js') }}"></script>

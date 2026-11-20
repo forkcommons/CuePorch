@@ -36,6 +36,7 @@ from waitress import serve
 from cueporch import verify
 import analytics_reports
 import audience_accounts
+import audience_comments
 import library_actions
 import library_appearance
 import library_caption_jobs
@@ -75,6 +76,7 @@ STEPS = (
     "grant",
     "catalog",
     "moderation",
+    audience_comments.STEP,
     "restoration",
 )
 SCHEMA = """
@@ -606,9 +608,12 @@ def create_app(root, database, operator, institution, simulation=None):
         staff()
         with tx() as con:
             return [
-                dict(row)
+                {key: row[key] for key in row.keys() if row[key] is not None}
                 for row in con.execute(
-                    "SELECT id,step,payload FROM action WHERE status='waiting' ORDER BY created"
+                    """SELECT action.id,step,payload,c.body AS comment_body,a.name AS comment_author
+                       FROM action LEFT JOIN audience_comment c ON c.approval=action.id
+                       LEFT JOIN audience_account a ON a.id=c.account
+                       WHERE action.status='waiting' ORDER BY action.created"""
                 )
             ]
 
@@ -1095,7 +1100,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return library_discovery.listing(con, read_library_works, library_actions.title_for, vimeo_privacy.permits, item)
 
     library_discovery.register(app, tx, staff, public_listing, root, institution)
-    audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing)
+    audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)

@@ -5,7 +5,9 @@ import secrets
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import STEPS, create_app
@@ -13,7 +15,10 @@ from institution import STEPS, create_app
 
 class Policy(unittest.TestCase):
     def test_all_steps(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, ExitStack() as services:
+            # These workers hold Windows files and are unrelated to the policy API.
+            for worker in ("library_worker", "library_caption_jobs", "review_push"):
+                services.enter_context(patch(f"institution.{worker}.start"))
             root = Path(temp)
             secret = secrets.token_hex(24)
             headers = {"Authorization": "Bearer " + secret}
@@ -24,9 +29,10 @@ class Policy(unittest.TestCase):
                 (library / "manifest.json").write_text(
                     json.dumps(dict(institution=name, schema=1, works=[]))
                 )
-                return create_app(
-                    library, root / (name + ".db"), secret, name
-                ).test_client()
+                app = create_app(library, root / (name + ".db"), secret, name)
+                services.callback(app.extensions["stop_event_capture"])
+                services.callback(app.extensions["stop_editor"])
+                return app.test_client()
 
             first = institution("station")
             other = institution("arts")

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from flask import abort, make_response, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import audience_comments
 import audience_library
 from library_analytics import source_origin
 from library_discovery import entry_payload
@@ -31,7 +32,7 @@ CREATE INDEX IF NOT EXISTS audience_attempt_expiry ON audience_auth_attempt(expi
 CREATE TABLE IF NOT EXISTS audience_watch_later(
  account TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL, saved REAL NOT NULL,
  PRIMARY KEY(account,kind,slug));
-""" + audience_library.SCHEMA
+""" + audience_library.SCHEMA + audience_comments.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
 LOCAL_COOKIE = "cueporch-viewer"
 HTTPS_COOKIE = "__Host-cueporch-viewer"
@@ -91,7 +92,7 @@ def account_view(row):
     return {key: row[key] for key in ("name", "email", "pronouns")}
 
 
-def register(app, tx, origin_url, operator, listing):
+def register(app, tx, origin_url, operator, listing, action, staff):
     public_origin = source_origin(origin_url)
     dummy = generate_password_hash(secrets.token_urlsafe(24))
     limit_key = hmac.digest(operator.encode(), b"CuePorch viewer attempts", "sha256")
@@ -201,6 +202,7 @@ def register(app, tx, origin_url, operator, listing):
             with tx() as con:
                 row = current(con, session)
                 same_password(row, previous_hash)
+                audience_comments.remove_account(con, row["id"])
                 audience_library.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
@@ -320,3 +322,4 @@ def register(app, tx, origin_url, operator, listing):
         return current(con, browser_session(scheme()), required)
 
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
+    audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)

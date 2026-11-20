@@ -30,6 +30,7 @@ from installed_advanced_analytics import check_advanced_analytics
 from installed_discovery import check_discovery
 from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
+from installed_audience_comments import check_audience_comments
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
@@ -378,6 +379,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         if audience is not None:
                             results[-1]["audience_accounts"] = audience
                             results[-1]["audience_collections"] = check_audience_collections(browser, base, auth, replacement)
+                            results[-1]["audience_comments"] = check_audience_comments(browser, base, auth, replacement)
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
