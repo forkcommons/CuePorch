@@ -8,9 +8,10 @@ import re
 import time
 import uuid
 
-from flask import Response, abort, request
+from flask import Response, abort, make_response, render_template, request
 
-from library_interactivity import text_field, web_link
+from library_appearance import brand_image
+from library_interactivity import image_id, text_field, web_link
 
 
 SCHEMA = """
@@ -27,14 +28,20 @@ UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medi
 DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
                first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single",
                attendance_analytics=False)
+DEFAULT_APPEARANCE = dict(alignment="center", logo=None, background_image=None,
+                          background="#e7eee5", overlay="#ffffff", opacity=25)
 FORM_TYPES = ("text", "select", "checkbox", "description")
 EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
+
+
+def configured(settings):
+    return DEFAULT | settings | {"appearance": DEFAULT_APPEARANCE | settings.get("appearance", {})}
 
 
 def read_form(con, kind, subject):
     row = con.execute("SELECT revision,settings FROM viewer_form WHERE kind=? AND subject=?",
                       (kind, subject)).fetchone()
-    return (row["revision"], DEFAULT | json.loads(row["settings"])) if row else (None, DEFAULT.copy())
+    return (row["revision"], configured(json.loads(row["settings"]))) if row else (None, configured({}))
 
 
 def active(con, kind, subject):
@@ -61,6 +68,19 @@ def validation(body, kind="video"):
     if layout not in ("single", "steps"):
         abort(422, "Choose a registration layout.")
     result["layout"] = layout
+    raw = body.get("appearance", {})
+    if not isinstance(raw, dict):
+        abort(422, "Choose a registration appearance.")
+    appearance = {name: raw.get(name, value) for name, value in DEFAULT_APPEARANCE.items()}
+    if appearance["alignment"] not in ("start", "center", "end"):
+        abort(422, "Choose a registration form alignment.")
+    if type(appearance["opacity"]) is not int or not 0 <= appearance["opacity"] <= 100:
+        abort(422, "Choose an overlay opacity from 0 to 100.")
+    for name in ("background", "overlay"):
+        color = appearance[name]
+        if not isinstance(color, str) or not re.fullmatch(r"#[a-fA-F0-9]{6}", color):
+            abort(422, "Use six-digit hexadecimal colors.")
+    result["appearance"] = appearance
     custom = body.get("fields")
     if not isinstance(custom, list) or len(custom) > 20:
         abort(422, "A registration form can have up to 20 custom fields.")
@@ -87,6 +107,18 @@ def validation(body, kind="video"):
                 abort(422, "Use distinct dropdown choices.")
         fields.append(dict(id=key, type=kind, label=label, required=required, options=choices))
     return dict(result, fields=fields)
+
+
+def check_images(con, settings):
+    appearance = settings["appearance"]
+    for name in ("logo", "background_image"):
+        appearance[name] = image_id(con, appearance[name])
+
+
+def presentation(con, form):
+    appearance = form["appearance"]
+    return dict(form, logo_src=brand_image(con, appearance["logo"]),
+                background_src=brand_image(con, appearance["background_image"]))
 
 
 def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_record=None):
@@ -154,7 +186,11 @@ def operator_form(con, kind, uid, protected_public=False):
         body = request.get_json()
         if not isinstance(body, dict) or body.get("revision") != revision:
             abort(409, "The registration form changed. Reopen the editor.")
-        updated = validation(body.get("settings"), kind)
+        supplied = body.get("settings")
+        if isinstance(supplied, dict) and "appearance" not in supplied:
+            supplied = dict(supplied, appearance=config["appearance"])
+        updated = validation(supplied, kind)
+        check_images(con, updated)
         if updated["enabled"] and protected_public:
             abort(409, "Registration cannot gate a designated public record.")
         name = text_field(body.get("preset_name", ""), "a registration preset name", 80)
@@ -167,7 +203,7 @@ def operator_form(con, kind, uid, protected_public=False):
             con.execute("""INSERT INTO viewer_form VALUES(?,?,?,?) ON CONFLICT(kind,subject) DO UPDATE SET
                            revision=excluded.revision,settings=excluded.settings""", (kind, uid, revision, json.dumps(config)))
     return dict(revision=revision, settings=config, protected_public=protected_public,
-                presets={row["name"]: DEFAULT | json.loads(row["settings"]) for row in con.execute(
+                presets={row["name"]: configured(json.loads(row["settings"])) for row in con.execute(
                     "SELECT name,settings FROM viewer_form_preset ORDER BY name"
                 )},
                 registrants=[dict(email=row["email"], registered=row["registered"], answers=json.loads(row["answers"]))
@@ -193,6 +229,25 @@ def export(con, kind, uid):
 
 
 def register(app, tx, staff, get_work, protected_public):
+    @app.post("/api/registration/preview")
+    def registration_preview():
+        staff()
+        request.max_content_length = 256 * 1024
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(422, "Choose a registration preview.")
+        settings = validation(body.get("settings"), "event" if body.get("event") is True else "video")
+        with tx() as con:
+            check_images(con, settings)
+            form = presentation(con, settings)
+        response = make_response(dict(html=render_template(
+            "registration_preview.html", registration=form, enrollment="",
+            registration_preview=True, offer_attendee_sharing=form["attendance_analytics"],
+        )))
+        response.cache_control.private = True
+        response.cache_control.no_store = True
+        return response
+
     @app.route("/api/library/work/<uid>/registration", methods=["GET", "PUT"])
     def video_registration(uid):
         staff()

@@ -36,6 +36,27 @@ main { max-width: 65rem; }
 .workspace-tour-mark :is(p, h2) { margin-block: .35rem; }
 .workspace-tour-mark > div { display: flex; flex-wrap: wrap; gap: .5rem; }
 .workspace-tour-highlight { outline: 3px solid #248478; outline-offset: .2rem; }
+.registration-gate {
+  position: relative; isolation: isolate; display: flex; justify-content: center;
+  padding: clamp(.65rem, 3vw, 2rem); border-radius: .65rem; overflow: hidden;
+  background: var(--registration-bg);
+}
+.registration-gate[data-alignment="start"] { justify-content: flex-start; }
+.registration-gate[data-alignment="end"] { justify-content: flex-end; }
+.registration-background, .registration-gate::before { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
+.registration-background { z-index: -2; object-fit: cover; }
+.registration-gate::before { content: ""; z-index: -1; background: var(--registration-overlay); opacity: var(--registration-opacity); }
+.registration-card {
+  inline-size: min(100%, 29rem); min-inline-size: 0; padding: clamp(.65rem, 3vw, 1.4rem);
+  background: #fcfcf8; color: #152e33; border-radius: .5rem; overflow-wrap: anywhere; color-scheme: light;
+}
+.registration-card h2 { margin-block: .35rem; }
+.registration-card input:not([type="checkbox"]), .registration-card select { max-inline-size: 100%; }
+.registration-logo { display: block; max-inline-size: min(11rem, 100%); max-block-size: 4rem; object-fit: contain; }
+.registration-preview-container { overflow-x: auto; }
+.registration-preview { display: block; inline-size: 800px; block-size: 33rem; border: 1px solid #becac7; }
+.registration-preview[data-size="mobile"] { inline-size: 390px; }
+.registration-preview[hidden] { display: none; }
 .workspace-search, .workspace-home-actions { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem 1rem; margin-block: 1rem; }
 .workspace-search label { align-self: center; }
 .workspace-home-actions > * { align-self: baseline; }

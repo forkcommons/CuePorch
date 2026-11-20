@@ -51,7 +51,7 @@ const openRegistration = setupRegistration((suffix, method, values) => request(e
     download.download = "cueporch-showcase-registrants.csv";
     download.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-});
+}, () => credential.value);
 function membership() {
     const included = new Set(selected);
     const titles = new Map(library.map((work) => [work.id, work.title]));

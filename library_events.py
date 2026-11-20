@@ -1518,6 +1518,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         analytics_allowed = library_analytics.permitted() and request.args.get("dnt", "").lower() not in ("1", "true")
         enrollment = None
         form_error = None
+        registration_view = None
         archives = None
         latest = latest_slot = None
         latest_captioned = False
@@ -1600,6 +1601,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                             grant = guests.dumps([*scope, joined])
                 if not grant and not json_status and not withdrawn:
                     enrollment = forms.dumps(scope)
+                    registration_view = library_registration.presentation(con, form)
             if playlist_enabled and not joined and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
@@ -1709,7 +1711,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
-                                     viewer_grant=grant, registration=form if enrollment else None,
+                                     viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      unlock_token=frame_grant, event_access=access,
                                      current_event_url=viewer_url(row, event, embed, link_key),

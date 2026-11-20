@@ -72,6 +72,7 @@ const openRegistration = setupRegistration(
     download.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
+  () => credential.value,
 );
 
 function membership() {

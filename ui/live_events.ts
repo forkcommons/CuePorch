@@ -296,6 +296,7 @@ const registrationEditor = element<HTMLFormElement>("registrationEditor");
 const openRegistration = setupRegistration(
   (suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body),
   () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"),
+  () => credential.value,
 );
 
 function choose(event: LiveEvent, instance: Occurrence) {

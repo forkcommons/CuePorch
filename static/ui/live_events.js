@@ -223,7 +223,7 @@ async function downloadEventFile(path, filename) {
 }
 const { close: closeEngagement } = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
-const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"));
+const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"), () => credential.value);
 function choose(event, instance) {
     if (registrationEvent !== event.id) {
         registrationEditor.hidden = true;

@@ -1,4 +1,16 @@
+import {checked} from "./team_api.js";
+
 interface Field { id: string; type: string; label: string; required: boolean; options: string[]; }
+const imageFields = ["logo", "background_image"] as const;
+type ImageField = typeof imageFields[number];
+interface Appearance {
+  alignment: string;
+  logo: string | null;
+  background_image: string | null;
+  background: string;
+  overlay: string;
+  opacity: number;
+}
 interface Definition {
   enabled: boolean;
   heading: string;
@@ -9,6 +21,7 @@ interface Definition {
   last_name: string;
   collect_utm: boolean;
   attendance_analytics?: boolean;
+  appearance: Appearance;
   fields: Field[];
 }
 interface Registrant { email: string; registered: number; answers: Record<string, string | boolean>; }
@@ -21,7 +34,7 @@ interface FormDataState {
 }
 type VideoRequest = <T>(suffix: string, method?: string, body?: object) => Promise<T>;
 
-export function setupRegistration(call: VideoRequest, download: () => Promise<void>) {
+export function setupRegistration(call: VideoRequest, download: () => Promise<void>, credential: () => string) {
   const form = document.querySelector<HTMLFormElement>("#registrationEditor")!;
   const listing = form.querySelector<HTMLTableSectionElement>("#registrantRows")!;
   const protectedNotice = form.querySelector<HTMLElement>("#registrationProtected")!;
@@ -30,12 +43,24 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   const add = form.querySelector<HTMLButtonElement>("#addRegistrationField")!;
   const message = form.querySelector<HTMLElement>("#registrationStatus")!;
   const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+  const preview = form.querySelector<HTMLIFrameElement>("#registrationPreview")!;
+  const showPreview = form.querySelector<HTMLButtonElement>("#showRegistrationPreview")!;
   const presets = form.querySelector<HTMLSelectElement>("[name=preset]")!;
   const attendeeAnalytics = form.querySelector<HTMLInputElement>("[name=attendance_analytics]");
   const field = <T extends HTMLElement = HTMLInputElement>(node: Element, name: string) =>
     node.querySelector<T>(`[name="${name}"]`)!;
   let current: FormDataState;
   let counter = 0;
+  let images: Record<ImageField, string | null> = {logo: null, background_image: null};
+  let busy = false;
+  const clearImage = (name: ImageField) => form.querySelector<HTMLButtonElement>(`[data-clear-image="${name}"]`)!;
+
+  async function request<T>(path: string, body: object): Promise<T> {
+    const headers: Record<string, string> = {Authorization: "Bearer " + credential()};
+    if (!(body instanceof FormData)) headers["Content-Type"] = "application/json";
+    const response = await fetch(path, {method: "POST", headers, body: body instanceof FormData ? body : JSON.stringify(body)});
+    return (await checked(response)).json();
+  }
 
   function append(value: Field) {
     const row = template.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
@@ -73,6 +98,16 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     for (const key of ["heading", "description", "privacy_url", "layout", "first_name", "last_name"] as const) {
       field(form, key).value = settings[key];
     }
+    for (const key of ["alignment", "background", "overlay", "opacity"] as const) {
+      field(form, key).value = String(settings.appearance[key]);
+    }
+    for (const name of imageFields) {
+      images[name] = settings.appearance[name];
+      field(form, name).value = "";
+      clearImage(name).hidden = !images[name];
+    }
+    preview.hidden = true;
+    preview.removeAttribute("srcdoc");
     fields.replaceChildren();
     add.disabled = false;
     settings.fields.forEach(append);
@@ -93,11 +128,10 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     }
   }
 
-  async function action(callback: () => Promise<void>, success = "") {
+  async function action(callback: () => Promise<void>) {
     message.textContent = "";
     try {
       await callback();
-      message.textContent = success;
     } catch (error) {
       message.textContent = error instanceof Error ? error.message : String(error);
     }
@@ -110,24 +144,78 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   presets.onchange = () => {
     if (presets.value) renderFields(current.presets[presets.value]);
   };
-  form.onsubmit = (event) => {
+
+  for (const name of imageFields) {
+    clearImage(name).onclick = () => {
+      images[name] = null;
+      field(form, name).value = "";
+      clearImage(name).hidden = true;
+    };
+  }
+
+  async function draft(context: FormDataState): Promise<Definition | undefined> {
+    for (const name of imageFields) {
+      const input = field(form, name);
+      const file = input.files?.[0];
+      if (!file) continue;
+      const upload = new FormData();
+      upload.set("logo", file);
+      const uploaded = await request<{logo: string}>("/api/review-logos", upload);
+      if (context !== current || form.hidden) return;
+      if (input.files?.[0] === file) {
+        images[name] = uploaded.logo;
+        input.value = "";
+        clearImage(name).hidden = false;
+      }
+    }
+    const questions = [...fields.querySelectorAll<HTMLLIElement>(":scope > li")].map(row => ({
+      id: row.dataset.fieldId!, type: field(row, "kind").value, label: field(row, "label").value,
+      required: field(row, "required").checked,
+      options: field(row, "options").value.split("\n").map(value => value.trim()).filter(Boolean),
+    }));
+    return {
+      enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
+      ...(attendeeAnalytics ? {attendance_analytics: attendeeAnalytics.checked} : {}),
+      heading: field(form, "heading").value, description: field(form, "description").value,
+      privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
+      last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: questions,
+      appearance: {...images, alignment: field(form, "alignment").value, background: field(form, "background").value,
+        overlay: field(form, "overlay").value, opacity: field(form, "opacity").valueAsNumber},
+    };
+  }
+
+  async function useDraft(draw: (settings: Definition, context: FormDataState) => Promise<void>) {
+    if (busy) return;
+    busy = showPreview.disabled = save.disabled = presets.disabled = true;
+    const context = current;
+    await action(async () => {
+      const settings = await draft(context);
+      if (settings && context === current && !form.hidden) await draw(settings, context);
+    });
+    busy = showPreview.disabled = save.disabled = presets.disabled = false;
+  }
+
+  const size = field<HTMLSelectElement>(form, "preview_size");
+  size.onchange = () => { preview.dataset.size = size.value; };
+  showPreview.onclick = () => {
+    if (!form.reportValidity()) return;
+    void useDraft(async (settings, context) => {
+      const response = await request<{html: string}>("/api/registration/preview", {settings, event: !!attendeeAnalytics});
+      if (context !== current || form.hidden) return;
+      preview.dataset.size = size.value;
+      preview.srcdoc = response.html;
+      preview.hidden = false;
+    });
+  };
+  form.onsubmit = event => {
     event.preventDefault();
-    save.disabled = true;
-    void action(async () => {
-      const draft = [...fields.querySelectorAll<HTMLLIElement>(":scope > li")].map((row) => ({
-        id: row.dataset.fieldId, type: field(row, "kind").value, label: field(row, "label").value,
-        required: field(row, "required").checked,
-        options: field(row, "options").value.split("\n").map((value) => value.trim()).filter(Boolean),
-      }));
-      render(await call<FormDataState>("/registration", "PUT", {revision: current.revision,
-        preset_name: field(form, "preset_name").value, settings: {
-        enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
-        ...(attendeeAnalytics ? {attendance_analytics: attendeeAnalytics.checked} : {}),
-        heading: field(form, "heading").value, description: field(form, "description").value,
-        privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
-        last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: draft,
-      }}));
-    }, "Registration saved.").finally(() => { save.disabled = false; });
+    void useDraft(async (settings, context) => {
+      const updated = await call<FormDataState>("/registration", "PUT", {revision: context.revision,
+        preset_name: field(form, "preset_name").value, settings});
+      if (context !== current || form.hidden) return;
+      render(updated);
+      message.textContent = "Registration saved.";
+    });
   };
   form.querySelector<HTMLButtonElement>("#registrationExport")!.onclick = () => void action(download);
   return () => action(async () => {

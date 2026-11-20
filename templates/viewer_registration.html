@@ -1,4 +1,11 @@
-<section aria-labelledby="registrationHeading">
+{% set artwork = registration.appearance %}
+<section class="registration-gate" aria-labelledby="registrationHeading" data-alignment="{{ artwork.alignment }}"
+         style="--registration-bg:{{ artwork.background }};--registration-overlay:{{ artwork.overlay }};--registration-opacity:{{ artwork.opacity }}%">
+  {% if registration.background_src %}
+  <img class="registration-background" src="{{ registration.background_src }}" alt="">
+  {% endif %}
+  <div class="registration-card">
+  {% if registration.logo_src %}<img class="registration-logo" src="{{ registration.logo_src }}" alt="Organizer logo">{% endif %}
   <h2 id="registrationHeading">{{ registration.heading }}</h2>
   {% if registration.description %}<p>{{ registration.description }}</p>{% endif %}
   <form method="post" aria-labelledby="registrationHeading" {% if registration.layout == 'steps' %}data-registration-steps{% endif %}>
@@ -48,5 +55,6 @@
     {% endif %}
     <button type="submit">Register and watch</button>
   </form>
-  {% if registration.layout == 'steps' %}<script type="module" src="/static/ui/registration_steps.js"></script>{% endif %}
+  {% if registration.layout == 'steps' and not registration_preview %}<script type="module" src="/static/ui/registration_steps.js"></script>{% endif %}
+  </div>
 </section>

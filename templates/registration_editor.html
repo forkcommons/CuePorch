@@ -22,6 +22,22 @@
         <ol id="registrationFields"></ol>
         <button type="button" id="addRegistrationField">Add field</button>
       </fieldset>
+      <fieldset>
+        <legend>Registration appearance</legend>
+        <label>Form alignment <select name="alignment"><option value="start">Left</option><option value="center">Center</option><option value="end">Right</option></select></label>
+        <label>Registration logo <input type="file" name="logo" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="button" data-clear-image="logo" hidden>Remove logo</button>
+        <label>Registration background image <input type="file" name="background_image" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="button" data-clear-image="background_image" hidden>Remove background image</button>
+        <label>Background color <input type="color" name="background"></label>
+        <label>Overlay color <input type="color" name="overlay"></label>
+        <label>Overlay opacity (%) <input type="number" name="opacity" min="0" max="100" step="1" required></label>
+        <label>Form preview device <select name="preview_size"><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label>
+        <button type="button" id="showRegistrationPreview">Preview registration</button>
+        <div class="registration-preview-container">
+          <iframe id="registrationPreview" title="Registration preview" class="registration-preview" sandbox hidden></iframe>
+        </div>
+      </fieldset>
       <label>Save as registration preset <input name="preset_name" maxlength="80"></label>
       <button type="submit">Save registration</button>
       <p id="registrationStatus" role="status"></p>

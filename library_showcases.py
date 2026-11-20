@@ -316,6 +316,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         form = None
         form_token = None
         form_error = None
+        registration_view = None
         if not locked:
             with tx() as con:
                 current = get_showcase(con, row["id"])
@@ -334,6 +335,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     form_error = library_registration.enroll(con, "showcase", row["id"], form, request.form, request.args)
                 if form and (not enrollment or form_error):
                     form_token = registration.dumps(scope)
+                    registration_view = library_registration.presentation(con, form)
                 logo = brand_image(con, values["logo"])
                 if not form_token:
                     works = library()
@@ -355,7 +357,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         response = make_response(render_template("showcase_view.html", settings=values, entries=entries, logo=logo,
                                                 locked=locked, wrong=locked and request.method == "POST",
                                                 unlock_token=frame, embed=embed, internal=internal,
-                                                registration=form if form_token else None, enrollment=form_token,
+                                                registration=registration_view, enrollment=form_token,
                                                 registration_error=form_error),
                                  401 if locked and request.method == "POST" else 422 if form_error else 200)
         response.cache_control.no_store = True
