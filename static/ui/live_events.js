@@ -961,6 +961,7 @@ async function updateCaptionSettings(update = false) {
         waiting_for_stream: "Waiting for the event stream",
         engine_unavailable: "Connect a local TextFlowKit streaming runtime",
         listening: "Transcribing the program",
+        blocked: "Automatic caption generation is disabled in workspace AI settings",
         media_or_engine_unavailable: "Waiting for usable live audio and a local transcription runtime",
         stopped: "Captioning stopped",
     };
@@ -982,6 +983,7 @@ async function updateReplayCaptions(data) {
     const states = {
         queued: "Caption generation is queued.",
         running: "Transcribing the finished recording.",
+        blocked: "Workspace AI settings blocked generation. You can upload a subtitle file.",
         failed: "Could not generate captions. You can upload a subtitle file.",
         no_speech: "The caption engine did not find speech.",
         unavailable: result.archived ? "No caption track has been saved." : "The recording is still being prepared.",

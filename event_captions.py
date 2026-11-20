@@ -14,6 +14,7 @@ import requests
 
 import event_peer
 from event_audio import LiveAudio
+import team_ai_policy
 
 
 SCHEMA = """
@@ -30,6 +31,14 @@ CREATE TABLE IF NOT EXISTS live_caption_cue(
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 BAD_TIMES = (ValueError, TypeError, KeyError, OverflowError)
 DEFAULTS = dict(enabled=False, language="en")
+FEATURE = "live_caption"
+
+
+def require_generation(con, actor):
+    _, member = actor(con)
+    message = team_ai_policy.restriction(con, FEATURE, member)
+    if message:
+        abort(403, message)
 
 
 def live_runtime(language):
@@ -102,7 +111,8 @@ class LiveCaptionJobs:
     def allowed(self, scope):
         with self.tx() as con:
             row = settings(con, *scope)
-            return bool(row and row["enabled"] and self.access(con, *scope))
+            return bool(row and row["enabled"] and not team_ai_policy.restriction(con, FEATURE, None)
+                        and self.access(con, *scope))
 
     def update(self, scope, language, state):
         with self.tx() as con:
@@ -110,7 +120,7 @@ class LiveCaptionJobs:
                            ON CONFLICT(event,opens) DO UPDATE SET state=excluded.state""", (*scope, language, state))
             return con.execute("SELECT processed FROM live_caption_job WHERE event=? AND opens=?", scope).fetchone()["processed"]
 
-    def ingest(self, stream, scope, first):
+    def ingest(self, stream, scope, first, language):
         with stream:
             for line in stream:
                 try:
@@ -126,9 +136,14 @@ class LiveCaptionJobs:
                 except BAD_TIMES:
                     continue
                 with self.tx() as con:
-                    if self.access(con, *scope):
+                    policy = team_ai_policy.load(con)[1]
+                    configured = settings(con, *scope)
+                    if (configured["enabled"] and self.access(con, *scope)
+                            and not team_ai_policy.restriction(con, FEATURE, None, policy)):
+                        revised, = team_ai_policy.apply_dictionary([{"text": text}], language, policy["dictionary"])
                         self.action(con, approval_key(*scope), "caption", dict(event=scope[0], occurrence=scope[1]))
-                        con.execute("INSERT OR IGNORE INTO live_caption_cue VALUES(?,?,?,?,?)", (*scope, start, end, text[:400]))
+                        con.execute("INSERT OR IGNORE INTO live_caption_cue VALUES(?,?,?,?,?)",
+                                    (*scope, start, end, revised["text"][:400]))
 
     def process(self, row):
         scope = (row["event"], row["opens"])
@@ -152,12 +167,12 @@ class LiveCaptionJobs:
             playlist = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
             audio = LiveAudio(self.media, row["origin"], row["remote"], playlist)
             watermark = self.update(scope, language, "listening")
-            self.read_program(scope, audio, runtime, watermark)
+            self.read_program(scope, audio, runtime, watermark, language)
             self.update(scope, language, "stopped")
         except (StopIteration, OSError, ValueError, KeyError, subprocess.TimeoutExpired, requests.RequestException):
             self.update(scope, language, "media_or_engine_unavailable")
 
-    def read_program(self, scope, audio, runtime, watermark):
+    def read_program(self, scope, audio, runtime, watermark, language):
         worker = reader = None
         last_end = None
         activity = monotonic()
@@ -178,7 +193,7 @@ class LiveCaptionJobs:
                         args, env = runtime
                         worker = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                   stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                        reader = Thread(target=self.ingest, args=(worker.stdout, scope, chunk.start), daemon=True)
+                        reader = Thread(target=self.ingest, args=(worker.stdout, scope, chunk.start, language), daemon=True)
                         reader.start()
                     worker.stdin.write(pcm)
                     worker.stdin.flush()
@@ -218,7 +233,7 @@ class LiveCaptionJobs:
             thread.join(timeout=24)
 
 
-def register(app, tx, staff, operator_access, audience_access):
+def register(app, tx, staff, operator_access, audience_access, ai_actor):
     @app.route("/api/live-events/<event>/<int:opens>/captions", methods=["GET", "PUT"])
     def event_caption_settings(event, opens):
         staff()
@@ -230,13 +245,17 @@ def register(app, tx, staff, operator_access, audience_access):
                 body = request.get_json()
                 if not isinstance(body, dict) or type(body.get("enabled")) is not bool or body.get("language") not in LANGUAGES:
                     abort(422, "Choose whether to caption the event and select a language.")
+                if body["enabled"]:
+                    require_generation(con, ai_actor)
                 if state and state["language"] != body["language"]:
                     abort(409, "Choose the language before the first live caption is generated.")
                 con.execute("INSERT OR REPLACE INTO live_caption_setting VALUES(?,?,?,?)", (event, opens, body["enabled"], body["language"]))
                 prior = settings(con, event, opens)
             available = con.execute("SELECT count(*) FROM live_caption_cue WHERE event=? AND opens=?", (event, opens)).fetchone()[0]
+            blocked = team_ai_policy.restriction(con, FEATURE, None) is not None
             return dict(enabled=bool(prior and prior["enabled"]), language=prior["language"] if prior else "en",
-                        status=state["state"] if state else "waiting_for_stream", cue_count=available)
+                        status="blocked" if blocked else state["state"] if state else "waiting_for_stream",
+                        cue_count=available)
 
     @app.get("/events/<slug>/<int:opens>/captions")
     def viewer_event_captions(slug, opens):

@@ -471,6 +471,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
             if setup:
+                if setup["captions"]["enabled"]:
+                    event_captions.require_generation(con, ai_actor)
                 event["setup"] = {key: setup[key] for key in ("method", "captions", "chat", "qa")}
             uid = uuid.uuid4().hex
             slug = body.get("slug") or uid
@@ -667,7 +669,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access, database, start_voice, voice_audio)
-    event_captions.register(app, tx, staff, operator_chat, audience_chat)
+    event_captions.register(app, tx, staff, operator_chat, audience_chat, ai_actor)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
     event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
     replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)

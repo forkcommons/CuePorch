@@ -42,7 +42,22 @@ def browser_caption_state(video):
             .map(c=>[c.startTime,c.endTime,c.text]), active:[...(t.activeCues || [])].map(c=>c.text)}))})""")
 
 
-def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=False, regional_origins=None):
+def set_caption_policy(base, auth, enabled):
+    url = base + "/api/team/ai"
+    response = requests.get(url, headers=auth, timeout=10)
+    response.raise_for_status()
+    policy = response.json()
+    policy["settings"]["features"]["live_caption"]["enabled"] = enabled
+    policy["settings"]["dictionary"] = [
+        dict(language="en", source="City Council", preferred="Fixture City Council"),
+        dict(language="en", source="Council", preferred="Fixture Council"),
+        dict(language="es", source="City Council", preferred="Unused Spanish term"),
+    ]
+    requests.put(url, json=policy, headers=auth | {"X-CuePorch-Team": "1"}, timeout=10).raise_for_status()
+
+
+def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=False, regional_origins=None,
+                        governed=False):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=14)).strftime("%Y-%m-%dT%H:%M")
@@ -94,6 +109,14 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                 operator.get_by_label("Generate automatic live captions").check()
                 operator.get_by_role("button", name="Save live caption settings").click()
             expect(operator.locator("#productionCaptionStatus")).to_contain_text("Waiting for the event stream")
+            if governed:
+                set_caption_policy(base, auth, False)
+                refused = requests.put(production + "/captions", headers=auth,
+                                       json=dict(enabled=True, language="en"), timeout=10)
+                assert refused.status_code == 403
+                operator.get_by_role("button", name="Refresh caption status").click()
+                expect(operator.locator("#productionCaptionStatus")).to_contain_text(
+                    "Automatic caption generation is disabled in workspace AI settings")
             setup = requests.post(production + "/encoder", headers=auth, timeout=30)
             setup.raise_for_status()
             audience = browser.new_page()
@@ -145,6 +168,11 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                     raise AssertionError(f"The live player did not decode a frame: {browser_caption_state(video)}") from error
                 width = video.evaluate("v=>v.videoWidth")
                 assert width >= 240
+                if governed:
+                    audience.wait_for_function("document.querySelector('#eventPlayer video')?.currentTime >= 2")
+                    held = requests.get(production + "/captions", headers=auth, timeout=10).json()
+                    assert (held["status"], held["cue_count"]) == ("blocked", 0), held
+                    set_caption_policy(base, auth, True)
                 deadline = time.monotonic() + 50
                 while time.monotonic() < deadline:
                     status = requests.get(production + "/captions", headers=auth, timeout=10)
@@ -159,7 +187,8 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                 requests.put(gate, headers=auth, json={"required": False}, timeout=10).raise_for_status()
                 audience.get_by_role("button", name="Show live captions").click(timeout=15000)
                 audience.get_by_text("Live transcript", exact=True).click()
-                expect(audience.get_by_label("Caption lines")).to_contain_text(re.compile(r"city\s*council", re.I), timeout=15000)
+                expected = r"fixture (?:city )?council" if governed else r"city\s*council"
+                expect(audience.get_by_label("Caption lines")).to_contain_text(re.compile(expected, re.I), timeout=15000)
                 if registered or protected:
                     assert requests.get(caption_route, timeout=10).status_code == 404
                     anonymous = requests.get(stable, headers={"Accept": "application/json"}, timeout=10)
@@ -227,7 +256,8 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                         viewer_decoded_caption_cue_after_transcript_seek=True, withdrawal_revokes_caption_access=True,
                         withdrawal_revokes_cueporch_manifest=True, peer_withdrawal_http=response.status_code,
                         rewind_seconds=round(rewind, 2), requires_registration=registered, requires_password=protected,
-                        inherited_caption_defaults=protected, trusted_region_enforced_on_hls_and_captions=bool(regional_origins))
+                        inherited_caption_defaults=protected, trusted_region_enforced_on_hls_and_captions=bool(regional_origins),
+                        workspace_gate_and_language_dictionary=governed)
         finally:
             browser.close()
             if not withdrawn:
