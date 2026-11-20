@@ -7,7 +7,7 @@ const metricNames = {
     impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
     watched_seconds: "Seconds watched", average_watched_seconds: "Average seconds watched",
     unique_impressions: "Unique impressions", unique_viewers: "Unique viewers", average_watched_fraction: "Average percent watched",
-    downloads: "Downloads",
+    downloads: "Downloads", likes: "Likes", comments: "Comments",
 };
 const parts = Object.keys(metricNames);
 const count = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
@@ -174,6 +174,7 @@ function renderTop(top) {
 function renderVideo(report) {
     const { group, breakdown } = report.filters;
     document.querySelector("#captionBreakdownNote").hidden = group !== "caption" && breakdown !== "caption";
+    document.querySelector("#communityBreakdownNote").hidden = report.community_breakdown;
     const totals = document.querySelector("#reportTotals");
     totals.replaceChildren();
     for (const name of parts) {

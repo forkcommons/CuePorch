@@ -27,6 +27,7 @@ from installed_ratings import check_ratings
 from installed_registration import check_registration
 from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
+from installed_community_analytics import check_community_analytics
 from installed_discovery import check_discovery
 from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
@@ -65,6 +66,7 @@ p.add_argument("--analytics-region-proxy", action="store_true",
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
 p.add_argument("--analytics-unique", action="store_true", help="Check distinct viewers and browser identity coverage")
 p.add_argument("--analytics-captions", action="store_true", help="Check usage of captions actually shown during playback")
+p.add_argument("--analytics-community", action="store_true", help="Check audience likes and published comment reporting")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
@@ -398,6 +400,9 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                                             verify_captions=args.analytics_captions)
                         if args.analytics_captions:
                             advanced["caption_usage"]["vimeo_track_type_preserved"] = True
+                        if args.analytics_community:
+                            advanced["community"] = check_community_analytics(page, browser, base, auth, replacement,
+                                                                            home / "institution.sqlite")
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
                                             missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
                                             playback_width=width, setup_seconds=setup_seconds,

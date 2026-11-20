@@ -14,6 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import audience_comments
 import audience_library
+import community_analytics
 from library_analytics import source_origin
 from library_discovery import entry_payload
 from library_registration import EMAIL
@@ -32,7 +33,7 @@ CREATE INDEX IF NOT EXISTS audience_attempt_expiry ON audience_auth_attempt(expi
 CREATE TABLE IF NOT EXISTS audience_watch_later(
  account TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL, saved REAL NOT NULL,
  PRIMARY KEY(account,kind,slug));
-""" + audience_library.SCHEMA + audience_comments.SCHEMA
+""" + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
 LOCAL_COOKIE = "cueporch-viewer"
 HTTPS_COOKIE = "__Host-cueporch-viewer"

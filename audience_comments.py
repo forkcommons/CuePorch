@@ -6,9 +6,11 @@ import uuid
 from flask import abort, request
 
 from audience_library import COLLECTION_ID, VIDEO_KEY
+import community_analytics
 
 
 STEP = "public_comments"
+APPROVAL_PREFIX = "public-comment-"
 PAGE_SIZE = 30
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audience_comment(
@@ -71,10 +73,11 @@ def register(app, tx, viewer, mutation, listing, private, limit, action, staff):
             if post:
                 limit(con, "comment", author)
                 uid, now = uuid.uuid4().hex, time.time()
-                approval = f"public-comment-{uid}"
+                approval = APPROVAL_PREFIX + uid
                 status = action(con, approval, STEP, dict(comment=uid, kind=kind, video=slug))
                 con.execute("INSERT INTO audience_comment VALUES(?,?,?,?,?,?,?)",
                             (uid, author, kind, slug, body.strip(), now, approval))
+                community_analytics.observe_comment(con, uid, kind, now if status == "eligible" else None)
                 return private(dict(status=status), 201)
             query, direction, start = search(con)
             rows = con.execute(f"""SELECT c.*,a.name,g.status FROM audience_comment c

@@ -9,7 +9,7 @@ const metricNames = {
   impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
   watched_seconds: "Seconds watched", average_watched_seconds: "Average seconds watched",
   unique_impressions: "Unique impressions", unique_viewers: "Unique viewers", average_watched_fraction: "Average percent watched",
-  downloads: "Downloads",
+  downloads: "Downloads", likes: "Likes", comments: "Comments",
 };
 type Metric = keyof typeof metricNames;
 type Counts = Record<Metric, number | null>;
@@ -22,6 +22,7 @@ interface Report {
   filters: {group: string; breakdown: string};
   totals: Counts & {identified_impressions: number; identified_views: number};
   overview: Bucket[]; rows: Entry[]; top?: TopBreakdowns;
+  community_breakdown: boolean;
 }
 type ReportType = "video" | "engagement" | "rating" | "region" | "source" | "device" | "date" | "bandwidth";
 interface EngagementMetrics {
@@ -214,6 +215,7 @@ function renderTop(top?: TopBreakdowns) {
 function renderVideo(report: Report) {
   const {group, breakdown} = report.filters;
   document.querySelector<HTMLElement>("#captionBreakdownNote")!.hidden = group !== "caption" && breakdown !== "caption";
+  document.querySelector<HTMLElement>("#communityBreakdownNote")!.hidden = report.community_breakdown;
   const totals = document.querySelector<HTMLElement>("#reportTotals")!;
   totals.replaceChildren();
   for (const name of parts) {

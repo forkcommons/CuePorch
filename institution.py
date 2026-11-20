@@ -37,6 +37,7 @@ from cueporch import verify
 import analytics_reports
 import audience_accounts
 import audience_comments
+import community_analytics
 import library_actions
 import library_appearance
 import library_caption_jobs
@@ -593,6 +594,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
                     (step,),
                 )
+                if step == audience_comments.STEP:
+                    community_analytics.publish_approved(con)
             apply_routes(con)
         return {"required": required}
 
@@ -644,6 +647,8 @@ def create_app(root, database, operator, institution, simulation=None):
             ).rowcount
             if not changed:
                 abort(409)
+            if decision == "approve" and uid.startswith(audience_comments.APPROVAL_PREFIX):
+                community_analytics.publish_approved(con, uid)
             apply_routes(con)
         return "", 204
 

@@ -30,6 +30,7 @@ DIMENSIONS = {
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
 TOP_DIMENSIONS = ("video", "region", "device", "source")
+COMMUNITY_UNAVAILABLE = {"device", "region", "source", "caption"}
 PERIODS = {
     "day": "date(s.created, 'unixepoch')",
     "week": "date(s.created,'unixepoch','-'||((CAST(strftime('%w',s.created,'unixepoch') AS INTEGER)+6)%7)||' days')",
@@ -37,7 +38,7 @@ PERIODS = {
     "year": "strftime('%Y-01-01',s.created,'unixepoch')",
 }
 METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds",
-           "unique_impressions", "unique_viewers", "average_watched_fraction", "downloads")
+           "unique_impressions", "unique_viewers", "average_watched_fraction", "downloads", "likes", "comments")
 VIDEO_COUNTS = """coalesce(sum(s.impression),0) AS impressions, coalesce(sum(s.played),0) AS views,
     coalesce(sum(s.completed),0) AS finishes, coalesce(sum({watched}),0) AS watched,
     count(DISTINCT identity.viewer) AS unique_impressions,
@@ -45,27 +46,38 @@ VIDEO_COUNTS = """coalesce(sum(s.impression),0) AS impressions, coalesce(sum(s.p
     count(identity.viewer) AS identified_impressions,
     count(identity.viewer) FILTER (WHERE s.played=1) AS identified_views,
     avg(cueporch_watched_fraction(s.work,s.version,s.duration_ms,{watched})) FILTER (WHERE s.played=1) AS average_watched_fraction,
-    coalesce(sum(s.download),0) AS downloads"""
+    coalesce(sum(s.download),0) AS downloads,
+    coalesce(sum(s.likes),0) AS likes, coalesce(sum(s.comments),0) AS comments"""
 MILESTONES = (1, 25, 50, 75, 100)
 PLAYBACK_ROWS = """SELECT s.id,s.work,s.version,s.surface,s.created,s.played,s.completed,s.watched,s.intervals,
-    c.source,c.device,g.region,1 AS impression,0 AS download,'vod' AS streaming,NULL AS duration_ms
+    c.source,c.device,g.region,1 AS impression,0 AS download,'vod' AS streaming,NULL AS duration_ms,
+    0 AS likes,0 AS comments
     FROM video_analytics_session s
     LEFT JOIN video_analytics_context c ON c.session=s.id
     LEFT JOIN video_analytics_region g ON g.session=s.id"""
-DOWNLOAD_ROWS = """SELECT NULL,work,NULL,surface,created,0,0,0,NULL,source,device,region,0,1,'vod',NULL
+DOWNLOAD_ROWS = """SELECT NULL,work,NULL,surface,created,0,0,0,NULL,source,device,region,0,1,'vod',NULL,0,0
     FROM video_analytics_download"""
 EVENT_ROWS = """SELECT playback.id,playback.event,NULL,details.surface,details.created,playback.played,
-    details.completed,playback.watched,NULL,details.source,details.device,details.region,1,0,playback.phase,details.duration_ms
+    details.completed,playback.watched,NULL,details.source,details.device,details.region,1,0,playback.phase,details.duration_ms,0,0
     FROM live_playback_reporting details JOIN live_playback playback ON playback.id=details.session
     JOIN live_event event ON event.id=playback.event"""
+LIKE_ROWS = """SELECT NULL,l.slug,NULL,'watch',l.liked,0,0,0,NULL,NULL,NULL,NULL,0,0,'vod',NULL,1,0
+    FROM audience_like_reporting r JOIN audience_like l ON l.account=r.account AND l.kind=r.kind AND l.slug=r.slug
+    WHERE cueporch_library_content(l.slug)"""
+COMMENT_ROWS = """SELECT NULL,c.slug,NULL,'watch',r.published,0,0,0,NULL,NULL,NULL,NULL,0,0,'vod',NULL,0,1
+    FROM audience_comment_reporting r JOIN audience_comment c ON c.id=r.comment JOIN action a ON a.id=c.approval
+    WHERE a.status='eligible' AND r.published IS NOT NULL AND cueporch_library_content(c.slug)"""
 ACTIVE_WORKS = " LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"
 PLAYBACK_TABLES = f" FROM ({PLAYBACK_ROWS}) s{ACTIVE_WORKS}"
-VIDEO_TABLES = f" FROM ({PLAYBACK_ROWS} UNION ALL {DOWNLOAD_ROWS} UNION ALL {EVENT_ROWS}) s{ACTIVE_WORKS}"
+OBSERVED_ROWS = " UNION ALL ".join((PLAYBACK_ROWS, DOWNLOAD_ROWS, EVENT_ROWS))
+VIDEO_TABLES = f" FROM ({OBSERVED_ROWS}) s{ACTIVE_WORKS}"
+COMMUNITY_TABLES = f" FROM ({OBSERVED_ROWS} UNION ALL {LIKE_ROWS} UNION ALL {COMMENT_ROWS}) s{ACTIVE_WORKS}"
 
 
-def row_metrics(row):
+def row_metrics(row, community):
     values = metrics(row)
     return dict(values, average_watched_seconds=values["watched_seconds"] / values["views"] if values["views"] else 0,
+                likes=row["likes"] if community else None, comments=row["comments"] if community else None,
                 **{name: row[name] for name in ("unique_impressions", "unique_viewers", "identified_impressions",
                                                 "identified_views", "average_watched_fraction", "downloads")})
 
@@ -130,7 +142,7 @@ def caption_scope(language, kind, split):
     return join, "", tuple(selected.values()), (), watched
 
 
-def summarize(con, options, catalog, lengths, *, include_top=False):
+def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=None):
     filters, clause, params = filter_settings(options, include_events=True)
     language, kind = options.get("caption_language", ""), options.get("caption_kind", "")
     if (not isinstance(language, str) or len(language) > 53 or (language and not LANGUAGE.fullmatch(language))
@@ -138,7 +150,9 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
         abort(422, "Choose a valid text track language and type.")
     language = language.lower()
     filters.update(caption_language=language, caption_kind=kind)
-    base = VIDEO_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id"
+    community = not (language or kind or any(filters[name] for name in ("device", "region", "source")))
+    identity_join = " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id"
+    base = (COMMUNITY_TABLES if community else VIDEO_TABLES) + identity_join
     join, where, before, after, watched = caption_scope(language, kind, False)
     scope, scope_params = base + join + clause + where, before + params + after
     counts = VIDEO_COUNTS.format(watched=watched)
@@ -148,23 +162,28 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
         return watched / duration if duration else None
 
     con.create_function("cueporch_watched_fraction", 4, watched_fraction, deterministic=True)
+    library_ids = catalog if library_ids is None else library_ids
+    con.create_function("cueporch_library_content", 1, library_ids.__contains__, deterministic=True)
     period = PERIODS[filters["period"]]
     primary, secondary = filters["group"], filters["breakdown"]
+    community_rows = community and not COMMUNITY_UNAVAILABLE.intersection((primary, secondary))
     group = DIMENSIONS[primary] or period
     detail = (DIMENSIONS[secondary] or period) if secondary else "''"
     totals = con.execute(f"SELECT {counts} {scope}", scope_params).fetchone()
     trend = con.execute(f"""SELECT {period} AS period,{counts} {scope}
                          GROUP BY period ORDER BY period""", scope_params)
-    overview = [dict(period=row["period"], **row_metrics(row)) for row in trend]
+    overview = [dict(period=row["period"], **row_metrics(row, community)) for row in trend]
     breakdown_scope, breakdown_params, breakdown_counts = scope, scope_params, counts
     if "caption" in (primary, secondary):
         split_join, split_where, split_before, split_after, split_watched = caption_scope(language, kind, True)
-        breakdown_scope = base + split_join + clause + split_where
+        breakdown_scope = VIDEO_TABLES + identity_join + split_join + clause + split_where
         breakdown_params = split_before + params + split_after
         breakdown_counts = VIDEO_COUNTS.format(watched=split_watched)
+    elif community and not community_rows:
+        breakdown_scope = VIDEO_TABLES + identity_join + join + clause + where
     rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{breakdown_counts} {breakdown_scope}
                         GROUP BY category,breakdown
-                        ORDER BY views DESC,impressions DESC,downloads DESC,category,breakdown""", breakdown_params)
+                        ORDER BY views DESC,impressions DESC,downloads DESC,likes DESC,comments DESC,category,breakdown""", breakdown_params)
     items = []
     for row in rows:
         category, value = row["category"], row["breakdown"]
@@ -172,9 +191,10 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
             category=catalog.get(category, category) if primary == "video" else category,
             video=category if primary == "video" else value if secondary == "video" else None,
             breakdown=catalog.get(value, value) if secondary == "video" else value,
-            **row_metrics(row),
+            **row_metrics(row, community_rows),
         ))
-    result = dict(filters=filters, totals=row_metrics(totals), overview=overview, rows=items)
+    result = dict(filters=filters, totals=row_metrics(totals, community), overview=overview, rows=items,
+                  community_breakdown=community_rows)
     if include_top:
         result["top"] = {}
         for dimension in TOP_DIMENSIONS:
@@ -313,7 +333,7 @@ def register(app, tx, staff, read_works):
             titles = catalog(con, works)
             if kind in GROUP_REPORTS or kind == "video":
                 selected = options | {"group": kind} if kind in GROUP_REPORTS else options
-                result = summarize(con, selected, titles | event_titles(con), durations(works),
+                result = summarize(con, selected, titles | event_titles(con), durations(works), library_ids=titles,
                                    include_top=kind == "video" and request.args.get("format") != "csv")
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))

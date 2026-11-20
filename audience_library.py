@@ -6,6 +6,7 @@ import uuid
 
 from flask import abort, render_template, request, url_for
 
+import community_analytics
 from library_discovery import entry_payload
 
 SCHEMA = """
@@ -88,7 +89,9 @@ def register(app, tx, viewer, mutation, listing, private):
                     return private(dict(liked=False, likes=0))
                 abort(404)
             if request.method == "PUT":
-                con.execute("INSERT OR IGNORE INTO audience_like VALUES(?,?,?,?)", (uid, *key, time.time()))
+                added = con.execute("INSERT OR IGNORE INTO audience_like VALUES(?,?,?,?)", (uid, *key, time.time()))
+                if added.rowcount:
+                    community_analytics.observe_like(con, uid, *key)
             total, liked = con.execute(
                 "SELECT count(*),coalesce(max(account=?),0) FROM audience_like WHERE kind=? AND slug=?",
                 (uid, *key),
