@@ -34,6 +34,8 @@
     <label><input type="checkbox" name="idp_initiated"> Allow members to start sign-in from the identity provider</label>
     <label><input type="checkbox" name="sync_groups"> Synchronize groups from signed SAML assertions</label>
     <label>Signed group attribute name <input name="groups_attribute" value="groups" maxlength="256"></label>
+    <label><input type="checkbox" name="scim_adopt_members"> Match SCIM users to existing team accounts</label>
+    <p>The provider can manage an existing member on an authorized domain if it sends their exact email address and a directory ID. The member keeps their work and permissions and signs in through SAML. The Owner keeps their local account.</p>
     <p>Saving a changed connection signs out members who used it. The workspace Owner signs in with their local account.</p>
     <button>Save single sign-on settings</button>
     {% else %}

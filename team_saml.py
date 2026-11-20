@@ -46,7 +46,7 @@ STATE_SECONDS = 300
 MAX_ASSERTION_AGE = 300
 DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email",
                jit=False, force=False, idp_initiated=False, sync_groups=False, groups_attribute="groups",
-               default_role="viewer")
+               default_role="viewer", scim_adopt_members=False)
 DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
@@ -125,7 +125,7 @@ def validated_settings(body, origin):
     if any(not isinstance(value, str) or not DOMAIN.fullmatch(value.strip().lower()) for value in domains):
         abort(400, "Enter exact email domains such as example.org.")
     settings["domains"] = sorted({value.strip().lower() for value in domains})
-    for key in ("jit", "force", "idp_initiated", "sync_groups"):
+    for key in ("jit", "force", "idp_initiated", "sync_groups", "scim_adopt_members"):
         value = body.get(key, DEFAULT[key])
         if not isinstance(value, bool):
             abort(400, "Choose which single sign-on policies to enable.")
@@ -221,8 +221,10 @@ def team_for_assertion(con, settings, subject, address, name, note):
     issuer = settings["entity_id"]
     identity = con.execute("SELECT member FROM team_saml_identity WHERE issuer=? AND subject=?", (issuer, subject)).fetchone()
     if identity:
-        return con.execute("SELECT id FROM team_member WHERE id=? AND email=? AND role<>'owner' AND removed IS NULL",
-                           (identity["member"], address)).fetchone()
+        return con.execute("""SELECT id FROM team_member m
+            WHERE id=? AND email=? AND role<>'owner' AND removed IS NULL
+            AND NOT EXISTS(SELECT 1 FROM team_scim_user u WHERE u.member=m.id AND u.issuer<>?)""",
+            (identity["member"], address, issuer)).fetchone()
     member = con.execute("SELECT id,role FROM team_member WHERE email=? AND removed IS NULL", (address,)).fetchone()
     if member is None:
         if not settings["jit"] or con.execute("SELECT 1 FROM team_member WHERE email=?", (address,)).fetchone():

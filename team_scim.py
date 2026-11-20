@@ -212,13 +212,20 @@ def user_values(values, settings, previous=None):
     return address, display, given, family, locale, external, active
 
 
-def save_user(con, origin, settings, values, revoke, note, current=None):
+def save_user(con, origin, settings, values, revoke, clear_local_credentials, note, current=None):
     issuer = settings["entity_id"]
     previous = user_view(con, origin, current) if current else None
     address, name, given, family, locale, external, active = user_values(values, settings, previous)
     uid = current["id"] if current else str(uuid4())
-    if con.execute("SELECT 1 FROM team_member WHERE email=? AND id<>? AND removed IS NULL", (address, uid)).fetchone():
+    match = con.execute("""SELECT m.id,m.role,u.member AS managed FROM team_member m
+        LEFT JOIN team_scim_user u ON u.member=m.id WHERE m.email=? AND m.id<>? AND m.removed IS NULL""",
+        (address, uid)).fetchone()
+    adopt = (match is not None and current is None and settings["scim_adopt_members"]
+             and match["role"] != "owner" and match["managed"] is None and bool(external))
+    if match and not adopt:
         raise SCIMError(409, "The email is already assigned to a workspace member.", "uniqueness")
+    if adopt:
+        uid = match["id"]
     if external and con.execute("""SELECT 1 FROM team_scim_user WHERE issuer=? AND external_id=?
                                  AND member<>? AND deleted=0""", (issuer, external, uid)).fetchone():
         raise SCIMError(409, "The external ID is already assigned to a workspace member.", "uniqueness")
@@ -235,12 +242,25 @@ def save_user(con, origin, settings, values, revoke, note, current=None):
         elif current["email"] != address:
             con.execute("DELETE FROM team_session WHERE member=?", (uid,))
     else:
-        con.execute("INSERT INTO team_member VALUES(?,?,?,?,?,?,?)",
-                    (uid, address, name, settings["default_role"], "", now, None if active else now))
+        removed = None if active else now
+        if adopt:
+            con.execute("UPDATE team_member SET name=?,password_hash='',removed=? WHERE id=?", (name, removed, uid))
+            if active:
+                clear_local_credentials(con, uid)
+            else:
+                revoke(con, uid)
+        else:
+            con.execute("INSERT INTO team_member VALUES(?,?,?,?,?,?,?)",
+                        (uid, address, name, settings["default_role"], "", now, removed))
         con.execute("INSERT INTO team_scim_user VALUES(?,?,?,?,?,?,?,?,0)",
                     (uid, issuer, external, given, family, locale, now, now))
         con.execute("DELETE FROM team_invitation WHERE email=?", (address,))
-    action = "scim_provisioned" if not current else "scim_deactivated" if not active else "scim_updated"
+    if adopt:
+        action = "scim_adopted" if active else "scim_deactivated"
+    elif not current:
+        action = "scim_provisioned"
+    else:
+        action = "scim_updated" if active else "scim_deactivated"
     note(con, "scim", action, uid)
     return lookup(con, "Users", issuer, uid)
 
@@ -342,7 +362,7 @@ def scim_fault(error):
     return response
 
 
-def register(app, tx, origin, operator, ownership, mutation, note, revoke, delete_group):
+def register(app, tx, origin, operator, ownership, mutation, note, revoke, clear_local_credentials, delete_group):
     @app.route("/api/team/identity/provisioning", methods=("GET", "POST", "DELETE"))
     def provisioning_settings():
         secure = secure_site(origin)
@@ -431,7 +451,7 @@ def register(app, tx, origin, operator, ownership, mutation, note, revoke, delet
                 if method == "PATCH":
                     payload = patch_values(view(con, origin, current), payload, kind)
                 if kind == "Users":
-                    saved = save_user(con, origin, settings, payload, revoke, note, current)
+                    saved = save_user(con, origin, settings, payload, revoke, clear_local_credentials, note, current)
                 else:
                     saved = save_group(con, issuer, payload, note, current)
                 resource = view(con, origin, saved)

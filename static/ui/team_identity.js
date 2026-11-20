@@ -19,7 +19,7 @@ function field(name) {
 function render(result) {
     revision = result.revision;
     if (field("enabled")) {
-        for (const key of ["enabled", "jit", "force", "idp_initiated", "sync_groups"]) {
+        for (const key of ["enabled", "jit", "force", "idp_initiated", "sync_groups", "scim_adopt_members"]) {
             field(key).checked = result.settings[key];
         }
         for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "groups_attribute", "default_role"]) {
@@ -97,6 +97,7 @@ settings.onsubmit = event => {
         force: field("force").checked,
         idp_initiated: field("idp_initiated").checked,
         sync_groups: field("sync_groups").checked,
+        scim_adopt_members: field("scim_adopt_members").checked,
         groups_attribute: field("groups_attribute").value,
         default_role: field("default_role").value,
         domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),

@@ -13,6 +13,7 @@ type Settings = {
   sync_groups: boolean;
   groups_attribute: string;
   default_role: string;
+  scim_adopt_members: boolean;
 };
 
 const access = document.querySelector<HTMLFormElement>("#teamIdentityAccess")!;
@@ -37,7 +38,7 @@ function field(name: keyof Settings) {
 function render(result: {revision: string; settings: Settings}) {
   revision = result.revision;
   if (field("enabled")) {
-    for (const key of ["enabled", "jit", "force", "idp_initiated", "sync_groups"] as const) {
+    for (const key of ["enabled", "jit", "force", "idp_initiated", "sync_groups", "scim_adopt_members"] as const) {
       (field(key) as HTMLInputElement).checked = result.settings[key];
     }
     for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "groups_attribute", "default_role"] as const) {
@@ -114,6 +115,7 @@ settings.onsubmit = event => {
     force: (field("force") as HTMLInputElement).checked,
     idp_initiated: (field("idp_initiated") as HTMLInputElement).checked,
     sync_groups: (field("sync_groups") as HTMLInputElement).checked,
+    scim_adopt_members: (field("scim_adopt_members") as HTMLInputElement).checked,
     groups_attribute: field("groups_attribute").value,
     default_role: field("default_role").value,
     domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),

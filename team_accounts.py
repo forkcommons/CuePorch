@@ -287,11 +287,15 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         limit, authenticator, reset_password,
     )
 
-    def revoke_member_access(con, uid):
+    def clear_local_credentials(con, uid):
         con.execute("DELETE FROM team_session WHERE member=?", (uid,))
         authenticator.forget(con, uid)
         email_factor.forget(con, uid)
         email_security.forget(con, uid)
+        con.execute("DELETE FROM account_password_reset WHERE scope='team' AND account=?", (uid,))
+
+    def revoke_member_access(con, uid):
+        clear_local_credentials(con, uid)
         con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
         con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
         con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
@@ -310,7 +314,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         con.execute("DELETE FROM team_group_role WHERE team_group=?", (uid,))
         con.execute("DELETE FROM team_group WHERE id=?", (uid,))
 
-    team_scim.register(app, tx, origin, operator_name, ownership, mutation, note, revoke_member_access, delete_group)
+    team_scim.register(app, tx, origin, operator_name, ownership, mutation, note, revoke_member_access,
+                       clear_local_credentials, delete_group)
 
     def eligible_works(con, ids=None):
         return {work["id"]: work for work in read_works() if (ids is None or work["id"] in ids)

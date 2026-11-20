@@ -86,6 +86,8 @@ Enable **Synchronize groups from signed SAML assertions** when the provider send
 
 To connect a provisioning service, use **Create provisioning token** in **Single sign-on** after saving the SAML connection. Copy the base URL and the one-time token into the identity provider's SCIM 2.0 settings. The provider can create members on authorized domains, update their names and email addresses, deactivate or reactivate them, and manage groups. CuePorch applies the configured default role to a new SCIM member. Assign Library folders to those groups in **Team members → Groups**. Removing a group assignment withdraws the related playback access. Deactivating a member ends their sessions and removes their group and direct shares. Use **Rotate provisioning token** to replace the current token or **Revoke provisioning token** to disconnect the provider.
 
+Enable **Match SCIM users to existing team accounts** to transfer existing memberships to your directory. The provider must send the member's exact email on an authorized domain and its directory identifier (`externalId`). Members keep their IDs, roles, work and current shares. CuePorch signs them out and removes their local sign-in credentials. They return through the configured SAML provider. The Owner always retains local sign-in.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

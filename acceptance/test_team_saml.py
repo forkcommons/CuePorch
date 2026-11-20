@@ -49,7 +49,8 @@ def signing_material():
             cert.public_bytes(serialization.Encoding.PEM).decode())
 
 
-def saml_document(origin, request_id, email, subject, private_key, certificate, *, audience=None, expired=False, groups=()):
+def saml_document(origin, request_id, email, subject, private_key, certificate, *,
+                  audience=None, expired=False, groups=(), issuer=ISSUER):
     now = datetime.now(UTC) - (timedelta(minutes=10) if expired else timedelta())
     issued = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     expires = (now + timedelta(minutes=4 if expired else 60)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -60,10 +61,10 @@ def saml_document(origin, request_id, email, subject, private_key, certificate, 
     response_to = f' InResponseTo="{request_id}"' if request_id else ""
     xml = etree.fromstring(f"""<samlp:Response xmlns:samlp="{SAML.NS_SAMLP}" xmlns:saml="{SAML.NS_SAML}"
         ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}"{response_to}>
-      <saml:Issuer>{ISSUER}</saml:Issuer>
+      <saml:Issuer>{issuer}</saml:Issuer>
       <samlp:Status><samlp:StatusCode Value="{SAML.STATUS_SUCCESS}"/></samlp:Status>
       <saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{issued}">
-        <saml:Issuer>{ISSUER}</saml:Issuer>
+        <saml:Issuer>{issuer}</saml:Issuer>
         <saml:Subject>
           <saml:NameID>{subject}</saml:NameID>
           <saml:SubjectConfirmation Method="{SAML.CM_BEARER}">
@@ -127,7 +128,8 @@ class TeamSAML(unittest.TestCase):
                 cleanup.callback(app.extensions[name])
             self.server(cleanup, app, port, tls)
             idp = Flask("fixture-identity-provider")
-            policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False, groups=())
+            policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False, groups=(),
+                          issuer=ISSUER)
             pending, provider_assertion = {}, {}
 
             def show_assertion(response, state):
@@ -147,7 +149,8 @@ class TeamSAML(unittest.TestCase):
                 self.assertRegex(state, re.compile(r"^[A-Za-z0-9_-]{43}$"))
                 sign_key, sign_cert = (foreign_key, foreign_cert) if policy["foreign"] else (private_key, certificate)
                 response = saml_document(origin, document.get("ID"), policy["email"], policy["subject"], sign_key, sign_cert,
-                                         audience=policy["audience"], expired=policy["expired"], groups=policy["groups"])
+                                         audience=policy["audience"], expired=policy["expired"], groups=policy["groups"],
+                                         issuer=policy["issuer"])
                 pending.clear()
                 pending.update(RelayState=state, SAMLResponse=response)
                 return show_assertion(response, state)
@@ -297,10 +300,15 @@ class TeamSAML(unittest.TestCase):
                                 expect(portal_page.get_by_text("This sign-in has already been used.")).to_be_visible()
                             self.verify_group_claims(page, admin, federated, unrelated, start, origin, policy,
                                                      operator_headers, work)
+                            existing = join(local, "existing@station.example", "contributor", "Existing producer")
+                            self.verify_scim_adoption(page, admin, local, federated, start, origin, policy,
+                                                      operator_headers, work, existing, owner_email, local_password)
+                            self.assertEqual(owner.request.get(origin + "/api/team/account").json()["role"], "owner")
 
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
                     self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
                                     {row["action"] for row in audit})
+                    self.assertTrue(any(row["action"] == "scim_adopted" and row["subject"] == existing for row in audit))
                 browser.close()
 
     def verify_scim(self, page, admin, federated, start, origin, policy, operator, work):
@@ -455,6 +463,79 @@ class TeamSAML(unittest.TestCase):
         self.assertEqual(federated.request.get(account).status, 401)
         managed = api.get(team_groups, headers=operator).json()["groups"]
         self.assertTrue(all(not group["members"] for group in managed if group["managed"]))
+
+    def verify_scim_adoption(self, page, admin, local, federated, start, origin, policy, operator,
+                             work, uid, owner_email, password):
+        api = admin.request
+        identity = origin + "/api/team/identity"
+        member = origin + "/api/team/account"
+        media = origin + f"/team/video/{work}/media"
+        address = "existing@station.example"
+        directory = origin + "/scim/v2/Users"
+        alternate_issuer = ISSUER + ":adopting"
+
+        def save_settings():
+            with page.expect_response(lambda response: response.url == identity and response.request.method == "PUT") as saved:
+                page.get_by_role("button", name="Save single sign-on settings").click()
+            self.assertTrue(saved.value.ok)
+            expect(page.locator("#teamSamlSettings")).not_to_have_attribute("aria-busy", "true")
+
+        def federate():
+            screen = start(federated)
+            screen.get_by_role("button", name="Continue as station crew").click()
+            return screen
+
+        page.get_by_label("Require SAML for team members").uncheck()
+        save_settings()
+        credentials = dict(email=address, password=password)
+        self.assertEqual(local.request.post(origin + "/api/team/session", headers=TEAM, data=credentials).json()["id"], uid)
+        self.assertTrue(api.put(origin + f"/api/team/members/{uid}/works/{work}", headers=operator, data={}).ok)
+        self.assertTrue(local.request.get(media).ok)
+        policy.update(subject="existing-producer", email=address)
+        expect(federate().get_by_text("Existing producer · Contributor")).to_be_visible()
+
+        issuer = page.get_by_label("Identity provider entity ID")
+        issuer.fill(alternate_issuer)
+        save_settings()
+        self.assertTrue(local.request.get(media).ok)
+        page.get_by_role("button", name="Create provisioning token").click()
+        expect(page.locator("#teamProvisioningStatus")).to_have_text("Provisioning is enabled.")
+        token = page.locator("#newProvisioningToken input").input_value()
+        auth = {"Authorization": "Bearer " + token, "Content-Type": "application/scim+json"}
+        record = dict(userName=address, externalId="previously-local-001", displayName="Directory producer")
+        match = page.get_by_label("Match SCIM users to existing team accounts")
+        expect(match).not_to_be_checked()
+        self.assertEqual(api.post(directory, headers=auth, data=record).status, 409)
+        match.check()
+        save_settings()
+        self.assertEqual(api.post(directory, headers=auth, data=dict(record, externalId="")).status, 409)
+        self.assertEqual(api.post(directory, headers=auth, data=dict(record, userName=owner_email)).status, 409)
+        adopted = api.post(directory, headers=auth, data=record)
+        self.assertEqual(adopted.status, 201)
+        self.assertEqual(adopted.json()["id"], uid)
+        self.assertEqual(local.request.get(member).status, 401)
+        self.assertFalse(local.request.post(origin + "/api/team/session", headers=TEAM, data=credentials).ok)
+        policy["issuer"] = alternate_issuer
+        expect(federate().get_by_text("Directory producer · Contributor")).to_be_visible()
+        self.assertEqual(federated.request.get(member).json()["id"], uid)
+        self.assertTrue(federated.request.get(media).ok)
+
+        resource = adopted.headers["location"]
+        for active in (False, True):
+            updated = api.patch(resource, headers=auth, data={
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [dict(op="Replace", path="active", value=active)],
+            })
+            self.assertIs(updated.json()["active"], active)
+            self.assertEqual(federated.request.get(media).status, 401)
+        expect(federate().get_by_text("Directory producer · Contributor")).to_be_visible()
+        self.assertEqual(federated.request.get(media).status, 404)
+
+        issuer.fill(ISSUER)
+        save_settings()
+        policy["issuer"] = ISSUER
+        expect(federate().get_by_text("This identity is not linked to an eligible workspace member.")).to_be_visible()
+        self.assertEqual(federated.request.get(member).status, 401)
 
 
 if __name__ == "__main__":
