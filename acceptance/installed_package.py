@@ -1,11 +1,11 @@
 """Exercise the installed launcher or run a fresh headless source rehearsal."""
 
-import argparse, hashlib, json, os, socket, subprocess, sys, tempfile, threading, time
+import argparse, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from contextlib import ExitStack
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from demo_source import build_server
 from browser import chromium
 from installed_library import check_folders
@@ -15,7 +15,7 @@ from installed_versions import check_versions, generate_replacement
 from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
-from installed_migrated_privacy import check_migrated_privacy
+from installed_migrated_privacy import TRANSFER_PASSWORD, check_migrated_privacy
 from installed_video_details import check_imported_video_details, check_video_details, check_workspace
 from installed_embed_builder import check_embed_builder
 from installed_appearance import check_appearance
@@ -33,7 +33,7 @@ from installed_discovery import check_discovery
 from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
 from installed_audience_comments import check_audience_comments
-from installed_team_accounts import check_team_accounts
+from installed_team_accounts import PASSWORD as TEAM_PASSWORD, TEAM, check_team_accounts
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
@@ -154,6 +154,91 @@ def start_candidate(home, env):
             return subprocess.Popen([sys.executable, launcher, "--data", str(home)],
                                     stdout=log, stderr=log, env=env)
     return subprocess.Popen([launcher, "--data", str(home), "--headless"], env=env)
+
+
+def stop_candidate(proc):
+    if proc.poll() is None:
+        import psutil
+
+        for child in psutil.Process(proc.pid).children(recursive=True):
+            child.terminate()
+        proc.terminate()
+        proc.wait()
+
+
+def prepare_recovery(base, auth, email):
+    def owner(method, path, body=None):
+        response = requests.request(method, base + path, headers=TEAM | auth, json=body, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    roster = owner("GET", "/api/team/members")
+    member = next(row["id"] for row in roster["members"] if row["email"] == email)
+    folders = owner("GET", "/api/library/folders")
+    parent = next(folder["id"] for folder in folders if folder["name"] == "Station programs")
+    group = owner("POST", "/api/team/groups", dict(name="Archive editors", members=[member], folders=[parent],
+                                                   edit_folders=[parent]))
+    inventory = owner("GET", "/api/library")
+    works = {work["title"]: work["id"] for work in inventory if work["quality"] != "owner file needed"}
+    public = owner("PUT", f"/api/library/work/{works['Station meeting']}/source-privacy", {})
+    restricted = owner("GET", f"/api/library/work/{works['Migrated password']}")
+    return group["id"], public["paths"]["watch"], restricted["embed"], {work["id"] for work in inventory}
+
+
+def rehearse_account_restore(browser, base, home, env, auth, email, private_work, recovery, museum, venue):
+    group, public_link, restricted_embed, work_ids = recovery
+    snapshot = home.with_name(home.name + "-recovered")
+    portable = home.with_name(home.name + "-portable")
+    export = Path(__file__).resolve().parents[1] / "export_institution.py"
+    subprocess.run([sys.executable, str(export), str(home / "collection"), str(home / "institution.sqlite"),
+                    str(portable)], check=True)
+    rights = json.loads((portable / "rights-and-routes.json").read_text(encoding="utf8"))
+    editor = next(member for member in rights["team_member"] if member["email"] == email)
+    assert "password_hash" not in editor and not {"team_session", "team_invitation"} & rights.keys()
+    assert any(edge["team_group"] == group and edge["member"] == editor["id"] for edge in rights["team_group_member"])
+    assert any(edge["team_group"] == group and edge["permission"] == "edit" for edge in rights["team_group_folder"])
+    assert any(row["work"] == private_work for row in rights["library_video_details"])
+    hashes = json.loads((portable / "SHA256.json").read_text(encoding="utf8"))
+    for file, digest in hashes.items():
+        with (portable / file).open("rb") as media:
+            assert hashlib.file_digest(media, "sha256").hexdigest() == digest
+
+    shutil.copytree(home, snapshot, ignore=shutil.ignore_patterns("desktop-session.json", "desktop.lock", "service.log"))
+    proc = start_candidate(snapshot, env)
+    previous = museum.embed
+    try:
+        desktop = wait_for_desktop(proc, snapshot)
+        response = requests.get(base + "/api/library", headers=auth, timeout=10)
+        response.raise_for_status()
+        assert {work["id"] for work in response.json()} == work_ids
+        with browser.new_context() as guest:
+            restored = guest.new_page()
+            assert restored.goto(base + public_link).ok
+            assert restored.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == 320
+            museum.embed = base + restricted_embed
+            restored.goto(venue)
+            frame = restored.frame_locator("iframe")
+            expect(frame.get_by_label("Video password")).to_be_visible()
+            frame.get_by_label("Video password").fill(TRANSFER_PASSWORD)
+            frame.get_by_role("button", name="Watch video").click()
+            width = frame.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}")
+            assert width == 320
+            media = f"{base}/team/video/{private_work}/media"
+            assert guest.request.get(media).status == 401
+            assert guest.request.post(base + "/api/team/session", headers=TEAM,
+                                      data={"email": email, "password": TEAM_PASSWORD}).ok
+            restored.goto(base + "/team")
+            restored.get_by_role("link", name="Exhibition cut", exact=True).click()
+            expect(restored.get_by_role("link", name="Edit video details")).to_be_visible()
+            assert restored.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == 320
+            assert requests.get(media, timeout=10).status_code == 401
+        shut_down(proc, base, desktop, snapshot)
+        return dict(offline_copy_recovered=True, portable_hash_files=len(hashes), retained_inventory=len(work_ids),
+                    protected_embed_width=width, public_and_group_video_width=320,
+                    source_rights_and_edit_group_retained=True, portable_team_secrets_excluded=True)
+    finally:
+        museum.embed = previous
+        stop_candidate(proc)
 
 
 def prepare_previous_windows(home, source, venue):
@@ -397,14 +482,19 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     assert width > 0
                     if args.team_only or args.cutover_only:
-                        team = check_team_accounts(page, browser, base, auth, replacement, copy)
+                        team, contributor_email = check_team_accounts(page, browser, base, auth, replacement, copy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
                                             repeat_ids_unique=True, anonymous_denied=True, playback_width=width,
                                             setup_seconds=setup_seconds, team=team))
                         if args.cutover_only:
                             results[-1]["cutover"] = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
-                        browser.close()
+                            recovery = prepare_recovery(base, auth, contributor_email)
                         shut_down(proc, base, desktop, home)
+                        if args.cutover_only:
+                            results[-1]["recovery"] = rehearse_account_restore(
+                                browser, base, home, candidate_env, auth, contributor_email, copy["work"], recovery, museum, venue,
+                            )
+                        browser.close()
                         save_report()
                         continue
                     if args.discovery_only or args.audience_accounts_only:
@@ -544,13 +634,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                 shut_down(proc, base, desktop, home)
                 save_report()
             finally:
-                if proc.poll() is None:
-                    import psutil
-
-                    for child in psutil.Process(proc.pid).children(recursive=True):
-                        child.terminate()
-                    proc.terminate()
-                    proc.wait()
+                stop_candidate(proc)
     finally:
         src.shutdown()
         src.server_close()

@@ -38,6 +38,8 @@ def export(collection, database, target):
                 "cases": "SELECT id,work FROM complaint",
                 "case_history": "SELECT case_id,kind,details,actor,at FROM case_event",
             }
+            if has_table(db, "team_member"):
+                tables["team_member"] = "SELECT id,email,name,role,joined,removed FROM team_member"
             manifest = json.loads(
                 (root / "collection" / "manifest.json").read_text(encoding="utf8")
             )
@@ -54,6 +56,7 @@ def export(collection, database, target):
                 "library_placement",
                 "library_star",
                 "library_title",
+                "library_video_details",
                 "library_thumbnail",
                 "library_embed_pages",
                 "library_watch_later",
@@ -61,16 +64,22 @@ def export(collection, database, target):
                 "library_deleted_item",
                 "video_presentation",
                 "video_rating_widget",
+                "team_work_grant",
+                "team_folder_grant",
+                "team_group",
+                "team_group_member",
+                "team_group_folder",
+                "team_owned_work",
+                "team_membership_event",
             ):
-                if db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                    (table,),
-                ).fetchone():
+                if has_table(db, table):
                     tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
             for row in record.get("library_embed_pages", []):
                 row["pages"] = json.loads(row["pages"])
+            for row in record.get("library_video_details", []):
+                row["metadata"] = json.loads(row["metadata"])
             if "video_rating_widget" in record:
                 record["video_rating_summary"] = [dict(row) for row in db.execute(
                     """SELECT work,version,mode,score,count(*) AS responses FROM video_rating

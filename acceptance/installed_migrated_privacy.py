@@ -12,6 +12,9 @@ from browser import chromium
 from playwright.sync_api import sync_playwright
 
 
+TRANSFER_PASSWORD = "migration-replacement-password"
+
+
 def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
     previous_embed = museum.embed
     legacy_embed = f"http://127.0.0.1:{source.server_port}/fixture/legacy-player"
@@ -86,7 +89,7 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         assert entry["watch_url"] == base + info["watch"] and not entry["embed_url"]
 
         password_id = ids["Migrated password"]
-        password = "migration-replacement-password"
+        password = TRANSFER_PASSWORD
         paths = restore(password_id, password)["paths"]
         assert paths["watch"] and paths["embed_url"]
         pages = [venue + "/screenings/premiere", venue + "/screenings/matinee"]

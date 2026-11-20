@@ -293,4 +293,4 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 scoped_contributor_details_and_editorial_edit=True, edit_downgrade_preserved_playback=True,
                 existing_audience_identity_separate=True, range_playback=True, forged_origin_denied=True,
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
-                persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True)
+                persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True), email("contributor")
