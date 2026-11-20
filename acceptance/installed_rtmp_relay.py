@@ -5,11 +5,12 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import secrets
+import socket
 from statistics import median
 import subprocess
 from threading import Event, Thread
 from time import monotonic, time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 import requests
@@ -266,12 +267,20 @@ def check_low_rtmp(base, keys, ffmpeg, publish, certificate):
 @contextmanager
 def marked_feed(connection, key, ffmpeg, certificate, colour, dimensions, fps, tone):
     tls = ["-tls_verify", "1", "-ca_file", str(certificate)] if connection.startswith("rtmps://") else []
+    if connection.startswith("srt://"):
+        container = "mpegts"
+        destination = connection + "?" + urlencode({
+            "mode": "caller", "pbkeylen": 16, "passphrase": key, "pkt_size": 1316, "conntimeo": 1600,
+        })
+    else:
+        container = "flv"
+        destination = connection + "/" + key
     command = [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
                "-i", f"color={colour}:size={dimensions}:rate={fps}",
                "-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000",
                "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-tune", "zerolatency",
                "-pix_fmt", "yuv420p", "-g", str(fps), "-sc_threshold", "0", "-c:a", "aac", *tls,
-               "-f", "flv", connection + "/" + key]
+               "-f", container, destination]
     with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) as process:
         try:
@@ -295,6 +304,18 @@ CHECK_COLOUR = """idx => {
 
 
 def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
+    return verify_backup(base, keys, ffmpeg, urlsplit(publish).scheme, certificate, publish=publish)
+
+
+def check_backup_srt(base, keys, ffmpeg):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as primary, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as backup:
+        primary.bind(("127.0.0.1", 0))
+        backup.bind(("127.0.0.1", 0))
+        ports = primary.getsockname()[1], backup.getsockname()[1]
+    return verify_backup(base, keys, ffmpeg, "srt", None, ports=ports)
+
+
+def verify_backup(base, keys, ffmpeg, protocol, certificate, publish=None, ports=None):
     operator = keys["operator"]
     auth = {"Authorization": "Bearer " + operator}
     password = secrets.token_urlsafe(16)
@@ -312,7 +333,7 @@ def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
     (slot,) = event["occurrences"]
     production = f"{base}/api/live-events/{event['id']}/{slot['id']}"
     stable = urljoin(base, event["watch"]) + f"?occurrence={slot['id']}"
-    endpoint = production + "/rtmp"
+    endpoint = production + ("/srt" if ports else "/rtmp")
 
     def inputs(primary, backup, selected):
         deadline = monotonic() + 28
@@ -342,24 +363,50 @@ def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
         staff.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)});")
         staff.goto(base + "/operator/live-events")
         staff.get_by_role("button", name=f"Open production for {title}", exact=False).click()
-        staff.get_by_label("Use an independent backup encoder").check()
-        staff.get_by_label("Backup programme output").select_option("360")
-        assert requests.post(endpoint, json={"backup": True}, timeout=8).status_code == 403
+        if ports:
+            details = {"interface": "127.0.0.1", "port": ports[0], "backup_port": ports[1], "height": 360}
+            duplicate = details | {"backup_port": ports[0]}
+            assert requests.post(endpoint, headers=auth, json=duplicate, timeout=8).status_code == 422
+            staff.get_by_text("SRT encoder", exact=True).click()
+            staff.get_by_label("Use an independent SRT backup encoder").check()
+            staff.get_by_label("UDP port", exact=True).fill(str(ports[0]))
+            staff.get_by_label("Backup listening port").fill(str(ports[1]))
+            staff.get_by_label("SRT programme output").select_option("360")
+            prepare = "Start SRT listener"
+        else:
+            details = {"backup": True, "height": 360}
+            staff.get_by_label("Use an independent backup encoder").check()
+            staff.get_by_label("Backup programme output").select_option("360")
+            prepare = "Prepare low-latency RTMP"
+        assert requests.post(endpoint, json=details, timeout=8).status_code == 403
         with staff.expect_response(lambda answer: answer.url == endpoint, timeout=30000) as reply:
-            staff.get_by_role("button", name="Prepare low-latency RTMP").click()
+            staff.get_by_role("button", name=prepare).click()
         assert reply.value.ok, f"Could not prepare dual encoders: HTTP {reply.value.status}"
         connection = reply.value.json()
-        assert connection["server"] == publish + "/cueporch"
-        assert connection["key"] != connection["backup_key"] and connection["output_height"] == 360
-        assert staff.get_by_label("Backup stream key", exact=True).input_value() == connection["backup_key"]
-        again = requests.post(endpoint, headers=auth, json={"backup": True, "height": 360}, timeout=8)
+        primary_server = connection["server"]
+        if ports:
+            backup_server = connection["backup_server"]
+            primary_secret, backup_secret = connection["passphrase"], connection["backup_passphrase"]
+            assert (primary_server, backup_server) == tuple(f"srt://127.0.0.1:{port}" for port in ports)
+            assert staff.get_by_label("Backup passphrase", exact=True).input_value() == backup_secret
+            with marked_feed(backup_server, primary_secret, ffmpeg, certificate, "blue", "640x360", 25, 770) as invalid:
+                assert disconnected(invalid, 12), "The backup listener accepted the primary passphrase."
+            changed = details | {"height": 720}
+        else:
+            backup_server = primary_server
+            primary_secret, backup_secret = connection["key"], connection["backup_key"]
+            assert primary_server == publish + "/cueporch"
+            assert staff.get_by_label("Backup stream key", exact=True).input_value() == backup_secret
+            changed = {"backup": False}
+        assert primary_secret != backup_secret and connection["output_height"] == 360
+        again = requests.post(endpoint, headers=auth, json=details, timeout=8)
         assert again.json() == connection
-        assert requests.post(endpoint, headers=auth, json={"backup": False}, timeout=8).status_code == 409
+        assert requests.post(endpoint, headers=auth, json=changed, timeout=8).status_code == 409
         audience = browser.new_page()
         audience.goto(stable)
         audience.get_by_label("Event password").fill(password)
         audience.get_by_role("button", name="Unlock event").click()
-        primary = feeds.enter_context(marked_feed(connection["server"], connection["key"], ffmpeg, certificate,
+        primary = feeds.enter_context(marked_feed(primary_server, primary_secret, ffmpeg, certificate,
                                                    "red", "320x180", 12, 440))
         inputs(True, False, "primary")
         status = audience.locator("#eventStatus")
@@ -370,7 +417,7 @@ def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
         address = urljoin(base, audience.locator("#eventPlayer").get_attribute("data-address"))
         assert audience.locator("#eventPlayer").get_attribute("data-transport").startswith("local:")
         assert player.evaluate("v => v.videoWidth") == 640
-        backup = feeds.enter_context(marked_feed(connection["server"], connection["backup_key"], ffmpeg, certificate,
+        backup = feeds.enter_context(marked_feed(backup_server, backup_secret, ffmpeg, certificate,
                                                   "blue", "640x360", 25, 770))
         inputs(True, True, "primary")
         wait_for_delivery(production, auth, "live", 40, primary)
@@ -387,7 +434,7 @@ def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
         assert audience.url == stable and requests.get(address, timeout=8).ok
         manifest = requests.get(address, timeout=8)
         assert "#EXT-X-DISCONTINUITY" in manifest.text.splitlines()
-        restored = feeds.enter_context(marked_feed(connection["server"], connection["key"], ffmpeg, certificate,
+        restored = feeds.enter_context(marked_feed(primary_server, primary_secret, ffmpeg, certificate,
                                                     "green", "480x270", 20, 880))
         inputs(True, True, "backup")
         assert audience.evaluate(CHECK_COLOUR, 2)
@@ -402,10 +449,10 @@ def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
         wait_for_delivery(production, auth, "live", 20, restored)
         requests.delete(production + "/delivery", headers=auth, timeout=35).raise_for_status()
         assert requests.get(address, timeout=8).status_code == 404
-        revoked = feeds.enter_context(marked_feed(connection["server"], connection["backup_key"], ffmpeg, certificate,
+        revoked = feeds.enter_context(marked_feed(backup_server, backup_secret, ffmpeg, certificate,
                                                     "blue", "640x360", 25, 770))
         assert disconnected(restored, 18) and disconnected(revoked, 12)
-        return dict(protocol=urlsplit(publish).scheme, different_input_resolutions=True,
+        return dict(protocol=protocol, different_input_resolutions=True,
                     protected_output_width=640, failover_seconds=failover, failback_seconds=failback,
                     same_open_player=True, primary_recovery_did_not_preempt_backup=True, peertube_live=True,
                     withdrawal_disconnected_encoder_and_revoked_grants=True)

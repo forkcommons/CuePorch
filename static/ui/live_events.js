@@ -77,6 +77,10 @@ const backupKey = input("backupEncoderKey");
 const backupEnabled = input("enableBackupEncoder");
 const outputHeight = element("backupOutputHeight");
 backupEnabled.onchange = () => { element("backupOutput").hidden = !backupEnabled.checked; };
+const srtBackupEnabled = input("enableSrtBackup");
+const srtBackupSecret = input("srtBackupPassphrase");
+const srtBackupHeight = element("srtBackupHeight");
+srtBackupEnabled.onchange = () => { element("srtBackupOptions").hidden = !srtBackupEnabled.checked; };
 const previewEncoder = input("privateEncoderPreview");
 const encoderPreviewPanel = element("encoderPreview");
 const encoderPreviewStatus = element("encoderPreviewStatus");
@@ -246,6 +250,12 @@ function choose(event, instance) {
     input("dashUploadToken").value = "";
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
+    srtBackupSecret.value = "";
+    element("srtBackupCredentials").hidden = true;
+    element("srtBackupChoice").hidden = event.event.latency !== "low";
+    srtBackupEnabled.checked = false;
+    element("srtBackupOptions").hidden = true;
+    srtBackupHeight.value = "720";
     previewEncoder.checked = event.preview_encoder;
     showEncoderPreview(instance.delivery === "preview");
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
@@ -765,9 +775,14 @@ button("copyEncoderKey").onclick = () => void action(async () => {
 button("prepareSrt").onclick = () => void action(async () => {
     const result = await request(mediaPath("srt"), "POST", {
         interface: input("srtInterface").value, port: Number(input("srtPort").value),
+        backup_port: srtBackupEnabled.checked ? Number(input("srtBackupPort").value) : undefined,
+        height: srtBackupEnabled.checked ? Number(srtBackupHeight.value) : undefined,
     });
     input("srtServer").value = result.server;
     input("srtPassphrase").value = result.passphrase;
+    input("srtBackupServer").value = result.backup_server || "";
+    srtBackupSecret.value = result.backup_passphrase || "";
+    element("srtBackupCredentials").hidden = !result.backup_passphrase;
     element("srtSettings").hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
@@ -778,10 +793,14 @@ button("stopSrt").onclick = () => void action(async () => {
     await request(mediaPath("srt"), "DELETE");
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
+    srtBackupSecret.value = "";
 }, "SRT listener stopped.");
 button("copySrtPassphrase").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(input("srtPassphrase").value);
 }, "SRT passphrase copied.");
+button("copySrtBackupPassphrase").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(srtBackupSecret.value);
+}, "Backup SRT passphrase copied.");
 async function refreshDestinations(result) {
     const selection = active;
     result = result || await request(mediaPath("destinations"));
@@ -1092,6 +1111,7 @@ button("withdrawEvent").onclick = () => void action(async () => {
     input("dashUploadToken").value = "";
     key.value = "";
     backupKey.value = "";
+    srtBackupSecret.value = "";
     await request(mediaPath("delivery"), "DELETE");
     await load();
 }, "Occurrence withdrawn.");

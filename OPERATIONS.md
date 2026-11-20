@@ -50,6 +50,8 @@ Set `CUEPORCH_RTMP_RELAY_URL=rtmp://127.0.0.1:11936`, `CUEPORCH_RTMP_RELAY_API=h
 
 To use two Low-mode encoders, select **Use an independent backup encoder** before preparing the RTMP relay. Set the programme output resolution for the station's CPU and network. Send both sources to the same server using their separate keys and supply audio and video from each. Independent inputs, encoders and networks reduce shared failures. Stream status shows both inputs and the selected feed. CuePorch normalizes both signals and sends the selected programme to PeerTube. When the primary recovers, stop the backup input to return the programme to the primary. The `POST /rtmp` production call accepts `backup` as a boolean and `height` as 360, 720, 1080 or 2160. The default remains one encoder.
 
+For two encrypted SRT encoders in Low mode, choose separate UDP ports on the receiving interface and allow inbound traffic to both ports from the intended encoders. Each caller uses MPEG-TS, 128-bit SRT encryption and the passphrase for its listener. The same audience player and operator health view follow the selected feed. The `POST /srt` production call accepts an optional `backup_port` and an optional `height` selection with the same values as RTMP. Omit `backup_port` to prepare one listener.
+
 For a Fail-safe MPEG-DASH contribution, expose CuePorch on its configured HTTPS origin. In the occurrence's production controls, choose **Prepare MPEG-DASH contribution** and copy its manifest endpoint and upload token. Set `CUEPORCH_DASH_TOKEN` in the transmitter's private environment. Run the transmitter on the encoder workstation with the manifest address shown in CuePorch.
 
 ```sh

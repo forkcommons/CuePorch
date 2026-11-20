@@ -1116,19 +1116,39 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         body = request.get_json()
         if not isinstance(body, dict) or type(body.get("preview", False)) is not bool:
             abort(422, "Choose a receiving interface and port.")
+        backup_port = body.get("backup_port")
+        height = body.get("height", 720) if backup_port is not None else None
         try:
             endpoint = srt_endpoint(body.get("interface"), body.get("port"))
+            backup = srt_endpoint(body.get("interface"), backup_port) if backup_port is not None else None
         except ValueError as error:
             abort(422, str(error))
+        if backup == endpoint:
+            abort(422, "Choose different UDP ports for the primary and backup encoders.")
+        if backup and (type(height) is not int or height not in (360, 720, 1080, 2160)):
+            abort(422, "Choose a supported output height for the backup programme.")
+        endpoints = endpoint, backup
         try:
             with locked(uid):
-                prior = studio.srt_credentials(uid, opens, endpoint)
+                prior = studio.srt_credentials(uid, opens, endpoints)
                 if prior:
+                    if prior.get("output_height") != height:
+                        abort(409, "Stop the current SRT listeners before changing the output height.")
                     with tx() as con:
                         delivery = occurrence(con, uid, opens)
                         return dict(prior, preview=bool(delivery and delivery["delivery"] == "preview"))
-                connection = provision_event(uid, opens, browser=True, preview=body.get("preview"))
-                return dict(studio.srt(uid, opens, connection, endpoint, direct_window(uid, connection)),
+                end_at = None
+                if backup:
+                    with tx() as con:
+                        _, event = read(con, uid)
+                        shift = selected_open(event, opens)
+                        if body.get("preview") or encoder_preview_enabled(con, uid):
+                            abort(409, "Use the private encoder preview or turn off preview for this event.")
+                    if direct_window(uid, {"preview": False}) is None:
+                        abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
+                    end_at = datetime.fromisoformat(shift["end"]).timestamp()
+                connection = provision_event(uid, opens, browser=True, preview=False if backup else body.get("preview"))
+                return dict(studio.srt(uid, opens, connection, endpoints, direct_window(uid, connection), height, end_at),
                             preview=connection["preview"])
         except Timeout:
             abort(409, "Another operation is preparing this event.")

@@ -245,21 +245,31 @@ class Relay:
             self.done.set()
 
 
-class SrtRelay(Relay):
-    def __init__(self, encoder, endpoint, lease, playback=None):
+class SrtPublisher:
+    def __init__(self, endpoint):
         self.endpoint = endpoint
         self.passphrase = secrets.token_hex(16)
-        listener = endpoint + "?" + urlencode({
+
+    def read_arguments(self, playback):
+        listener = self.endpoint + "?" + urlencode({
             "mode": "listener", "passphrase": self.passphrase, "enforced_encryption": 1,
             "listen_timeout": 300_000_000, "timeout": 15_000_000,
         })
-        super().__init__(
-            ["-fflags", "+genpts", *probe_arguments(playback), "-protocol_whitelist", "srt,udp",
-             "-f", "mpegts", "-i", listener, *output_arguments(encoder, playback)], lease, playback,
-        )
+        return ["-fflags", "+genpts", *probe_arguments(playback), "-protocol_whitelist", "srt,udp",
+                "-f", "mpegts", "-i", listener]
 
     def credentials(self):
         return dict(server=self.endpoint, passphrase=self.passphrase, key_bytes=16)
+
+
+class SrtRelay(Relay):
+    def __init__(self, encoder, endpoint, lease, playback=None):
+        self.endpoints = (endpoint, None)
+        self.publisher = SrtPublisher(endpoint)
+        super().__init__([*self.publisher.read_arguments(playback), *output_arguments(encoder, playback)], lease, playback)
+
+    def credentials(self):
+        return self.publisher.credentials()
 
 
 class RtmpPublisher:
@@ -379,12 +389,14 @@ class RtmpRelay:
 
 
 class BackupInput:
-    def __init__(self, config, stop, shared_output, height):
-        self.publisher = RtmpPublisher(config, stop)
+    def __init__(self, publisher, shared_output, height):
+        self.publisher = publisher
+        self.listener = isinstance(publisher, SrtPublisher)
         self.progress = None
         self.storage = None
         self.connection = None
         self.retry_until = 0
+        self.retry_at = 0
         self.newest = None
         self.updated = 0
         self.shared_output = shared_output
@@ -399,7 +411,7 @@ class BackupInput:
                           "-hls_segment_filename", "feed-%09d.ts", "feed.m3u8"]
 
     def poll(self, now):
-        connection = self.publisher.connection
+        connection = self.publisher.endpoint if self.listener else self.publisher.connection
         if not connection:
             return []
         if not self.progress or self.progress.process.poll() is not None:
@@ -407,7 +419,9 @@ class BackupInput:
                 self.connection = connection
                 self.retry_until = now + 8
                 self.newest = None
-            if now < self.retry_until and (not self.progress or not self.progress.latest or self.newest is None):
+            try_rtmp = now < self.retry_until and (not self.progress or not self.progress.latest or self.newest is None)
+            if now >= self.retry_at and (self.listener or try_rtmp):
+                self.retry_at = now + .5
                 if self.storage:
                     self.storage.cleanup()
                 self.storage = TemporaryDirectory(dir=self.shared_output, prefix="input-", ignore_cleanup_errors=True)
@@ -428,7 +442,8 @@ class BackupInput:
             finish_process(self.progress.process, 0)
         if self.storage:
             self.storage.cleanup()
-        self.publisher.disconnect()
+        if not self.listener:
+            self.publisher.disconnect()
 
 
 def finish_process(process, grace):
@@ -446,33 +461,25 @@ def finish_process(process, grace):
         process.wait()
 
 
-class RedundantRtmpRelay:
-    def __init__(self, encoder, config, lease, playback, height, end_at):
+class RedundantRelay:
+    def __init__(self, encoder, lease, playback, height, end_at, stop, publishers):
         self.lease = lease
         self.playback = playback
-        self.stop = Event()
+        self.stop = stop
         self.done = Event()
         self.progress = None
         self.public = encoder["public"]
         self.height = height
         self.end_at = end_at
         self.connected = dict(primary=False, backup=False)
-        self.feeds = {role: BackupInput(config, self.stop, playback.path, height) for role in self.connected}
+        self.feeds = {role: BackupInput(publisher, playback.path, height) for role, publisher in publishers.items()}
         self.program = event_backup.Program(playback.path, playback.window)
         self.destination = ingest_address(encoder)
-        Thread(target=self.run, name="CuePorch redundant RTMP programme", daemon=True).start()
+        Thread(target=self.run, name="CuePorch redundant programme", daemon=True).start()
 
     @property
     def process(self):
         return self.progress.process if self.progress else None
-
-    def credentials(self):
-        return self.feeds["primary"].publisher.credentials() | dict(
-            public=self.public, preview=False, backup_key=self.feeds["backup"].publisher.credentials()["key"],
-            output_height=self.height)
-
-    def authorize(self, item):
-        return any(feed.publisher.authorize(item) for feed in self.feeds.values())
 
     def health(self):
         return dict(selected=self.program.selected if self.connected.get(self.program.selected) else None,
@@ -516,7 +523,35 @@ class RedundantRtmpRelay:
                 finish_process(self.process, 5)
 
 
+class RedundantRtmpRelay(RedundantRelay):
+    def __init__(self, encoder, config, lease, playback, height, end_at):
+        stop = Event()
+        publishers = {role: RtmpPublisher(config, stop) for role in ("primary", "backup")}
+        super().__init__(encoder, lease, playback, height, end_at, stop, publishers)
+
+    def credentials(self):
+        return self.feeds["primary"].publisher.credentials() | dict(
+            public=self.public, preview=False, backup_key=self.feeds["backup"].publisher.credentials()["key"],
+            output_height=self.height)
+
+    def authorize(self, item):
+        return any(feed.publisher.authorize(item) for feed in self.feeds.values())
+
+
+class RedundantSrtRelay(RedundantRelay):
+    def __init__(self, encoder, endpoints, lease, playback, height, end_at):
+        self.endpoints = endpoints
+        publishers = dict(primary=SrtPublisher(endpoints[0]), backup=SrtPublisher(endpoints[1]))
+        super().__init__(encoder, lease, playback, height, end_at, Event(), publishers)
+
+    def credentials(self):
+        backup = self.feeds["backup"].publisher.credentials()
+        return self.feeds["primary"].publisher.credentials() | dict(
+            backup_server=backup["server"], backup_passphrase=backup["passphrase"], output_height=self.height)
+
+
 RTMP_ROOMS = (RtmpRelay, RedundantRtmpRelay)
+SRT_ROOMS = (SrtRelay, RedundantSrtRelay)
 
 
 class DashRelay:
@@ -588,12 +623,10 @@ class Studio:
         self.active = {}
         self.lock = Lock()
 
-    def prepare(self, uid, opens, construct, srt_address=None, playback_window=None):
+    def prepare(self, uid, opens, construct, playback_window=None):
         with self.lock:
             self.active = {key: value for key, value in self.active.items() if not value.done.is_set()}
             existing = self.active.get((uid, opens))
-            if isinstance(existing, SrtRelay) and existing.endpoint == srt_address and not existing.stop.is_set():
-                return existing
             if existing or len(self.active) >= MAX_ROOMS:
                 raise BusyError("Close another event transmission before starting this one.")
             self.directory.mkdir(exist_ok=True)
@@ -619,9 +652,12 @@ class Studio:
         return self.prepare(uid, opens, lambda lease, playback: Capture(encoder, lease, playback),
                             playback_window=playback_window).token
 
-    def srt(self, uid, opens, encoder, endpoint, playback_window=None):
-        return self.prepare(uid, opens, lambda lease, playback: SrtRelay(encoder, endpoint, lease, playback),
-                            srt_address=endpoint, playback_window=playback_window).credentials()
+    def srt(self, uid, opens, encoder, endpoints, playback_window=None, height=None, end_at=None):
+        def receive(lease, playback):
+            if endpoints[1]:
+                return RedundantSrtRelay(encoder, endpoints, lease, playback, height, end_at)
+            return SrtRelay(encoder, endpoints[0], lease, playback)
+        return self.prepare(uid, opens, receive, playback_window=playback_window).credentials()
 
     def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None):
         def receive(lease, playback):
@@ -680,10 +716,11 @@ class Studio:
             return source
         return None
 
-    def srt_credentials(self, uid, opens, endpoint):
+    def srt_credentials(self, uid, opens, endpoints):
         with self.lock:
             room = self.active.get((uid, opens))
-            if isinstance(room, SrtRelay) and room.endpoint == endpoint and not room.done.is_set() and not room.stop.is_set():
+            if (isinstance(room, SRT_ROOMS) and room.endpoints == endpoints and
+                    not room.done.is_set() and not room.stop.is_set()):
                 return room.credentials()
         return None
 
@@ -692,12 +729,12 @@ class Studio:
             room = self.active.get((uid, opens))
             if not room or room.done.is_set() or room.stop.is_set():
                 return None
-        source = ("browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else
+        source = ("browser" if isinstance(room, Capture) else "srt" if isinstance(room, SRT_ROOMS) else
                   "rtmp" if isinstance(room, RTMP_ROOMS) else "dash" if isinstance(room, DashRelay) else "program")
         progress = room.progress
         values = progress.sample() if progress else None
         information = dict(source=source, metrics=values)
-        if isinstance(room, RedundantRtmpRelay):
+        if isinstance(room, RedundantRelay):
             information["inputs"] = room.health()
         return information
 
@@ -709,7 +746,7 @@ class Studio:
     def close_srt(self, uid, opens):
         with self.lock:
             room = self.active.get((uid, opens))
-            if isinstance(room, SrtRelay):
+            if isinstance(room, SRT_ROOMS):
                 room.stop.set()
 
     def withdraw(self, uid, opens):

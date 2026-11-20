@@ -16,7 +16,7 @@ from installed_languages import check_hosted_languages
 from installed_interactivity import check_hosted_chapters
 from installed_events import check_browser_delivery, check_live_delivery, check_program_delivery, check_registered_live, check_srt_delivery
 from installed_dash_relay import check_failsafe_dash
-from installed_rtmp_relay import check_backup_rtmp, check_low_rtmp, relay_fixture
+from installed_rtmp_relay import check_backup_rtmp, check_backup_srt, check_low_rtmp, relay_fixture
 from installed_live_captions import check_live_captions
 from installed_library_recording import check_library_recording
 from installed_event_playlist import check_event_playlist
@@ -54,6 +54,7 @@ live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify
 live_modes.add_argument("--event-direct-low", action="store_true", help="Verify Low-mode browser delivery with captioned host fallback")
 live_modes.add_argument("--event-rtmp-relay", type=Path, metavar="MEDIAMTX", help="Verify Low-mode RTMPS with an isolated MediaMTX executable")
 live_modes.add_argument("--event-backup-rtmp", type=Path, metavar="MEDIAMTX", help="Verify two independent Low-mode encoders and sticky failover")
+live_modes.add_argument("--event-backup-srt", action="store_true", help="Verify separate encrypted SRT inputs and sticky failover")
 live_modes.add_argument("--event-failsafe-dash", action="store_true", help="Verify delayed DASH delivery, upload interruption and protected replay")
 live_modes.add_argument("--event-api", action="store_true", help="Verify scoped event API and closed registered delivery")
 live_modes.add_argument("--event-attendance", action="store_true", help="Verify API enrollment and protected personal links")
@@ -81,7 +82,7 @@ a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.event_direct_low or
-        a.event_rtmp_relay or a.event_backup_rtmp or a.event_failsafe_dash or a.event_api or
+        a.event_rtmp_relay or a.event_backup_rtmp or a.event_backup_srt or a.event_failsafe_dash or a.event_api or
         a.event_attendance or a.event_webhooks or a.event_attendee_watch or
         a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.event_controls or
@@ -257,6 +258,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as fixtures:
                     }
                 elif a.srt_event:
                     evidence["event_delivery"] = check_srt_delivery(base, keys, ffmpeg)
+                elif a.event_backup_srt:
+                    evidence["event_delivery"] = check_backup_srt(base, keys, ffmpeg)
                 elif rtmp_sidecar:
                     inspect_relay = check_backup_rtmp if a.event_backup_rtmp else check_low_rtmp
                     evidence["event_delivery"] = inspect_relay(

@@ -311,12 +311,29 @@
         <summary>SRT encoder</summary>
         <label>Receiving interface <input id="srtInterface" value="127.0.0.1"></label>
         <label>UDP port <input id="srtPort" type="number" min="1024" max="65535" value="9180"></label>
+        <label id="srtBackupChoice" hidden><input type="checkbox" id="enableSrtBackup"> Use an independent SRT backup encoder</label>
+        <div id="srtBackupOptions" hidden>
+          <label>Backup listening port <input id="srtBackupPort" type="number" min="1024" max="65535" value="9181"></label>
+          <label>SRT programme output
+            <select id="srtBackupHeight">
+              <option value="360">360p</option>
+              <option value="720" selected>720p</option>
+              <option value="1080">1080p</option>
+              <option value="2160">2160p</option>
+            </select>
+          </label>
+        </div>
         <button type="button" id="prepareSrt">Start SRT listener</button>
         <button type="button" id="stopSrt">Stop SRT listener</button>
         <div id="srtSettings" hidden>
           <label>SRT endpoint <input id="srtServer" readonly></label>
           <label>SRT passphrase <input id="srtPassphrase" type="password" readonly></label>
           <button type="button" id="copySrtPassphrase">Copy SRT passphrase</button>
+          <div id="srtBackupCredentials" hidden>
+            <label>Backup endpoint <input id="srtBackupServer" readonly></label>
+            <label>Backup passphrase <input id="srtBackupPassphrase" type="password" readonly></label>
+            <button type="button" id="copySrtBackupPassphrase">Copy backup SRT passphrase</button>
+          </div>
           <p>Use caller mode with MPEG-TS and a 128-bit encryption key.</p>
         </div>
       </details>
