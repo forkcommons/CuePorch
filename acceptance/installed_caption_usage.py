@@ -72,7 +72,7 @@ def check_caption_usage(page, browser, base, auth, uid):
     page.get_by_role("button", name="Apply filters").click()
     expect(page.locator("#reportRows")).to_contain_text("es · Subtitles")
     expect(page.locator("#reportRows > tr")).to_have_count(1)
-    expect(page.locator("#captionBreakdownNote")).to_be_visible()
+    expect(page.locator("#trackBreakdownNote")).to_be_visible()
     with page.expect_download() as downloaded:
         page.get_by_role("button", name="Download CSV").click()
     exported = list(csv.DictReader(StringIO(downloaded.value.path().read_text(encoding="utf-8"))))

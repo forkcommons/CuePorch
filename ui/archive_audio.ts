@@ -35,6 +35,7 @@ choice.onchange = async () => {
   choice.disabled = true;
   video.autoplay = false;
   notice.textContent = "Loading audio…";
+  video.dispatchEvent(new Event("cueporch-audio-before-change"));
   video.pause();
 
   async function load(option: HTMLOptionElement) {
@@ -49,7 +50,7 @@ choice.onchange = async () => {
     }
     selected = option;
     video.dataset.audioTrack = option.value;
-    video.dispatchEvent(new Event("cueporch-audio-change"));
+    video.dataset.analyticsAudioTrack = option.dataset.analyticsTrack || "original";
     if (download) {
       const path = new URL(source(option), window.location.href);
       path.searchParams.set("download", "1");
@@ -68,6 +69,7 @@ choice.onchange = async () => {
       notice.textContent = "Audio could not load. Reopen the video to try again.";
     }
   } finally {
+    video.dispatchEvent(new Event("cueporch-audio-change"));
     choice.value = selected.value;
     choice.disabled = false;
     if (playing && video.readyState >= HTMLMediaElement.HAVE_METADATA) {

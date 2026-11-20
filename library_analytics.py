@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 from flask import Response, abort, request
 
 from catalog import video_version_key
-from library_languages import track_language, viewer_tracks
+from library_audio import KINDS, tracks_for as audio_tracks_for
+from library_languages import original_language, track_language, viewer_tracks
 from subtitles import LANGUAGE
 
 
@@ -41,9 +42,14 @@ CREATE INDEX IF NOT EXISTS video_analytics_download_date ON video_analytics_down
 CREATE TABLE IF NOT EXISTS video_analytics_caption(
  session TEXT NOT NULL, language TEXT NOT NULL, kind TEXT NOT NULL, watched INTEGER NOT NULL,
  PRIMARY KEY(session,language,kind));
+CREATE TABLE IF NOT EXISTS video_analytics_track_pair(
+ session TEXT NOT NULL, audio_language TEXT NOT NULL, audio_kind TEXT NOT NULL,
+ caption_language TEXT NOT NULL, caption_kind TEXT NOT NULL, watched INTEGER NOT NULL,
+ PRIMARY KEY(session,audio_language,audio_kind,caption_language,caption_kind));
 """
 SURFACES = ("watch", "embed")
 CAPTION_KINDS = ("captions", "subtitles", "captions_ai", "subtitles_ai", "none", "unknown")
+AUDIO_KINDS = ("original", *KINDS, "unknown")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
 REGION_CODE = re.compile(r"[A-Z]{2}(?:-[A-Z0-9]{1,3})?")
 PLAY_COUNTS = """coalesce(sum(played),0) AS views, coalesce(sum(completed),0) AS finishes,
@@ -131,31 +137,62 @@ def record_download(tx, work, response, origin):
         LOGGER.exception("Could not record a download observation")
 
 
-def caption_observations(work, samples, watched):
+def caption_label(track):
+    language = track_language(track)
+    kind = track["kind"] + ("_ai" if track.get("provenance") == "TextFlowKit machine-generated" else "")
+    return (language if LANGUAGE.fullmatch(language) else "und", kind)
+
+
+def track_observations(samples, watched, key_count):
     if not isinstance(samples, list) or len(samples) > 256:
-        abort(422, "Invalid text track observation.")
+        abort(422, "Invalid playback track observation.")
     raw = {}
     for sample in samples:
-        if (not isinstance(sample, list) or len(sample) != 2 or not isinstance(sample[0], str)
-                or len(sample[0]) > 128 or sample[0] in raw or type(sample[1]) is not int
-                or not 0 <= sample[1] <= watched + 1):
-            abort(422, "Invalid text track observation.")
-        raw[sample[0]] = sample[1]
+        if (not isinstance(sample, list) or len(sample) != key_count + 1
+                or any(not isinstance(key, str) or len(key) > 160 for key in sample[:-1])
+                or type(sample[-1]) is not int or not 0 <= sample[-1] <= watched + 1):
+            abort(422, "Invalid playback track observation.")
+        key = tuple(sample[:-1])
+        if key in raw:
+            abort(422, "Duplicate playback track observation.")
+        raw[key] = sample[-1]
     if sum(raw.values()) > watched + len(raw):
-        abort(422, "Text track observation exceeds playback time.")
+        abort(422, "Track observation exceeds playback time.")
+    return raw
+
+
+def caption_observations(work, samples, watched):
+    raw = track_observations(samples, watched, 1)
     totals = defaultdict(int)
-    totals[("none", "none")] = raw.get("none", 0)
-    if len(raw) > ("none" in raw):
+    totals[("none", "none")] = raw.pop(("none",), 0)
+    if raw:
         for track in viewer_tracks(work):
-            milliseconds = raw.pop(track["key"], 0)
+            milliseconds = raw.pop((track["key"],), 0)
             if milliseconds:
-                language = track_language(track)
-                kind = track["kind"] + ("_ai" if track.get("provenance") == "TextFlowKit machine-generated" else "")
-                totals[(language if LANGUAGE.fullmatch(language) else "und", kind)] += milliseconds
+                totals[caption_label(track)] += milliseconds
     return [(language, kind, milliseconds) for (language, kind), milliseconds in totals.items() if milliseconds]
 
 
-def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):
+def track_pair_observations(work, samples, watched, source_language):
+    raw = track_observations(samples, watched, 2)
+    if not raw:
+        return []
+    language = original_language(work) if source_language is None else source_language
+    language = language.lower() if isinstance(language, str) else "und"
+    audio = {"original": (language if LANGUAGE.fullmatch(language) else "und", "original")}
+    for track in audio_tracks_for(work):
+        kind, language, digest = track["kind"], track["language"], track["rendition"]["sha256"]
+        audio[f"{kind}:{language}:{digest}"] = (language, kind)
+    captions = {"none": ("none", "none"), "unknown": ("unknown", "unknown")}
+    captions.update((track["key"], caption_label(track)) for track in viewer_tracks(work))
+    totals = defaultdict(int)
+    for (audio_key, caption_key), milliseconds in raw.items():
+        if audio_key in audio and caption_key in captions and milliseconds:
+            totals[(*audio[audio_key], *captions[caption_key])] += milliseconds
+    return [(*labels, milliseconds) for labels, milliseconds in totals.items()]
+
+
+def record(con, work, nonce, surface, body, context=None, *, viewer_key=None, source_language=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
     seq, played, finished = body.get("sequence"), body.get("played"), body.get("completed")
@@ -178,6 +215,7 @@ def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):
     if not played and (watched or finished):
         abort(422, "A play is required for viewing progress.")
     caption_time = caption_observations(work, body.get("captions", []), watched)
+    track_pairs = track_pair_observations(work, body.get("tracks", []), watched, source_language)
     now = datetime.now(timezone.utc).timestamp()
     update = con.execute(
         """INSERT INTO video_analytics_session VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -191,6 +229,10 @@ def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):
     con.executemany("""INSERT INTO video_analytics_caption VALUES(?,?,?,?)
         ON CONFLICT(session,language,kind) DO UPDATE SET watched=max(watched,excluded.watched)""",
         [(nonce, language, kind, milliseconds) for language, kind, milliseconds in caption_time])
+    con.executemany("""INSERT INTO video_analytics_track_pair VALUES(?,?,?,?,?,?)
+        ON CONFLICT(session,audio_language,audio_kind,caption_language,caption_kind)
+        DO UPDATE SET watched=max(watched,excluded.watched)""",
+        [(nonce, *pair) for pair in track_pairs])
     if context:
         source, device, *region = context
         con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, source, device))

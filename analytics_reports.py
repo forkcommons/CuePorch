@@ -9,7 +9,7 @@ import re
 from flask import Response, abort, request
 
 from catalog import video_version_key
-from library_analytics import CAPTION_KINDS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
+from library_analytics import AUDIO_KINDS, CAPTION_KINDS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
 from library_registration import csv_cell
 import media_bandwidth
 from subtitles import LANGUAGE
@@ -23,14 +23,25 @@ DIMENSIONS = {
     "region": "coalesce(s.region, 'Unknown')",
     "surface": "s.surface",
     "streaming": "CASE s.streaming WHEN 'live' THEN 'Live' WHEN 'replay' THEN 'Replay' ELSE 'On demand' END",
-    "caption": "CASE caption.kind WHEN 'none' THEN 'Off' WHEN 'captions' THEN caption.language || ' · Captions'"
-               " WHEN 'subtitles' THEN caption.language || ' · Subtitles'"
-               " WHEN 'captions_ai' THEN caption.language || ' · Automated captions'"
-               " WHEN 'subtitles_ai' THEN caption.language || ' · Automated subtitles' ELSE 'Unknown' END",
+    "caption": "CASE tracks.caption_kind WHEN 'none' THEN 'Off' WHEN 'captions' THEN tracks.caption_language || ' · Captions'"
+               " WHEN 'subtitles' THEN tracks.caption_language || ' · Subtitles'"
+               " WHEN 'captions_ai' THEN tracks.caption_language || ' · Automated captions'"
+               " WHEN 'subtitles_ai' THEN tracks.caption_language || ' · Automated subtitles' ELSE 'Unknown' END",
+    "audio": "CASE tracks.audio_kind WHEN 'original' THEN tracks.audio_language || ' · Original audio'"
+             " WHEN 'dubbed' THEN tracks.audio_language || ' · Dubbed audio'"
+             " WHEN 'description' THEN tracks.audio_language || ' · Audio description'"
+             " WHEN 'commentary' THEN tracks.audio_language || ' · Commentary' ELSE 'Unknown' END",
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
 TOP_DIMENSIONS = ("video", "region", "device", "source")
-COMMUNITY_UNAVAILABLE = {"device", "region", "source", "caption"}
+TRACK_DIMENSIONS = {"caption", "audio"}
+COMMUNITY_UNAVAILABLE = {"device", "region", "source", *TRACK_DIMENSIONS}
+TRACK_WATCHED = "min(s.watched,coalesce(tracks.watched,s.watched))"
+PAIR_ROWS = """SELECT session,audio_language,audio_kind,caption_language,caption_kind,watched
+    FROM video_analytics_track_pair
+    UNION ALL
+    SELECT session,'unknown','unknown',language,kind,watched FROM video_analytics_caption c
+    WHERE NOT EXISTS (SELECT 1 FROM video_analytics_track_pair WHERE session=c.session)"""
 PERIODS = {
     "day": "date(s.created, 'unixepoch')",
     "week": "date(s.created,'unixepoch','-'||((CAST(strftime('%w',s.created,'unixepoch') AS INTEGER)+6)%7)||' days')",
@@ -127,33 +138,64 @@ def caption_scope(language, kind, split):
     selected = {column: value for column, value in (("language", language), ("kind", kind)) if value}
     if not split and not selected:
         return "", "", (), (), "s.watched"
-    watched = "min(s.watched,coalesce(caption.watched,s.watched))"
     if split:
-        join = " LEFT JOIN video_analytics_caption caption ON caption.session=s.id"
-        where = " AND s.impression=1" + "".join(f" AND coalesce(caption.{column},'unknown')=?" for column in selected)
-        return join, where, (), tuple(selected.values()), watched
+        join = (" LEFT JOIN (SELECT session,language AS caption_language,kind AS caption_kind,watched"
+                " FROM video_analytics_caption) tracks ON tracks.session=s.id")
+        where = " AND s.impression=1" + "".join(f" AND coalesce(tracks.caption_{column},'unknown')=?" for column in selected)
+        return join, where, (), tuple(selected.values()), TRACK_WATCHED
     if "unknown" in selected.values():
         where = (" AND s.impression=1 AND NOT EXISTS (SELECT 1 FROM video_analytics_caption WHERE session=s.id)"
                  if all(value == "unknown" for value in selected.values()) else " AND 0")
         return "", where, (), (), "s.watched"
     match = " AND ".join(f"{column}=?" for column in selected)
     join = (f" JOIN (SELECT session,sum(watched) AS watched FROM video_analytics_caption WHERE {match}"
-            " GROUP BY session) caption ON caption.session=s.id")
-    return join, "", tuple(selected.values()), (), watched
+            " GROUP BY session) tracks ON tracks.session=s.id")
+    return join, "", tuple(selected.values()), (), TRACK_WATCHED
+
+
+def pair_scope(selected, splits):
+    if not selected and not splits:
+        return "", "", (), (), "s.watched"
+    groups = "session" + "".join(f",{split}_language,{split}_kind" for split in sorted(splits))
+    match = " WHERE " + " AND ".join(f"{column}=?" for column in selected) if selected else ""
+    allow_unmeasured = all(value == "unknown" for value in selected.values())
+    join_type = "LEFT JOIN" if allow_unmeasured else "JOIN"
+    join = (f" {join_type} (SELECT {groups},sum(watched) AS watched FROM ({PAIR_ROWS}){match}"
+            f" GROUP BY {groups}) tracks ON tracks.session=s.id")
+    where = " AND s.impression=1"
+    if selected and allow_unmeasured:
+        where += (" AND (tracks.session IS NOT NULL OR ("
+                  " NOT EXISTS (SELECT 1 FROM video_analytics_track_pair WHERE session=s.id)"
+                  " AND NOT EXISTS (SELECT 1 FROM video_analytics_caption WHERE session=s.id)))")
+    return join, where, tuple(selected.values()), (), TRACK_WATCHED
+
+
+def track_filters(options, dimension, kinds):
+    language, kind = (options.get(f"{dimension}_{key}", "") for key in ("language", "kind"))
+    if (not isinstance(language, str) or len(language) > 53 or (language and not LANGUAGE.fullmatch(language))
+            or not isinstance(kind, str) or kind not in ("", *kinds)):
+        abort(422, f"Choose a valid {dimension} track language and type.")
+    return language.lower(), kind
 
 
 def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=None):
     filters, clause, params = filter_settings(options, include_events=True)
-    language, kind = options.get("caption_language", ""), options.get("caption_kind", "")
-    if (not isinstance(language, str) or len(language) > 53 or (language and not LANGUAGE.fullmatch(language))
-            or not isinstance(kind, str) or kind not in ("", *CAPTION_KINDS)):
-        abort(422, "Choose a valid text track language and type.")
-    language = language.lower()
-    filters.update(caption_language=language, caption_kind=kind)
-    community = not (language or kind or any(filters[name] for name in ("device", "region", "source")))
+    language, kind = track_filters(options, "caption", CAPTION_KINDS)
+    audio_language, audio_kind = track_filters(options, "audio", AUDIO_KINDS)
+    track_options = dict(caption_language=language, caption_kind=kind, audio_language=audio_language, audio_kind=audio_kind)
+    filters.update(track_options)
+    selected = {key: value for key, value in track_options.items() if value}
+    primary, secondary = filters["group"], filters["breakdown"]
+    splits = TRACK_DIMENSIONS.intersection((primary, secondary))
+    paired = "audio" in splits or audio_language or audio_kind
+
+    def track_scope(grouped):
+        return pair_scope(selected, grouped) if paired else caption_scope(language, kind, "caption" in grouped)
+
+    community = not (selected or any(filters[name] for name in ("device", "region", "source")))
     identity_join = " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id"
     base = (COMMUNITY_TABLES if community else VIDEO_TABLES) + identity_join
-    join, where, before, after, watched = caption_scope(language, kind, False)
+    join, where, before, after, watched = track_scope(set())
     scope, scope_params = base + join + clause + where, before + params + after
     counts = VIDEO_COUNTS.format(watched=watched)
 
@@ -165,7 +207,6 @@ def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=
     library_ids = catalog if library_ids is None else library_ids
     con.create_function("cueporch_library_content", 1, library_ids.__contains__, deterministic=True)
     period = PERIODS[filters["period"]]
-    primary, secondary = filters["group"], filters["breakdown"]
     community_rows = community and not COMMUNITY_UNAVAILABLE.intersection((primary, secondary))
     group = DIMENSIONS[primary] or period
     detail = (DIMENSIONS[secondary] or period) if secondary else "''"
@@ -174,8 +215,8 @@ def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=
                          GROUP BY period ORDER BY period""", scope_params)
     overview = [dict(period=row["period"], **row_metrics(row, community)) for row in trend]
     breakdown_scope, breakdown_params, breakdown_counts = scope, scope_params, counts
-    if "caption" in (primary, secondary):
-        split_join, split_where, split_before, split_after, split_watched = caption_scope(language, kind, True)
+    if splits:
+        split_join, split_where, split_before, split_after, split_watched = track_scope(splits)
         breakdown_scope = VIDEO_TABLES + identity_join + split_join + clause + split_where
         breakdown_params = split_before + params + split_after
         breakdown_counts = VIDEO_COUNTS.format(watched=split_watched)

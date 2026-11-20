@@ -51,6 +51,12 @@
             <option value="captions_ai">Automated captions</option><option value="subtitles_ai">Automated subtitles</option>
             <option value="none">Off</option><option value="unknown">Unknown</option>
           </select></label>
+          <label data-video-filter>Audio track language <input name="audio_language" maxlength="53" placeholder="en or fr-CA"></label>
+          <label data-video-filter>Audio track type <select name="audio_kind">
+            <option value="">All</option><option value="original">Original audio</option><option value="dubbed">Dubbed audio</option>
+            <option value="description">Audio description</option><option value="commentary">Commentary</option>
+            <option value="unknown">Unknown</option>
+          </select></label>
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
@@ -100,8 +106,8 @@
     </section>
     <section aria-labelledby="reportRowsTitle">
       <h2 id="reportRowsTitle">Breakdown</h2>
-      <p id="captionBreakdownNote" hidden>A session can appear under several text tracks. Watch time is split by track.</p>
-      <p id="communityBreakdownNote" hidden>Likes and comments are unavailable for device, region, referring site, and text-track filters or breakdowns.</p>
+      <p id="trackBreakdownNote" hidden>A session can appear in several track rows. Each row includes the time played with those tracks.</p>
+      <p id="communityBreakdownNote" hidden>Likes and comments are unavailable for device, region, referring site, and track filters or breakdowns.</p>
       <p id="reportEmpty" hidden>No video activity matches these filters.</p>
       <div class="analytics-table">
         <table><thead><tr id="reportColumns"></tr></thead><tbody id="reportRows"></tbody></table>

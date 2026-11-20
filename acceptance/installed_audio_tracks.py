@@ -1,5 +1,7 @@
 """Verify alternate audio signal, controls, archive and access in the installed app."""
 
+import csv
+from io import StringIO
 import json
 import subprocess
 import uuid
@@ -74,6 +76,16 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         reply.raise_for_status()
         return reply.json()
 
+    def report(kind="video", **options):
+        reply = requests.post(f"{base}/api/analytics/{kind}-report", headers=staff, timeout=10,
+                              json={"videos": [uid], "group": "audio"} | options)
+        reply.raise_for_status()
+        return reply.json()
+
+    def pause_and_flush(target, player):
+        with target.expect_response(lambda reply: "/viewer-analytics/" in reply.url and reply.status == 204):
+            player.evaluate("v => v.pause()")
+
     def unlock(target):
         expect(target.locator("video")).to_have_count(0)
         expect(target.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
@@ -108,6 +120,10 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
     page.goto(f"{base}/operator/videos/{uid}")
     page.get_by_role("link", name="Languages and subtitles").click()
     expect(page.get_by_role("heading", name="Languages for " + title)).to_be_visible()
+    page.get_by_label("Original language", exact=True).fill("en")
+    page.get_by_label("Generate subtitles when setting the original language").uncheck()
+    page.get_by_role("button", name="Set original language").click()
+    expect(page.locator("#languagesStatus")).to_have_text("Original language saved.")
     page.get_by_label("Subtitle language").fill("en")
     page.get_by_label("Subtitle file").set_input_files({
         "name": "english.vtt", "mimeType": "text/vtt", "buffer": b"WEBVTT\n\n00:00:00.000 --> 00:00:06.000\nEnglish caption\n",
@@ -134,12 +150,38 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         video = unlock(viewer)
         expect(viewer.get_by_role("combobox", name="Audio track", exact=True)).to_have_value("original")
         original_tone = tone(video, 440)
+        viewer.wait_for_function("document.querySelector('video').currentTime >= 1.1")
         video.evaluate("v=>{v.currentTime=2;v.playbackRate=1.25;v.textTracks[0].mode='showing';}")
-        viewer.wait_for_function("!document.querySelector('video').seeking")
+        viewer.wait_for_function("!document.querySelector('video').seeking && document.querySelector('track').readyState === 2")
         video = choose(viewer, "dubbed:es")
         state = video.evaluate("v=>[v.currentTime,v.playbackRate,v.textTracks[0].mode,v.videoWidth,v.paused]")
         assert 1.9 <= state[0] < 3 and state[1:] == [1.25, "showing", 256, False], state
         dubbed_tone = tone(video, 880)
+        viewer.wait_for_function("document.querySelector('video').currentTime >= 3.4")
+        pause_and_flush(viewer, video)
+        tracks = report()
+        assert tracks["totals"]["views"] == tracks["totals"]["impressions"] == tracks["totals"]["unique_viewers"] == 1
+        by_audio = {row["category"]: row["watched_seconds"] for row in tracks["rows"]}
+        assert set(by_audio) == {"en · Original audio", "es · Dubbed audio"} and min(by_audio.values()) >= 0.9, by_audio
+        assert abs(sum(by_audio.values()) - tracks["totals"]["watched_seconds"]) < .15, tracks["totals"]
+        paired = report("device", breakdown="audio", audio_language="ES", audio_kind="dubbed", caption_kind="subtitles")
+        assert paired["totals"]["views"] == paired["totals"]["unique_viewers"] == 1
+        assert paired["totals"]["watched_seconds"] >= .85
+        assert [(row["category"], row["breakdown"]) for row in paired["rows"]] == [("Desktop", "es · Dubbed audio")]
+        assert report(audio_kind="dubbed", caption_kind="none")["totals"]["views"] == 0
+        assert any(row["category"] == "en · Original audio" and row["breakdown"] == "Off"
+                   and row["watched_seconds"] >= 0.9 for row in report(breakdown="caption")["rows"])
+        retention = {row["second"]: row["percent"] for row in get(work + "/analytics")["retention"]}
+        assert retention[0] == retention[3] == 1, retention
+
+        with browser.new_context(extra_http_headers={"DNT": "1"}) as private:
+            private_page = private.new_page()
+            private_page.goto(watch)
+            private_video = unlock(private_page)
+            assert private_video.get_attribute("data-analytics") is None
+            assert abs(tone(choose(private_page, "dubbed:es"), 880) - dubbed_tone) < 24
+        assert report()["totals"] == tracks["totals"]
+
         with viewer.expect_download() as received:
             viewer.get_by_role("link", name="Download video").click()
         assert received.value.suggested_filename == "video-es-dubbed.mp4"
@@ -155,7 +197,30 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         frame = viewer.frame_locator("iframe")
         iframe_video = unlock(frame)
         assert abs(tone(iframe_video, 440) - original_tone) < 24
-        described_tone = tone(choose(frame, "description:en"), 660)
+        described = choose(frame, "description:en")
+        described_tone = tone(described, 660)
+        audience_frame = viewer.locator("iframe").element_handle().content_frame()
+        audience_frame.wait_for_function("end => document.querySelector('video').currentTime >= end",
+                                         arg=described.evaluate("v => v.currentTime + .75"))
+        pause_and_flush(viewer, described)
+        assert report(surface="embed", audio_kind="description", audio_language="en")["totals"]["watched_seconds"] >= 0.65
+        assert report(surface="watch", audio_kind="description")["totals"]["views"] == 0
+
+        page.goto(f"{base}/operator/analytics?video={uid}")
+        page.get_by_label("Group by").select_option("audio")
+        page.get_by_label("Break down by").select_option("caption")
+        page.get_by_label("Audio track language").fill("es")
+        page.get_by_label("Audio track type").select_option("dubbed")
+        page.get_by_label("Text track type").select_option("subtitles")
+        page.get_by_role("button", name="Apply filters").click()
+        expect(page.locator("#reportRows")).to_contain_text("es · Dubbed audio")
+        expect(page.locator("#reportRows > tr")).to_have_count(1)
+        expect(page.locator("#trackBreakdownNote")).to_be_visible()
+        with page.expect_download() as exported:
+            page.get_by_role("button", name="Download CSV").click()
+        rows = list(csv.DictReader(StringIO(exported.value.path().read_text(encoding="utf-8"))))
+        assert [(row["audio"], row["caption"], row["views"]) for row in rows] == [("es · Dubbed audio", "en · Subtitles", "1")]
+        page.goto(f"{base}/operator/videos/{uid}/languages")
 
         page.get_by_role("button", name="Replace es dubbed audio").click()
         page.get_by_label("Audio file").set_input_files(alternate)
@@ -206,7 +271,10 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
                     replacement_hz=replaced_tone, video_width=state[3], position_and_player_state_preserved=True,
                     cut_scoped_restore=True, original_download_and_optional_viewer_download=True,
                     replacement_revokes_old_asset=True, appearance_scope_and_embed_rights=True,
-                    invalid_upload_and_retry_preserved_tracks=True)
+                    invalid_upload_and_retry_preserved_tracks=True,
+                    analytics=dict(watch_seconds=by_audio, paired_seconds=paired["totals"]["watched_seconds"],
+                                   unique_watch_viewers=1, original_and_dubbed_retention_preserved=True,
+                                   alternate_embed_playback=True, opted_out=True, filtered_csv=True))
     finally:
         guest.close()
         museum.embed = prior_embed

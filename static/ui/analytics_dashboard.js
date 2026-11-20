@@ -1,6 +1,7 @@
 const dimensionNames = {
     video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
     caption: "Captions and subtitles",
+    audio: "Audio track",
     streaming: "Streaming type",
 };
 const metricNames = {
@@ -173,7 +174,8 @@ function renderTop(top) {
 }
 function renderVideo(report) {
     const { group, breakdown } = report.filters;
-    document.querySelector("#captionBreakdownNote").hidden = group !== "caption" && breakdown !== "caption";
+    document.querySelector("#trackBreakdownNote").hidden =
+        ![group, breakdown].some(dimension => dimension === "caption" || dimension === "audio");
     document.querySelector("#communityBreakdownNote").hidden = report.community_breakdown;
     const totals = document.querySelector("#reportTotals");
     totals.replaceChildren();
@@ -316,6 +318,8 @@ function filters() {
         data.region = String(data.region).trim();
     if (data.caption_language)
         data.caption_language = String(data.caption_language).trim();
+    if (data.audio_language)
+        data.audio_language = String(data.audio_language).trim();
     return { ...data, videos: [...chosen] };
 }
 async function apply() {

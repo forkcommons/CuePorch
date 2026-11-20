@@ -3,6 +3,7 @@ export {};
 const dimensionNames: Record<string, string> = {
   video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
   caption: "Captions and subtitles",
+  audio: "Audio track",
   streaming: "Streaming type",
 };
 const metricNames = {
@@ -214,7 +215,8 @@ function renderTop(top?: TopBreakdowns) {
 
 function renderVideo(report: Report) {
   const {group, breakdown} = report.filters;
-  document.querySelector<HTMLElement>("#captionBreakdownNote")!.hidden = group !== "caption" && breakdown !== "caption";
+  document.querySelector<HTMLElement>("#trackBreakdownNote")!.hidden =
+    ![group, breakdown].some(dimension => dimension === "caption" || dimension === "audio");
   document.querySelector<HTMLElement>("#communityBreakdownNote")!.hidden = report.community_breakdown;
   const totals = document.querySelector<HTMLElement>("#reportTotals")!;
   totals.replaceChildren();
@@ -352,6 +354,7 @@ function filters() {
   if (data.source) data.source = String(data.source).trim();
   if (data.region) data.region = String(data.region).trim();
   if (data.caption_language) data.caption_language = String(data.caption_language).trim();
+  if (data.audio_language) data.audio_language = String(data.audio_language).trim();
   return {...data, videos: [...chosen]};
 }
 

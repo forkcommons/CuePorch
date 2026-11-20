@@ -51,6 +51,11 @@ def viewer_tracks(work):
             for index, track in enumerate(tracks_for(work)) if track_kind(track) in ("captions", "subtitles")]
 
 
+def original_language(work):
+    changed = work.get("language_edits", {}).get(video_version_key(work), {})
+    return changed.get("original_language", work.get("source_language")) or ""
+
+
 def save_blob(root, content):
     digest = hashlib.sha256(content).hexdigest()
     target = root / "objects" / digest
@@ -83,9 +88,8 @@ def update(root, uid, expected, mutate):
 
 def summary(work):
     version = video_version_key(work)
-    changed = work.get("language_edits", {}).get(version, {})
     return dict(version=version, title=work["title"],
-                original_language=changed.get("original_language", work.get("source_language")) or "",
+                original_language=original_language(work),
                 tracks=[dict(language=track_language(item), kind=track_kind(item),
                              provenance=item.get("provenance"), bytes=item["bytes"])
                         for item in tracks_for(work, version=version)])

@@ -19,7 +19,7 @@ import library_share
 import library_embed
 import library_appearance
 import library_audio
-from library_languages import track_key, tracks_for, viewer_tracks
+from library_languages import original_language, track_key, tracks_for, viewer_tracks
 import library_interactivity
 import library_ratings
 import library_registration
@@ -463,7 +463,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             analytics = None
             if context:
                 analytics = analytics_serializer.dumps(
-                    [token, video_version_key(work), surface, secrets.token_urlsafe(18), context]
+                    [token, video_version_key(work), surface, secrets.token_urlsafe(18), context, original_language(work)]
                 )
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
@@ -616,13 +616,15 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             token, version, surface, nonce, *context = analytics_serializer.loads(session, max_age=4 * 3600)
         except (BadSignature, ValueError):
             abort(404)
+        request.max_content_length = 128 * 1024
         with tx() as con:
             work, _, _, _ = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
             if library_analytics.permitted():
                 library_analytics.record(con, work, nonce, surface, request.get_json(),
-                                         context[0] if context else None, viewer_key=viewer_key)
+                                         context[0] if context else None, viewer_key=viewer_key,
+                                         source_language=context[1] if len(context) > 1 else None)
         return "", 204
 
     return watch
