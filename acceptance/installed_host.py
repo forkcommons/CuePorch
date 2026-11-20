@@ -44,6 +44,7 @@ live_modes.add_argument("--registered-event", action="store_true", help="Test an
 live_modes.add_argument("--browser-event", action="store_true", help="Test browser capture through the installed Live Studio")
 live_modes.add_argument("--scenes-event", action="store_true", help="Verify live scene changes and graphics from the installed studio")
 live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify live DVR and actual browser relay diagnostics")
+live_modes.add_argument("--event-direct-low", action="store_true", help="Verify Low-mode browser delivery with captioned host fallback")
 live_modes.add_argument("--speakers-event", action="store_true", help="Verify browser guests and private speaker chat")
 live_modes.add_argument("--program-graphics", action="store_true", help="Verify audience graphics in real hosted video")
 live_modes.add_argument("--studio-slides", action="store_true", help="Verify PDF and PowerPoint slides in real hosted video")
@@ -65,7 +66,8 @@ live_modes.add_argument("--program-event", action="store_true", help="Test an un
 a = p.parse_args()
 if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
-if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or a.studio_slides or
+if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.event_direct_low or
+        a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.event_controls or
         a.waiting_replay or a.peer_event_report or a.simulcast_event or a.encoder_preview or
         a.srt_event or a.program_event) and not a.live_rtmp_port:
@@ -186,6 +188,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = check_browser_delivery(base, keys, (root, ffmpeg))
                 elif a.event_diagnostics:
                     evidence["event_delivery"] = check_browser_delivery(base, keys, diagnostics=True)
+                elif a.event_direct_low:
+                    evidence["event_delivery"] = check_browser_delivery(base, keys, direct_low=True)
                 elif a.speakers_event:
                     evidence["event_delivery"] = check_speaker_delivery(base, keys, ffmpeg)
                 elif a.program_graphics:

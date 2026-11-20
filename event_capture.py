@@ -4,10 +4,12 @@ from contextlib import suppress
 from hashlib import sha256
 from ipaddress import ip_address
 import math
+from pathlib import Path
 from queue import Empty, Full, Queue
 import re
 import secrets
 import subprocess
+from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
 import time
 from urllib.parse import urlencode, urlsplit
@@ -36,21 +38,56 @@ def ingest_address(encoder):
     return server + "/" + key
 
 
-def output_arguments(encoder):
-    return [
+def output_arguments(encoder, playback=None):
+    codec = [
         "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast",
-        "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-vf", "fps=30", "-g", "60",
+        "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-vf", "fps=30", "-g", "30" if playback else "60",
         "-sc_threshold", "0", "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
-        "-rw_timeout", "10000000", "-f", "flv", ingest_address(encoder),
     ]
+    address = ingest_address(encoder)
+    if not playback:
+        return [*codec, "-rw_timeout", "10000000", "-f", "flv", address]
+    local = (
+        f"[f=hls:onfail=ignore:hls_time=1:hls_list_size={playback.window}:hls_delete_threshold=2:"
+        "hls_flags=delete_segments+independent_segments+program_date_time+temp_file:"
+        "hls_segment_filename=0-%09d.ts]0.m3u8"
+    )
+    relay = ("[f=fifo:fifo_format=flv:queue_size=120:drop_pkts_on_overflow=1:onfail=ignore:"
+             "attempt_recovery=1:max_recovery_attempts=3:restart_with_keyframe=1]" + address)
+    return [*codec, "-f", "tee", local + "|" + relay]
+
+
+def probe_arguments(playback):
+    return ["-probesize", "128k", "-analyzeduration", "300000"] if playback else []
+
+
+class LocalPlayback:
+    def __init__(self, directory, window):
+        self.identity = uuid4().hex
+        self.window = max(4, window)
+        self.storage = TemporaryDirectory(dir=directory, prefix="hls-", ignore_cleanup_errors=True)
+        self.path = Path(self.storage.name)
+
+    def live(self):
+        try:
+            with (self.path / "0.m3u8").open("rb") as stream:
+                if time.time() - (self.path / "0.m3u8").stat().st_mtime > 6:
+                    return False
+                return stream.read(256 * 1024).count(b"#EXTINF:") >= 2
+        except OSError:
+            return False
+
+    def close(self):
+        with suppress(OSError):
+            self.storage.cleanup()
 
 
 class EncoderProgress:
-    def __init__(self, args, stdin):
+    def __init__(self, args, stdin, cwd=None):
         self.latest = None
         self.process = subprocess.Popen(
             ["ffmpeg", "-nostdin", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "1", *args],
-            stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            cwd=cwd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         Thread(target=self.read, name="CuePorch encoder progress", daemon=True).start()
@@ -80,7 +117,7 @@ class EncoderProgress:
 
 
 class Capture:
-    def __init__(self, encoder, lease):
+    def __init__(self, encoder, lease, playback=None):
         self.token = uuid4().hex
         self.lease = lease
         self.chunks = Queue(maxsize=8)
@@ -90,10 +127,11 @@ class Capture:
         self.next = 0
         self.last = None
         self.error = False
+        self.playback = playback
         self.progress = EncoderProgress(
-            ["-fflags", "+genpts", "-protocol_whitelist", "pipe", "-f", "webm", "-i", "pipe:0",
-             *output_arguments(encoder)],
-            subprocess.PIPE,
+            ["-fflags", "+genpts", *probe_arguments(playback),
+             "-protocol_whitelist", "pipe", "-f", "webm", "-i", "pipe:0", *output_arguments(encoder, playback)],
+            subprocess.PIPE, playback.path if playback else None,
         )
         self.process = self.progress.process
         self.thread = Thread(target=self.receive, name="CuePorch browser encoder", daemon=True)
@@ -130,6 +168,8 @@ class Capture:
                 with suppress(OSError):
                     self.process.stdin.close()
             finally:
+                if self.playback:
+                    self.playback.close()
                 self.lease.release()
                 self.done.set()
 
@@ -165,11 +205,12 @@ def srt_endpoint(address, port):
 
 
 class Relay:
-    def __init__(self, args, lease):
+    def __init__(self, args, lease, playback=None):
         self.stop = Event()
         self.done = Event()
         self.lease = lease
-        self.progress = EncoderProgress(args, subprocess.DEVNULL)
+        self.playback = playback
+        self.progress = EncoderProgress(args, subprocess.DEVNULL, playback.path if playback else None)
         self.process = self.progress.process
         try:
             self.process.wait(timeout=0.4)
@@ -193,12 +234,14 @@ class Relay:
                         self.process.wait()
                     break
         finally:
+            if self.playback:
+                self.playback.close()
             self.lease.release()
             self.done.set()
 
 
 class SrtRelay(Relay):
-    def __init__(self, encoder, endpoint, lease):
+    def __init__(self, encoder, endpoint, lease, playback=None):
         self.endpoint = endpoint
         self.passphrase = secrets.token_hex(16)
         listener = endpoint + "?" + urlencode({
@@ -206,8 +249,8 @@ class SrtRelay(Relay):
             "listen_timeout": 300_000_000, "timeout": 15_000_000,
         })
         super().__init__(
-            ["-fflags", "+genpts", "-protocol_whitelist", "srt,udp", "-f", "mpegts", "-i", listener,
-             *output_arguments(encoder)], lease,
+            ["-fflags", "+genpts", *probe_arguments(playback), "-protocol_whitelist", "srt,udp",
+             "-f", "mpegts", "-i", listener, *output_arguments(encoder, playback)], lease, playback,
         )
 
     def credentials(self):
@@ -220,7 +263,7 @@ class Studio:
         self.active = {}
         self.lock = Lock()
 
-    def prepare(self, uid, opens, construct, srt_address=None):
+    def prepare(self, uid, opens, construct, srt_address=None, playback_window=None):
         with self.lock:
             self.active = {key: value for key, value in self.active.items() if not value.done.is_set()}
             existing = self.active.get((uid, opens))
@@ -234,24 +277,41 @@ class Studio:
                 lease.acquire()
             except Timeout:
                 raise BusyError("This event already has a browser transmission.") from None
+            playback = None
             try:
-                room = construct(lease)
+                if playback_window is not None:
+                    playback = LocalPlayback(self.directory, playback_window)
+                room = construct(lease, playback)
             except BaseException:
+                if playback:
+                    playback.close()
                 lease.release()
                 raise
             self.active[uid, opens] = room
             return room
 
-    def start(self, uid, opens, encoder):
-        return self.prepare(uid, opens, lambda lease: Capture(encoder, lease)).token
+    def start(self, uid, opens, encoder, playback_window=None):
+        return self.prepare(uid, opens, lambda lease, playback: Capture(encoder, lease, playback),
+                            playback_window=playback_window).token
 
-    def srt(self, uid, opens, encoder, endpoint):
-        return self.prepare(uid, opens, lambda lease: SrtRelay(encoder, endpoint, lease), endpoint).credentials()
+    def srt(self, uid, opens, encoder, endpoint, playback_window=None):
+        return self.prepare(uid, opens, lambda lease, playback: SrtRelay(encoder, endpoint, lease, playback),
+                            srt_address=endpoint, playback_window=playback_window).credentials()
 
     def program(self, uid, opens, encoder, source):
         args = ["-re", "-protocol_whitelist", "file", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
                 "-c", "copy", "-rw_timeout", "10000000", "-f", "flv", ingest_address(encoder)]
-        return self.prepare(uid, opens, lambda lease: Relay(args, lease))
+        return self.prepare(uid, opens, lambda lease, _: Relay(args, lease))
+
+    def playback(self, uid, opens, identity=None):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if not room or room.stop.is_set() or room.done.is_set():
+                return None
+            source = room.playback
+        if source and (identity is None or identity == source.identity) and source.live():
+            return source
+        return None
 
     def srt_credentials(self, uid, opens, endpoint):
         with self.lock:

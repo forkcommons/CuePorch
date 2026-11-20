@@ -5,6 +5,7 @@ from array import array
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import re
 import socket
 import sqlite3
 import subprocess
@@ -697,7 +698,7 @@ def wait_for_delivery(url, auth, expected, seconds, encoder):
         observed = response.json()["state"]
         if observed == expected:
             return
-        if encoder.poll() is not None:
+        if encoder is not None and encoder.poll() is not None:
             raise AssertionError(f"The installed RTMP encoder ended early (exit {encoder.returncode})")
         time.sleep(1)
     raise AssertionError(f"Did not observe {expected}; last state was {observed}")
@@ -960,13 +961,15 @@ def archive_has_scene_audio(operator, ffmpeg):
     return False
 
 
-def check_browser_delivery(base, keys, graphics=None, diagnostics=False):
+def check_browser_delivery(base, keys, graphics=None, diagnostics=False, direct_low=False):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
     event = dict(title="Installed browser broadcast", slug="installed-browser-broadcast", visibility="public",
-                 type="live", latency="standard", save_replay=False,
+                 type="live", latency="low" if direct_low else "standard", save_replay=False,
                  schedule=dict(timezone="UTC", start=start, end=end, repeat="none"))
+    if direct_low:
+        event["dvr_seconds"] = 120
     auth = {"Authorization": "Bearer " + keys["operator"]}
     response = requests.post(base + "/api/live-events", json=event, headers=auth, timeout=10)
     response.raise_for_status()
@@ -1011,6 +1014,24 @@ def check_browser_delivery(base, keys, graphics=None, diagnostics=False):
             _, width, _ = play_event(guest, watch, "Live", navigate=False)
             assert width >= 320
             scene_result = check_broadcast_graphics(guest, panel) if panel else {}
+            if direct_low:
+                player = guest.locator("#eventPlayer")
+                expect(player).to_have_attribute("data-transport", re.compile(r"^local:"))
+                manifest = urljoin(base, player.get_attribute("data-address"))
+                saved = requests.get(manifest, timeout=10)
+                saved.raise_for_status()
+                fragment = next(line for line in saved.text.splitlines() if line.endswith(".ts"))
+                assert requests.get(urljoin(manifest, fragment), timeout=10).ok
+                wait_for_delivery(studio.removesuffix("/browser"), auth, "live", 80, None)
+                captions = studio.removesuffix("/browser") + "/captions"
+                requests.put(captions, headers=auth, json=dict(enabled=True, language="en"), timeout=10).raise_for_status()
+                assert requests.get(manifest, timeout=10).status_code == 404
+                assert requests.get(urljoin(manifest, fragment), timeout=10).status_code == 404
+                expect(player).to_have_attribute("data-transport", "hosted", timeout=25000)
+                _, hosted_width, _ = play_event(guest, watch, "Live", navigate=False)
+                assert hosted_width >= 320
+                scene_result.update(direct_low_decoded_width=width, hosted_relay_decoded_width=hosted_width,
+                                    caption_switch_revoked_direct_media=True)
             if diagnostics:
                 scene_result.update(check_live_diagnostics(operator, guest, health, auth))
             operator.get_by_role("button", name="Stop", exact=True).click()

@@ -16,7 +16,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
+from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
 import event_analytics
@@ -841,13 +841,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     programs.start(locked, qualify_program, provision_event)
 
+    def direct_window(uid, connection):
+        with tx() as con:
+            _, event = read(con, uid)
+        seconds = event.get("dvr_seconds", 120)
+        if event["latency"] == "low" and not connection["preview"] and 4 <= seconds <= 120:
+            return seconds
+        return None
+
     @app.post("/api/live-events/<uid>/<int:opens>/browser")
     def start_event_capture(uid, opens):
         staff()
         try:
             with locked(uid):
                 connection = provision_event(uid, opens, browser=True, preview=False)
-                return dict(token=studio.start(uid, opens, connection)), 201
+                return dict(token=studio.start(uid, opens, connection, direct_window(uid, connection))), 201
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
@@ -901,7 +909,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         delivery = occurrence(con, uid, opens)
                         return dict(prior, preview=bool(delivery and delivery["delivery"] == "preview"))
                 connection = provision_event(uid, opens, browser=True, preview=body.get("preview"))
-                return dict(studio.srt(uid, opens, connection, endpoint), preview=connection["preview"])
+                return dict(studio.srt(uid, opens, connection, endpoint, direct_window(uid, connection)),
+                            preview=connection["preview"])
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
@@ -1238,6 +1247,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             pre_live = event_player.lobby(artwork, event, next_broadcast, poster) if not withdrawn else None
         address = None
         analytics_token = None
+        transport = "hosted"
         reporting_scope = reporting_token = None
         if library_analytics.permitted() and request.args.get("dnt", "").lower() not in ("1", "true"):
             origin = library_analytics.request_context(analytics_proxies)
@@ -1263,7 +1273,19 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
-            address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private, reporting_scope)
+            source = studio.playback(row["id"], shown["id"]) if (
+                delivery["delivery"] == "ready" and event["latency"] == "low" and not captioned) else None
+            if source:
+                transport = f"local:{source.identity}"
+                session = files.dumps(scope + [delivery["remote"], transport, False])
+                address = url_for("event_media_file", token=session, filename="0.m3u8")
+                native_video, status = True, "Live"
+                if reporting_scope is not None:
+                    analytics_token = measurement.dumps(scope + [delivery["remote"], False, uuid.uuid4().hex,
+                                                                  [*reporting_scope, None]])
+            else:
+                address, analytics_token, status = viewer_playback(
+                    event, delivery, scope, native_video, host_private, reporting_scope)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
@@ -1285,11 +1307,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         live_badge=status == "Live" and artwork["show_live_badge"],
                         viewers=viewers if status == "Live" else None)
         view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
+                     transport=transport,
                      captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=playing,
                      preview_replay=preview_replay, appearance=appearance, branding=branding)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=playing, audience_occurrence=shown,
-                                     address=address, status=status, embed=embed, protected=protected,
+                                     address=address, status=status, embed=embed, protected=protected, transport=transport,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
@@ -1379,11 +1402,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(404)
         if not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
+        local = isinstance(gateway, str) and gateway.startswith("local:")
         with tx() as con:
             delivery = delivered(con, uid, revision, opens, form_revision, remote, replay)
+            if local and (replay or event_captions.active_track(con, uid, opens)):
+                abort(404)
         try:
-            response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
-        except (ValueError, requests.RequestException):
+            if local:
+                source = studio.playback(uid, opens, gateway.removeprefix("local:"))
+                if not source:
+                    abort(404)
+                response = local_hls(source.path, filename)
+            else:
+                response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
+        except (OSError, ValueError, requests.RequestException):
             abort(404)
         return media_bandwidth.measure(response, tx, uid, "vod" if replay else "live")
 

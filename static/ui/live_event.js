@@ -92,10 +92,11 @@ function viewArchive(opens, autoplayMuted) {
     eventStatus.textContent = "Loading replay";
     void checkStatus();
 }
-function renderVideo(address, phase, analytics, video) {
+function renderVideo(address, phase, analytics, transport, video) {
     stopMeasuring?.();
     player.dataset.address = address;
     player.dataset.phase = phase;
+    player.dataset.transport = transport;
     hls?.destroy();
     hls = undefined;
     if (!video) {
@@ -115,7 +116,8 @@ function renderVideo(address, phase, analytics, video) {
         const last = ranges.length - 1;
         const start = ranges.start(last);
         const end = ranges.end(last);
-        const position = hls ? hls.liveSyncPosition : end - liveSegments * (latencyMode === "low" ? 2 : 4);
+        const seconds = transport.startsWith("local:") ? 1 : latencyMode === "low" ? 2 : 4;
+        const position = hls ? hls.liveSyncPosition : end - liveSegments * seconds;
         return position === null || !Number.isFinite(position) || end - start < 1
             ? null : Math.min(end - .5, Math.max(start, position));
     });
@@ -161,6 +163,7 @@ function closePlayer() {
     hls = undefined;
     player.dataset.address = "";
     player.dataset.phase = "";
+    player.dataset.transport = "";
     player.replaceChildren();
 }
 async function checkStatus() {
@@ -191,7 +194,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance, branding: brand } = await response.json();
+        const { status: next, address: src, native_video: native, transport, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance, branding: brand } = await response.json();
         if (requested !== location.href)
             return;
         const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
@@ -216,8 +219,15 @@ async function checkStatus() {
                 stopChecking();
         }
         else if (src && native) {
-            if (!player.querySelector("video") || player.dataset.phase !== next || changedOccurrence) {
-                renderVideo(src, next, analytics || "");
+            const video = player.querySelector("video");
+            if (!video || player.dataset.phase !== next || changedOccurrence) {
+                renderVideo(src, next, analytics || "", transport);
+            }
+            else if (player.dataset.transport !== transport) {
+                const playing = !video.paused;
+                renderVideo(src, next, analytics || "", transport, video);
+                if (playing)
+                    void video.play().catch(() => { });
             }
         }
         else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
@@ -275,7 +285,7 @@ if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence
     (!initial && eventStatus.textContent === "Replay")))
     stopChecking();
 if (initial && player.dataset.address)
-    renderVideo(player.dataset.address, eventStatus.textContent || "", player.dataset.analytics || "", initial);
+    renderVideo(player.dataset.address, eventStatus.textContent || "", player.dataset.analytics || "", player.dataset.transport || "hosted", initial);
 const initialFrame = player.querySelector("iframe");
 if (initialFrame)
     stopMeasuring = measurePeerEventPlayback(initialFrame, player.dataset.analytics || "");

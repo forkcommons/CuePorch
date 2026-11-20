@@ -3,7 +3,7 @@
 import re
 from urllib.parse import urlsplit
 
-from flask import Response
+from flask import Response, send_file
 import requests
 
 import event_peer
@@ -53,6 +53,23 @@ def manifest_text(payload):
         if any(not HLS_FILE.fullmatch(name) for name in files):
             raise ValueError("PeerTube returned a playlist outside this occurrence.")
     return content
+
+
+def local_hls(directory, filename):
+    if filename == "0.m3u8":
+        with (directory / filename).open("rb") as playlist:
+            payload = playlist.read(256 * 1024 + 1)
+        if len(payload) > 256 * 1024:
+            raise ValueError("The local playlist is too large.")
+        response = Response(manifest_text(payload), mimetype=FORMATS["m3u8"])
+    elif LIVE_FILE.fullmatch(filename) and filename.endswith(".ts"):
+        response = send_file(directory / filename, mimetype=FORMATS["ts"], conditional=True, etag=False)
+        response.direct_passthrough = False
+    else:
+        raise ValueError("Unrecognized local video resource.")
+    response.cache_control.no_store = True
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 class Gateway:

@@ -24,7 +24,8 @@ const next = document.querySelector<HTMLButtonElement>("#archiveNext")!;
 interface ArchivePlaylist {entries: {id: number; label: string}[]; autoplay_next: boolean; loop: boolean;}
 interface EventBranding {logo: string | null; byline: string; live_badge: boolean; viewers: number | null;}
 interface EventView {
-  status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
+  status: string; address: string | null; native_video: boolean; transport: string;
+  captions: string | null; analytics_token: string | null;
   occurrence: {id: number; start: string; local: string} | null; playlist: ArchivePlaylist | null;
   lobby_preview: BeforeEvent | null;
   preview_replay: boolean;
@@ -112,10 +113,11 @@ function viewArchive(opens: number, autoplayMuted?: boolean) {
   void checkStatus();
 }
 
-function renderVideo(address: string, phase: string, analytics: string, video?: HTMLVideoElement) {
+function renderVideo(address: string, phase: string, analytics: string, transport: string, video?: HTMLVideoElement) {
   stopMeasuring?.();
   player.dataset.address = address;
   player.dataset.phase = phase;
+  player.dataset.transport = transport;
   hls?.destroy();
   hls = undefined;
   if (!video) {
@@ -134,7 +136,8 @@ function renderVideo(address: string, phase: string, analytics: string, video?: 
     const last = ranges.length - 1;
     const start = ranges.start(last);
     const end = ranges.end(last);
-    const position = hls ? hls.liveSyncPosition : end - liveSegments * (latencyMode === "low" ? 2 : 4);
+    const seconds = transport.startsWith("local:") ? 1 : latencyMode === "low" ? 2 : 4;
+    const position = hls ? hls.liveSyncPosition : end - liveSegments * seconds;
     return position === null || !Number.isFinite(position) || end - start < 1
       ? null : Math.min(end - .5, Math.max(start, position));
   });
@@ -178,6 +181,7 @@ function closePlayer() {
   hls = undefined;
   player.dataset.address = "";
   player.dataset.phase = "";
+  player.dataset.transport = "";
   player.replaceChildren();
 }
 
@@ -202,7 +206,7 @@ async function checkStatus() {
       return;
     }
     if (!response.ok) return;
-    const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics,
+    const {status: next, address: src, native_video: native, transport, captions: captionPath, analytics_token: analytics,
       occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback,
       appearance, branding: brand}: EventView = await response.json();
     if (requested !== location.href) return;
@@ -225,8 +229,13 @@ async function checkStatus() {
       closePlayer();
       if (!archives) stopChecking();
     } else if (src && native) {
-      if (!player.querySelector("video") || player.dataset.phase !== next || changedOccurrence) {
-        renderVideo(src, next, analytics || "");
+      const video = player.querySelector("video");
+      if (!video || player.dataset.phase !== next || changedOccurrence) {
+        renderVideo(src, next, analytics || "", transport);
+      } else if (player.dataset.transport !== transport) {
+        const playing = !video.paused;
+        renderVideo(src, next, analytics || "", transport, video);
+        if (playing) void video.play().catch(() => {});
       }
     } else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
       closePlayer();
@@ -273,6 +282,6 @@ const initial = player.querySelector("video");
 if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence was withdrawn" ||
     (!initial && eventStatus.textContent === "Replay"))) stopChecking();
 if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "",
-  player.dataset.analytics || "", initial);
+  player.dataset.analytics || "", player.dataset.transport || "hosted", initial);
 const initialFrame = player.querySelector("iframe");
 if (initialFrame) stopMeasuring = measurePeerEventPlayback(initialFrame, player.dataset.analytics || "");

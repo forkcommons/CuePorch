@@ -28,7 +28,8 @@
       {% include 'viewer_registration.html' %}
     {% endif %}
     {% include 'event_waiting.html' %}
-    <div id="eventPlayer" data-address="{{ address or '' }}" data-analytics="{{ analytics_token or '' }}">
+    <div id="eventPlayer" data-address="{{ address or '' }}" data-analytics="{{ analytics_token or '' }}"
+         data-transport="{{ transport }}">
       {% if address and native_video %}
         <video controls playsinline aria-label="Event video"></video>
       {% elif address %}
