@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Support requests · CuePorch</title>
+<body data-help-team="{{ 'yes' if team else 'no' }}">
+{% if team %}<nav aria-label="Team"><a href="/team">Team workspace</a></nav>
+{% else %}{% include "operator_navigation.html" %}{% endif %}
+<main>
+  <p><a href="{{ url_for('help_center', team=1 if team else none) }}">Help center</a></p>
+  <h1>Support requests</h1>
+  <p>{{ contact }}{% if hours %} · {{ hours }}{% endif %}</p>
+  {% if team %}<p id="helpSignIn" hidden><a href="/team">Sign in to your team</a></p>{% endif %}
+  <form id="helpAccess" method="post"{% if team %} hidden{% endif %}>
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open requests</button>
+  </form>
+  <p id="helpStatus" role="status"></p>
+  <section id="helpWorkspace" hidden>
+    <details id="newHelp">
+      <summary>New request</summary>
+      <form id="helpCreate" method="post">
+        <label>Subject <input name="subject" maxlength="120" required></label>
+        <label>Describe the issue <textarea name="message" maxlength="8000" rows="5" required></textarea></label>
+        <button>Send request</button>
+      </form>
+    </details>
+    <h2>Requests</h2>
+    <div id="helpView" hidden>
+      <label for="helpViewSelection">Request view</label>
+      <select id="helpViewSelection"><option value="mine">My requests</option><option value="inbox">Workspace inbox</option></select>
+    </div>
+    <p id="helpEmpty" hidden>No requests yet.</p>
+    <ul id="helpList"></ul>
+    <div id="helpPages" hidden>
+      <button type="button" id="helpPrevious">Previous page</button>
+      <span id="helpPageNumber"></span>
+      <button type="button" id="helpNext">Next page</button>
+    </div>
+    <article id="helpThread" aria-labelledby="helpSubject" hidden>
+      <h2 id="helpSubject"></h2>
+      <p id="helpState"></p>
+      <ol id="helpHistory" class="help-conversation"></ol>
+      <form id="helpReply" method="post">
+        <label>Reply <textarea name="message" maxlength="8000" rows="4" required></textarea></label>
+        <button>Send reply</button>
+      </form>
+      <button type="button" id="helpResolve" hidden>Resolve request</button>
+    </article>
+  </section>
+</main>
+<script type="module" src="/static/ui/workspace_help.js"></script>
+</body>
+</html>

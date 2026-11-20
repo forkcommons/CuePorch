@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Help · CuePorch</title>
+{% if team %}<nav aria-label="Team"><a href="/team">Team workspace</a></nav>
+{% else %}{% include "operator_navigation.html" %}{% endif %}
+<main>
+  <h1>Help center</h1>
+  <p><a href="{{ url_for('help_requests_page', team=1 if team else none) }}">Requests</a></p>
+  <form method="get" role="search">
+    {% if team %}<input type="hidden" name="team" value="1">{% endif %}
+    <label>Search help <input name="q" type="search" value="{{ query }}" maxlength="160"></label>
+    <button>Search</button>
+  </form>
+  {% if not query %}
+  <h2>Popular searches</h2>
+  <ul>
+    {% for phrase in popular %}
+    <li><a href="{{ url_for('help_center', q=phrase, team=1 if team else none) }}">{{ phrase }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <h2>{{ 'Search results' if query else 'Help topics' }}</h2>
+  {% if not results %}<p>No help topics match your search.</p>{% endif %}
+  <ul>
+    {% for title, summary, link in results %}
+    <li><a href="{{ link }}">{{ title }}</a> <p>{{ summary }}</p></li>
+    {% endfor %}
+  </ul>
+  <p>{{ contact }}{% if hours %} · {{ hours }}{% endif %}</p>
+</main>
+</html>

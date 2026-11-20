@@ -300,6 +300,8 @@ Select works and choose **Delete selected**, or open a folder and choose **Delet
 
 ### Reviews, complaints and appeals
 
+Open **Help** from the operator navigation or **Help center** from your team workspace. Search by task or open **Requests** to start a private support conversation, see replies and track its status. Workspace administrators and owners can choose **Workspace inbox** to reply and resolve requests. Replying to a resolved request reopens it. For reports about a specific video or rights appeals, use **Report an issue or appeal** on the video page.
+
 All nine approval switches start **off**. In the operator console, select **Load settings and review queue**. Enable **Require approval** for any of intake, caption, publication, replay, migration, grant, catalog, moderation and restoration. Each choice applies to this institution and this step. Reload to inspect waiting actions. Approve or reject the intended action. Turning a switch off releases eligible waiting work. A recorded rejection stands. Privacy, grant windows and source permissions still apply in automatic mode.
 
 For a work-specific problem, open **Support and appeals** with the work ID, describe the issue and save the returned case ID and private case key. Use them to add context, read the decision or submit an appeal. The operator monitors the inbox, records reasons and can suspend or restore the affected screenings. Set real support hours and contacts before inviting public reports.

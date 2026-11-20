@@ -594,6 +594,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         sharing_restrictions = check_sharing_restrictions(
             base, auth, admin, contributor_page, successor, second_work, owned[0]["id"], uid, parent, replacement,
         )
+        support = check_support_requests(base, auth, contributor_page, successor)
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
@@ -611,7 +612,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
                 private_feed_follows_publication_order_and_account_removal=True,
-                sharing_restrictions=sharing_restrictions), email("contributor")
+                sharing_restrictions=sharing_restrictions, support_requests=support), email("contributor")
 
 
 def check_sharing_restrictions(base, auth, admin, contributor, owner, own, pending, foreign, folder, sample):
@@ -706,3 +707,72 @@ def check_sharing_restrictions(base, auth, admin, contributor, owner, own, pendi
     return dict(owner_policy_ui_and_stale_write=True, scoped_contributor_link_and_embed_rules=True,
                 single_bulk_folder_and_upload_denials=True, third_party_routes_denied=True,
                 restricted_current_and_pending_sharing_withdrawn=True, direct_file_management_restricted=True)
+
+
+def check_support_requests(base, auth, contributor, owner):
+    endpoint = base + "/api/team/support/requests"
+    hidden_ticket = requests.post(endpoint, headers=TEAM | auth, timeout=10,
+                                  json={"subject": "Second account request", "message": "Private operator only."})
+    assert hidden_ticket.status_code == 201
+    hidden_path = endpoint + "/" + hidden_ticket.json()["id"]
+    assert contributor.request.get(hidden_path, headers=TEAM).status == 404
+    assert contributor.request.get(endpoint + "?view=inbox", headers=TEAM).status == 403
+    assert contributor.request.get(endpoint, headers=TEAM).json()["requests"] == []
+    assert contributor.request.post(endpoint, headers=TEAM | {"Origin": "https://foreign.example.test"},
+                                    data={"subject": "Incorrect origin", "message": "Denied."}).status == 403
+
+    contributor.goto(base + "/team")
+    contributor.get_by_role("link", name="Help center").click()
+    expect(contributor.get_by_role("heading", name="Popular searches")).to_be_visible()
+    contributor.get_by_role("link", name="captions", exact=True).click()
+    expect(contributor.get_by_role("link", name="Captions and subtitles")).to_be_visible()
+    contributor.get_by_role("searchbox", name="Search help").fill("no-such-topic")
+    contributor.get_by_role("button", name="Search", exact=True).click()
+    expect(contributor.get_by_text("No help topics match your search.")).to_be_visible()
+    contributor.get_by_role("link", name="Requests", exact=True).click()
+    expect(contributor.get_by_text("No requests yet.")).to_be_visible()
+    contributor.get_by_text("New request", exact=True).click()
+    topic = "Caption questions for tonight's screening"
+    message = "Is <em>this wording</em> stored as text?"
+    contributor.get_by_label("Subject", exact=True).fill(topic)
+    contributor.get_by_label("Describe the issue").fill(message)
+    contributor.get_by_role("button", name="Send request").click()
+    expect(contributor.locator("#helpStatus")).to_have_text("Request sent.")
+    expect(contributor.get_by_role("heading", name=topic)).to_be_visible()
+    expect(contributor.get_by_text(message, exact=True)).to_be_visible()
+    assert contributor.locator("#helpHistory em").count() == 0
+    path = contributor.url
+    uid = urlsplit(path).query.split("request=")[1]
+    ticket = endpoint + "/" + uid
+    cache = contributor.request.get(ticket, headers=TEAM).headers["cache-control"]
+    assert "no-store" in cache and "private" in cache
+    assert requests.get(ticket, timeout=10).status_code == 403
+    initial = contributor.request.get(ticket, headers=TEAM).json()
+    assert contributor.request.put(ticket, headers=TEAM,
+                                   data={"state": "resolved", "revision": initial["revision"]}).status == 403
+
+    owner.goto(base + "/help/requests?team=1")
+    assert owner.request.get(endpoint, headers=TEAM).json()["can_manage"]
+    expect(owner.locator("#helpWorkspace")).to_be_visible()
+    owner.get_by_role("combobox", name="Request view").select_option("inbox")
+    owner.get_by_role("button", name=topic, exact=True).click()
+    expect(owner.get_by_text(message, exact=True)).to_be_visible()
+    owner.get_by_label("Reply", exact=True).fill("Use the reviewed subtitles before the show.")
+    owner.get_by_role("button", name="Send reply").click()
+    expect(owner.locator("#helpStatus")).to_have_text("Reply sent.")
+    assert owner.request.put(ticket, headers=TEAM,
+                             data={"state": "resolved", "revision": initial["revision"]}).status == 409
+    owner.get_by_role("button", name="Resolve request").click()
+    expect(owner.locator("#helpStatus")).to_have_text("Request resolved.")
+
+    contributor.goto(path)
+    expect(contributor.locator("#helpState")).to_have_text("Resolved")
+    expect(contributor.get_by_text("Use the reviewed subtitles before the show.", exact=True)).to_be_visible()
+    expect(contributor.get_by_role("button", name="Reopen request")).to_have_count(0)
+    contributor.get_by_label("Reply", exact=True).fill("One more detail about the translated track.")
+    contributor.get_by_role("button", name="Send reply").click()
+    expect(contributor.locator("#helpStatus")).to_have_text("Reply sent.")
+    expect(contributor.locator("#helpState")).to_have_text("Open")
+    expect(contributor.get_by_text("You · Request reopened", exact=True)).to_be_visible()
+    return dict(searched_help=True, member_scope_and_private_cache=True, owner_reply_and_resolve=True,
+                stale_update_denied=True, durable_thread_and_reopen=True)

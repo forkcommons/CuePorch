@@ -75,6 +75,7 @@ import team_sharing_policy
 import team_workspaces
 import timeline_jobs
 import vimeo_privacy
+import workspace_help
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
@@ -143,6 +144,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + team_branding.SCHEMA
             + team_sharing_policy.SCHEMA
             + team_workspaces.SCHEMA
+            + workspace_help.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -235,6 +237,9 @@ def create_app(root, database, operator, institution, simulation=None):
 
     workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
     sharing_access, enforce_sharing = team_sharing_policy.register(app, tx, team_origin, team_member, operator_name)
+    workspace_help.register(app, tx, team_origin, team_member, operator_name,
+                            os.environ.get("CUEPORCH_SUPPORT_CONTACT", "Institutional support inbox"),
+                            os.environ.get("CUEPORCH_SUPPORT_HOURS", ""))
 
     def action(con, uid, step, payload):
         if step not in STEPS:
