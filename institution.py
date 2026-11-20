@@ -39,6 +39,7 @@ import library_actions
 import library_appearance
 import library_caption_jobs
 import library_details
+import library_discovery
 import library_embed
 import library_events
 import library_folder_privacy
@@ -122,6 +123,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
             + library_details.SCHEMA
+            + library_discovery.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -953,33 +955,6 @@ def create_app(root, database, operator, institution, simulation=None):
             apply_routes(con)
         return {"action": key, "status": state}
 
-    @app.get("/")
-    def catalog():
-        with tx() as con:
-            routes = con.execute(
-                """SELECT kind,slug,description FROM route
-                   WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)
-                   AND NOT EXISTS (SELECT 1 FROM library_peer_handoff h WHERE h.work=route.slug)
-                   ORDER BY description,slug"""
-            ).fetchall()
-            routes = [dict(route) for route in routes]
-            route_ids = {route["slug"] for route in routes}
-            explicit = {
-                row["work"]: json.loads(row["settings"])
-                for row in con.execute("SELECT work,settings FROM library_privacy")
-                if json.loads(row["settings"])["visibility"] == "public"
-                and row["work"] not in route_ids
-                and not library_privacy.blocked(con, row["work"])
-            }
-            if explicit:
-                routes.extend(
-                    dict(kind="work", slug=w["id"], description=library_actions.title_for(con, w))
-                    for w in read_library_works()
-                    if w["id"] in explicit and vimeo_privacy.permits(w, explicit[w["id"]])
-                )
-                routes.sort(key=lambda row: (row["description"] or "", row["slug"]))
-        return render_template("catalog.html", name=institution, rows=routes)
-
     @app.route("/watch/<kind>/<slug>", methods=["GET", "POST"])
     @app.route("/embed/<kind>/<slug>", methods=["GET", "POST"], endpoint="embed_watch")
     def watch(kind, slug):
@@ -1114,6 +1089,8 @@ def create_app(root, database, operator, institution, simulation=None):
     def read_library_works():
         return json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
 
+    library_discovery.register(app, tx, staff, read_library_works, library_actions.title_for, vimeo_privacy.permits,
+                               root, institution)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)

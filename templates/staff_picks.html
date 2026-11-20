@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Manage Staff Picks · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body>
+  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="{{ url_for('catalog', section='picks') }}">View Staff Picks</a></nav>
+  <main>
+    <h1>Manage Staff Picks</h1>
+    <form id="picksAccess">
+      <label>Operator credential <input type="password" id="key" required></label>
+      <button type="submit">Load Staff Picks</button>
+    </form>
+    <p id="picksStatus" role="status"></p>
+    <div id="picksEditor" class="picks-editor" hidden>
+      <section aria-labelledby="selectedPicks">
+        <h2 id="selectedPicks">Selected videos</h2>
+        <ol id="picksList"></ol>
+        <button id="savePicks" type="button" disabled>Save Staff Picks</button>
+      </section>
+      <section aria-labelledby="availablePicks">
+        <h2 id="availablePicks">Public videos</h2>
+        <label for="pickSearch">Find a public video</label>
+        <input id="pickSearch" type="search" maxlength="120">
+        <ul id="pickOptions"></ul>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/staff_picks.js') }}"></script>
+</body>
+</html>

@@ -16,6 +16,12 @@ Open the macOS arm64 package on an Apple Silicon Mac or install the amd64 Debian
 
 Enter your institution name, select **Save setup**, then open the operator console. To publish video, connect a PeerTube host using its address and publishing account, or use **Set up a local video host** with a running Docker-compatible engine. The local desktop console opens on this computer. The operations guide describes the separate deployment for a public institutional site.
 
+### Browse public videos and curate Staff Picks
+
+Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** links to the institution’s published channel pages. Each result opens its existing watch address.
+
+In the operator Library, open **Staff Picks**. Add public videos, use **Move up** and **Move down** to arrange them, then select **Save Staff Picks**. The first picks appear in Explore, and the full list has its own page. Making a pick private or deleting it hides it from Watch and closes its public cover link. The selection stays in the editor so it can be removed or shown again if the video becomes public.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.
