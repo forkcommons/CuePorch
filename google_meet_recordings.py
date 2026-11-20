@@ -1,6 +1,7 @@
 """Google Meet's conference and generated recording resources."""
 
 from datetime import datetime, timezone
+import json
 import re
 
 from flask import abort
@@ -12,6 +13,7 @@ SCOPES = "https://www.googleapis.com/auth/meetings.space.readonly https://www.go
 CONFERENCE = re.compile(r"conferenceRecords/([A-Za-z0-9_-]{1,256})")
 RECORDING = re.compile(r"conferenceRecords/[A-Za-z0-9_-]{1,256}/recordings/[A-Za-z0-9_-]{1,256}")
 DRIVE_ID = re.compile(r"[A-Za-z0-9_-]{1,256}")
+POLL_SECONDS = 120
 
 
 def get(connection, revision, resource, params=None):
@@ -20,8 +22,8 @@ def get(connection, revision, resource, params=None):
         return response_object(response)
 
 
-def page(connection, revision, resource, key, cursor=None):
-    params = {"pageSize": 30}
+def page(connection, revision, resource, key, cursor=None, **options):
+    params = {"pageSize": 30} | options
     if cursor:
         params["pageToken"] = cursor
     result = get(connection, revision, resource, params)
@@ -49,6 +51,44 @@ def drive_file(row):
     if row.get("state") != "FILE_GENERATED" or not isinstance(item, str) or not DRIVE_ID.fullmatch(item):
         return None
     return item
+
+
+def scan_new_recordings(connection, watch):
+    revision = watch["connection"]
+    state = json.loads(watch["cursor"]) if watch["cursor"] else {
+        "since": max(watch["started"], (watch["checked"] or watch["started"]) - 2 * 86400),
+        "parents": [],
+    }
+    if not state["parents"]:
+        since = datetime.fromtimestamp(state["since"], timezone.utc).isoformat().replace("+00:00", "Z")
+        conferences, following = page(connection, revision, "conferenceRecords", "conferenceRecords",
+                                      state.get("conferences_page"), filter=f'end_time>="{since}"', pageSize=8)
+        state["conferences_page"] = following
+        for row in conferences:
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not CONFERENCE.fullmatch(row["name"]):
+                continue
+            ended = row.get("endTime")
+            try:
+                end = datetime.fromisoformat(ended) if isinstance(ended, str) else None
+                if end and end.tzinfo and end.timestamp() >= state["since"]:
+                    state["parents"].append(row["name"])
+            except (ValueError, OverflowError, OSError):
+                continue
+    entries = []
+    if state["parents"]:
+        parent = state["parents"][0]
+        rows, following = page(connection, revision, parent + "/recordings", "recordings",
+                               state.get("recordings_page"))
+        for row in rows:
+            name = row.get("name") if isinstance(row, dict) else None
+            if isinstance(name, str) and RECORDING.fullmatch(name) and name.startswith(parent + "/"):
+                if item := drive_file(row):
+                    entries.append(dict(id=name, rev=item, name=label_at(row, "Meeting recording")))
+        state["recordings_page"] = following
+        if not following:
+            state["parents"].pop(0)
+    more = bool(state["parents"] or state.get("conferences_page"))
+    return dict(entries=entries, cursor=json.dumps(state) if more else "", has_more=more)
 
 
 def browse(connection, revision, conference, cursor, search):

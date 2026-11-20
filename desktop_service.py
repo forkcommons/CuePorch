@@ -212,6 +212,7 @@ def main():
                 institution.extensions["stop_file_links"]()
                 institution.extensions["stop_event_capture"]()
                 institution.extensions["stop_dropbox_watch"]()
+                institution.extensions["stop_google_meet_watch"]()
             institution = activate()
             return jsonify(ok=True)
 
@@ -254,6 +255,7 @@ def main():
             institution.extensions["stop_file_links"]()
             institution.extensions["stop_event_capture"]()
             institution.extensions["stop_dropbox_watch"]()
+            institution.extensions["stop_google_meet_watch"]()
         handle.unlink(missing_ok=True)
         lock.release()
 

@@ -1,6 +1,7 @@
 """Use the Meet and Drive contracts to import a selected conference recording."""
 
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import secrets
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -44,7 +46,7 @@ class MeetImport(unittest.TestCase):
                 cloud, AUTH=f"http://localhost:{remote.server_port}/authorize", TOKEN_URL=provider_url + "/token",
                 REVOKE=provider_url + "/revoke", FILES=provider_url + "/drive/v3/files",
             ))
-            cleanup.enter_context(patch.object(meet, "API", provider_url + "/v2/"))
+            cleanup.enter_context(patch.multiple(meet, API=provider_url + "/v2/", POLL_SECONDS=.25))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_GOOGLE_MEET_CLIENT_ID": "fixture-meet", "CUEPORCH_GOOGLE_MEET_CLIENT_SECRET": "fixture-secret",
                 "CUEPORCH_DROPBOX_CLIENT_ID": "", "CUEPORCH_DROPBOX_CLIENT_SECRET": "", "CUEPORCH_PUBLIC_URL": "",
@@ -59,7 +61,7 @@ class MeetImport(unittest.TestCase):
             base = f"http://127.0.0.1:{service.server_port}"
             callback = base + "/integration/oauth/google-meet/callback"
             dates = {"first": "2026-11-17", "second": "2026-11-20"}
-            observed = dict(downloads=[], revoked=False)
+            observed = dict(downloads=[], revoked=False, auto_finished=None, auto_ready=False, auto_listed=False)
 
             @provider.get("/authorize")
             def consent():
@@ -89,6 +91,12 @@ class MeetImport(unittest.TestCase):
                 rows = [dict(name=f"conferenceRecords/{occurrence}", space="spaces/weekly",
                              startTime=day + "T12:00:00Z", endTime=day + "T12:30:00Z")
                         for occurrence, day in dates.items()]
+                if request.args.get("filter"):
+                    assert request.args["filter"].startswith('end_time>="')
+                    if observed["auto_finished"]:
+                        rows.append(dict(name="conferenceRecords/automatic", space="spaces/weekly",
+                                         startTime=observed["auto_finished"], endTime=observed["auto_finished"]))
+                    return dict(conferenceRecords=rows)
                 if request.args.get("pageToken") == "meet-more":
                     return dict(conferenceRecords=rows[:1])
                 return dict(conferenceRecords=rows[1:], nextPageToken="meet-more")
@@ -100,6 +108,11 @@ class MeetImport(unittest.TestCase):
 
             @provider.get("/v2/conferenceRecords/<occurrence>/recordings/ready")
             def recording(occurrence):
+                if occurrence == "automatic":
+                    observed["auto_listed"] = True
+                    return dict(name="conferenceRecords/automatic/recordings/ready",
+                                state="FILE_GENERATED" if observed["auto_ready"] else "ENDED",
+                                startTime=observed["auto_finished"], driveDestination={"file": "meet_automatic"})
                 return dict(name=f"conferenceRecords/{occurrence}/recordings/ready", state="FILE_GENERATED",
                             startTime=dates[occurrence] + "T12:02:00Z",
                             driveDestination={"file": "meet_" + occurrence})
@@ -116,6 +129,21 @@ class MeetImport(unittest.TestCase):
 
             cleanup.enter_context(service_worker(remote))
             cleanup.enter_context(service_worker(service))
+            api = cleanup.enter_context(requests.Session())
+            api.headers.update({"Authorization": "Bearer " + operator})
+            watch_api = base + "/api/integrations/google-meet/watch"
+
+            def wait_for(check):
+                deadline = monotonic() + 18
+                while monotonic() < deadline:
+                    result = api.get(watch_api, timeout=5)
+                    result.raise_for_status()
+                    receipt = result.json()
+                    if check(receipt):
+                        return receipt
+                    sleep(.1)
+                self.fail("The Meet archive did not reach the expected state.")
+
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 page = browser.new_page()
                 page.goto(base + "/operator/integrations")
@@ -139,14 +167,33 @@ class MeetImport(unittest.TestCase):
                 expect(video).to_be_visible()
                 self.assertEqual(320, video.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
                 page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Browse recordings").click()
+                page.get_by_role("button", name="Enable automatic archive").click()
+                expect(page.locator("#dropboxWatchStatus")).to_contain_text("Archiving new Google Meet recordings.")
+                baseline = wait_for(lambda receipt: receipt.get("checked"))
+                self.assertEqual([], baseline["jobs"])
+                observed["auto_finished"] = datetime.now(timezone.utc).isoformat()
+                wait_for(lambda receipt: observed["auto_listed"])
+                self.assertEqual([], api.get(watch_api, timeout=5).json()["jobs"])
+                self.assertEqual(["meet_second"], observed["downloads"])
+                observed["auto_ready"] = True
+                automated = wait_for(lambda receipt: any(job["state"] == "imported" for job in receipt["jobs"]))
+                self.assertEqual(["meet_second", "meet_automatic"], observed["downloads"])
+                self.assertEqual(1, len(automated["jobs"]))
+                page.get_by_role("button", name="Refresh watch status").click()
+                page.get_by_role("link", name="Meeting recording", exact=False).click()
+                expect(video).to_be_visible()
+                self.assertEqual(320, video.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
+                page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Google Meet").click()
                 expect(page.locator("#integrationStatus")).to_have_text("Google Meet disconnected.")
                 self.assertTrue(observed["revoked"])
+                self.assertEqual({"enabled": False, "jobs": []}, api.get(watch_api, timeout=5).json())
                 result = requests.get(base + "/api/integrations/google-meet/files", timeout=5,
                                       headers={"Authorization": "Bearer " + operator})
                 self.assertEqual(409, result.status_code)
-        print("Meet OAuth scope, repeated conference pagination, generated artifacts only, selected Drive download,"
-              " private 320px playback and revoked listing passed.")
+        print("Meet OAuth scope, repeated conference pagination, selected download, generated-only automatic"
+              " archive, private 320px playback and revoke passed.")
 
 
 if __name__ == "__main__":

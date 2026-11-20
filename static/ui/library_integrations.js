@@ -24,6 +24,8 @@ const importSelected = document.querySelector("#importCloudSelection");
 const batchReceipts = document.querySelector("#cloudBatchReceipts");
 const receipt = document.querySelector("#driveReceipt");
 const watch = document.querySelector("#dropboxWatch");
+const watchHeading = document.querySelector("#dropboxWatchHeading");
+const watchDescription = document.querySelector("#watchDescription");
 const watchState = document.querySelector("#dropboxWatchStatus");
 const watchJobs = document.querySelector("#dropboxWatchJobs");
 const enableWatch = document.querySelector("#enableDropboxWatch");
@@ -180,7 +182,13 @@ async function openPicker(item) {
     batchReceipts.replaceChildren();
     pickerHeading.textContent = `Import from ${active.name}`;
     remoteFolder.hidden = !active.browse_folders;
-    watch.hidden = active.id !== "dropbox";
+    const meeting = active.id === "google-meet";
+    watch.hidden = !meeting && active.id !== "dropbox";
+    watchHeading.textContent = meeting ? "Automatic Google Meet archive" : "Dropbox auto-import";
+    watchDescription.textContent = meeting
+        ? "Copy generated recordings from meetings that end after you enable archiving."
+        : "Copy new videos from this Dropbox folder into the selected Library destination.";
+    currentWatch = { enabled: false, jobs: [] };
     picker.hidden = false;
     receipt.hidden = true;
     query = "";
@@ -241,20 +249,24 @@ async function loadPage(append) {
 }
 function renderWatch(data) {
     currentWatch = data;
+    const meeting = active.id === "google-meet";
     disableWatch.hidden = !data.enabled;
     refreshWatch.hidden = !data.enabled;
-    const selected = source.at(-1)?.id || "";
+    const selected = meeting ? "" : source.at(-1)?.id || "";
     enableWatch.hidden = data.enabled && data.source === selected && (data.destination || "") === destination.value;
-    enableWatch.textContent = data.enabled ? "Change watched folder or destination" : "Watch this folder";
+    enableWatch.textContent = meeting
+        ? (data.enabled ? "Change archive destination" : "Enable automatic archive")
+        : (data.enabled ? "Change watched folder or destination" : "Watch this folder");
+    disableWatch.textContent = meeting ? "Stop automatic archive" : "Stop watching";
     const folder = data.source
         ? recentFolders.get(data.source) || "Previously selected Dropbox folder"
         : "Dropbox root";
     const target = Array.from(destination.options).find(option => option.value === data.destination)?.text
         || (data.destination ? "Previously selected Library folder" : "Library root");
     const checked = data.checked ? ` Last checked ${new Date(data.checked * 1000).toLocaleString()}.` : "";
-    watchState.textContent = data.enabled
-        ? `Watching ${folder}. Destination: ${target}.${checked}${data.error ? " " + data.error : ""}`
-        : "Folder watching is off.";
+    const mode = meeting ? "Archiving new Google Meet recordings." : `Watching ${folder}.`;
+    watchState.textContent = data.enabled ? `${mode} Destination: ${target}.${checked}${data.error ? " " + data.error : ""}`
+        : meeting ? "Automatic archive is off." : "Folder watching is off.";
     watchJobs.replaceChildren(...data.jobs.map(job => {
         const line = document.createElement("li");
         line.append(job.work ? videoLink(job.work, job.name) : job.name, ` — ${job.state}`);

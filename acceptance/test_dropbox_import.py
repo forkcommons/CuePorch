@@ -1,12 +1,13 @@
 """Rehearse a Dropbox folder listing and verified media ingest in a real browser."""
 
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import secrets
+import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -26,9 +27,30 @@ from test_drive_import import QuietHandler, service_worker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
 import library_integrations as cloud
+from intake_watch import SCHEMA, migrate
 
 
 class DropboxImport(unittest.TestCase):
+    def test_preserve_prior_watch_cursor_and_queue(self):
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.executescript(SCHEMA + """
+                CREATE TABLE workspace_dropbox_watch(
+                    id,revision,connection,source,destination,actor,cursor,checked,error,started,recovering);
+                INSERT INTO workspace_dropbox_watch
+                    VALUES(1,'watch','connection','folder',NULL,'operator','cursor',100,NULL,50,1);
+                CREATE TABLE workspace_dropbox_queue(id,watch,file,version,entry,state,work,attempts,next_attempt,error);
+                INSERT INTO workspace_dropbox_queue
+                    VALUES(1,'watch','file','rev','{}','waiting',NULL,0,0,NULL);
+            """)
+            migrate(database)
+            migrate(database)
+            self.assertEqual([("dropbox", "cursor", 50, 1)], database.execute(
+                "SELECT provider,cursor,started,recovering FROM workspace_intake_watch",
+            ).fetchall())
+            self.assertEqual([("watch", "file", "waiting")], database.execute(
+                "SELECT watch,file,state FROM workspace_intake_queue",
+            ).fetchall())
+
     def test_content_hash_across_blocks(self):
         first = b"1" * 4_194_304
         second = b"two"
@@ -73,7 +95,7 @@ class DropboxImport(unittest.TestCase):
                 "CUEPORCH_GOOGLE_DRIVE_CLIENT_SECRET": "",
                 "CUEPORCH_PUBLIC_URL": "",
             }))
-            cleanup.enter_context(patch("dropbox_watch.POLL_SECONDS", .25))
+            cleanup.enter_context(patch("intake_watch.POLL_SECONDS", .25))
             operator = secrets.token_urlsafe(32)
             with patch("institution.library_worker.start", return_value=lambda: None):
                 app = create_app(root, root / "workspace.sqlite", operator, "station")

@@ -133,7 +133,7 @@ To copy several videos from the same provider, select them and choose **Import s
 
 To import new Dropbox videos automatically, open the folder in the Dropbox picker, select a Library destination and choose **Watch this folder**. CuePorch checks for new revisions in that folder while the service is running. Videos already present when you start the watch and videos inside its subfolders can be imported manually. Choose **Refresh watch status** to see copies and errors. A failed copy has a **Retry** button. **Stop watching** clears the watch and keeps completed Library copies.
 
-To copy a Google Meet recording, connect Google Meet and choose **Browse recordings**. Open the meeting by date and time, select a Library destination, and choose a recording. A recording appears after Google has generated its MP4 file and grants you access. Each occurrence of a recurring meeting has its own recording list. This version supports operator selection of recordings.
+To copy a Google Meet recording, connect Google Meet and choose **Browse recordings**. Open the meeting by date and time, select a Library destination, and choose a recording. A recording appears after Google has generated its MP4 file and grants you access. Each occurrence of a recurring meeting has its own recording list. To copy recordings automatically, choose a destination and **Enable automatic archive**. CuePorch checks meetings that end after you enable archiving. **Refresh watch status** shows completed imports and errors. Stopping or disconnecting the archive keeps previously imported Library files.
 
 ### Work actions
 

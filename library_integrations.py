@@ -12,7 +12,7 @@ from flask import abort, render_template, request
 from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
-from dropbox_watch import CursorReset, Watch
+from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
@@ -162,6 +162,14 @@ def dropbox_video(row):
             and row.get("is_downloadable", True) is True)
 
 
+def dropbox_queue_entry(row, watch):
+    if not dropbox_video(row) or not isinstance(row.get("rev"), str):
+        return None
+    if watch["recovering"] and not changed_since(row, watch["started"]):
+        return None
+    return {key: row.get(key) for key in (".tag", "id", "name", "rev", "size", "content_hash")}
+
+
 def import_dropbox(import_video, connection, revision, actor, row, folder, authorize):
     if not dropbox_video(row):
         abort(415, "Choose a supported video that its owner allows you to download.")
@@ -216,15 +224,24 @@ def register(app, tx, staff, operator, origin, import_video, database):
                              google_meet_recordings.SCOPES, dict(access_type="offline", prompt="consent")), tx, operator)
     connections = {item.config.key: item for item in (drive, dropbox, box, meet)}
     watch = Watch(
-        app, tx, database, dropbox, lambda revision, source, cursor: dropbox_entries(
-            dropbox, revision, source, cursor, watch=True,
+        app, tx, database, dropbox, lambda state: dropbox_entries(
+            dropbox, state["connection"], state["source"], state["cursor"], watch=True,
         ),
-        dropbox_video,
+        dropbox_queue_entry,
         lambda revision, actor, row, folder, authorize: import_dropbox(
             import_video, dropbox, revision, actor, row, folder, authorize,
         ),
     )
     app.extensions["stop_dropbox_watch"] = watch.stop
+    meet_watch = Watch(
+        app, tx, database, meet, lambda state: google_meet_recordings.scan_new_recordings(meet, state),
+        lambda entry, state: entry,
+        lambda revision, actor, row, folder, authorize: import_google_video(
+            import_video, meet, revision, actor, row["rev"], folder, authorize,
+        ), interval=google_meet_recordings.POLL_SECONDS,
+    )
+    app.extensions["stop_google_meet_watch"] = meet_watch.stop
+    watches = {dropbox.config.key: watch, meet.config.key: meet_watch}
 
     def site():
         secure = secure_site(origin)
@@ -286,8 +303,9 @@ def register(app, tx, staff, operator, origin, import_video, database):
     def disconnect(provider):
         mutate()
         connection = configured_provider(provider)
+        active_watch = watches.get(provider)
         return private(dict(connected=False,
-                            provider_revoked=connection.disconnect(watch.clear if connection is dropbox else None)))
+                            provider_revoked=connection.disconnect(active_watch.clear if active_watch else None)))
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():
@@ -352,6 +370,18 @@ def register(app, tx, staff, operator, origin, import_video, database):
                                               lambda con: meet.authorize(con, revision))
         return private(receipt, status)
 
+    @app.post("/api/integrations/google-meet/watch")
+    def configure_meet_archive():
+        actor, body, _, _ = mutate()
+        if type(body.get("enabled")) is not bool:
+            abort(400, "Choose whether to archive new Google Meet recordings automatically.")
+        if body["enabled"]:
+            revision = meet.revision()
+            meet_watch.enable(revision, "", destination_folder(body.get("destination")), actor, "")
+        else:
+            meet_watch.disable()
+        return private(meet_watch.receipt())
+
     @app.get("/api/integrations/dropbox/files")
     def dropbox_files():
         read_api()
@@ -388,10 +418,12 @@ def register(app, tx, staff, operator, origin, import_video, database):
                                          lambda con: dropbox.authorize(con, revision))
         return private(receipt, status)
 
-    @app.get("/api/integrations/dropbox/watch")
-    def dropbox_watch_status():
+    @app.get("/api/integrations/<provider>/watch")
+    def import_watch_status(provider):
         read_api()
-        return private(watch.receipt())
+        if provider not in watches:
+            abort(404)
+        return private(watches[provider].receipt())
 
     @app.post("/api/integrations/dropbox/watch")
     def configure_dropbox_watch():
@@ -414,11 +446,13 @@ def register(app, tx, staff, operator, origin, import_video, database):
         watch.enable(revision, source, destination, actor, cursor)
         return private(watch.receipt())
 
-    @app.post("/api/integrations/dropbox/watch/<int:job>/retry")
-    def retry_dropbox_watch_job(job):
+    @app.post("/api/integrations/<provider>/watch/<int:job>/retry")
+    def retry_watch_job(provider, job):
         mutate()
-        watch.retry(job)
-        return private(watch.receipt())
+        if provider not in watches:
+            abort(404)
+        watches[provider].retry(job)
+        return private(watches[provider].receipt())
 
     @app.get("/api/integrations/box/files")
     def box_files():

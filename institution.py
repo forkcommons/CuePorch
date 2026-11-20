@@ -80,7 +80,7 @@ import library_timeline
 import library_trash
 import library_upload
 import library_integrations
-import dropbox_watch
+import intake_watch
 import library_worker
 import media_bandwidth
 import registration_return
@@ -191,7 +191,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_activity.SCHEMA
             + workspace_updates.SCHEMA
             + workspace_oauth.SCHEMA
-            + dropbox_watch.SCHEMA
+            + intake_watch.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -219,7 +219,7 @@ def create_app(root, database, operator, institution, simulation=None):
         library_ai_drafts.initialize(db)
         workspace_updates.initialize(db)
         workspace_oauth.migrate_drive_connection(db)
-        dropbox_watch.migrate(db)
+        intake_watch.migrate(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536
