@@ -1,6 +1,6 @@
 # Operating CuePorch
 
-**CuePorch by ForkCommons · Version 0.2.0**
+**CuePorch by ForkCommons · Development version 0.3.0**
 
 For public institutional hosting, the commands below use the source deployment. The desktop installer runs a loopback operator service.
 
@@ -47,7 +47,7 @@ Check failed or waiting jobs in the operator library and approval queue. Retryin
 
 Use the versions in requirements.txt for the product. Browser cases additionally need Playwright and a headless Chromium browser. The Windows rehearsal used Edge. The station integration tests use CivicCast's Python package and, for captions, its built portal-public bundle at revision 0b8ab5accac4fc6ebbc6886d5d3d9006bdc0c65f. Run the exact commands in the acceptance record. Run separate copies for different institutions and migrations. A customer Vimeo account is optional.
 
-For a grouped development rehearsal, build the browser UI with `npm ci --prefix ui` and `npm run build --prefix ui`, then run `python acceptance/installed_package.py desktop_service.py . cutover.json --source --only fresh --cutover-only`. Install the packages in `requirements-acceptance.txt` and have FFmpeg on `PATH`. This starts the local Python service and uses a headless browser to check a simulated Vimeo move, team permissions, actual video playback, and embed cutover. Run the native launcher for package acceptance.
+For a grouped development rehearsal, build the browser UI with `npm ci --prefix ui` and `npm run build --prefix ui`, then run `python acceptance/installed_package.py desktop_service.py . cutover.json --source --only fresh --cutover-only`. Install the packages in `requirements-acceptance.txt` and have FFmpeg on `PATH`. This starts the local Python service and checks Vimeo migration, workspace permissions, adaptive and progressive playback, embed cutover and recovery. The manually triggered Native packages workflow runs these checks on fresh native installations for Windows, macOS and Linux.
 
 For a portable exit, pause institutional writes and run `python export_institution.py COLLECTION DATABASE NEW_DIRECTORY`. Store this export privately. It includes media, hashes, video details and embed placements, screening agreements, case history, routes, saved slide presentations, and the team roster, grants, groups and membership activity. Team credential hashes, active sessions and invitation tokens are excluded. Use the full offline snapshot to preserve credentials and resume service.
 

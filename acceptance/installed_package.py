@@ -18,6 +18,7 @@ from installed_privacy import check_folder_privacy, check_privacy, check_privacy
 from installed_migrated_privacy import TRANSFER_PASSWORD, check_migrated_privacy
 from installed_video_details import check_imported_video_details, check_video_details, check_workspace
 from installed_embed_builder import check_embed_builder
+from installed_file_links import check_file_links
 from installed_appearance import check_appearance
 from installed_languages import check_languages
 from installed_audio_tracks import check_audio_tracks
@@ -183,7 +184,7 @@ def prepare_recovery(base, auth, email):
     works = {work["title"]: work["id"] for work in inventory if work["quality"] != "owner file needed"}
     public = owner("PUT", f"/api/library/work/{works['Station meeting']}/source-privacy", {})
     restricted = owner("GET", f"/api/library/work/{works['Migrated password']}")
-    return group["id"], public["paths"]["watch"], restricted["embed"], {work["id"] for work in inventory}
+    return group["id"], public["paths"]["watch"], restricted["embed"]
 
 
 def rehearse_workspace_switch(page, browser, base, home, env, auth, email, private_work, group):
@@ -208,7 +209,7 @@ def rehearse_workspace_switch(page, browser, base, home, env, auth, email, priva
 
 
 def rehearse_account_restore(browser, base, home, env, auth, email, private_work, recovery, museum, venue):
-    group, public_link, restricted_embed, work_ids = recovery
+    group, public_link, restricted_embed, work_ids, rendition_link = recovery
     snapshot = home.with_name(home.name + "-recovered")
     portable = home.with_name(home.name + "-portable")
     export = Path(__file__).resolve().parents[1] / "export_institution.py"
@@ -220,6 +221,7 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
     assert any(edge["team_group"] == group and edge["member"] == editor["id"] for edge in rights["team_group_member"])
     assert any(edge["team_group"] == group and edge["permission"] == "edit" for edge in rights["team_group_folder"])
     assert any(row["work"] == private_work for row in rights["library_video_details"])
+    assert any(row["work"] == public_link.rsplit("/", 1)[1] for row in rights["video_file_link"])
     hashes = json.loads((portable / "SHA256.json").read_text(encoding="utf8"))
     for file, digest in hashes.items():
         with (portable / file).open("rb") as media:
@@ -233,6 +235,8 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
         response = requests.get(base + "/api/library", headers=auth, timeout=10)
         response.raise_for_status()
         assert {work["id"] for work in response.json()} == work_ids
+        rendition = requests.get(base + rendition_link, headers={"Range": "bytes=0-63"}, timeout=10)
+        assert rendition.status_code == 206 and len(rendition.content) == 64
         with browser.new_context() as guest:
             restored = guest.new_page()
             assert restored.goto(base + public_link).ok
@@ -257,7 +261,8 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
         shut_down(proc, base, desktop, snapshot)
         return dict(offline_copy_recovered=True, portable_hash_files=len(hashes), retained_inventory=len(work_ids),
                     protected_embed_width=width, public_and_group_video_width=320,
-                    source_rights_and_edit_group_retained=True, portable_team_secrets_excluded=True)
+                    source_rights_and_edit_group_retained=True, portable_team_secrets_excluded=True,
+                    migrated_direct_link_recovered=True)
     finally:
         museum.embed = previous
         stop_candidate(proc)
@@ -514,6 +519,12 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             results[-1]["workspaces"] = rehearse_workspace_switch(
                                 page, browser, base, home, candidate_env, auth, contributor_email, copy["work"], recovery[0],
                             )
+                            files = check_file_links(page, browser, base, auth, venue, root, recovery[1], copy["work"])
+                            rendition_link = files.pop("migrated_video_link")
+                            results[-1]["file_links"] = files
+                            inventory = requests.get(base + "/api/library", headers=auth, timeout=10)
+                            inventory.raise_for_status()
+                            recovery += ({work["id"] for work in inventory.json()}, rendition_link)
                         shut_down(proc, base, desktop, home)
                         if args.cutover_only:
                             results[-1]["recovery"] = rehearse_account_restore(

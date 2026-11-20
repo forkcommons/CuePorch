@@ -1,5 +1,5 @@
 # CuePorch by ForkCommons
-Version 0.2.0 · Windows, macOS and Linux
+Development version 0.3.0 · Windows, macOS and Linux
 
 CuePorch preserves and publishes video for public media stations and arts institutions. TypeScript drives the operator, creator and screening interfaces. Python owns the institutional service, Vimeo importer, grants and publication queue. The Rust desktop launcher starts the bundled service and opens your browser. PeerTube provides public hosting. CivicCast is optional.
 

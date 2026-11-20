@@ -19,6 +19,7 @@ import library_ratings
 import library_registration
 import library_analytics
 import library_editing
+import library_file_links
 import library_timeline
 import library_thumbnail
 import library_versions
@@ -90,6 +91,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_appearance.register(app, tx, staff, get_work, read_works, title_for)
     library_details.register(app, tx, authorize_editor, root, get_work, title_for, save_title)
+    start_file_links = library_file_links.register(app, tx, staff, root, get_work, permits)
     library_interactivity.register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits)
     library_ratings.register(app, tx, staff, get_work)
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)
@@ -288,7 +290,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         response.cache_control.private = True
         return media_bandwidth.measure(response, tx, work["id"]) if asset_type == "video" else response
 
-    return start_editor
+    return start_editor, start_file_links
 
 
 def sync_edits(tx, receipts, origin, root, connect):

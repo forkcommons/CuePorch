@@ -20,7 +20,7 @@ def export(collection, database, target):
         root = Path(tmp) / "export"
         root.mkdir(mode=0o700)
         shutil.copytree(
-            collection, root / "collection", ignore=shutil.ignore_patterns("*.lock")
+            collection, root / "collection", ignore=shutil.ignore_patterns("*.lock", ".render-*")
         )
         verify(root / "collection")
         with closing(
@@ -64,6 +64,7 @@ def export(collection, database, target):
                 "library_deleted_item",
                 "video_presentation",
                 "video_rating_widget",
+                "video_file_link",
                 "team_work_grant",
                 "team_folder_grant",
                 "team_group",
@@ -82,6 +83,8 @@ def export(collection, database, target):
                 row["pages"] = json.loads(row["pages"])
             for row in record.get("library_video_details", []):
                 row["metadata"] = json.loads(row["metadata"])
+            for row in record.get("video_file_link", []):
+                row["renditions"] = json.loads(row["renditions"]) if row["renditions"] else None
             if "video_rating_widget" in record:
                 record["video_rating_summary"] = [dict(row) for row in db.execute(
                     """SELECT work,version,mode,score,count(*) AS responses FROM video_rating

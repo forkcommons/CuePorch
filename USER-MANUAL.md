@@ -1,6 +1,6 @@
 # CuePorch user manual
 
-**Version 0.2.0 · ForkCommons**
+**Development version 0.3.0 · ForkCommons**
 
 [Project home](README.md) · [README](README.md) · [Operations](OPERATIONS.md) · [Acceptance record](evidence/ACCEPTANCE.md)
 
@@ -10,7 +10,7 @@ If your institution already runs CuePorch, ask its operator for the site address
 
 ### Install and open CuePorch
 
-On Windows, double-click **CuePorch-0.2.0-Windows-x64-Setup.exe**. Windows should identify Scott Converse as the verified publisher. Keep the suggested library folder for a new institution. To upgrade, close 0.1.0, back up its library and select the existing folder containing both operator.json and institution.sqlite. Open **ForkCommons → CuePorch** from Start. The installer bundles the runtime and FFmpeg.
+For a signed Windows release, double-click **CuePorch-0.3.0-Windows-x64-Setup.exe**. Windows should identify Scott Converse as the verified publisher. Keep the suggested library folder for a new institution. To restore a library, close CuePorch, back up the data and select the restored folder containing both operator.json and institution.sqlite. Open **ForkCommons → CuePorch** from Start. The installer bundles the runtime and FFmpeg.
 
 Open the macOS arm64 package on an Apple Silicon Mac or install the amd64 Debian package on Ubuntu 24.04. The Mac app has an ad-hoc signature and the installer has no Apple notarization. On these platforms use the launcher's `--data PATH` option to open an existing library outside its default location.
 
@@ -253,6 +253,12 @@ In production controls, expand **Audience chat** and enable it for the selected 
 Expand **Q&A and polls** in production controls. After you enable Q&A, audience questions appear automatically. Enable **Approve questions before publishing** only when you want to review them. Disable it to publish pending questions. Viewers can upvote and sort questions. Operators can pin a question, reply, archive and restore it, or download the question log.
 
 Add two to four options to a poll and optionally choose one correct answer for a quiz. Save a draft and open it when the audience is ready. Only one poll accepts votes at a time. **Publish results** closes voting and shows the totals, percentages and the correct answer if one is set. Archive the poll to remove it from the audience panel. **Download polls** includes the aggregate results for the occurrence.
+
+### Direct video file links
+
+In a video's **File actions**, open **Video file links** and select **Prepare file links**. CuePorch offers HLS and DASH streaming links and progressive MP4 links at resolutions up to 1080p. The highest available resolution depends on the stored video. When downloads are enabled, the separate **Download MP4** links prompt the browser to save the file.
+
+Direct links are available for locally retained public videos that allow embedding anywhere. Anyone with a link can access its media bytes. Share the watch page or CuePorch embed to enforce a password, registration or domain restriction. Direct links stay valid for the linked cut and sharing settings until you choose **Revoke file links** or the cut or access changes.
 
 ### Delete and restore
 

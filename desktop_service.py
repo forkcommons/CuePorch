@@ -204,6 +204,7 @@ def main():
             save(config, settings)
             if institution:
                 institution.extensions["stop_editor"]()
+                institution.extensions["stop_file_links"]()
                 institution.extensions["stop_event_capture"]()
             institution = activate()
             return jsonify(ok=True)
@@ -242,6 +243,7 @@ def main():
         wasyncore.close_all(server._map)
         if institution:
             institution.extensions["stop_editor"]()
+            institution.extensions["stop_file_links"]()
             institution.extensions["stop_event_capture"]()
         handle.unlink(missing_ok=True)
         lock.release()

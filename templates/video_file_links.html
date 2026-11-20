@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Video file links · CuePorch</title>
+<main data-work="{{ work }}">
+  <nav aria-label="Video"><a href="/operator/videos/{{ work }}">Video details</a> · <a href="/operator/library">Library</a></nav>
+  <h1>Video file links</h1>
+  <p>Anyone with a direct link can play or save a copy of the video. Use the watch page or iframe for password or registration access.</p>
+  <form id="fileLinkAccess">
+    <label>Operator credential <input type="password" autocomplete="current-password" required></label>
+    <button>Open video file links</button>
+  </form>
+  <p id="fileLinkStatus" role="status"></p>
+  <section id="fileLinkPanel" hidden>
+    <button type="button" id="prepareFileLinks">Prepare file links</button>
+    <button type="button" id="revokeFileLinks" hidden>Revoke file links</button>
+    <ul id="fileLinkList"></ul>
+  </section>
+</main>
+<script type="module" src="/static/ui/video_file_links.js"></script>
+</html>

@@ -49,6 +49,7 @@ import library_embed
 import library_events
 import library_folder_privacy
 import library_folders
+import library_file_links
 import library_languages
 import library_interactivity
 import library_ratings
@@ -122,6 +123,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + SCHEMA
             + library_worker.SCHEMA
             + library_folders.SCHEMA
+            + library_file_links.SCHEMA
             + library_folder_privacy.SCHEMA
             + library_peer_handoff.SCHEMA
             + library_privacy.SCHEMA
@@ -1214,7 +1216,7 @@ def create_app(root, database, operator, institution, simulation=None):
     def remember_work(work):
         works[work["id"]] = work
 
-    start_editor = library_actions.register(
+    start_editor, start_file_links = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
         authorize_editor,
     )
@@ -1502,6 +1504,7 @@ def create_app(root, database, operator, institution, simulation=None):
     library_worker.start(app, root, database, tx, action, apply_routes)
     library_caption_jobs.start(app, root, tx, remember_work)
     app.extensions["stop_editor"] = start_editor()
+    app.extensions["stop_file_links"] = start_file_links()
     review_push.start(app, tx, database)
     return app
 
