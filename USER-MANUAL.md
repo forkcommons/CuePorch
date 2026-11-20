@@ -123,6 +123,12 @@ After transfer, choose **Restore Vimeo privacy** from the imported video’s act
 
 Open **Manage library and embeds**, then **Load library**. The root lists works without a folder. Choose **New folder** and select its parent and color. Open an existing folder to edit its name, parent or color. Select works, choose a destination and select **Move selected**. Work IDs and delivery history are retained. Search titles and filter by privacy within the current folder. Choose a list or grid and sort by title, added date, modification date or duration. Filter by creator when the source provides a name. Use Star work or Star folder to keep frequently used items in your personal Starred view. Dates and attribution depend on the available import and library history. For Vimeo imports, the privacy column displays the source record.
 
+### Import a video from Google Drive
+
+Open **Integrations** and connect Google Drive. The workspace administrator needs to configure the Google OAuth application first. After granting read access at Google, open **Browse videos**, select a Library destination and choose the video to import. You can search Drive by video name or use **More videos** to continue through the results. CuePorch verifies the copy and prepares it for playback as a private Library video, including when your default for local uploads is public. If an import fails, check Drive download access and click the import button again. Importing the same Drive file revision again returns the existing work.
+
+Open **Connected** to disconnect Google Drive. The imported copies stay in CuePorch. When revocation at Google fails, use your Google Account to remove the app's access.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.
@@ -457,6 +463,8 @@ The directory watcher hands packages to CuePorch. Use a ZIP path without `--watc
 For live use, `live_destination.py ORIGIN TITLE PRIVATE_SETTINGS_FILE` creates a PeerTube destination and writes encoder settings. Keep the stream key private. Stable channel and meeting routes can point to the captioned CivicCast player or a PeerTube embed. The rehearsal demonstrated synchronized live captions on the CivicCast web path and separate RTMP playback on PeerTube. Choose the path whose caption behavior your station has verified. [Live configuration and replay handoff](OPERATIONS.md#live-and-replay)
 
 ### HTTP integrations
+
+To enable Drive import, enable the Drive API in your Google Cloud project and register a web OAuth client. Add the full CuePorch callback URL ending in `/integration/oauth/google-drive/callback` as an authorized redirect URI. Set `CUEPORCH_GOOGLE_DRIVE_CLIENT_ID` and `CUEPORCH_GOOGLE_DRIVE_CLIENT_SECRET` in the CuePorch service environment and restart. Use the same CuePorch address to open Integrations and complete consent. The integration needs `https://www.googleapis.com/auth/drive.readonly` to browse downloadable video files. Google treats this as a restricted scope and may require verification depending on who uses the app. The operator credential protects the encrypted OAuth tokens in the workspace database. [Google OAuth setup](https://developers.google.com/identity/protocols/oauth2/web-server) · [Google Drive authorization scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
 
 Use `Authorization: Bearer <credential>` with the credential for the operation. Send mutation bodies as JSON except for file uploads. The institution origin and the video-host origin serve different APIs.
 

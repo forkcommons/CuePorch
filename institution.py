@@ -78,6 +78,7 @@ import library_thumbnail
 import library_timeline
 import library_trash
 import library_upload
+import library_integrations
 import library_worker
 import media_bandwidth
 import registration_return
@@ -186,6 +187,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_help.SCHEMA
             + workspace_activity.SCHEMA
             + workspace_updates.SCHEMA
+            + library_integrations.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -1355,8 +1357,10 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""), questions_enabled,
     )
-    library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work,
-                            enforce_sharing)
+    import_video = library_upload.register(
+        app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
+    )
+    library_integrations.register(app, tx, staff, operator, team_origin, import_video)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,

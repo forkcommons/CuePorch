@@ -25,6 +25,10 @@ VIDEO_INPUT = {"mp4": "mov", "mov": "mov", "webm": "matroska", "mkv": "matroska"
 DOCUMENTS = {"pdf", "docx", "txt"}
 
 
+def max_upload_bytes():
+    return int(os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", str(8 * 1024**3)))
+
+
 def prepare_asset(source, scratch, kind, decoder):
     if kind == "video":
         return "screening.mp4", prepare_screening(source, scratch / "screening.mp4", decoder)
@@ -67,15 +71,15 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
 
     @app.post("/api/library/uploads")
     def upload():
-        return ingest(staff())
+        return upload_request(staff())
 
     @app.post("/api/team/uploads")
     def contributor_upload():
         member = team_contributor()
-        return ingest(actor_id(member), member["id"])
+        return upload_request(actor_id(member), member["id"])
 
-    def ingest(actor, member=None):
-        request.max_content_length = int(os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", str(8 * 1024**3)))
+    def upload_request(actor, member=None):
+        request.max_content_length = max_upload_bytes()
         incoming = request.files.get("file")
         if not incoming or not incoming.filename:
             abort(400, "Choose a file to upload.")
@@ -85,7 +89,11 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             abort(400, "The upload identifier is invalid.")
         if member:
             identity = str(uuid.uuid5(uuid.UUID(member), identity))
-        name = PureWindowsPath(incoming.filename).name
+        return ingest(actor, identity, incoming.filename, request.form.get("folder") or None,
+                      incoming.save, request.form.get("privacy"), member)
+
+    def ingest(actor, identity, filename, folder, save, overrides=None, member=None, authorize_import=None):
+        name = PureWindowsPath(filename).name
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", name).strip(" .")
         name_path = Path(name)
         fmt = name_path.suffix.lower().lstrip(".")
@@ -102,8 +110,9 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             kind, decoder = "document", None
         else:
             abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
-        folder = request.form.get("folder") or None
-        overrides = request.form.get("privacy") if kind == "video" else None
+        if authorize_import and kind != "video":
+            abort(415, "Choose a supported video file.")
+        overrides = overrides if kind == "video" else None
         if member and (folder or overrides is not None or kind != "video"):
             abort(403, "Team workspace uploads are private videos in My Library.")
         if overrides is not None:
@@ -113,14 +122,21 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                 abort(400, "Use valid upload privacy settings.")
         provider = "cueporch-upload"
         uid = work_id(institution, provider, identity)
+        if authorize_import:
+            with tx() as con:
+                authorize_import(con)
+                check_folder(con, folder)
+                enforce_sharing(con, settings=DEFAULTS)
         with tempfile.TemporaryDirectory(dir=database.parent) as tmp:
             scratch = Path(tmp)
             source = scratch / ("original." + fmt)
-            incoming.save(source)
+            save(source)
             if not source.stat().st_size:
                 abort(422, "The selected file is empty.")
             digest = checksum(source)
             with tx() as con:
+                if authorize_import:
+                    authorize_import(con)
                 if member:
                     ensure_member(con, member)
                 prior, placed = prior_upload(con, uid, digest)
@@ -130,7 +146,7 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                         abort(409, "The upload identifier is already in use.")
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
-                if kind == "video" and not member:
+                if kind == "video" and not member and not authorize_import:
                     upload_privacy(con, actor, folder, overrides)
 
             files = [dict(role="original", path=source.name, format=fmt, name=name[:255])]
@@ -149,6 +165,8 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                 provider=provider,
             )
             with tx() as con:
+                if authorize_import:
+                    authorize_import(con)
                 if member:
                     ensure_member(con, member)
                 prior, placed = prior_upload(con, uid, digest)
@@ -159,7 +177,10 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
                 if kind == "video":
-                    choices, password = (DEFAULTS, None) if member else upload_privacy(con, actor, folder, overrides)
+                    if authorize_import:
+                        enforce_sharing(con, settings=DEFAULTS)
+                    choices, password = ((DEFAULTS, None) if member or authorize_import
+                                         else upload_privacy(con, actor, folder, overrides))
                 work = prior or merge_collection(staged, root)[uid]
                 if member and work.get("source_creator") != actor:
                     abort(409, "The upload identifier is already in use.")
@@ -200,3 +221,8 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             abort(409, "This upload is in Recently deleted. Restore it to use it again.")
         placed = con.execute("SELECT 1 FROM library_placement WHERE work=?", (uid,)).fetchone()
         return prior, placed is not None
+
+    def import_video(actor, identity, filename, folder, save, authorize):
+        return ingest(actor, identity, filename, folder, save, authorize_import=authorize)
+
+    return import_video
