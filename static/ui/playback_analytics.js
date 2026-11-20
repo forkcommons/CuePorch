@@ -7,6 +7,8 @@ let watched = 0;
 let position = video.currentTime;
 let last = performance.now();
 let lastSent = 0;
+const captionTime = new Map();
+const textTracks = Array.from(video.querySelectorAll("track"));
 function browserIdentity() {
     const key = "cueporchAnalyticsViewer";
     try {
@@ -26,8 +28,13 @@ function sample() {
     const now = performance.now();
     const delta = video.currentTime - position;
     const expected = (now - last) / 1000 * Math.abs(video.playbackRate) + .25;
-    if (played && !video.seeking && delta > 0 && delta <= expected)
+    if (played && !video.seeking && delta > 0 && delta <= expected) {
         watched += delta;
+        const visible = textTracks.find(track => track.track.mode === "showing");
+        const key = visible ? visible.readyState === HTMLTrackElement.LOADED ? visible.dataset.analyticsTrack : undefined : "none";
+        if (key)
+            captionTime.set(key, (captionTime.get(key) ?? 0) + delta);
+    }
     position = video.currentTime;
     last = now;
 }
@@ -48,7 +55,8 @@ function send() {
         method: "POST",
         keepalive: true,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sequence: ++sequence, played, completed, watched: Math.round(watched * 1000), intervals, viewer }),
+        body: JSON.stringify({ sequence: ++sequence, played, completed, watched: Math.round(watched * 1000), intervals, viewer,
+            captions: [...captionTime].slice(0, 256).map(([key, seconds]) => [key, Math.round(seconds * 1000)]) }),
     }).catch(() => { });
 }
 video.addEventListener("playing", () => {

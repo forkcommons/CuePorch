@@ -9,9 +9,10 @@ import re
 from flask import Response, abort, request
 
 from catalog import video_version_key
-from library_analytics import DEVICES, PLAY_COUNTS, REGION_CODE, SURFACES, bounds, metrics
+from library_analytics import CAPTION_KINDS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
 from library_registration import csv_cell
 import media_bandwidth
+from subtitles import LANGUAGE
 
 
 DIMENSIONS = {
@@ -21,6 +22,10 @@ DIMENSIONS = {
     "source": "coalesce(s.source, 'Unknown')",
     "region": "coalesce(s.region, 'Unknown')",
     "surface": "s.surface",
+    "caption": "CASE caption.kind WHEN 'none' THEN 'Off' WHEN 'captions' THEN caption.language || ' · Captions'"
+               " WHEN 'subtitles' THEN caption.language || ' · Subtitles'"
+               " WHEN 'captions_ai' THEN caption.language || ' · Automated captions'"
+               " WHEN 'subtitles_ai' THEN caption.language || ' · Automated subtitles' ELSE 'Unknown' END",
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
 TOP_DIMENSIONS = ("video", "region", "device", "source")
@@ -32,12 +37,13 @@ PERIODS = {
 }
 METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds",
            "unique_impressions", "unique_viewers", "average_watched_fraction", "downloads")
-VIDEO_COUNTS = "coalesce(sum(s.impression),0) AS impressions, " + PLAY_COUNTS + """,
+VIDEO_COUNTS = """coalesce(sum(s.impression),0) AS impressions, coalesce(sum(s.played),0) AS views,
+    coalesce(sum(s.completed),0) AS finishes, coalesce(sum({watched}),0) AS watched,
     count(DISTINCT identity.viewer) AS unique_impressions,
     count(DISTINCT identity.viewer) FILTER (WHERE s.played=1) AS unique_viewers,
     count(identity.viewer) AS identified_impressions,
     count(identity.viewer) FILTER (WHERE s.played=1) AS identified_views,
-    avg(cueporch_watched_fraction(s.work,s.version,s.watched)) FILTER (WHERE s.played=1) AS average_watched_fraction,
+    avg(cueporch_watched_fraction(s.work,s.version,{watched})) FILTER (WHERE s.played=1) AS average_watched_fraction,
     coalesce(sum(s.download),0) AS downloads"""
 MILESTONES = (1, 25, 50, 75, 100)
 PLAYBACK_ROWS = """SELECT s.id,s.work,s.version,s.surface,s.created,s.played,s.completed,s.watched,s.intervals,
@@ -93,9 +99,37 @@ def filter_settings(options):
     return filters, clause, tuple(params)
 
 
+def caption_scope(language, kind, split):
+    selected = {column: value for column, value in (("language", language), ("kind", kind)) if value}
+    if not split and not selected:
+        return "", "", (), (), "s.watched"
+    watched = "min(s.watched,coalesce(caption.watched,s.watched))"
+    if split:
+        join = " LEFT JOIN video_analytics_caption caption ON caption.session=s.id"
+        where = " AND s.impression=1" + "".join(f" AND coalesce(caption.{column},'unknown')=?" for column in selected)
+        return join, where, (), tuple(selected.values()), watched
+    if "unknown" in selected.values():
+        where = (" AND s.impression=1 AND NOT EXISTS (SELECT 1 FROM video_analytics_caption WHERE session=s.id)"
+                 if all(value == "unknown" for value in selected.values()) else " AND 0")
+        return "", where, (), (), "s.watched"
+    match = " AND ".join(f"{column}=?" for column in selected)
+    join = (f" JOIN (SELECT session,sum(watched) AS watched FROM video_analytics_caption WHERE {match}"
+            " GROUP BY session) caption ON caption.session=s.id")
+    return join, "", tuple(selected.values()), (), watched
+
+
 def summarize(con, options, catalog, lengths, *, include_top=False):
     filters, clause, params = filter_settings(options)
-    scope = VIDEO_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id" + clause
+    language, kind = options.get("caption_language", ""), options.get("caption_kind", "")
+    if (not isinstance(language, str) or len(language) > 53 or (language and not LANGUAGE.fullmatch(language))
+            or not isinstance(kind, str) or kind not in ("", *CAPTION_KINDS)):
+        abort(422, "Choose a valid text track language and type.")
+    language = language.lower()
+    filters.update(caption_language=language, caption_kind=kind)
+    base = VIDEO_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id"
+    join, where, before, after, watched = caption_scope(language, kind, False)
+    scope, scope_params = base + join + clause + where, before + params + after
+    counts = VIDEO_COUNTS.format(watched=watched)
 
     def watched_fraction(uid, version, watched):
         duration = lengths.get((uid, version))
@@ -106,13 +140,19 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
     primary, secondary = filters["group"], filters["breakdown"]
     group = DIMENSIONS[primary] or period
     detail = (DIMENSIONS[secondary] or period) if secondary else "''"
-    totals = con.execute(f"SELECT {VIDEO_COUNTS} {scope}", params).fetchone()
-    trend = con.execute(f"""SELECT {period} AS period,{VIDEO_COUNTS} {scope}
-                         GROUP BY period ORDER BY period""", params)
+    totals = con.execute(f"SELECT {counts} {scope}", scope_params).fetchone()
+    trend = con.execute(f"""SELECT {period} AS period,{counts} {scope}
+                         GROUP BY period ORDER BY period""", scope_params)
     overview = [dict(period=row["period"], **row_metrics(row)) for row in trend]
-    rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{VIDEO_COUNTS} {scope}
+    breakdown_scope, breakdown_params, breakdown_counts = scope, scope_params, counts
+    if "caption" in (primary, secondary):
+        split_join, split_where, split_before, split_after, split_watched = caption_scope(language, kind, True)
+        breakdown_scope = base + split_join + clause + split_where
+        breakdown_params = split_before + params + split_after
+        breakdown_counts = VIDEO_COUNTS.format(watched=split_watched)
+    rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{breakdown_counts} {breakdown_scope}
                         GROUP BY category,breakdown
-                        ORDER BY views DESC,impressions DESC,downloads DESC,category,breakdown""", params)
+                        ORDER BY views DESC,impressions DESC,downloads DESC,category,breakdown""", breakdown_params)
     items = []
     for row in rows:
         category, value = row["category"], row["breakdown"]
@@ -127,8 +167,8 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
         result["top"] = {}
         for dimension in TOP_DIMENSIONS:
             leaders = con.execute(f"""SELECT {DIMENSIONS[dimension]} AS category,count(*) AS views
-                                      {PLAYBACK_TABLES} {clause} AND s.played=1
-                                      GROUP BY category ORDER BY views DESC,category LIMIT 5""", params)
+                                      {PLAYBACK_TABLES} {join} {clause} {where} AND s.played=1
+                                      GROUP BY category ORDER BY views DESC,category LIMIT 5""", scope_params)
             result["top"][dimension] = [
                 dict(label=catalog.get(category, category) if dimension == "video" else category,
                      video=category if dimension == "video" else None, views=views)

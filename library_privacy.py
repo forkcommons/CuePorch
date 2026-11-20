@@ -19,7 +19,7 @@ import library_peer_handoff
 import library_share
 import library_embed
 import library_appearance
-from library_languages import tracks_for
+from library_languages import track_key, tracks_for, viewer_tracks
 import library_interactivity
 import library_ratings
 import library_registration
@@ -476,7 +476,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
-                            token=token, tracks=tracks_for(work), download=settings["download"],
+                            token=token, tracks=viewer_tracks(work), download=settings["download"],
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=details, start=start,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
@@ -554,6 +554,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if not 0 <= track < len(tracks):
                 abort(404)
             item, media_type = tracks[track], "text/vtt"
+            expected = request.args.get("track_key")
+            if expected is not None and expected != track_key(item):
+                abort(404)
         else:
             item, media_type = video, "video/mp4"
         path = root / "objects" / item["sha256"]

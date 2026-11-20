@@ -37,9 +37,10 @@
            {% if not download %}controlslist="nodownload"{% endif %}
            src="{{ url_for('shared_video', token=token) }}{% if start %}#t={{ start }}{% endif %}">
       {% for track in tracks %}
-      <track kind="captions" srclang="{{ track.language or 'und' }}"
+      <track kind="{{ track.kind }}" srclang="{{ track.language or 'und' }}"
              label="{{ track.language or 'Captions' }}"
-             src="{{ url_for('shared_video', token=token, track=loop.index0) }}">
+             {% if analytics %}data-analytics-track="{{ track.key }}"{% endif %}
+             src="{{ url_for('shared_video', token=token, track=track.index, track_key=track.key) }}">
       {% endfor %}
     </video>
     {% if analytics %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}

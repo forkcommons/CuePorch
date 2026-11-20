@@ -15,7 +15,7 @@ from installed_versions import generate_replacement
 
 
 def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
-                             verify_region=False, verify_bandwidth=False, verify_unique=False):
+                             verify_region=False, verify_bandwidth=False, verify_unique=False, verify_captions=False):
     endpoint = base + "/api/analytics/video-report"
     today = datetime.now(timezone.utc).date().isoformat()
     title_a, title_b = "Advanced report station", "Advanced report festival"
@@ -220,4 +220,8 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         from installed_unique_viewers import check_unique_viewers
 
         results["unique_viewers"] = check_unique_viewers(page, browser, base, auth, upload("Unique viewer fixture", clip))
+    if verify_captions:
+        from installed_caption_usage import check_caption_usage
+
+        results["caption_usage"] = check_caption_usage(page, browser, base, auth, upload("Caption usage fixture", longer))
     return results

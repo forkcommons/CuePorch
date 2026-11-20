@@ -26,6 +26,7 @@
       <p id="captionJobStatus" aria-live="polite"></p>
     </section>
     <form id="uploadSubtitle">
+      <label>Text track type <select name="kind"><option value="subtitles">Subtitles</option><option value="captions">Captions</option></select></label>
       <label>Subtitle language <input name="language" required placeholder="es" maxlength="40"></label>
       <label>Subtitle file <input name="track" type="file" accept=".vtt,.srt" required></label>
       <button type="submit">Upload subtitles</button>

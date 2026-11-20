@@ -1,6 +1,6 @@
 export {};
 
-interface Track { language: string; provenance: string | null; bytes: number; }
+interface Track { language: string; kind: string; provenance: string | null; bytes: number; }
 interface Languages { title: string; version: string; original_language: string; tracks: Track[]; }
 interface Cue { start: number; end: number; text: string; settings: string; }
 interface TrackData { version: string; revision: string; cues: Cue[]; }
@@ -88,7 +88,7 @@ function present(updated: Languages) {
     const path = languages + "/" + encodeURIComponent(entry.language);
     const row = document.createElement("li");
     const name = document.createElement("strong");
-    name.textContent = entry.language;
+    name.textContent = `${entry.language} · ${entry.kind}`;
     const edit = button("Edit " + entry.language);
     const download = button("Download " + entry.language);
     const remove = button("Remove " + entry.language);

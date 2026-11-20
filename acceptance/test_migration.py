@@ -126,6 +126,7 @@ class Migration(unittest.TestCase):
                                 dict(
                                     uri=path + "/9",
                                     language="en",
+                                    type="subtitles",
                                     link=origin + "/asset/en.vtt",
                                 )
                             ]
@@ -192,6 +193,7 @@ class Migration(unittest.TestCase):
                 ],
             )
             self.assertEqual(sum(path == "/asset/2" for path, _ in requests), 2)
+            self.assertEqual(works[0]["files"][1]["text_kind"], "subtitles")
             self.assertEqual(sum(path == "/asset/1" for path, _ in requests), 1)
             self.assertFalse(
                 any(token for path, token in requests if path.startswith("/cdn/"))

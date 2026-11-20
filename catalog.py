@@ -17,7 +17,9 @@ VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job")
 
 
 def video_version_key(work):
-    return hashlib.sha256(json.dumps(work["files"], sort_keys=True).encode()).hexdigest()
+    # Text track classification is descriptive metadata. Keep existing cut IDs when it is imported.
+    files = [{field: value for field, value in item.items() if field != "text_kind"} for item in work["files"]]
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 
 def version_snapshot(work):
@@ -161,7 +163,7 @@ def merge_collection(source, destination):
             for field in ("language_edits", "chapter_edits"):
                 if prior and field in prior:
                     work[field] = prior[field]
-            if prior and prior["files"] != work["files"]:
+            if prior and video_version_key(prior) != video_version_key(work):
                 versions = prior.get("versions_history", [])
                 work["versions_history"] = versions + [version_snapshot(prior)]
             elif prior and "versions_history" in prior:

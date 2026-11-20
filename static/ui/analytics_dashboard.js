@@ -1,5 +1,6 @@
 const dimensionNames = {
     video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
+    caption: "Captions and subtitles",
 };
 const metricNames = {
     impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
@@ -167,6 +168,7 @@ function renderTop(top) {
 }
 function renderVideo(report) {
     const { group, breakdown } = report.filters;
+    document.querySelector("#captionBreakdownNote").hidden = group !== "caption" && breakdown !== "caption";
     const totals = document.querySelector("#reportTotals");
     totals.replaceChildren();
     for (const name of parts) {
@@ -306,6 +308,8 @@ function filters() {
         data.source = String(data.source).trim();
     if (data.region)
         data.region = String(data.region).trim();
+    if (data.caption_language)
+        data.caption_language = String(data.caption_language).trim();
     return { ...data, videos: [...chosen] };
 }
 async function apply() {

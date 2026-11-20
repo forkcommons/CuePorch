@@ -115,7 +115,7 @@ def start(app, root, tx, remember_work):
             if track_digest(current, job["language"]) != job["replaces"]:
                 raise Superseded("A subtitle edit was saved before the generated track was ready.")
             library_languages.store_track(
-                root, current, edits, job["language"], cues, "TextFlowKit machine-generated"
+                root, current, edits, job["language"], cues, "TextFlowKit machine-generated", kind="captions"
             )
 
         state, error = "complete", None

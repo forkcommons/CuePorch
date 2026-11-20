@@ -57,6 +57,7 @@ p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
 p.add_argument("--analytics-unique", action="store_true", help="Check distinct viewers and browser identity coverage")
+p.add_argument("--analytics-captions", action="store_true", help="Check usage of captions actually shown during playback")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
@@ -363,10 +364,19 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     assert width > 0
                     if args.analytics_only:
+                        if args.analytics_captions:
+                            imported = next(work["id"] for work in works if work["title"] == "Station meeting")
+                            types = requests.get(f"{base}/api/library/work/{imported}/languages", headers=auth, timeout=10)
+                            types.raise_for_status()
+                            assert any(track["language"] == "en" and track["kind"] == "subtitles"
+                                       for track in types.json()["tracks"])
                         advanced = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
                                                             verify_region=args.analytics_region_proxy,
                                                             verify_bandwidth=args.analytics_bandwidth,
-                                                            verify_unique=args.analytics_unique)
+                                                            verify_unique=args.analytics_unique,
+                                                            verify_captions=args.analytics_captions)
+                        if args.analytics_captions:
+                            advanced["caption_usage"]["vimeo_track_type_preserved"] = True
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
                                             missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
                                             playback_width=width, setup_seconds=setup_seconds,
@@ -409,7 +419,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
                                                                   verify_region=args.analytics_region_proxy,
                                                                   verify_bandwidth=args.analytics_bandwidth,
-                                                                  verify_unique=args.analytics_unique)
+                                                                  verify_unique=args.analytics_unique,
+                                                                  verify_captions=args.analytics_captions)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     recording = check_recording(pw, base, auth)
                     timeline = check_timeline(

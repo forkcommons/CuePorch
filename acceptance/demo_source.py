@@ -147,6 +147,7 @@ def build_server(directory, port=0):
                             dict(
                                 uri=path + "/1",
                                 language="en",
+                                type="subtitles",
                                 link=origin + "/media/captions.vtt",
                             )
                         ]

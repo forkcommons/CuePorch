@@ -145,6 +145,7 @@ def assets(video, tracks):
                 format="vtt",
                 language=track.get("language"),
                 provenance="Vimeo text track",
+                text_kind=track.get("type"),
                 source_track=track["uri"],
             ),
             None,

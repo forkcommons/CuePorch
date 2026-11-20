@@ -41,6 +41,12 @@
           <label data-playback-filter>Referring site <input name="source" maxlength="270" placeholder="https://example.org"></label>
           <label data-playback-filter>Region code <input name="region" maxlength="7" placeholder="US or US-CO"
             pattern="[A-Z]{2}(-[A-Z0-9]{1,3})?|Unknown" title="A code like US or US-CO, or Unknown"></label>
+          <label data-video-filter>Text track language <input name="caption_language" maxlength="53" placeholder="en or fr-CA"></label>
+          <label data-video-filter>Text track type <select name="caption_kind">
+            <option value="">All</option><option value="captions">Captions</option><option value="subtitles">Subtitles</option>
+            <option value="captions_ai">Automated captions</option><option value="subtitles_ai">Automated subtitles</option>
+            <option value="none">Off</option><option value="unknown">Unknown</option>
+          </select></label>
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
@@ -90,6 +96,7 @@
     </section>
     <section aria-labelledby="reportRowsTitle">
       <h2 id="reportRowsTitle">Breakdown</h2>
+      <p id="captionBreakdownNote" hidden>A session can appear under several text tracks. Watch time is split by track.</p>
       <p id="reportEmpty" hidden>No video activity matches these filters.</p>
       <div class="analytics-table">
         <table><thead><tr id="reportColumns"></tr></thead><tbody id="reportRows"></tbody></table>

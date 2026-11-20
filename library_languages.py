@@ -13,6 +13,9 @@ from cueporch import checksum, dump
 import subtitles
 
 
+TEXT_KINDS = ("captions", "subtitles", "descriptions", "metadata")
+
+
 def tracks_for(work, cut=None, version=None, vtt_only=True):
     cut = work if cut is None else cut
     key = version or video_version_key(cut)
@@ -32,6 +35,20 @@ def language_tag(value):
 
 def track_language(track):
     return (track.get("language") or "und").lower()
+
+
+def track_kind(track):
+    kind = track.get("text_kind")
+    return kind if kind in TEXT_KINDS else "captions"
+
+
+def track_key(track):
+    return f"{track['sha256']}:{track_language(track)}:{track_kind(track)}"
+
+
+def viewer_tracks(work):
+    return [dict(track, index=index, key=track_key(track), kind=track_kind(track))
+            for index, track in enumerate(tracks_for(work)) if track_kind(track) in ("captions", "subtitles")]
 
 
 def save_blob(root, content):
@@ -69,7 +86,8 @@ def summary(work):
     changed = work.get("language_edits", {}).get(version, {})
     return dict(version=version, title=work["title"],
                 original_language=changed.get("original_language", work.get("source_language")) or "",
-                tracks=[dict(language=track_language(item), provenance=item.get("provenance"), bytes=item["bytes"])
+                tracks=[dict(language=track_language(item), kind=track_kind(item),
+                             provenance=item.get("provenance"), bytes=item["bytes"])
                         for item in tracks_for(work, version=version)])
 
 
@@ -81,7 +99,7 @@ def editable_body():
     return body
 
 
-def store_track(root, work, edit, language, cues, provenance, expected_digest=None):
+def store_track(root, work, edit, language, cues, provenance, expected_digest=None, *, kind=None):
     available = tracks_for(work, vtt_only=False)
     existing = next((item for item in available if track_language(item) == language), None)
     if expected_digest is not None and (existing is None or existing["sha256"] != expected_digest):
@@ -90,7 +108,7 @@ def store_track(root, work, edit, language, cues, provenance, expected_digest=No
         data = subtitles.serialize(cues)
     except ValueError as error:
         abort(400, str(error))
-    updated = {"role": "caption", "format": "vtt", "language": language,
+    updated = {"role": "caption", "format": "vtt", "language": language, "text_kind": kind or track_kind(existing or {}),
                "provenance": provenance, **save_blob(root, data)}
     edit["tracks"] = [item for item in available if track_language(item) != language] + [updated]
 
@@ -122,6 +140,9 @@ def register(app, tx, staff, get_work, root, remember_work, title_for, request_c
                 request.max_content_length = 8 * 1024**2
                 upload = request.files.get("track")
                 language = language_tag(request.form.get("language"))
+                kind = request.form.get("kind", "subtitles")
+                if kind not in ("captions", "subtitles"):
+                    abort(422, "Choose subtitles or captions.")
                 format = Path(upload.filename or "").suffix.lower() if upload else ""
                 if format not in (".vtt", ".srt"):
                     abort(415, "Choose a WebVTT or SRT subtitle file.")
@@ -130,7 +151,7 @@ def register(app, tx, staff, get_work, root, remember_work, title_for, request_c
                 except ValueError as error:
                     abort(422, str(error))
                 work = update(root, uid, request.form.get("version"),
-                              lambda current, edit: store_track(root, current, edit, language, cues, "Operator upload"))
+                              lambda current, edit: store_track(root, current, edit, language, cues, "Operator upload", kind=kind))
                 remember_work(work)
             title = title_for(con, work)
         return summary(work) | {"title": title}

@@ -92,7 +92,7 @@ def import_collection(source, destination):
                     "caption-source",
                 ):
                     raise ValueError("Unrecognized file role")
-                for field in ("language", "provenance", "name"):
+                for field in ("language", "provenance", "name", "text_kind"):
                     if field in attachment:
                         item[field] = attachment[field]
                 path = source.parent / attachment["path"]

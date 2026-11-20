@@ -74,7 +74,7 @@ function present(updated) {
         const path = languages + "/" + encodeURIComponent(entry.language);
         const row = document.createElement("li");
         const name = document.createElement("strong");
-        name.textContent = entry.language;
+        name.textContent = `${entry.language} · ${entry.kind}`;
         const edit = button("Edit " + entry.language);
         const download = button("Download " + entry.language);
         const remove = button("Remove " + entry.language);
