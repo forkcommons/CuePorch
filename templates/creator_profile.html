@@ -9,6 +9,8 @@
     <header>
       <h1>{{ name }}</h1>
       <p>@{{ handle }} · {{ video_count }} public {{ "video" if video_count == 1 else "videos" }}</p>
+      <p data-follower-count>{{ followers }} {{ "follower" if followers == 1 else "followers" }}</p>
+      {% set follow_handle = handle %}{% include "follow_creator.html" %}
       {% if bio %}<p>{{ bio }}</p>{% endif %}
       {% if links %}
         <ul>{% for link in links %}<li><a href="{{ link }}" rel="noreferrer">{{ link }}</a></li>{% endfor %}</ul>

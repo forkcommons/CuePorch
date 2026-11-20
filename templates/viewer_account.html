@@ -31,7 +31,7 @@
       </section>
     </div>
     <div id="viewerManagement" hidden>
-      {% if destination %}<p><a href="{{ destination }}">Return to video</a></p>{% endif %}
+      {% if destination %}<p><a href="{{ destination }}">{% if destination.startswith('/creators/') %}Return to creator profile{% elif destination == '/watch/feed' %}Return to feed{% else %}Return to video{% endif %}</a></p>{% endif %}
       <section aria-labelledby="viewerDetailsHeading">
         <h2 id="viewerDetailsHeading">Account details</h2>
         <form id="viewerDetails" method="post">
@@ -53,7 +53,7 @@
       <button type="button" id="viewerSignOut">Sign out</button>
       <details>
         <summary>Delete account</summary>
-        <p>This removes your account and saved videos.</p>
+        <p>This removes your account, saved videos and follows.</p>
         <form id="deleteViewerAccount" method="post">
           <label>Current password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
           <button type="submit">Delete my account</button>

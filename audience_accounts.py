@@ -15,8 +15,9 @@ import audience_library
 from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
                                       workspace_session, workspace_session_cookie)
 import community_analytics
+import creator_profiles
 from library_analytics import source_origin
-from library_discovery import entry_payload
+from library_discovery import PAGE_SIZE, entry_payload, ordered
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audience_account(
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS audience_watch_later(
  PRIMARY KEY(account,kind,slug));
 """ + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
-VIDEO_PATH = re.compile(r"/watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}")
+VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|watch/feed)")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
@@ -117,7 +118,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     def viewer_account_page():
         scheme()
         destination = request.args.get("next", "")
-        return private(render_template("viewer_account.html", destination=destination if VIDEO_PATH.fullmatch(destination) else ""))
+        return private(render_template("viewer_account.html",
+                                       destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else ""))
 
     @app.route("/api/viewer/account", methods=("GET", "PUT", "DELETE"))
     def viewer_account():
@@ -134,6 +136,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 same_password(row, previous_hash)
                 audience_comments.remove_account(con, row["id"])
                 audience_library.remove_account(con, row["id"])
+                con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
@@ -253,3 +256,5 @@ def register(app, tx, origin_url, operator, listing, action, staff):
 
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
+    creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
+                                       ordered, PAGE_SIZE)

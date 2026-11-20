@@ -33,6 +33,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_privacy(
  work TEXT PRIMARY KEY, settings TEXT NOT NULL, password_hash TEXT,
  revision TEXT NOT NULL, share_key TEXT);
+CREATE TABLE IF NOT EXISTS library_publication_time(
+ work TEXT PRIMARY KEY, published_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS library_privacy_change(
  work TEXT PRIMARY KEY, settings TEXT NOT NULL, password_hash TEXT,
  revision TEXT NOT NULL, share_key TEXT, approval TEXT NOT NULL, listing TEXT);
@@ -171,6 +173,10 @@ def save(con, uid, settings, password_hash, revision, share_key):
            revision=excluded.revision,share_key=excluded.share_key""",
         (uid, settings, password_hash, revision, share_key),
     )
+    if json.loads(settings)["visibility"] == "public":
+        con.execute("INSERT OR IGNORE INTO library_publication_time VALUES(?,?)", (uid, time.time()))
+    else:
+        con.execute("DELETE FROM library_publication_time WHERE work=?", (uid,))
 
 
 def cancel_pending(con, row):

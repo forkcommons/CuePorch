@@ -15,6 +15,7 @@
       {% for key, label in sections %}
         <a href="{{ url_for('catalog', section=key if key != 'explore' else none) }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
+      <a href="{{ url_for('viewer_feed') }}">Feed</a>
       <a href="{{ url_for('watch_later_page') }}">Watch Later</a>
       <a href="{{ url_for('liked_videos_page') }}">Liked videos</a>
       <a href="{{ url_for('viewer_collections_page') }}">Collections</a>

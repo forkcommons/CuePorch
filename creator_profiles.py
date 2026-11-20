@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS creator_profile(
  member TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT NOT NULL, bio TEXT NOT NULL,
  links TEXT NOT NULL, visible INTEGER NOT NULL CHECK(visible IN (0,1)), cover TEXT,
  featured TEXT NOT NULL, revision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audience_creator_follow(
+ account TEXT NOT NULL, member TEXT NOT NULL,
+ PRIMARY KEY(account,member));
+CREATE INDEX IF NOT EXISTS creator_followers ON audience_creator_follow(member);
 """
 HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])")
 VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor') AND p.visible=1"
@@ -26,6 +30,60 @@ def for_work(con, uid):
         SELECT p.handle,p.name FROM creator_profile p JOIN team_member m ON m.id=p.member
         JOIN team_owned_work o ON o.member=p.member WHERE o.work=? AND {VISIBLE}
     """, (uid,)).fetchone()
+
+
+def follower_count(con, uid):
+    return con.execute("SELECT count(*) FROM audience_creator_follow WHERE member=?", (uid,)).fetchone()[0]
+
+
+def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size):
+    @app.route("/api/viewer/follow/<handle>", methods=("GET", "PUT", "DELETE"))
+    def viewer_follow_creator(handle):
+        if not HANDLE.fullmatch(handle):
+            abort(404)
+        if request.method in ("PUT", "DELETE"):
+            mutation()
+        with tx() as con:
+            account = viewer(con)["id"]
+            profile = con.execute(f"""SELECT p.member,({VISIBLE}) AS visible FROM creator_profile p
+                JOIN team_member m ON m.id=p.member WHERE p.handle=?""", (handle,)).fetchone()
+            if request.method == "DELETE":
+                if profile:
+                    con.execute("DELETE FROM audience_creator_follow WHERE account=? AND member=?",
+                                (account, profile["member"]))
+                return private(dict(following=False,
+                                    followers=follower_count(con, profile["member"]) if profile and profile["visible"] else None))
+            if not profile or not profile["visible"]:
+                abort(404)
+            member = profile["member"]
+            if request.method == "PUT":
+                con.execute("INSERT OR IGNORE INTO audience_creator_follow VALUES(?,?)", (account, member))
+            following = con.execute("SELECT 1 FROM audience_creator_follow WHERE account=? AND member=?",
+                                    (account, member)).fetchone() is not None
+            return private(dict(following=following, followers=follower_count(con, member)))
+
+    @app.get("/watch/feed")
+    def viewer_feed():
+        page = max(1, request.args.get("page", 1, type=int))
+        with tx() as con:
+            account = viewer(con, required=False)
+            rows = []
+            if account:
+                owned = {row["work"]: row for row in con.execute(f"""
+                    SELECT o.work,p.handle,p.name,t.published_at
+                    FROM audience_creator_follow f JOIN creator_profile p ON p.member=f.member
+                    JOIN team_member m ON m.id=p.member JOIN team_owned_work o ON o.member=p.member
+                    LEFT JOIN library_publication_time t ON t.work=o.work
+                    WHERE f.account=? AND {VISIBLE}
+                """, (account["id"],))}
+                if owned:
+                    entries = ordered(entry for (kind, slug), entry in listing(con).items()
+                                      if kind == "work" and slug in owned)
+                    entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)
+                    rows = [dict(entry_payload(entry), creator=owned[entry["slug"]]) for entry in entries]
+        start = (page - 1) * page_size
+        return private(render_template("viewer_feed.html", rows=rows[start:start + page_size],
+                                       signed_in=bool(account), page=page, next_page=start + page_size < len(rows)))
 
 
 def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):
@@ -112,8 +170,10 @@ def register(app, tx, origin, member, mutation, listing, entry_payload, read_wor
                       if kind == "work" and slug in owned}
             cover = videos.get(row["cover"])
             featured = [videos[uid] for uid in json.loads(row["featured"]) if uid in videos]
+            followers = follower_count(con, row["member"])
         response = make_response(render_template("creator_profile.html", name=row["name"], bio=row["bio"],
                                                  handle=row["handle"], links=json.loads(row["links"]),
-                                                 cover=cover, featured=featured, video_count=len(videos)))
+                                                 cover=cover, featured=featured, video_count=len(videos),
+                                                 followers=followers))
         response.cache_control.no_store = True
         return response

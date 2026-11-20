@@ -59,6 +59,7 @@ def export(collection, database, target):
                 "library_video_details",
                 "library_thumbnail",
                 "library_embed_pages",
+                "library_publication_time",
                 "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
@@ -75,6 +76,7 @@ def export(collection, database, target):
                 "team_workspace_link",
                 "team_workspace_link_group",
                 "team_branding",
+                "creator_profile",
             ):
                 if has_table(db, table):
                     tables[table] = "SELECT * FROM " + table
@@ -84,6 +86,9 @@ def export(collection, database, target):
                 row["pages"] = json.loads(row["pages"])
             for row in record.get("library_video_details", []):
                 row["metadata"] = json.loads(row["metadata"])
+            for row in record.get("creator_profile", []):
+                row["links"] = json.loads(row["links"])
+                row["featured"] = json.loads(row["featured"])
             for row in record.get("video_file_link", []):
                 row["renditions"] = json.loads(row["renditions"]) if row["renditions"] else None
             for brand in record.get("team_branding", []):

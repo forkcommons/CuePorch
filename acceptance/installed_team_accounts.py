@@ -467,8 +467,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             endpoint = f"{base}/api/library/work/{work}/privacy"
             requests.put(endpoint, headers=auth, timeout=15, json=settings).raise_for_status()
 
-        privacy(owned[0]["id"], public_settings)
         privacy(second_work, public_settings)
+        privacy(owned[0]["id"], public_settings)
         with browser.new_context() as guest:
             profile_visitor = guest.new_page()
             profile_visitor.goto(profile_url)
@@ -480,21 +480,65 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             )
             cards = profile_visitor.get_by_role("region", name="Featured videos").get_by_role("link")
             expect(cards).to_have_text([second_title, draft_name])
+            profile_visitor.get_by_role("link", name="Sign in to follow").click()
+            signup = profile_visitor.locator("#viewerSignUp")
+            signup.get_by_label("Display name").fill("Arts audience")
+            signup.get_by_label("Email").fill(email("arts-audience"))
+            signup.get_by_label("Password").fill(PASSWORD)
+            signup.get_by_role("button", name="Create account").click()
+            expect(profile_visitor).to_have_url(profile_url)
+            profile_visitor.get_by_role("button", name="Follow creator", exact=True).click()
+            expect(profile_visitor.get_by_role("button", name="Unfollow creator")).to_be_visible()
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("1 follower")
+            follow_path = f"{base}/api/viewer/follow/{handle}"
+            assert viewer.request.get(follow_path).json()["following"] is False
+            assert viewer.request.put(follow_path, headers={
+                "Origin": "https://unrelated.example.org", "X-CuePorch-Viewer": "1",
+            }, data={}).status == 403
+            assert requests.get(follow_path, timeout=10).status_code == 401
+            feed = guest.new_page()
+            profile_visitor.get_by_role("link", name="Feed", exact=True).click()
+            expect(profile_visitor.locator(".watch-card")).to_have_text([draft_name, second_title])
+            feed.goto(base + "/watch/feed")
+            expect(feed.locator(".watch-card")).to_have_text([draft_name, second_title])
+            independent_feed = viewer.new_page()
+            independent_feed.goto(base + "/watch/feed")
+            expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
+
+            profile_visitor.goto(profile_url)
             profile_visitor.get_by_role("region", name="Cover video").get_by_role("link", name=draft_name).click()
             assert profile_visitor.locator("video").evaluate(
                 "async v => {v.muted = true; await v.play(); return v.videoWidth;}"
             ) > 0
+            expect(profile_visitor.get_by_role("button", name="Unfollow creator")).to_be_visible()
             profile_visitor.get_by_role("link", name="Cameron · Local arts").click()
             assert profile_visitor.url == profile_url
             privacy(owned[0]["id"], private_settings)
             profile_visitor.reload()
             expect(profile_visitor.get_by_role("region", name="Cover video")).to_have_count(0)
             expect(cards).to_have_text([second_title])
+            feed.reload()
+            expect(feed.locator(".watch-card")).to_have_text([second_title])
+            profile_visitor.get_by_role("button", name="Unfollow creator").click()
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("0 followers")
+            feed.reload()
+            expect(feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
+            profile_visitor.get_by_role("button", name="Follow creator", exact=True).click()
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("1 follower")
+            assert guest.request.delete(base + "/api/viewer/account", headers={"X-CuePorch-Viewer": "1"},
+                                        data={"password": PASSWORD}).status == 204
+            profile_visitor.reload()
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("0 followers")
+
+            assert viewer.request.put(follow_path, headers={"X-CuePorch-Viewer": "1"}, data={}).ok
+            contributor_page.get_by_label("Publish profile").uncheck()
+            contributor_page.get_by_role("button", name="Save creator profile").click()
+            expect(contributor_page.get_by_role("link", name="Open public profile")).not_to_be_visible()
+            assert requests.get(profile_url, timeout=10).status_code == 404
+            assert requests.get(f"{base}/watch/work/{second_work}", timeout=10).ok
+            independent_feed.reload()
+            expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
         privacy(second_work, private_settings)
-        contributor_page.get_by_label("Publish profile").uncheck()
-        contributor_page.get_by_role("button", name="Save creator profile").click()
-        expect(contributor_page.get_by_role("link", name="Open public profile")).not_to_be_visible()
-        assert requests.get(profile_url, timeout=10).status_code == 404
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
@@ -509,4 +553,5 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 private_audited_roster_csv=True, private_contributor_video_report_and_export=True,
                 report_requires_current_ownership_and_session=True,
                 named_playback_report_scope_opt_out_and_csv=True,
-                public_creator_profile_ordering_playback_and_withdrawal=True), email("contributor")
+                public_creator_profile_ordering_playback_and_withdrawal=True,
+                private_feed_follows_publication_order_and_account_removal=True), email("contributor")

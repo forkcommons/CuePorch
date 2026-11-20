@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Feed · CuePorch</title>
+<body class="watch-catalog">
+  {% include "viewer_watch_nav.html" %}
+  <main>
+    <h1>Feed</h1>
+    {% if not signed_in %}
+      <p><a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}">Sign in to see your feed</a></p>
+    {% elif rows %}
+      <ul class="watch-grid">
+        {% for item in rows %}
+          <li>
+            <a class="watch-card" href="{{ item.watch }}">
+              {% if item.cover %}<img src="{{ item.cover }}" alt="" loading="lazy">{% endif %}
+              {{ item.title }}
+            </a>
+            <a href="{{ url_for('creator_page', handle=item.creator.handle) }}">{{ item.creator.name }}</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>No public videos from creators you follow.</p>
+    {% endif %}
+    {% if signed_in and (page > 1 or next_page) %}
+      <nav aria-label="Feed pages">
+        {% if page > 1 %}<a href="{{ url_for('viewer_feed', page=page-1) }}">Previous page</a>{% endif %}
+        {% if next_page %}<a href="{{ url_for('viewer_feed', page=page+1) }}">Next page</a>{% endif %}
+      </nav>
+    {% endif %}
+  </main>
+</body>
+</html>
