@@ -125,7 +125,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
 
         admin_page.reload()
         member_row = admin_page.locator("#teamMemberList li").filter(has_text=email("viewer"))
-        member_row.get_by_role("button", name="Manage video access").click()
+        member_row.get_by_role("button", name="Manage media access").click()
         expect(admin_page.get_by_role("heading", name="Videos shared with Val")).to_be_visible()
         admin_page.get_by_label("Video", exact=True).select_option(label=protected_title)
         admin_page.get_by_role("button", name="Share video", exact=True).click()
@@ -158,6 +158,32 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert requests.get(migrated_watch, timeout=10).status_code == 404
         admin_page.get_by_role("button", name=f"Revoke {migrated['title']}").click()
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Video access revoked.")
+        assert viewer.request.get(migrated_media).status == 404
+
+        folders = requests.get(base + "/api/library/folders", headers=auth, timeout=10).json()
+        parent = next(folder["id"] for folder in folders if folder["name"] == "Station programs")
+        child = next(folder["id"] for folder in folders if folder["parent"] == parent)
+
+        def move_migrated(folder):
+            requests.put(base + "/api/library/placement", headers=auth, timeout=10,
+                         json={"works": [migrated["work"]], "folder": folder}).raise_for_status()
+
+        move_migrated(child)
+        folder_api = f"{base}/api/team/members/{viewer_id}/folders/{parent}"
+        assert viewer.request.put(folder_api, headers=TEAM, data={}).status == 403
+        admin_page.get_by_label("Folder", exact=True).select_option(value=parent)
+        admin_page.get_by_role("button", name="Share folder", exact=True).click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Folder shared.")
+        viewer_page.goto(base + "/team")
+        inherited_width = playback(viewer_page, migrated["title"])
+        assert inherited_width == 320
+        assert contributor.request.get(migrated_media).status == 404
+        move_migrated(None)
+        assert viewer.request.get(migrated_media).status == 404
+        move_migrated(child)
+        assert viewer.request.get(migrated_media).ok
+        admin_page.get_by_role("button", name="Revoke folder Station programs", exact=True).click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Folder access revoked.")
         assert viewer.request.get(migrated_media).status == 404
 
         admin_page.get_by_label("Video", exact=True).select_option(label=protected_title)
@@ -197,11 +223,14 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert any(event["action"] == "role_changed" and event["subject"] == admin_id for event in audit)
         assert {event["action"] for event in audit if event["subject"] == viewer_id
                 and event["detail"] == migrated["work"]} == {"video_shared", "video_unshared"}
+        assert {event["action"] for event in audit if event["subject"] == viewer_id
+                and event["detail"] == parent} == {"folder_shared", "folder_unshared"}
         assert all("token" not in record for record in audit)
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
+                inherited_folder_playback_width=inherited_width, folder_move_and_revocation_enforced=True,
                 existing_audience_identity_separate=True, range_playback=True, forged_origin_denied=True,
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
                 persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True)

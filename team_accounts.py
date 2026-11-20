@@ -28,6 +28,10 @@ CREATE INDEX IF NOT EXISTS team_session_expiry ON team_session(expires);
 CREATE TABLE IF NOT EXISTS team_auth_attempt(bucket TEXT PRIMARY KEY, expires REAL NOT NULL, attempts INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS team_auth_attempt_expiry ON team_auth_attempt(expires);
 CREATE TABLE IF NOT EXISTS team_work_grant(member TEXT NOT NULL, work TEXT NOT NULL, PRIMARY KEY(member,work));
+CREATE TABLE IF NOT EXISTS team_folder_grant(
+ member TEXT NOT NULL REFERENCES team_member(id) ON DELETE CASCADE,
+ folder TEXT NOT NULL REFERENCES library_folder(id) ON DELETE CASCADE,
+ PRIMARY KEY(member,folder));
 CREATE TABLE IF NOT EXISTS team_owned_work(work TEXT PRIMARY KEY, member TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS team_owned_work_member ON team_owned_work(member);
 CREATE TABLE IF NOT EXISTS team_membership_event(
@@ -86,6 +90,28 @@ def issue_session(con, uid, secure):
 def grant_available(con, uid):
     return not blocked(con, uid) and not con.execute("""SELECT 1 FROM library_peer_handoff
         WHERE work=? AND state='pending'""", (uid,)).fetchone()
+
+
+def visible_folders(con):
+    return con.execute("""WITH RECURSIVE paths(id,title) AS (
+        SELECT id,name FROM library_folder WHERE parent IS NULL AND NOT EXISTS (
+            SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=library_folder.id)
+        UNION ALL
+        SELECT f.id,paths.title || ' / ' || f.name FROM library_folder f JOIN paths ON f.parent=paths.id
+        WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
+    ) SELECT id,title FROM paths ORDER BY title COLLATE NOCASE,id""").fetchall()
+
+
+def inherited_works(con, member):
+    rows = con.execute("""WITH RECURSIVE granted(id) AS (
+        SELECT f.id FROM team_folder_grant g JOIN library_folder f ON f.id=g.folder
+        WHERE g.member=? AND NOT EXISTS (
+            SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
+        UNION
+        SELECT f.id FROM library_folder f JOIN granted g ON f.parent=g.id
+        WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
+    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""", (member,))
+    return {row[0] for row in rows}
 
 
 def register(app, tx, origin, key, institution, operator_name, read_works, title_for, root):
@@ -256,6 +282,7 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
+                con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
                 note(con, actor, "removed", uid, previous)
             elif (role := role_from(body)) != previous:
                 con.execute("UPDATE team_member SET role=? WHERE id=?", (role, uid))
@@ -278,7 +305,28 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             shared = shared_ids(con, uid)
             rows = [dict(id=work_id, title=title_for(con, work), shared=work_id in shared)
                     for work_id, work in eligible_works(con).items()]
-        return private(dict(works=sorted(rows, key=lambda row: row["title"].casefold())))
+            folders_shared = {row[0] for row in con.execute("SELECT folder FROM team_folder_grant WHERE member=?", (uid,))}
+            folders = [dict(row, shared=row["id"] in folders_shared) for row in visible_folders(con)]
+        return private(dict(works=sorted(rows, key=lambda row: row["title"].casefold()), folders=folders))
+
+    @app.route("/api/team/members/<uuid:account>/folders/<folder>", methods=("PUT", "DELETE"))
+    def team_update_folder_sharing(account, folder):
+        mutation(secure_site(origin))
+        uid = str(account)
+        with tx() as con:
+            actor = manager(con)
+            member_role(con, uid)
+            if request.method == "PUT":
+                if not any(row["id"] == folder for row in visible_folders(con)):
+                    abort(404, "This folder is unavailable for team viewing.")
+                result = con.execute("INSERT OR IGNORE INTO team_folder_grant VALUES(?,?)", (uid, folder))
+                event = "folder_shared"
+            else:
+                result = con.execute("DELETE FROM team_folder_grant WHERE member=? AND folder=?", (uid, folder))
+                event = "folder_unshared"
+            if result.rowcount:
+                note(con, actor, event, uid, folder)
+        return private("", 204)
 
     @app.route("/api/team/members/<uuid:account>/works/<uuid:work>", methods=("PUT", "DELETE"))
     def team_update_sharing(account, work):
@@ -303,7 +351,7 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
         if row["role"] == "admin":
             selected = {work_id} if work_id else None
         else:
-            selected = shared_ids(con, row["id"])
+            selected = shared_ids(con, row["id"]) | inherited_works(con, row["id"])
             if row["role"] == "contributor":
                 selected.update(item[0] for item in con.execute("SELECT work FROM team_owned_work WHERE member=?", (row["id"],)))
             if work_id:

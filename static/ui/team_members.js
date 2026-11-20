@@ -12,6 +12,10 @@ const sharing = document.querySelector("#teamShares");
 const shareWork = document.querySelector("#teamShareWork");
 const shareButton = document.querySelector("#shareTeamVideo");
 const shared = document.querySelector("#teamSharedVideos");
+const folderTitle = document.querySelector("#teamFoldersTitle");
+const shareFolder = document.querySelector("#teamShareFolder");
+const shareFolderButton = document.querySelector("#shareTeamFolder");
+const sharedFolders = document.querySelector("#teamSharedFolders");
 const activity = document.querySelector("#teamMembershipActivity");
 const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 let selected;
@@ -51,8 +55,9 @@ async function loadShares() {
     if (!selected)
         return;
     const member = selected;
-    const { works } = await (await call(`members/${member.id}/works`)).json();
+    const { works, folders } = await (await call(`members/${member.id}/works`)).json();
     sharing.querySelector("h3").textContent = `Videos shared with ${member.name}`;
+    folderTitle.textContent = `Folders shared with ${member.name}`;
     sharing.hidden = false;
     shareWork.replaceChildren();
     shared.replaceChildren();
@@ -69,6 +74,21 @@ async function loadShares() {
             shareWork.add(new Option(work.title, work.id));
     }
     shareButton.disabled = !shareWork.options.length;
+    shareFolder.replaceChildren();
+    sharedFolders.replaceChildren();
+    for (const folder of folders) {
+        if (folder.shared) {
+            const row = document.createElement("li");
+            row.append(`${folder.title} `, button(`Revoke folder ${folder.title}`, () => void task(async () => {
+                await call(`members/${member.id}/folders/${folder.id}`, "DELETE");
+                await loadShares();
+            }, "Folder access revoked.")));
+            sharedFolders.append(row);
+        }
+        else
+            shareFolder.add(new Option(folder.title, folder.id));
+    }
+    shareFolderButton.disabled = !shareFolder.options.length;
 }
 shareButton.onclick = () => void task(async () => {
     if (!selected || !shareWork.value)
@@ -76,6 +96,12 @@ shareButton.onclick = () => void task(async () => {
     await call(`members/${selected.id}/works/${shareWork.value}`, "PUT");
     await loadShares();
 }, "Video shared.");
+shareFolderButton.onclick = () => void task(async () => {
+    if (!selected || !shareFolder.value)
+        return;
+    await call(`members/${selected.id}/folders/${shareFolder.value}`, "PUT");
+    await loadShares();
+}, "Folder shared.");
 async function loadActivity() {
     const { events } = await (await call("audit")).json();
     const list = activity.querySelector("ul");
@@ -85,7 +111,7 @@ async function loadActivity() {
         const action = event.action.replaceAll("_", " ");
         const actor = names.get(event.actor.replace(/^team:/, "")) || event.actor;
         const subject = names.get(event.subject) || event.subject;
-        const detail = event.detail && !event.action.startsWith("video_") ? ` (${event.detail})` : "";
+        const detail = event.detail && !/^(video|folder)_/.test(event.action) ? ` (${event.detail})` : "";
         item.textContent = `${date.format(event.at * 1000)} · ${actor} · ${action} · ${subject}${detail}`;
         list.append(item);
     }
@@ -120,7 +146,7 @@ async function loadMembers() {
             item.append(role, button("Save role", () => void task(async () => {
                 await call(`members/${member.id}`, "PUT", { role: role.value });
                 await loadMembers();
-            }, "Member role saved.")), button("Manage video access", () => void task(async () => {
+            }, "Member role saved.")), button("Manage media access", () => void task(async () => {
                 selected = member;
                 await loadShares();
             })), button("Remove access", () => void task(async () => {
