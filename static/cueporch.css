@@ -27,6 +27,15 @@ main { max-width: 65rem; }
 .workspace-activity li { padding-block: .45rem; border-block-end: 1px solid #d2ded7; overflow-wrap: anywhere; }
 .workspace-activity li a, .workspace-activity time { display: block; }
 .workspace-activity button { margin-block-start: .25rem; }
+.workspace-tour { margin-block: .8rem; }
+.workspace-tour-mark {
+  display: block; inline-size: min(100%, 32rem); margin-block: .75rem; padding: .7rem 1rem;
+  border: 2px solid #2a635c; border-radius: .55rem; background: #fcfcf8; color: #152e33;
+}
+.workspace-tour-mark[hidden] { display: none; }
+.workspace-tour-mark :is(p, h2) { margin-block: .35rem; }
+.workspace-tour-mark > div { display: flex; flex-wrap: wrap; gap: .5rem; }
+.workspace-tour-highlight { outline: 3px solid #248478; outline-offset: .2rem; }
 .workspace-search, .workspace-home-actions { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem 1rem; margin-block: 1rem; }
 .workspace-search label { align-self: center; }
 .workspace-home-actions > * { align-self: baseline; }

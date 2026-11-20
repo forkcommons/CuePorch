@@ -19,12 +19,20 @@
   </form>
   <p id="recordStatus" role="status"></p>
   <main id="recordStudio" hidden>
+    {% if broadcast_endpoint %}
+    {% set tour_steps = [
+      ("#recordSources", "Connect your sources", "Choose a camera and microphone or share your screen. Check the preview before starting."),
+      ("#studioScenes", "Prepare scenes and graphics", "Add the layouts, graphics and slides you intend to show. Choose Take scene when you want it on the preview or program."),
+      ("#recordProductionMode", "Choose a production mode", "Choose whether to broadcast from this browser or make a recording for later.")
+    ] %}
+    {% include "workspace_tour.html" %}
+    {% endif %}
     <div class="video-workspace">
       <section aria-label="Recording preview">
         <canvas id="recordCanvas" width="1280" height="720" aria-label="Live recording preview"></canvas>
         <video id="takePreview" controls playsinline hidden aria-label="Finished recording"></video>
         {% if broadcast_endpoint %}
-        <label>Production mode <select id="browserProductionMode">
+        <label id="recordProductionMode">Production mode <select id="browserProductionMode">
           <option value="broadcast">Broadcast from this browser</option><option value="record">Recording only</option>
         </select></label>
         {% endif %}

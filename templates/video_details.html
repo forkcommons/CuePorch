@@ -20,6 +20,12 @@
   </form>
   <p id="detailsStatus" role="status"></p>
   <main id="videoDetails" hidden>
+    {% set tour_steps = [
+      ("#previewTitle", "Preview the video", "Check the copy people can play before making changes."),
+      ("#videoMetaTitle", "Describe the video", "Edit the title, description, tags and credits. Choose Save video details to apply your changes."),
+      ("#videoReviewLinks", "Share for review", "Open Review links and comments to create a recipient link or manage review feedback.")
+    ] %}
+    {% include "workspace_tour.html" %}
     <div class="video-work-actions">
       <label>Editorial status
         <select id="editorialState" disabled>
@@ -34,7 +40,7 @@
       <a href="/operator/videos/{{ work }}/analytics">Video analytics</a>
       <a href="/operator/videos/{{ work }}/editing">Edit video</a>
       <a href="/operator/videos/{{ work }}/timeline">Timeline editor</a>
-      <a href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>
+      <a id="videoReviewLinks" href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>
       <a id="viewerPage" hidden>View video page</a>
       <details>
         <summary>File actions</summary>
@@ -55,7 +61,7 @@
         <p id="previewMessage" hidden>No browser-playable copy is stored for this video.</p>
       </section>
     <form id="videoMeta">
-      <label>Title <input name="title" maxlength="128" required></label>
+      <label id="videoMetaTitle">Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000" rows="5"></textarea></label>
       <label>Pages that embed this video (one URL per line) <textarea name="embed_pages" rows="3"></textarea></label>
       <label>Tags (one per line) <textarea name="tags" rows="3"></textarea></label>

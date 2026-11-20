@@ -25,6 +25,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
 
 
+def check_tour(page, steps):
+    open_tour = page.get_by_role("button", name="Take a tour")
+    progress = page.locator("#workspaceTourProgress")
+    mark = page.locator("#workspaceTourMark")
+
+    def step(position):
+        anchor, title = steps[position - 1]
+        expect(page.locator(f"{anchor}.workspace-tour-highlight + #workspaceTourMark")).to_be_visible()
+        expect(mark.get_by_role("heading", name=title)).to_be_focused()
+        expect(progress).to_have_text(f"Step {position} of {len(steps)}")
+
+    expect(mark).to_be_hidden()
+    open_tour.focus()
+    page.keyboard.press("Enter")
+    step(1)
+    expect(mark.get_by_role("button", name="Back")).to_be_disabled()
+    mark.get_by_role("button", name="Next").click()
+    step(2)
+    mark.get_by_role("button", name="Back").click()
+    step(1)
+    page.keyboard.press("Escape")
+    expect(open_tour).to_be_focused()
+    expect(mark).to_be_hidden()
+    expect(page.locator(".workspace-tour-highlight")).to_have_count(0)
+    open_tour.click()
+    step(1)
+    for position in range(2, len(steps) + 1):
+        mark.get_by_role("button", name="Next").click()
+        step(position)
+    mark.get_by_role("button", name="Finish").click()
+    expect(open_tour).to_be_focused()
+    expect(mark).to_be_hidden()
+
+
 class WorkspaceActivity(unittest.TestCase):
     def test_activity(self):
         with ExitStack() as cleanup:
@@ -164,6 +198,40 @@ class WorkspaceActivity(unittest.TestCase):
                 page.get_by_role("button", name="Sign out").click()
                 expect(panel).to_be_hidden()
                 self.assertEqual(401, viewer.request.get(base + activity, headers=TEAM).status)
+
+                manager.goto(base + f"/operator/videos/{work}")
+                check_tour(manager, [
+                    ("#previewTitle", "Preview the video"),
+                    ("#videoMetaTitle", "Describe the video"),
+                    ("#videoReviewLinks", "Share for review"),
+                ])
+                production = event.json
+                occurrence = production["occurrences"][0]["id"]
+                manager.goto(base + f"/operator/live-events/{production['id']}/{occurrence}/studio")
+                check_tour(manager, [
+                    ("#recordSources", "Connect your sources"),
+                    ("#studioScenes", "Prepare scenes and graphics"),
+                    ("#recordProductionMode", "Choose a production mode"),
+                ])
+                self.assertEqual("broadcast", manager.locator("#browserProductionMode").input_value())
+
+                pw = "Synthetic password for this review"
+                review = operator_client.post(f"/api/library/work/{work}/review-links", headers=auth,
+                                              json=dict(name="Gallery review", password=pw, allow_comment=True))
+                self.assertEqual(201, review.status_code, review.data)
+                with browser.new_context(viewport={"width": 390, "height": 780}) as visitor:
+                    guest = visitor.new_page()
+                    guest.goto(base + review.json["path"])
+                    expect(guest.get_by_role("button", name="Take a tour")).to_have_count(0)
+                    guest.get_by_label("Review password").fill(pw)
+                    guest.get_by_role("button", name="Open review").click()
+                    check_tour(guest, [
+                        ("#reviewTourPlayer", "Play the selected version"),
+                        ("#reviewPlayerControls", "Inspect a moment"),
+                        ("#reviewTourFeedback", "Find feedback"),
+                    ])
+                    self.assertEqual(320, guest.locator("video").evaluate(
+                        "async v => {v.muted=true; await v.play(); return v.videoWidth;}"))
 
 
 if __name__ == "__main__":

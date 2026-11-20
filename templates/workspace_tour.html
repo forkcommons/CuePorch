@@ -1,0 +1,19 @@
+<div class="workspace-tour">
+  <button type="button" data-tour-toggle aria-expanded="false" aria-controls="workspaceTourMark">Take a tour</button>
+  <template data-tour-steps>
+    {% for anchor, label, instruction in tour_steps %}
+      <p data-tour-anchor="{{ anchor }}" data-tour-title="{{ label }}">{{ instruction }}</p>
+    {% endfor %}
+  </template>
+  <section class="workspace-tour-mark" id="workspaceTourMark" aria-labelledby="workspaceTourTitle" hidden>
+    <p id="workspaceTourProgress" data-tour-progress></p>
+    <h2 id="workspaceTourTitle" data-tour-heading tabindex="-1" aria-describedby="workspaceTourProgress workspaceTourInstruction"></h2>
+    <p id="workspaceTourInstruction" data-tour-instruction></p>
+    <div>
+      <button type="button" data-tour-back>Back</button>
+      <button type="button" data-tour-next>Next</button>
+      <button type="button" data-tour-close>Dismiss tour</button>
+    </div>
+  </section>
+</div>
+<script type="module" src="/static/ui/workspace_tour.js"></script>

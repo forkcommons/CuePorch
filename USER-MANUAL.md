@@ -22,6 +22,8 @@ Select **Open workspace overview** to see recent uploads and imports alongside t
 
 Open **Activity** in Workspace navigation or on your signed-in Team page. It shows the last 30 days of support messages and status changes, direct video shares to your account, and new live events if you manage the workspace. Choose an item's title to open the support request, video or event editor. Use **Mark as read** to save your read status across browsers, and **Show older activity** to see more items within the same 30-day window.
 
+Choose **Take a tour** in Video details, an open review, or Live Studio to highlight the main controls for that page. Use **Next** and **Back** to move, or select **Dismiss tour** or press **Escape** from the tour to return to the page. Reopen it from **Take a tour** whenever you need it.
+
 ### Browse public videos and curate Staff Picks
 
 Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** links to the institution’s published channel pages. Each result opens its existing watch address.
