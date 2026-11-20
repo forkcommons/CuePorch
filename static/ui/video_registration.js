@@ -1,6 +1,6 @@
 import { checked } from "./team_api.js";
 const imageFields = ["logo", "background_image"];
-export function setupRegistration(call, download, credential) {
+export function setupRegistration(call, download, credential, saved) {
     const form = document.querySelector("#registrationEditor");
     const listing = form.querySelector("#registrantRows");
     const protectedNotice = form.querySelector("#registrationProtected");
@@ -183,6 +183,7 @@ export function setupRegistration(call, download, credential) {
                 return;
             render(updated);
             message.textContent = "Registration saved.";
+            saved?.();
         });
     };
     form.querySelector("#registrationExport").onclick = () => void action(download);

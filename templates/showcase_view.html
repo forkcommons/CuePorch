@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{{ 'Protected showcase' if locked else settings.seo_title or settings.title }} · CuePorch</title>
   {% if not locked and not internal and not embed and settings.visibility == 'public' and settings.indexable %}
-    {% if settings.seo_description %}<meta name="description" content="{{ settings.seo_description }}">{% endif %}
+    {% if settings.seo_description or settings.description %}<meta name="description" content="{{ settings.seo_description or settings.description }}">{% endif %}
     {% if settings.seo_keywords %}<meta name="keywords" content="{{ settings.seo_keywords }}">{% endif %}
   {% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">

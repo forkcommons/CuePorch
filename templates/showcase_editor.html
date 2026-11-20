@@ -29,6 +29,7 @@
       <div id="showcaseSharing" class="library-tools" hidden>
         <label>Share link <input id="showcaseLink" readonly></label>
         <label>Embed code <input id="showcaseCode" readonly></label>
+        <label>Roku catalog feed <input id="showcaseRokuFeed" readonly></label>
       </div>
       {% include 'registration_editor.html' %}
       <div class="video-workspace">
@@ -73,6 +74,21 @@
             <label>Search title <input name="seo_title" maxlength="140"></label>
             <label>Search description <textarea name="seo_description" maxlength="200"></textarea></label>
             <label>Search keywords <input name="seo_keywords" maxlength="500"></label>
+            <section class="showcase-search-preview" aria-labelledby="showcaseSearchPreview">
+              <h3 id="showcaseSearchPreview">Search result preview</h3>
+              <p id="showcaseSearchStatus"></p>
+              <p id="showcaseSearchTitle"></p>
+              <p id="showcaseSearchAddress"></p>
+              <p id="showcaseSearchDescription"></p>
+            </section>
+          </fieldset>
+          <fieldset>
+            <legend>TV apps</legend>
+            <label><input type="checkbox" name="roku_enabled"> Offer a Roku catalog feed</label>
+            <label>Channel provider <input name="roku_provider" maxlength="100"></label>
+            <label>Channel language <input name="roku_language" maxlength="35" placeholder="en-US"></label>
+            <label>Channel genres <input name="roku_genres" maxlength="250" placeholder="documentary, educational"></label>
+            <p>Use the feed in your SceneGraph app with a public HTTPS address. It includes public videos with no registration form or embed restrictions.</p>
           </fieldset>
           <button type="submit">Save showcase</button>
         </form>

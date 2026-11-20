@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 import json
+import math
 import re
+from urllib.parse import urlsplit
 import uuid
 
 from flask import abort, make_response, render_template, request, send_file, url_for
@@ -10,6 +12,8 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash
 
 from catalog import video_version_key
+from browser_account_security import is_loopback
+import library_details
 import library_peer_handoff
 import library_privacy as privacy
 import library_registration
@@ -34,6 +38,7 @@ DEFAULTS = dict(
     logo=None, accent="#2b7e7d", dark=False, layout="grid", size="medium", search=True,
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
+    roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
@@ -72,13 +77,30 @@ def state(row):
     return DEFAULTS | json.loads(row["settings"])
 
 
-def summary(row):
+def roku_visible(con, row, settings):
+    return (settings["roku_enabled"] and settings["visibility"] == "public" and not settings["domains"]
+            and not library_registration.active(con, "showcase", row["id"]))
+
+
+def roku_origin(public_url):
+    canonical = source_origin(public_url)
+    if canonical.startswith("https://"):
+        return canonical
+    local = source_origin(request.host_url)
+    if is_loopback(urlsplit(local).hostname) and is_loopback(request.remote_addr):
+        return local
+    return None
+
+
+def summary(con, row, public_url):
     settings = state(row)
     mode = settings["visibility"]
+    origin = roku_origin(public_url) if roku_visible(con, row, settings) else None
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], settings=settings,
                 has_password=bool(row["password"]), created=row["created"],
                 watch=url_for("showcase_main", slug=row["slug"]) if mode in ("public", "password") else None,
-                embed=url_for("showcase_frame", slug=row["slug"]) if mode != "private" else None)
+                embed=url_for("showcase_frame", slug=row["slug"]) if mode != "private" else None,
+                roku=origin + url_for("showcase_roku", uid=row["id"]) if origin else None)
 
 
 def validate_settings(con, raw, lookup):
@@ -87,7 +109,8 @@ def validate_settings(con, raw, lookup):
     values = dict(DEFAULTS)
     for name, limit in (("title", 128), ("description", 5000), ("seo_title", 140),
                         ("seo_description", 200), ("seo_keywords", 500), ("headline", 140),
-                        ("summary", 2000), ("button_label", 100)):
+                        ("summary", 2000), ("button_label", 100), ("roku_provider", 100),
+                        ("roku_genres", 250)):
         values[name] = text_field(raw.get(name, DEFAULTS[name]), name.replace("_", " "), limit, name == "title")
     values["button_url"] = web_link(raw.get("button_url", ""))
     if bool(values["button_label"]) != bool(values["button_url"]):
@@ -97,7 +120,7 @@ def validate_settings(con, raw, lookup):
     if not isinstance(accent, str) or not re.fullmatch(r"#[A-Fa-f0-9]{6}", accent):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
-    for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable"):
+    for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
@@ -119,6 +142,16 @@ def validate_settings(con, raw, lookup):
     if not isinstance(members, list) or any(not isinstance(item, str) or item not in lookup for item in members):
         abort(422, "Choose existing library videos.")
     values["videos"] = list(dict.fromkeys(members))
+    language = text_field(raw.get("roku_language", DEFAULTS["roku_language"]), "a channel language", 35, True)
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}", language):
+        abort(422, "Use a channel language tag such as en-US.")
+    values["roku_language"] = language
+    genres = [genre.strip().casefold().replace(" ", "-") for genre in values["roku_genres"].split(",") if genre.strip()]
+    if len(genres) > 8 or any(not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", genre) for genre in genres):
+        abort(422, "Enter up to eight comma-separated genres using letters, numbers or hyphens.")
+    if values["roku_enabled"] and (not values["roku_provider"] or not genres):
+        abort(422, "Enter a provider and at least one genre for Roku.")
+    values["roku_genres"] = ", ".join(dict.fromkeys(genres))
     return values
 
 
@@ -174,11 +207,12 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         staff()
         with tx() as con:
             if request.method == "GET":
-                return [summary(row) for row in con.execute("SELECT * FROM video_showcase ORDER BY created DESC")]
+                return [summary(con, row, public_url)
+                        for row in con.execute("SELECT * FROM video_showcase ORDER BY created DESC")]
             uid = uuid.uuid4().hex
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, uid, uuid.uuid4().hex, json.dumps(DEFAULTS), datetime.now(timezone.utc).isoformat()))
-            return summary(get_showcase(con, uid)), 201
+            return summary(con, get_showcase(con, uid), public_url), 201
 
     @app.post("/api/showcases/selected-videos")
     def add_selected_videos():
@@ -212,7 +246,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         with tx() as con:
             row = get_showcase(con, uid)
             if request.method == "GET":
-                return summary(row)
+                return summary(con, row, public_url)
             if request.method == "DELETE":
                 con.execute("DELETE FROM video_showcase WHERE id=?", (uid,))
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
@@ -221,10 +255,11 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if request.method == "POST":
                 new_id = uuid.uuid4().hex
                 values = state(row)
-                values.update(title=(values["title"][:118] + " (copy)"), visibility="private", indexable=False)
+                values.update(title=(values["title"][:118] + " (copy)"), visibility="private", indexable=False,
+                              roku_enabled=False)
                 con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                             (new_id, new_id, uuid.uuid4().hex, json.dumps(values), datetime.now(timezone.utc).isoformat()))
-                return summary(get_showcase(con, new_id)), 201
+                return summary(con, get_showcase(con, new_id), public_url), 201
             request.max_content_length = 512 * 1024
             body = request.get_json()
             if not isinstance(body, dict) or body.get("revision") != row["revision"]:
@@ -244,7 +279,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if values != state(row) or slug != row["slug"] or hashed != row["password"]:
                 con.execute("UPDATE video_showcase SET slug=?,revision=?,settings=?,password=? WHERE id=?",
                             (slug, uuid.uuid4().hex, json.dumps(values), hashed, uid))
-            return summary(get_showcase(con, uid))
+            return summary(con, get_showcase(con, uid), public_url)
 
     @app.post("/api/showcases/<uid>/preview")
     def issue_showcase_preview(uid):
@@ -410,6 +445,9 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 if not 0 <= index < len(tracks):
                     abort(404)
                 digest, kind = tracks[index]["sha256"], "text/vtt"
+        return serve_file(work_id, digest, kind)
+
+    def serve_file(work_id, digest, kind):
         path = root / "objects" / digest if digest else None
         if path is None or not path.is_file():
             abort(404)
@@ -421,3 +459,73 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         response.cache_control.no_store = True
         response.cache_control.private = True
         return media_bandwidth.measure(response, tx, work_id) if kind == "video/mp4" else response
+
+    def roku_context(con, uid):
+        row = get_showcase(con, uid)
+        settings = state(row)
+        if not roku_visible(con, row, settings):
+            abort(404)
+        canonical = roku_origin(public_url)
+        if not canonical:
+            abort(404)
+        return settings, canonical
+
+    def roku_entry(con, work, settings):
+        if not work or library_registration.active(con, "video", work["id"]):
+            return None
+        # A device does not arrive from an allowed embed site. Apply the existing
+        # embed rules as well as public showcase and source privacy.
+        return content_policy(con, work, permits, settings, True, "", False)
+
+    @app.get("/showcases/tv/roku/<uid>.json")
+    def showcase_roku(uid):
+        with tx() as con:
+            settings, canonical = roku_context(con, uid)
+            works = library()
+            entries = []
+            for work_id in settings["videos"]:
+                work = works.get(work_id)
+                copy = roku_entry(con, work, settings)
+                if not copy or not (root / "objects" / copy["sha256"]).is_file():
+                    continue
+                details = library_details.details_for(con, work)
+                title = title_for(con, work)
+                description = details.get("description") or title
+                url = canonical + url_for("showcase_roku_media", uid=uid, work_id=work_id,
+                                          digest=copy["sha256"], kind="video")
+                content = dict(language=settings["roku_language"], videos=[dict(url=url, videoType="MP4")])
+                duration = work.get("duration_seconds")
+                if type(duration) in (int, float) and math.isfinite(duration) and duration > 0:
+                    content["duration"] = math.ceil(duration)
+                added = work.get("library_added_at")
+                if isinstance(added, str) and added:
+                    content["dateAdded"] = added
+                entry = dict(id=work_id, title=title, shortDescription=description[:200], longDescription=description,
+                             genres=settings["roku_genres"].split(", "), tags=details.get("tags", []), content=content)
+                poster = selected_thumbnail(con, work)
+                if poster:
+                    path = root / "objects" / poster
+                    if path.is_file() and thumbnail_type(path) in ("image/jpeg", "image/png"):
+                        entry["thumbnail"] = canonical + url_for("showcase_roku_media", uid=uid, work_id=work_id,
+                                                                 digest=poster, kind="poster")
+                entries.append(entry)
+        response = make_response(dict(providerName=settings["roku_provider"], language=settings["roku_language"],
+                                      lastUpdated=datetime.now(timezone.utc).isoformat(), shortFormVideos=entries))
+        response.cache_control.no_store = True
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
+    @app.get("/showcases/tv/roku/<uid>/<work_id>/<any(video,poster):kind>/<digest>")
+    def showcase_roku_media(uid, work_id, kind, digest):
+        with tx() as con:
+            settings, _ = roku_context(con, uid)
+            if work_id not in settings["videos"]:
+                abort(404)
+            work = library().get(work_id)
+            copy = roku_entry(con, work, settings)
+            if not copy:
+                abort(404)
+            current = selected_thumbnail(con, work) if kind == "poster" else copy["sha256"]
+            if not current or current != digest:
+                abort(404)
+        return serve_file(work_id, digest, "video/mp4" if kind == "video" else None)

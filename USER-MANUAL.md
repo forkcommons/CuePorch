@@ -272,6 +272,10 @@ Open **Showcases** from the library. **New showcase** creates a private gallery.
 
 Choose **Public**, **Password** or **Embed only** to create viewer links. The optional list of allowed sites restricts embeds. A public showcase lists publicly visible videos. A password-protected showcase can play other restricted videos when their embed settings permit it. Private videos stay in the operator preview. A video with its own registration form keeps that gate and is omitted from guest playlists. Use **Registration** to require a form for the whole showcase and export the answers as CSV. Use **Make a copy** to start a private gallery with the same presentation and video order.
 
+Under **Playback and discovery**, use **Search result preview** to see the draft title, address and description. Blank search fields use the gallery title and description. Save a public showcase with indexing enabled to publish its metadata and optional keywords.
+
+Under **TV apps**, enable the Roku catalog and enter the channel provider, language and genres. Save and copy **Roku catalog feed** into your SceneGraph app. Use a public HTTPS address for the app. The feed lists retained playback copies of public showcase videos that allow embeds anywhere and have no registration gate. Showcase registration or an embed-site restriction disables the feed.
+
 **Move from Vimeo** lists showcases and their source visibility during inventory. The transfer creates private galleries with ordered members found in the account inventory and reports the source video IDs that were unavailable. Repeated transfers keep the gallery and operator edits. Set the appropriate visibility, password and embed domains in CuePorch when the transferred gallery is ready. The transfer preserves names, descriptions and available video order. Recreate design and registration settings in CuePorch.
 
 ### Live events

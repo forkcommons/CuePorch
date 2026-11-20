@@ -34,7 +34,8 @@ interface FormDataState {
 }
 type VideoRequest = <T>(suffix: string, method?: string, body?: object) => Promise<T>;
 
-export function setupRegistration(call: VideoRequest, download: () => Promise<void>, credential: () => string) {
+export function setupRegistration(call: VideoRequest, download: () => Promise<void>, credential: () => string,
+    saved?: () => void) {
   const form = document.querySelector<HTMLFormElement>("#registrationEditor")!;
   const listing = form.querySelector<HTMLTableSectionElement>("#registrantRows")!;
   const protectedNotice = form.querySelector<HTMLElement>("#registrationProtected")!;
@@ -217,6 +218,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
       if (context !== current || form.hidden) return;
       render(updated);
       message.textContent = "Registration saved.";
+      saved?.();
     });
   };
   form.querySelector<HTMLButtonElement>("#registrationExport")!.onclick = () => void action(download);

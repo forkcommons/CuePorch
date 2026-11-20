@@ -15,6 +15,11 @@ const frame = document.querySelector("#showcaseFrame");
 const sharing = document.querySelector("#showcaseSharing");
 const link = document.querySelector("#showcaseLink");
 const code = document.querySelector("#showcaseCode");
+const rokuFeed = document.querySelector("#showcaseRokuFeed");
+const searchStatus = document.querySelector("#showcaseSearchStatus");
+const searchTitle = document.querySelector("#showcaseSearchTitle");
+const searchAddress = document.querySelector("#showcaseSearchAddress");
+const searchDescription = document.querySelector("#showcaseSearchDescription");
 const logoInput = field("logo_file");
 const clear = document.querySelector("#showcaseClearLogo");
 const base = document.body.dataset.publicUrl || location.origin;
@@ -51,7 +56,31 @@ const openRegistration = setupRegistration((suffix, method, values) => request(e
     download.download = "cueporch-showcase-registrants.csv";
     download.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}, () => credential.value);
+}, () => credential.value, () => {
+    const selectedId = current.id;
+    void request(endpoint()).then((updated) => {
+        showcases = showcases.map((value) => value.id === selectedId ? { ...value, roku: updated.roku } : value);
+        if (current.id === selectedId)
+            renderRokuLink(updated.roku);
+    }).catch(() => {
+        if (current.id === selectedId)
+            renderRokuLink(null);
+    });
+});
+function renderRokuLink(path) {
+    rokuFeed.value = path || "";
+    rokuFeed.parentElement.hidden = !path;
+}
+function renderSearchPreview() {
+    const visible = field("visibility").value === "public";
+    const indexable = field("indexable").checked;
+    searchStatus.textContent = !visible ? "Indexing requires a public showcase."
+        : indexable ? "Preview of the metadata saved for search engines." : "Search indexing is off.";
+    const title = field("seo_title").value.trim() || field("title").value.trim();
+    searchTitle.textContent = title ? title + " · CuePorch" : "";
+    searchAddress.textContent = new URL("/showcases/" + encodeURIComponent(field("slug").value), base).href;
+    searchDescription.textContent = field("seo_description").value.trim() || field("description").value.trim();
+}
 function membership() {
     const included = new Set(selected);
     const titles = new Map(library.map((work) => [work.id, work.title]));
@@ -109,7 +138,9 @@ function select(value) {
     code.value = value.embed ? `<iframe src="${new URL(value.embed, base).href}" title="Video showcase" width="960" height="640" allowfullscreen></iframe>` : "";
     link.parentElement.hidden = !value.watch;
     code.parentElement.hidden = !value.embed;
+    renderRokuLink(value.roku);
     visibility();
+    renderSearchPreview();
     membership();
     editor.hidden = false;
 }
@@ -156,6 +187,7 @@ if (credential.value)
     void action(signIn);
 picker.onchange = () => updateList(picker.value);
 field("visibility").onchange = visibility;
+form.addEventListener("input", renderSearchPreview);
 add.onclick = () => { selected.push(video.value); membership(); };
 logoInput.onchange = () => { clear.hidden = !logo && !logoInput.files?.length; };
 clear.onclick = () => { logo = null; logoInput.value = ""; clear.hidden = true; };

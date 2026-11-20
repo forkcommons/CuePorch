@@ -10,6 +10,7 @@ interface Showcase {
   has_password: boolean;
   watch: string | null;
   embed: string | null;
+  roku: string | null;
 }
 interface Work {id: string; title: string; asset_type: string;}
 
@@ -29,6 +30,11 @@ const frame = document.querySelector<HTMLIFrameElement>("#showcaseFrame")!;
 const sharing = document.querySelector<HTMLElement>("#showcaseSharing")!;
 const link = document.querySelector<HTMLInputElement>("#showcaseLink")!;
 const code = document.querySelector<HTMLInputElement>("#showcaseCode")!;
+const rokuFeed = document.querySelector<HTMLInputElement>("#showcaseRokuFeed")!;
+const searchStatus = document.querySelector<HTMLElement>("#showcaseSearchStatus")!;
+const searchTitle = document.querySelector<HTMLElement>("#showcaseSearchTitle")!;
+const searchAddress = document.querySelector<HTMLElement>("#showcaseSearchAddress")!;
+const searchDescription = document.querySelector<HTMLElement>("#showcaseSearchDescription")!;
 const logoInput = field("logo_file") as HTMLInputElement;
 const clear = document.querySelector<HTMLButtonElement>("#showcaseClearLogo")!;
 const base = document.body.dataset.publicUrl || location.origin;
@@ -73,7 +79,32 @@ const openRegistration = setupRegistration(
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   },
   () => credential.value,
+  () => {
+    const selectedId = current.id;
+    void request<Showcase>(endpoint()).then((updated) => {
+      showcases = showcases.map((value) => value.id === selectedId ? {...value, roku: updated.roku} : value);
+      if (current.id === selectedId) renderRokuLink(updated.roku);
+    }).catch(() => {
+      if (current.id === selectedId) renderRokuLink(null);
+    });
+  },
 );
+
+function renderRokuLink(path: string | null) {
+  rokuFeed.value = path || "";
+  rokuFeed.parentElement!.hidden = !path;
+}
+
+function renderSearchPreview() {
+  const visible = field("visibility").value === "public";
+  const indexable = (field("indexable") as HTMLInputElement).checked;
+  searchStatus.textContent = !visible ? "Indexing requires a public showcase."
+    : indexable ? "Preview of the metadata saved for search engines." : "Search indexing is off.";
+  const title = field("seo_title").value.trim() || field("title").value.trim();
+  searchTitle.textContent = title ? title + " · CuePorch" : "";
+  searchAddress.textContent = new URL("/showcases/" + encodeURIComponent(field("slug").value), base).href;
+  searchDescription.textContent = field("seo_description").value.trim() || field("description").value.trim();
+}
 
 function membership() {
   const included = new Set(selected);
@@ -130,7 +161,9 @@ function select(value: Showcase) {
   code.value = value.embed ? `<iframe src="${new URL(value.embed, base).href}" title="Video showcase" width="960" height="640" allowfullscreen></iframe>` : "";
   link.parentElement!.hidden = !value.watch;
   code.parentElement!.hidden = !value.embed;
+  renderRokuLink(value.roku);
   visibility();
+  renderSearchPreview();
   membership();
   editor.hidden = false;
 }
@@ -173,6 +206,7 @@ identify.onsubmit = (event) => { event.preventDefault(); void action(signIn); };
 if (credential.value) void action(signIn);
 picker.onchange = () => updateList(picker.value);
 field("visibility").onchange = visibility;
+form.addEventListener("input", renderSearchPreview);
 add.onclick = () => { selected.push(video.value); membership(); };
 logoInput.onchange = () => { clear.hidden = !logo && !logoInput.files?.length; };
 clear.onclick = () => { logo = null; logoInput.value = ""; clear.hidden = true; };
