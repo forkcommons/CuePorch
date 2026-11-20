@@ -72,6 +72,17 @@ def local_hls(directory, filename):
     return response
 
 
+def dash_hls(resource):
+    if isinstance(resource, str):
+        response = Response(manifest_text(resource.encode("ascii")), mimetype=FORMATS["m3u8"])
+    else:
+        response = send_file(resource, mimetype=FORMATS["m4s"], conditional=True, etag=False)
+        response.direct_passthrough = False
+    response.cache_control.no_store = True
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 class Gateway:
     def read(self, origin, path, byte_range=None, stream=False):
         headers = {"Authorization": event_peer.authorization(origin), "Accept-Encoding": "identity"}

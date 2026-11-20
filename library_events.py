@@ -18,10 +18,12 @@ from werkzeug.exceptions import Conflict, UnprocessableEntity
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from browser_account_security import private, same_origin, secure_site
-from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, local_hls, root_path
+from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, dash_hls, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
 import event_rtmp
+import event_dash_buffer
+import event_dash_format
 import event_analytics
 import event_attendance
 import event_chat
@@ -1165,6 +1167,72 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         except (OSError, ValueError):
             abort(502, "Could not start the low-latency RTMP relay.")
 
+    @app.route("/api/live-events/<uid>/<int:opens>/dash", methods=["POST", "DELETE"])
+    def event_dash_relay(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        try:
+            with locked(uid):
+                with tx() as con:
+                    _, event = read(con, uid)
+                    shift = selected_open(event, opens)
+                    preview = encoder_preview_enabled(con, uid)
+                if request.method == "DELETE":
+                    studio.close_dash(uid, opens)
+                    return "", 204
+                window = event.get("dvr_seconds", 120)
+                if event["latency"] != "fail-safe" or not 4 <= window <= 120:
+                    abort(409, "Choose Fail-safe with a DVR window of four to 120 seconds.")
+                if preview:
+                    abort(409, "Use the private encoder preview or turn off preview for this event.")
+                room = studio.dash_contribution(uid, opens)
+                if room:
+                    settings = room.credentials()
+                else:
+                    encoder = provision_event(uid, opens, browser=True, preview=False)
+                    end_at = datetime.fromisoformat(shift["end"]).timestamp() + event_dash_buffer.TARGET_DELAY + 300
+                    settings = studio.dash(uid, opens, encoder, window, end_at)
+                origin = mail_origin if secure and mail_origin.startswith("https://") else (
+                    f"https://{request.host}" if secure else request.host_url.rstrip("/"))
+                upload = url_for("dash_ingest", uid=uid, opens=opens, receiver=settings.pop("receiver"), filename="feed.mpd")
+                return private(settings | {"manifest": origin + upload})
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the Fail-safe contribution.")
+
+    @app.route("/event-ingest/<uid>/<int:opens>/<receiver>/<filename>", methods=["PUT", "POST"])
+    def dash_ingest(uid, opens, receiver, filename):
+        secure_site(mail_origin)
+        room = studio.dash_contribution(uid, opens)
+        if not room or receiver != room.playback.identity:
+            abort(404)
+        authorization = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(authorization.encode("utf8"), ("Bearer " + room.key).encode("ascii")):
+            abort(403)
+        if filename != "feed.mpd" and not (event_dash_format.INIT_FILE.fullmatch(filename) or
+                                           event_dash_format.MEDIA_FILE.fullmatch(filename)):
+            abort(404)
+        try:
+            request.max_content_length = (
+                event_dash_format.MAX_MANIFEST if filename == "feed.mpd" else event_dash_buffer.MAX_FRAGMENT_BYTES)
+            payload = request.get_data(cache=False)
+            if filename == "feed.mpd":
+                room.playback.publish(payload)
+            else:
+                room.playback.put(filename, payload)
+        except FileNotFoundError:
+            abort(404)
+        except event_dash_buffer.FullBuffer as error:
+            return dict(error=str(error)), 507
+        except event_dash_buffer.ConflictingFragment as error:
+            abort(409, str(error))
+        except ValueError as error:
+            abort(422, str(error))
+        return "", 204
+
     @app.get("/api/live-events/<uid>/<int:opens>/health")
     def event_health(uid, opens):
         staff()
@@ -1557,16 +1625,19 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
+            dash = event["latency"] == "fail-safe" and studio.dash_contribution(row["id"], shown["id"])
             source = studio.playback(row["id"], shown["id"]) if (
-                delivery["delivery"] == "ready" and event["latency"] == "low" and not captioned) else None
+                delivery["delivery"] == "ready" and (dash or (event["latency"] == "low" and not captioned))) else None
             if source:
                 transport = f"local:{source.identity}"
                 attendance = [joined] if joined else []
                 session = files.dumps(scope + [delivery["remote"], transport, False] + attendance)
-                address = url_for("event_media_file", token=session, filename="0.m3u8")
+                address = url_for("event_media_file", token=session, filename="master.m3u8" if dash else "0.m3u8")
                 native_video, status = True, "Live"
                 if reporting_scope is not None:
                     analytics_token = playback_token(scope, delivery, False, reporting_scope, None, joined, sharing)
+            elif dash and delivery["delivery"] == "ready":
+                status = "Buffering the Fail-safe signal"
             else:
                 address, analytics_token, status = viewer_playback(
                     event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing)
@@ -1706,20 +1777,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 token, max_age=12 * 3600)
         except (BadSignature, ValueError):
             abort(404)
-        if not replay and not LIVE_FILE.fullmatch(filename):
-            abort(404)
         local = isinstance(gateway, str) and gateway.startswith("local:")
+        if not local and not replay and not LIVE_FILE.fullmatch(filename):
+            abort(404)
         with tx() as con:
             delivery = delivered(con, uid, revision, opens, form_revision, remote, replay, embed,
                                  attendance[0] if attendance else None)
-            if local and (replay or event_captions.active_track(con, uid, opens)):
+            if local and (replay or (not studio.dash_contribution(uid, opens) and event_captions.active_track(con, uid, opens))):
                 abort(404)
         try:
             if local:
                 source = studio.playback(uid, opens, gateway.removeprefix("local:"))
                 if not source:
                     abort(404)
-                response = local_hls(source.path, filename)
+                response = (dash_hls(source.resource(filename)) if isinstance(source, event_dash_buffer.Buffer)
+                            else local_hls(source.path, filename))
             else:
                 response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
         except (OSError, ValueError, requests.RequestException):

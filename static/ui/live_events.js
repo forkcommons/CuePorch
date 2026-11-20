@@ -236,6 +236,8 @@ function choose(event, instance) {
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
     previewEncoder.checked = event.preview_encoder;
@@ -271,6 +273,8 @@ function choose(event, instance) {
     const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
     button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
     button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
+    button("prepareDash").hidden = button("stopDash").hidden = event.event.latency !== "fail-safe";
+    button("prepareDash").disabled = button("prepareEncoder").disabled;
     button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
         (instance.delivery !== "scheduled" && !calendar.host_ready);
@@ -716,6 +720,23 @@ button("stopLowRtmp").onclick = () => void action(async () => {
     encoder.hidden = true;
     key.value = "";
 }, "Low-latency RTMP stopped.");
+button("prepareDash").onclick = () => void action(async () => {
+    const connection = await request(mediaPath("dash"), "POST");
+    input("dashManifest").value = connection.manifest;
+    input("dashUploadToken").value = connection.token;
+    element("dashSettings").hidden = false;
+    button("withdrawEvent").textContent = "Withdraw this occurrence";
+    button("withdrawEvent").disabled = false;
+    health.textContent = `Waiting for a DASH contribution. Playback buffers ${connection.buffer_seconds} seconds.`;
+});
+button("stopDash").onclick = () => void action(async () => {
+    await request(mediaPath("dash"), "DELETE");
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
+}, "MPEG-DASH contribution stopped.");
+button("copyDashToken").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(input("dashUploadToken").value);
+}, "DASH upload token copied.");
 releasePreview.onclick = () => void action(async () => {
     await request(mediaPath("preview"), "POST");
     showEncoderPreview(false);
@@ -1051,6 +1072,8 @@ eventPlaylistPanel.ontoggle = () => { if (eventPlaylistPanel.open)
 eventPlaylistForm.onsubmit = (event) => { event.preventDefault(); void action(() => updatePlaylist(true)); };
 button("withdrawEvent").onclick = () => void action(async () => {
     encoder.hidden = true;
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
     key.value = "";
     await request(mediaPath("delivery"), "DELETE");
     await load();

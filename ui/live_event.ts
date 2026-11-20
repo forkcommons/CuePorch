@@ -73,7 +73,6 @@ const audienceAccess = lobby.dataset.audienceAccess || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
 const latencyMode = lobby.dataset.latency || "standard";
 const liveSyncSegments = new Map([["low", 2], ["standard", 2], ["fail-safe", 10]]);
-const liveSegments = liveSyncSegments.get(latencyMode) ?? 2;
 
 function showBranding(value: EventBranding) {
   logo.hidden = !value.logo;
@@ -131,6 +130,8 @@ function viewArchive(opens: number, autoplayMuted?: boolean) {
 }
 
 function renderVideo(address: string, phase: string, analytics: string, transport: string, video?: HTMLVideoElement) {
+  const local = transport.startsWith("local:");
+  const liveSegments = local ? 2 : liveSyncSegments.get(latencyMode) ?? 2;
   stopMeasuring?.();
   player.dataset.address = address;
   player.dataset.phase = phase;
@@ -153,7 +154,7 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
     const last = ranges.length - 1;
     const start = ranges.start(last);
     const end = ranges.end(last);
-    const seconds = transport.startsWith("local:") ? 1 : latencyMode === "low" ? 2 : 4;
+    const seconds = local ? (latencyMode === "fail-safe" ? 2 : 1) : latencyMode === "low" ? 2 : 4;
     const position = hls ? hls.liveSyncPosition : end - liveSegments * seconds;
     return position === null || !Number.isFinite(position) || end - start < 1
       ? null : Math.min(end - .5, Math.max(start, position));

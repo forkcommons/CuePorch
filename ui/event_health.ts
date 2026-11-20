@@ -1,13 +1,14 @@
 export interface RelayHealth {
   encoder?: {
-    source: "browser" | "srt" | "program";
+    source: "browser" | "srt" | "rtmp" | "dash" | "program";
     metrics: {fps?: number; bitrate?: number; drop_frames?: number} | null;
   } | null;
 }
 
 export function relaySummary({encoder}: RelayHealth, unavailable: string) {
   if (!encoder) return unavailable;
-  const label = {browser: "Browser relay", srt: "SRT relay", program: "Prerecorded relay"}[encoder.source];
+  const label = {browser: "Browser relay", srt: "SRT relay", rtmp: "Low-latency RTMP relay",
+    dash: "MPEG-DASH relay", program: "Prerecorded relay"}[encoder.source];
   const values = encoder.metrics;
   if (!values) return `${label} · Waiting for measurements`;
   const measurements = [label];

@@ -19,6 +19,8 @@ from uuid import UUID, uuid4
 from filelock import FileLock, Timeout
 import requests
 
+from event_dash_buffer import Buffer as DashBuffer, TARGET_DELAY
+
 
 CHUNK_BYTES = 3 * 1024 * 1024
 MAX_ROOMS = 4
@@ -353,6 +355,69 @@ class RtmpRelay:
             self.done.set()
 
 
+class DashRelay:
+    """Feed the delayed DASH contribution to the connected host through local HLS."""
+
+    def __init__(self, encoder, lease, staging, end_at):
+        self.lease = lease
+        self.staging = staging
+        self.playback = DashBuffer(staging.path, staging.identity, staging.window)
+        self.key = secrets.token_urlsafe(32)
+        self.stop = Event()
+        self.done = Event()
+        self.progress = None
+        self.accept_until = time.monotonic() + 300
+        self.end_at = end_at
+        self.arguments = ["-re", "-live_start_index", "0", "-protocol_whitelist", "file,crypto",
+                          "-i", "relay-master.m3u8", *output_arguments(encoder)]
+        Thread(target=self.run, name="CuePorch DASH contribution", daemon=True).start()
+
+    @property
+    def process(self):
+        return self.progress.process if self.progress else None
+
+    def credentials(self):
+        return dict(receiver=self.playback.identity, token=self.key, buffer_seconds=TARGET_DELAY)
+
+    def run(self):
+        saved = {}
+        try:
+            while not self.stop.is_set() and time.time() < self.end_at:
+                if self.playback.origin is None and time.monotonic() >= self.accept_until:
+                    break
+                playlists = self.playback.relay_playlists()
+                for name, document in playlists.items():
+                    if saved.get(name) != document:
+                        destination = self.staging.path / name
+                        temporary = destination.with_suffix(".tmp")
+                        try:
+                            temporary.write_text(document, encoding="ascii")
+                            temporary.replace(destination)
+                        except PermissionError:
+                            continue
+                        saved[name] = document
+                if playlists and all(saved.get(name) == value for name, value in playlists.items()):
+                    if not self.progress or (self.process.poll() is not None and not self.progress.latest):
+                        with suppress(OSError):
+                            self.progress = EncoderProgress(self.arguments, subprocess.DEVNULL, self.staging.path)
+                self.stop.wait(.5)
+        finally:
+            self.stop.set()
+            self.playback.close()
+            if self.process and self.process.poll() is None:
+                with suppress(ProcessLookupError):
+                    self.process.terminate()
+                try:
+                    self.process.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    with suppress(ProcessLookupError):
+                        self.process.kill()
+                    self.process.wait()
+            self.staging.close()
+            self.lease.release()
+            self.done.set()
+
+
 class Studio:
     def __init__(self, database):
         self.directory = database.parent / "event-browser"
@@ -416,6 +481,23 @@ class Studio:
             if isinstance(room, RtmpRelay):
                 room.stop.set()
 
+    def dash(self, uid, opens, encoder, window, end_at):
+        return self.prepare(uid, opens, lambda lease, playback: DashRelay(encoder, lease, playback, end_at),
+                            playback_window=window).credentials()
+
+    def dash_contribution(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if isinstance(room, DashRelay) and not room.stop.is_set() and not room.done.is_set():
+                return room
+        return None
+
+    def close_dash(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if isinstance(room, DashRelay):
+                room.stop.set()
+
     def program(self, uid, opens, encoder, source):
         args = ["-re", "-protocol_whitelist", "file", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
                 "-c", "copy", "-rw_timeout", "10000000", "-f", "flv", ingest_address(encoder)]
@@ -444,7 +526,7 @@ class Studio:
             if not room or room.done.is_set() or room.stop.is_set():
                 return None
         source = ("browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else
-                  "rtmp" if isinstance(room, RtmpRelay) else "program")
+                  "rtmp" if isinstance(room, RtmpRelay) else "dash" if isinstance(room, DashRelay) else "program")
         progress = room.progress
         values = progress.sample() if progress else None
         return dict(source=source, metrics=values)

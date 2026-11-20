@@ -48,6 +48,18 @@ paths:
 
 Set `CUEPORCH_RTMP_RELAY_URL=rtmp://127.0.0.1:11936`, `CUEPORCH_RTMP_RELAY_API=http://127.0.0.1:11937` and `CUEPORCH_RTMP_RELAY_SECRET` to the matching secret in the CuePorch service environment. Keep the control API and authorization callback on loopback, and exclude the callback from public proxy routes. Use at least 24 ASCII characters that are safe in the user-info portion of a URL. For remote senders, configure MediaMTX's RTMPS listener and a trusted certificate, keep its CuePorch reader local, and set `CUEPORCH_RTMP_PUBLISH_URL` to the externally reachable RTMPS origin with its port. Never publish the control API. MediaMTX 1.21.1 is the relay version used for source commissioning.
 
+For a Fail-safe MPEG-DASH contribution, expose CuePorch on its configured HTTPS origin. In the occurrence's production controls, choose **Prepare MPEG-DASH contribution** and copy its manifest endpoint and upload token. Set `CUEPORCH_DASH_TOKEN` in the transmitter's private environment. Run the transmitter on the encoder workstation with the manifest address shown in CuePorch.
+
+```sh
+python dash_transmitter.py --listen "https://media.example.org/event-ingest/EVENT/OCCURRENCE/RECEIVER/feed.mpd"
+```
+
+Direct the encoder to `rtmp://127.0.0.1:11938/live` with stream key `cueporch`. Use `--source` to change the listening address or to pull an existing feed when running without `--listen`. The transmitter repackages video and audio, retries transient upload errors, and sends the final manifest when the encoder stops normally. Use `--ca-file` to supply your internal certificate authority. Prefer an HTTPS reverse proxy that accepts at least 32 MiB for individual media fragments. Keep the published media contact domain and ingest credentials under the station's control.
+
+The native launcher also accepts `--dash-transmitter` followed by the same options. It uses the service's bundled FFmpeg.
+
+CuePorch accepts completed fragmented MP4 objects and an MPEG-DASH manifest with relative numbered templates. Each occurrence has its own credentials, delayed playback window and temporary spool. The delayed feed is also sent to the connected PeerTube host. Verify the station's complete sender, receiver and playback path before an event.
+
 For a permanent station signal, create a PeerTube live destination with live_destination.py. Supply PEERTUBE_USERNAME and PEERTUBE_PASSWORD privately. The command writes encoder settings to the specified private file and prints the embed. Send CivicCast's RTMP output to the corresponding address and stream key. Keep the local recording running independently.
 
 Set a stable channel or meeting link with PUT /api/routes/channel/CHANNEL or /api/routes/meeting/MEETING, authorized with the operator credential. Supply revision, destination, description and public_authorized. For required civic records set public_record. The destination may be a PeerTube /videos/embed/UUID or CivicCast /api/public/embed-player/channel/CHANNEL. Choose the captioned CivicCast route until the actual hosted RTMP path carries selectable, synchronized live captions. For a station package the stable replay slug is the returned work ID. Use that same slug for the meeting's live route to preserve its URL at handoff.
@@ -79,7 +91,7 @@ Routes below are relative to `/api/v1/live-events`. The event ID and occurrence 
 | --- | --- | --- |
 | `read` | `GET` at the base path, `GET /{event}`, `GET /{event}/{opens}/health` | Read the calendar, current revision, playback URLs, occurrences and host health. |
 | `schedule` | `POST` at the base path, `PUT /{event}` | Create or update the same event record as the operator console. The update body supplies the last returned `revision`. An older revision returns HTTP 409. |
-| `produce` | `POST /{event}/{opens}/encoder`, `POST or DELETE /{event}/{opens}/rtmp`, `GET or POST /{event}/{opens}/preview`, `GET or PUT /{event}/{opens}/program`, `DELETE /{event}/{opens}/delivery` | Prepare the host encoder, prepare or stop direct Low-latency RTMP, inspect or release a private preview, configure a prerecorded program or withdraw delivery. Encoder credentials are sensitive. |
+| `produce` | `POST /{event}/{opens}/encoder`, `POST or DELETE /{event}/{opens}/rtmp`, `POST or DELETE /{event}/{opens}/dash`, `GET or POST /{event}/{opens}/preview`, `GET or PUT /{event}/{opens}/program`, `DELETE /{event}/{opens}/delivery` | Prepare an encoder, start or stop the RTMP relay or MPEG-DASH contribution, inspect or release a private preview, configure a prerecorded program or withdraw delivery. Encoder credentials are sensitive. |
 | `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export`, `POST /{event}/{opens}/registrants`, `DELETE /{event}/{opens}/registrants/{id}/join`, `GET /{event}/registrants/{id}` | Manage the form, export registrations, enroll for an occurrence, revoke its personal link or retrieve the attendee referenced by a webhook. Only give this scope to an application authorized to handle those records. |
 | `registrations` | `GET /{event}/{opens}/registrants`, `GET /{event}/{opens}/registration/export`, `POST /{event}/{opens}/registration/import` | Read or export the occurrence roster, or import contacts from a UTF-8 CSV with optional column mapping. |
 

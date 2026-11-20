@@ -1,7 +1,8 @@
 export function relaySummary({ encoder }, unavailable) {
     if (!encoder)
         return unavailable;
-    const label = { browser: "Browser relay", srt: "SRT relay", program: "Prerecorded relay" }[encoder.source];
+    const label = { browser: "Browser relay", srt: "SRT relay", rtmp: "Low-latency RTMP relay",
+        dash: "MPEG-DASH relay", program: "Prerecorded relay" }[encoder.source];
     const values = encoder.metrics;
     if (!values)
         return `${label} · Waiting for measurements`;

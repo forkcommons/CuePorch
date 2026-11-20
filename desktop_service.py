@@ -16,6 +16,7 @@ from filelock import FileLock, Timeout
 from flask import Flask, abort, jsonify, render_template, request
 from waitress import create_server, wasyncore
 
+import dash_transmitter
 from institution import create_app
 from peertube_destination import PeerTube
 
@@ -35,6 +36,11 @@ def read(path):
 
 
 def main():
+    if getattr(sys, "frozen", False):
+        tools = Path(sys._MEIPASS) / "media-tools"
+        os.environ["PATH"] = str(tools) + os.pathsep + os.environ.get("PATH", "")
+    if len(sys.argv) > 1 and sys.argv[1] == "--dash-transmitter":
+        raise SystemExit(dash_transmitter.main(sys.argv[2:]))
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, type=Path)
     home = parser.parse_args().data.resolve()
@@ -58,9 +64,6 @@ def main():
     stopping = threading.Event()
     institution = None
     settings = read(config) if config.exists() else {}
-    if getattr(sys, "frozen", False):
-        tools = Path(sys._MEIPASS) / "media-tools"
-        os.environ["PATH"] = str(tools) + os.pathsep + os.environ.get("PATH", "")
 
     def activate():
         keys = read(owner)
