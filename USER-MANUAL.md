@@ -26,6 +26,8 @@ Open **Viewer account** from Watch to create an account or sign in. Use **Save t
 
 In **Viewer account**, you can change your display name, pronouns or sign-in email, update your password, sign out, and delete the account and its list. Use your current password to change email, change password or delete the account. Changing your password signs out your other browsers. Browsing and public playback are available to signed-out visitors.
 
+On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

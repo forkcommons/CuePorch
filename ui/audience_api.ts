@@ -7,3 +7,10 @@ export function viewerRequest(path: string, method: "GET" | "POST" | "PUT" | "DE
     }),
   });
 }
+
+export function viewerVideo(node: HTMLElement) {
+  const kind = node.dataset.kind || "";
+  const slug = node.dataset.slug || "";
+  const path = `${encodeURIComponent(kind)}/${encodeURIComponent(slug)}`;
+  return {kind, slug, path, account: "/account?" + new URLSearchParams({next: `/watch/${path}`})};
+}

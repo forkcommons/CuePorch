@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from flask import abort, make_response, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import audience_library
 from library_analytics import source_origin
 from library_discovery import entry_payload
 from library_registration import EMAIL
@@ -30,7 +31,7 @@ CREATE INDEX IF NOT EXISTS audience_attempt_expiry ON audience_auth_attempt(expi
 CREATE TABLE IF NOT EXISTS audience_watch_later(
  account TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL, saved REAL NOT NULL,
  PRIMARY KEY(account,kind,slug));
-"""
+""" + audience_library.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
 LOCAL_COOKIE = "cueporch-viewer"
 HTTPS_COOKIE = "__Host-cueporch-viewer"
@@ -200,6 +201,7 @@ def register(app, tx, origin_url, operator, listing):
             with tx() as con:
                 row = current(con, session)
                 same_password(row, previous_hash)
+                audience_library.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
@@ -289,7 +291,9 @@ def register(app, tx, origin_url, operator, listing):
                 ):
                     if (entry := available.get((kind, slug))) is not None:
                         rows.append(entry_payload(entry))
-        return private(render_template("viewer_watch_later.html", signed_in=bool(account), rows=rows))
+        return private(render_template("viewer_watch_later.html", signed_in=bool(account), rows=rows,
+                                       title="Watch Later", endpoint="watch-later",
+                                       empty_label="Your Watch Later list is empty.", remove_label="Remove"))
 
     @app.route("/api/viewer/watch-later/<any(work,meeting):kind>/<slug>", methods=("GET", "PUT", "DELETE"))
     def viewer_watch_later(kind, slug):
@@ -311,3 +315,8 @@ def register(app, tx, origin_url, operator, listing):
                 return private(dict(saved=True))
             saved = con.execute("SELECT 1 FROM audience_watch_later WHERE account=? AND kind=? AND slug=?", key).fetchone()
             return private(dict(saved=bool(saved)))
+
+    def viewer(con, required=True):
+        return current(con, browser_session(scheme()), required)
+
+    audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)

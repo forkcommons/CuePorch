@@ -60,6 +60,17 @@ main { max-width: 65rem; }
 .viewer-account #viewerManagement > * { margin-block: 1.25rem; }
 .save-video { margin-block: .7rem; }
 .save-video [role="status"] { margin-inline-start: .45rem; }
+.save-video > button { margin: .25rem .3rem .25rem 0; }
+.save-video [aria-pressed="true"] { background: #1f6965; color: white; }
+.save-video dialog form[data-collect-create] { margin-block-start: 1rem; }
+.viewer-watch-nav { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem 1rem; }
+body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
+.viewer-collections { list-style: none; padding: 0; }
+.viewer-collections li { border-block-end: 1px solid #becac7; padding: .7rem 0; }
+.viewer-collections p { margin: .2rem 0; }
+.viewer-collection-form { display: grid; gap: .55rem; width: min(28rem, 100%); margin-block: .8rem; }
+.viewer-collection-form input, .viewer-collection-form textarea { width: 100%; }
+.viewer-collection-form button { justify-self: start; }
 .picks-editor:not([hidden]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.35rem; }
 .picks-editor ul, .picks-editor ol { padding-inline-start: 1.25rem; }
 .picks-editor li { margin-block: .35rem; overflow-wrap: anywhere; }

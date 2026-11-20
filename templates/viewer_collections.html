@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Collections · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body>
+  {% include "viewer_watch_nav.html" %}
+  <main>
+    <h1>Collections</h1>
+    {% if signed_in %}
+      {% if collections %}
+        <ul class="viewer-collections">
+        {% for entry in collections %}
+          <li><a href="{{ entry.url }}">{{ entry.title }}</a>
+              {% if entry.description %}<p>{{ entry.description }}</p>{% endif %}</li>
+        {% endfor %}
+        </ul>
+      {% else %}<p>You haven’t created any collections.</p>{% endif %}
+      <form class="viewer-collection-form" data-viewer-collection-form="create" method="post">
+        <h2>Create a collection</h2>
+        <label>Name <input name="title" maxlength="120" required></label>
+        <label>Description <textarea name="description" maxlength="1500" rows="3"></textarea></label>
+        <button type="submit">Create collection</button>
+      </form>
+      <p id="viewerCollectionStatus" role="status"></p>
+      <script type="module" src="{{ url_for('static', filename='ui/viewer_collections.js') }}"></script>
+    {% else %}
+      <p><a href="{{ url_for('viewer_account_page') }}">Sign in to see your collections</a></p>
+    {% endif %}
+  </main>
+</body>
+</html>

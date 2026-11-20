@@ -1,5 +1,21 @@
 <div class="save-video" data-save-video data-kind="{{ save_kind }}" data-slug="{{ save_slug }}">
   <button type="button" data-save-toggle hidden>Save to Watch Later</button>
+  <button type="button" data-like-toggle hidden aria-pressed="false">Like video</button>
+  <span data-like-count hidden></span>
+  <button type="button" data-collect-open hidden>Add to collection</button>
   <span role="status" data-save-status></span>
+  <span role="status" data-like-status></span>
+  <dialog data-collect-dialog aria-labelledby="videoCollectionHeading">
+    <h2 id="videoCollectionHeading">Add to collection</h2>
+    <label>Collection <select data-collect-options></select></label>
+    <button type="button" data-collect-change disabled>Add video</button>
+    <form data-collect-create method="post">
+      <label>New collection name <input name="title" maxlength="120" required></label>
+      <button type="submit">Create collection</button>
+    </form>
+    <p role="status" data-collect-status></p>
+    <form method="dialog"><button type="submit">Close</button></form>
+  </dialog>
 </div>
 <script type="module" src="{{ url_for('static', filename='ui/save_video.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='ui/video_community.js') }}"></script>

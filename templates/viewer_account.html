@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body>
-  <nav aria-label="Watch"><a href="{{ url_for('catalog') }}">Explore</a> · <a href="{{ url_for('watch_later_page') }}">Watch Later</a></nav>
+  {% include "viewer_watch_nav.html" %}
   <main id="viewerAccount" class="viewer-account" data-destination="{{ destination }}">
     <h1>Viewer account</h1>
     <p id="viewerAccountStatus" role="status"></p>

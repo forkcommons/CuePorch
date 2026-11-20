@@ -1,0 +1,18 @@
+{% if rows %}
+  <ul class="watch-grid">
+    {% for item in rows %}
+      <li data-saved-row>
+        <a class="watch-card" href="{{ item.watch }}">
+          {% if item.cover %}<img src="{{ item.cover }}" alt="" loading="lazy">{% else %}<span class="watch-card-cover" aria-hidden="true">▶</span>{% endif %}
+          <strong>{{ item.title }}</strong>
+        </a>
+        <button type="button" data-remove-video data-kind="{{ item.kind }}" data-slug="{{ item.slug }}"
+                data-endpoint="{{ endpoint }}"
+                aria-label="{{ remove_label }} {{ item.title }}{% if endpoint == 'watch-later' %} from Watch Later{% elif endpoint != 'likes' %} from collection{% endif %}">{{ remove_label }}</button>
+      </li>
+    {% endfor %}
+  </ul>
+  <script type="module" src="{{ url_for('static', filename='ui/save_video.js') }}"></script>
+{% endif %}
+<p id="watchLaterEmpty" {% if rows %}hidden{% endif %}>{{ empty_label }}</p>
+<p id="watchLaterStatus" role="status"></p>

@@ -1,20 +1,16 @@
-import { viewerRequest } from "./audience_api.js";
-function links(node) {
-    const kind = encodeURIComponent(node.dataset.kind || "");
-    const slug = encodeURIComponent(node.dataset.slug || "");
-    return { api: `watch-later/${kind}/${slug}`, account: "/account?" + new URLSearchParams({ next: `/watch/${kind}/${slug}` }) };
-}
+import { viewerRequest, viewerVideo } from "./audience_api.js";
 for (const toolbar of document.querySelectorAll("[data-save-video]")) {
     const button = toolbar.querySelector("[data-save-toggle]");
     const status = toolbar.querySelector("[data-save-status]");
-    const paths = links(toolbar);
+    const video = viewerVideo(toolbar);
+    const endpoint = "watch-later/" + video.path;
     let saved = false;
     function render(value) {
         saved = value;
         button.textContent = saved ? "Remove from Watch Later" : "Save to Watch Later";
         button.hidden = false;
     }
-    void viewerRequest(paths.api).then(async (response) => {
+    void viewerRequest(endpoint).then(async (response) => {
         if (response.ok)
             render((await response.json()).saved);
         else if (response.status === 401)
@@ -24,9 +20,9 @@ for (const toolbar of document.querySelectorAll("[data-save-video]")) {
         button.disabled = true;
         status.textContent = "";
         try {
-            const response = await viewerRequest(paths.api, saved ? "DELETE" : "PUT");
+            const response = await viewerRequest(endpoint, saved ? "DELETE" : "PUT");
             if (response.status === 401)
-                location.assign(paths.account);
+                location.assign(video.account);
             else if (response.ok) {
                 render((await response.json()).saved);
                 status.textContent = saved ? "Saved." : "Removed.";
@@ -48,7 +44,7 @@ for (const button of document.querySelectorAll("[data-remove-video]")) {
     button.onclick = async () => {
         button.disabled = true;
         try {
-            const response = await viewerRequest(links(button).api, "DELETE");
+            const response = await viewerRequest(button.dataset.endpoint + "/" + viewerVideo(button).path, "DELETE");
             if (response.status === 401) {
                 location.assign("/account");
                 return;
