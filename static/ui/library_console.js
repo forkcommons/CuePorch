@@ -869,7 +869,19 @@ async function editFolderSlack(folder) {
     webhook.autocomplete = "off";
     addressLabel.append(webhook);
     fields.append(addressLabel);
-    const topics = { upload: "New uploads", comment: "Review comments", approval: "Approvals" };
+    function setting(text, initial) {
+        const label = document.createElement("label");
+        const option = document.createElement("input");
+        option.type = "checkbox";
+        option.checked = initial;
+        label.append(option, text);
+        fields.append(label);
+        return option;
+    }
+    const enabled = setting("Send Slack notifications", settings.enabled);
+    const recursive = setting("Include subfolders", settings.recursive);
+    const topics = { upload: "New uploads", comment: "Review comments", approval: "Approvals",
+        edit: "Titles, thumbnails and removals", privacy: "Privacy changes", showcase: "Additions to showcases" };
     for (const [value, label] of Object.entries(topics)) {
         const wrapper = document.createElement("label");
         const option = document.createElement("input");
@@ -880,6 +892,14 @@ async function editFolderSlack(folder) {
         wrapper.append(option, label);
         fields.append(wrapper);
     }
+    const label = document.createElement("label");
+    label.textContent = "Message language";
+    const language = document.createElement("select");
+    language.add(new Option("English", "en"));
+    language.add(new Option("Español", "es"));
+    language.value = settings.language;
+    label.append(language);
+    fields.append(label);
     const save = document.createElement("button");
     save.textContent = "Save Slack settings";
     const disconnect = document.createElement("button");
@@ -896,16 +916,21 @@ async function editFolderSlack(folder) {
     receipts.setAttribute("aria-label", "Recent Slack deliveries");
     for (const entry of settings.deliveries) {
         const item = document.createElement("li");
-        item.textContent = `${topics[entry.topic]} · ${entry.state}`;
+        item.textContent = `${entry.topic === "delete" ? "Removed video" : topics[entry.topic]} · ${entry.state}`;
         receipts.append(item);
     }
     body.append(receipts);
+    function preferences() {
+        return {
+            revision: settings.revision, topics: new FormData(fields).getAll("topics"),
+            enabled: enabled.checked, recursive: recursive.checked, language: language.value,
+        };
+    }
     async function store(method) {
         save.disabled = connect.disabled = disconnect.disabled = true;
         try {
-            const selected = new FormData(fields).getAll("topics");
             await completed(await request(path, method, {
-                revision: settings.revision, topics: selected, webhook: webhook.value.trim(),
+                ...preferences(), webhook: webhook.value.trim(),
             }, { "X-CuePorch-Slack": "1" }));
             await editFolderSlack(folder);
             workDialogStatus.textContent = method === "PUT" ? "Slack settings saved." : "Slack disconnected.";
@@ -922,9 +947,7 @@ async function editFolderSlack(folder) {
     connect.onclick = async () => {
         save.disabled = connect.disabled = disconnect.disabled = true;
         try {
-            const response = await completed(await request(`${path}/connect`, "POST", {
-                revision: settings.revision, topics: new FormData(fields).getAll("topics"),
-            }, { "X-CuePorch-Slack": "1" }));
+            const response = await completed(await request(`${path}/connect`, "POST", preferences(), { "X-CuePorch-Slack": "1" }));
             const receipt = await response.json();
             location.assign(receipt.authorization_url);
         }

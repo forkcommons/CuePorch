@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import abort, request, send_file
 
 import library_details
+import folder_slack_queue
 import library_appearance
 import library_audio
 import library_languages
@@ -82,6 +83,8 @@ def save_title(con, work, name):
            (SELECT 1 FROM publication_job j WHERE j.id=route.current_action AND j.work=route.slug)""",
         (name, uid),
     )
+    if work.get("asset_type", "video") == "video":
+        folder_slack_queue.enqueue(con, uid, "edit")
 
 
 def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key, authorize_editor,

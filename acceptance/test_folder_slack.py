@@ -109,9 +109,9 @@ class FolderSlack(unittest.TestCase):
                 api = page.context.request
                 auth = {"Authorization": "Bearer " + operator}
 
-                def folder(name):
+                def folder(name, parent=None):
                     result = api.post(base + "/api/library/folders", headers=auth,
-                                      data=dict(name=name, parent=None, color="#75198a"))
+                                      data=dict(name=name, parent=parent, color="#75198a"))
                     self.assertEqual(201, result.status)
                     return result.json()["id"]
 
@@ -174,12 +174,17 @@ class FolderSlack(unittest.TestCase):
                     data={"author": "Test reviewer", "body": "Private comment text", "seconds": 0.2}).ok)
                 for _ in range(2):
                     self.assertTrue(reader.request.put(base + feedback + "/status", data={"status": "Approved"}).ok)
-                deadline = monotonic() + 15
-                while len(delivered) < 3 and monotonic() < deadline:
-                    sleep(.1)
-                self.assertEqual(3, len(delivered))
+                def delivered_count(count):
+                    deadline = monotonic() + 15
+                    while len(delivered) < count and monotonic() < deadline:
+                        sleep(.1)
+                    labels = [entry["text"].split(" <")[0] for entry in delivered]
+                    self.assertEqual(count, len(delivered), labels)
+
+                delivered_count(3)
                 self.assertEqual(4, len(attempts))
-                self.assertEqual(sorted(folder_slack.TOPICS.values()), sorted(msg["text"].split(" <")[0] for msg in delivered))
+                self.assertEqual(sorted(folder_slack.TOPICS[key] for key in ("upload", "comment", "approval")),
+                                 sorted(msg["text"].split(" <")[0] for msg in delivered))
                 for message in delivered:
                     text = message["text"]
                     self.assertIn(f"{base}/team/video/{work}", text)
@@ -188,15 +193,55 @@ class FolderSlack(unittest.TestCase):
                         self.assertNotIn(private, text)
                 self.assertEqual(401, reader.request.get(base + f"/team/video/{work}").status)
                 expect(dialog.get_by_label("Replace webhook (optional)")).to_have_value("")
+
+                dialog.get_by_label("Include subfolders").check()
+                dialog.get_by_label("Message language").select_option("es")
+                dialog.get_by_role("button", name="Save Slack settings").click()
+                expect(dialog.get_by_role("status")).to_have_text("Slack settings saved.")
+                child = folder("Rough cuts", watched)
+                nested = upload(child)
+                work_api = base + f"/api/library/work/{nested}"
+                edited = api.put(work_api + "/title", headers=auth, data={"title": "Private edited title"})
+                self.assertTrue(edited.ok, edited.text())
+                manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))
+                media = next(f["sha256"] for item in manifest["works"] if item["id"] == nested
+                             for f in item["files"] if f["role"] == "playback")
+                thumbnail = api.post(work_api + "/thumbnail", headers=auth, data={"media": media, "seconds": 0.2})
+                self.assertTrue(thumbnail.ok, thumbnail.text())
+                sharing = api.put(work_api + "/privacy", headers=auth, data={
+                    "visibility": "password", "password": "fixture-archive-password", "embed": "disabled",
+                    "domains": [], "download": False,
+                })
+                self.assertTrue(sharing.ok, sharing.text())
+                self.assertEqual("password", sharing.json()["visibility"])
+                showcase = api.post(base + "/api/showcases", headers=auth, data={}).json()["id"]
+                gallery = api.post(base + "/api/showcases/selected-videos", headers=auth,
+                                   data={"works": [nested], "showcases": [showcase]})
+                self.assertTrue(gallery.ok, gallery.text())
+                delivered_count(8)
+                removed = api.post(base + "/api/library/recently-deleted", headers=auth, data={"kind": "work", "items": [nested]})
+                self.assertEqual(202, removed.status, removed.text())
+                delivered_count(9)
+                messages = [post["text"].split(" <")[0] for post in delivered[3:]]
+                self.assertEqual(sorted(folder_slack.LANGUAGES["es"][topic]
+                                        for topic in ("upload", "edit", "edit", "privacy", "showcase", "delete")), sorted(messages))
+                for event in delivered[3:8]:
+                    self.assertIn(f"{base}/team/video/{nested}|Abrir en CuePorch>", event["text"])
+                self.assertNotIn(nested, delivered[8]["text"])
+                dialog.get_by_label("Send Slack notifications").uncheck()
+                dialog.get_by_role("button", name="Save Slack settings").click()
+                expect(dialog.get_by_role("status")).to_have_text("Slack settings saved.")
+                self.assertFalse(api.get(path, headers=auth).json()["enabled"])
+                upload(child)
                 dialog.get_by_role("button", name="Disconnect Slack").click()
                 expect(dialog.get_by_role("status")).to_have_text("Slack disconnected.")
                 self.assertEqual([], api.get(path, headers=auth).json()["deliveries"])
                 upload(watched)
                 with closing(sqlite3.connect(database)) as connection:
                     self.assertEqual(0, connection.execute("SELECT count(*) FROM folder_slack_notice").fetchone()[0])
-                self.assertEqual(3, len(delivered))
-        print("Slack manual webhook, browser-bound OAuth and replay rejection, selected channel, scoped notices,"
-              " 429 retry, private link and disconnect passed.")
+                self.assertEqual(9, len(delivered))
+        print("Slack browser OAuth, scoped notices, 429 retry, private link, nested Spanish notices for editing,"
+              " privacy and showcase, pause, deletion and disconnect passed.")
 
 
 if __name__ == "__main__":

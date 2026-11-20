@@ -15,13 +15,15 @@ from flask import abort, request
 import requests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
+from folder_slack_queue import FOLDERS_FOR_WORK
 from library_analytics import source_origin
 from workspace_oauth import Config, Connection, provider_request, response_object
 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS folder_slack(
- folder TEXT PRIMARY KEY, revision TEXT NOT NULL, address BLOB NOT NULL, topics TEXT NOT NULL, channel TEXT);
+ folder TEXT PRIMARY KEY, revision TEXT NOT NULL, address BLOB NOT NULL, topics TEXT NOT NULL, channel TEXT,
+ enabled INTEGER NOT NULL DEFAULT 1, recursive INTEGER NOT NULL DEFAULT 0, language TEXT NOT NULL DEFAULT 'en');
 CREATE TABLE IF NOT EXISTS folder_slack_notice(
  id INTEGER PRIMARY KEY, folder TEXT NOT NULL, revision TEXT NOT NULL, work TEXT NOT NULL, topic TEXT NOT NULL,
  state TEXT NOT NULL DEFAULT 'queued', created INTEGER NOT NULL, due INTEGER NOT NULL,
@@ -33,6 +35,17 @@ TOPICS = {
     "upload": "A video upload is ready.",
     "comment": "A reviewer left a comment.",
     "approval": "A video version was approved.",
+    "edit": "A video was edited.",
+    "privacy": "A video's privacy settings changed.",
+    "showcase": "A video was added to a showcase.",
+}
+LANGUAGES = {
+    "en": TOPICS | {"delete": "A video was removed.", "open": "Open in CuePorch"},
+    "es": {"upload": "Hay un video nuevo disponible.", "comment": "Un revisor dejó un comentario.",
+           "approval": "Se aprobó una versión del video.", "edit": "Se editó un video.",
+           "privacy": "Cambió la configuración de privacidad de un video.",
+           "showcase": "Se añadió un video a una galería.", "delete": "Se eliminó un video.",
+           "open": "Abrir en CuePorch"},
 }
 WEBHOOK = re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9]{2,40}/[A-Za-z0-9]{2,40}/[A-Za-z0-9_-]{16,100}")
 RETRY_SECONDS = (10, 30, 120, 300)
@@ -42,8 +55,11 @@ OAUTH = Config("slack", "Slack", "https://slack.com/oauth/v2/authorize", "https:
 
 def migrate(con):
     columns = {row[1] for row in con.execute("PRAGMA table_info(folder_slack)")}
-    if "channel" not in columns:
-        con.execute("ALTER TABLE folder_slack ADD COLUMN channel TEXT")
+    new_columns = {"channel": "TEXT", "enabled": "INTEGER NOT NULL DEFAULT 1",
+                   "recursive": "INTEGER NOT NULL DEFAULT 0", "language": "TEXT NOT NULL DEFAULT 'en'"}
+    for name, sql_type in new_columns.items():
+        if name not in columns:
+            con.execute(f"ALTER TABLE folder_slack ADD COLUMN {name} {sql_type}")
 
 
 def current_settings(con, folder):
@@ -58,20 +74,27 @@ def check_revision(row, revision):
         abort(409, "The Slack settings changed. Reopen this folder's settings.")
 
 
-def save(con, folder, address, topics, channel):
+def save(con, folder, address, options, channel):
     revision = uuid4().hex
-    con.execute("INSERT OR REPLACE INTO folder_slack(folder,revision,address,topics,channel) VALUES(?,?,?,?,?)",
-                (folder, revision, address, json.dumps(topics), channel))
+    con.execute("""INSERT OR REPLACE INTO folder_slack(folder,revision,address,topics,channel,enabled,recursive,language)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (folder, revision, address, json.dumps(options["topics"]), channel,
+                 options["enabled"], options["recursive"], options["language"]))
     con.execute("UPDATE folder_slack_notice SET state='canceled' WHERE folder=? AND state='queued'", (folder,))
     return con.execute("SELECT * FROM folder_slack WHERE folder=?", (folder,)).fetchone()
 
 
-def selected_topics(body):
+def options_from(body, row):
     topics = body.get("topics")
     if not (isinstance(topics, list) and 1 <= len(topics) <= len(TOPICS)
             and all(isinstance(topic, str) and topic in TOPICS for topic in topics)):
         abort(400, "Choose the Slack notices you want to receive.")
-    return sorted(set(topics))
+    enabled = body.get("enabled", bool(row["enabled"]) if row else True)
+    recursive = body.get("recursive", bool(row["recursive"]) if row else False)
+    language = body.get("language", row["language"] if row else "en")
+    if type(enabled) is not bool or type(recursive) is not bool or not isinstance(language, str) or language not in LANGUAGES:
+        abort(400, "Choose the folder scope and language for Slack notices.")
+    return dict(topics=sorted(set(topics)), enabled=enabled, recursive=recursive, language=language)
 
 
 class ChannelConsent(Connection):
@@ -94,21 +117,14 @@ class ChannelConsent(Connection):
         return address, channel
 
     def save_authorization(self, con, tokens, context):
-        check_revision(current_settings(con, context["folder"]), context["revision"])
+        row = current_settings(con, context["folder"])
+        check_revision(row, context["revision"])
         address, channel = tokens
-        save(con, context["folder"], self.webhook_cipher.encrypt(address.encode("ascii")), context["topics"], channel)
+        options = context.get("options") or options_from(context, row)
+        save(con, context["folder"], self.webhook_cipher.encrypt(address.encode("ascii")), options, channel)
 
     def return_path(self, result, context):
         return "/operator/library?" + urlencode(dict(folder=context["folder"], slack=result))
-
-
-def enqueue(con, work, topic):
-    now = int(time())
-    con.execute("""INSERT INTO folder_slack_notice(folder,revision,work,topic,created,due)
-                   SELECT s.folder,s.revision,p.work,?,?,? FROM library_placement p
-                   JOIN folder_slack s ON s.folder=p.folder
-                   WHERE p.work=? AND EXISTS(SELECT 1 FROM json_each(s.topics) WHERE value=?)""",
-                (topic, now, now, work, topic))
 
 
 def send(cipher, job, origin):
@@ -118,11 +134,15 @@ def send(cipher, job, origin):
         return 400, 0
     if not WEBHOOK.fullmatch(address):
         return 400, 0
+    labels = LANGUAGES[job["language"]]
+    message = labels[job["topic"]]
+    if job["topic"] != "delete":
+        message += f" <{origin}/team/video/{job['work']}|{labels['open']}>"
     with requests.Session() as session:
         session.trust_env = False
         try:
             with session.post(address, json={
-                "text": f"{TOPICS[job['topic']]} <{origin}/team/video/{job['work']}|Open in CuePorch>",
+                "text": message,
                 "unfurl_links": False, "unfurl_media": False,
             }, timeout=(3, 6), allow_redirects=False, stream=True) as response:
                 delay = response.headers.get("Retry-After", "")
@@ -133,17 +153,18 @@ def send(cipher, job, origin):
 
 def deliver_next(tx, cipher, origin):
     with tx() as con:
-        job = con.execute("""SELECT n.*,s.address,p.folder AS current_folder,
-                             EXISTS(SELECT 1 FROM library_deleted_item d
-                               WHERE (d.kind='work' AND d.item=n.work) OR (d.kind='folder' AND d.item=n.folder)) AS hidden
+        job = con.execute("""SELECT n.*,s.address,s.language,s.recursive,
+                             EXISTS(SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=n.work) AS hidden
                              FROM folder_slack_notice n JOIN folder_slack s
                                ON s.folder=n.folder AND s.revision=n.revision
-                             LEFT JOIN library_placement p ON p.work=n.work
                              WHERE n.state='queued' AND n.due<=? ORDER BY n.due,n.id LIMIT 1""",
                           (int(time()),)).fetchone()
         if not job:
             return False
-        if job["hidden"] or job["current_folder"] != job["folder"]:
+        current = con.execute(FOLDERS_FOR_WORK + """SELECT 1 FROM folders WHERE folder=? AND (depth=0 OR ?=1)
+            AND NOT EXISTS (SELECT 1 FROM library_deleted_item WHERE kind='folder' AND item=?)""",
+            (job["work"], job["folder"], job["recursive"], job["folder"])).fetchone()
+        if not current or (job["hidden"] and job["topic"] != "delete"):
             con.execute("UPDATE folder_slack_notice SET state='canceled' WHERE id=?", (job["id"],))
             return True
     result, delay = send(cipher, job, origin)
@@ -202,10 +223,11 @@ def register(app, tx, origin, staff, operator, database):
             abort(409, "Use the configured workspace HTTPS address to connect Slack.")
         body = json_mutation(secure, "X-CuePorch-Slack")
         revision = body.get("revision")
-        topics = selected_topics(body)
         with tx() as con:
-            check_revision(current_settings(con, folder), revision)
-        return consent.prepare(secure, origin, dict(folder=folder, revision=revision, topics=topics))
+            row = current_settings(con, folder)
+            check_revision(row, revision)
+            options = options_from(body, row)
+        return consent.prepare(secure, origin, dict(folder=folder, revision=revision, options=options))
 
     @app.get(consent.callback)
     def slack_callback():
@@ -231,17 +253,19 @@ def register(app, tx, origin, staff, operator, database):
                     con.execute("DELETE FROM folder_slack WHERE folder=?", (folder,))
                     row = None
                 else:
-                    topics, address = selected_topics(body), body.get("webhook", "")
+                    options, address = options_from(body, row), body.get("webhook", "")
                     if (not isinstance(address, str) or (address and not WEBHOOK.fullmatch(address))
                             or (not address and not row)):
                         abort(400, "Enter the incoming webhook for the selected Slack channel.")
                     encrypted = cipher.encrypt(address.encode("ascii")) if address else row["address"]
-                    row = save(con, folder, encrypted, topics, None if address else row["channel"])
+                    row = save(con, folder, encrypted, options, None if address else row["channel"])
                 clear_consent(con, folder)
             receipts = con.execute("""SELECT topic,state,attempts FROM folder_slack_notice WHERE folder=?
                                     ORDER BY id DESC LIMIT 10""", (folder,)).fetchall()
         return private(dict(configured=configured, oauth_available=configured and consent.configured,
                             revision=row["revision"] if row else None, channel=row["channel"] if row else None,
+                            enabled=bool(row["enabled"]) if row else True, recursive=bool(row["recursive"]) if row else False,
+                            language=row["language"] if row else "en",
                             topics=json.loads(row["topics"]) if row else [], deliveries=[dict(item) for item in receipts]))
 
     return close

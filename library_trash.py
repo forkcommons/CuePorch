@@ -6,6 +6,8 @@ import uuid
 
 from flask import abort, request
 
+import folder_slack_queue
+
 RECOVERY_SECONDS = 30 * 24 * 3600
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_deletion(
@@ -57,7 +59,9 @@ def register(app, tx, staff, read_works):
             or (kind == "folder" and len(items) != 1)
         ):
             abort(400)
-        works = {work["id"]: work["title"] for work in read_works()}
+        catalog = read_works()
+        works = {work["id"]: work["title"] for work in catalog}
+        videos = {work["id"] for work in catalog if work.get("asset_type", "video") == "video"}
         with tx() as con:
             works.update(
                 (work, title)
@@ -142,6 +146,9 @@ def register(app, tx, staff, read_works):
                 "DELETE FROM library_download WHERE work=?",
                 [(item,) for item in selected],
             )
+            for item in selected:
+                if item in videos:
+                    folder_slack_queue.enqueue(con, item, "delete")
             deleted_at = time.time()
             for batch_kind, item, title, members in batches:
                 deletion = uuid.uuid4().hex

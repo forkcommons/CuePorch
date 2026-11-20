@@ -9,7 +9,7 @@ import uuid
 
 from flask import Response, abort, request
 
-import folder_slack
+import folder_slack_queue
 import review_notifications
 import review_push
 
@@ -61,7 +61,7 @@ def set_editorial_status(con, work, version, status):
         (work, version, status),
     )
     if approved:
-        folder_slack.enqueue(con, work, "approval")
+        folder_slack_queue.enqueue(con, work, "approval")
 
 
 def reviewer_token():
@@ -232,7 +232,7 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             )
             review_push.enqueue(con, uid, version, comment)
             work = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
-            folder_slack.enqueue(con, work["work"], "comment")
+            folder_slack_queue.enqueue(con, work["work"], "comment")
         return confidential(({"id": comment}, 201))
 
     @app.put("/review/<uid>/feedback/<version>/notices")

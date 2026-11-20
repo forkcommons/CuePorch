@@ -15,6 +15,7 @@ from werkzeug.security import generate_password_hash
 
 from catalog import video_version_key
 from browser_account_security import is_loopback
+import folder_slack_queue
 import library_analytics
 import library_details
 import library_peer_handoff
@@ -251,6 +252,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     values["videos"].extend(new)
                     con.execute("UPDATE video_showcase SET revision=?,settings=? WHERE id=?",
                                 (uuid.uuid4().hex, json.dumps(values), row["id"]))
+                    for work in new:
+                        folder_slack_queue.enqueue(con, work, "showcase")
                     added += len(new)
         return dict(showcases=len(rows), added=added)
 
@@ -293,6 +296,10 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if values != state(row) or slug != row["slug"] or hashed != row["password"]:
                 con.execute("UPDATE video_showcase SET slug=?,revision=?,settings=?,password=? WHERE id=?",
                             (slug, uuid.uuid4().hex, json.dumps(values), hashed, uid))
+                previous = set(state(row)["videos"])
+                for work in values["videos"]:
+                    if work not in previous:
+                        folder_slack_queue.enqueue(con, work, "showcase")
             return summary(con, get_showcase(con, uid), public_url)
 
     @app.post("/api/showcases/<uid>/preview")

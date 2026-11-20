@@ -145,6 +145,8 @@ When workspace mail is configured, CuePorch emails a completion link after it pr
 
 Open a Library folder and choose **Slack notifications**. Select uploads, review comments or approvals. With the workspace Slack app configured, choose **Choose channel in Slack**, select a channel and allow access. You can also paste a channel’s incoming webhook and save. Posts link to the video in CuePorch and its team access rules still apply. The folder dialog shows recent delivery results. Choose **Disconnect Slack** to clear this folder’s connection and queued deliveries. Manage the app installation in Slack. [Create a Slack incoming webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
 
+The same dialog can include subfolders, change the message language between English and Spanish and send notices for title, thumbnail, removal, privacy and showcase changes. Clear **Send Slack notifications** and save to pause delivery and keep the channel for later.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.

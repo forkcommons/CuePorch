@@ -15,6 +15,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_peer_handoff
+import folder_slack_queue
 import library_share
 import library_embed
 import library_appearance
@@ -174,6 +175,9 @@ def apply_pending(con):
 
 
 def save(con, uid, settings, password_hash, revision, share_key):
+    previous = get_privacy(con, uid)
+    prior_settings = json.loads(previous["settings"]) if previous else DEFAULTS
+    prior_password = previous["password_hash"] if previous else None
     con.execute(
         """INSERT INTO library_privacy VALUES(?,?,?,?,?) ON CONFLICT(work) DO UPDATE SET
            settings=excluded.settings,password_hash=excluded.password_hash,
@@ -184,6 +188,8 @@ def save(con, uid, settings, password_hash, revision, share_key):
         con.execute("INSERT OR IGNORE INTO library_publication_time VALUES(?,?)", (uid, time.time()))
     else:
         con.execute("DELETE FROM library_publication_time WHERE work=?", (uid,))
+    if prior_settings != json.loads(settings) or prior_password != password_hash:
+        folder_slack_queue.enqueue(con, uid, "privacy")
 
 
 def cancel_pending(con, row):
