@@ -77,6 +77,18 @@
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
         <label><input name="archive_replay" type="checkbox" checked> Keep a private copy in the Library</label>
       </fieldset>
+      <details id="eventContentSettings">
+        <summary>Content and disclosures</summary>
+        <label>Content rating <select name="rating"><option value="unrated">Unrated</option><option value="all">All audiences</option><option value="mature">Mature audiences</option></select></label>
+        <fieldset id="eventContentDescriptors" hidden>
+          <legend>Content descriptors</legend>
+          {% for code, label in rating_labels.items() %}
+          <label><input type="checkbox" name="content_descriptor" value="{{ code }}"> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+        <label><input type="checkbox" name="advertisement"> Contains advertising</label>
+        <label><input type="checkbox" name="realistic_ai"> Contains realistic AI-generated material</label>
+      </details>
       <fieldset id="eventStartingOptions">
         <legend>Starting audience settings</legend>
         <label><input name="registration" type="checkbox"> Require event registration</label>

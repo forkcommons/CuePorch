@@ -18,6 +18,7 @@
     <header id="eventHeader">
       <h1>{{ event.title }}</h1>
       {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
+      {% include 'content_warnings.html' %}
       <p id="eventOccurrenceTime" {% if not occurrence %}hidden{% endif %}><time {% if occurrence %}datetime="{{ occurrence.start }}"{% endif %}>
         {% if occurrence %}{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }}){% endif %}
       </time></p>

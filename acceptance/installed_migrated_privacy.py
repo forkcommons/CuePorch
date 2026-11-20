@@ -104,6 +104,9 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         bad = requests.put(details_url, headers=auth, timeout=10,
                            json=dict(details, embed_pages=["https://user:secret@example.org/"]))
         assert bad.status_code == 400
+        rated = requests.put(details_url, headers=auth, timeout=10,
+                             json=dict(details, rating="mature", content=["violence"], advertisement=True))
+        rated.raise_for_status()
         replacements = [row for row in download_map() if row["work_id"] == password_id]
         assert [row["external_page"] for row in replacements] == pages
         assert {row["embed_url"] for row in replacements} == {base + paths["embed_url"]}
@@ -114,6 +117,10 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         frame.get_by_label("Video password").fill(password)
         frame.get_by_role("button", name="Watch video").click()
         play(frame.locator("video"))
+        disclosures = frame.get_by_role("list", name="Content information")
+        expect(disclosures).to_contain_text("Mature audiences")
+        expect(disclosures).to_contain_text("Violence")
+        expect(disclosures).to_contain_text("Contains advertising")
         expect(frame.get_by_role("link", name="Download video")).to_have_count(0)
         response = requests.get(base + paths["embed_url"], timeout=10,
                                 headers={"Referer": "http://localhost:3/", "Sec-Fetch-Dest": "iframe"})

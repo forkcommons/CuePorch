@@ -24,6 +24,7 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import content_rating
 import media_bandwidth
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
@@ -510,6 +511,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             audio_labels=library_audio.KINDS,
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=None if embed else details, start=start,
+                            content_labels=content_rating.viewer_labels(details) if details else [],
+                            descriptor_labels=content_rating.DESCRIPTORS,
                             panorama=panorama if panorama != "flat" else None,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
                             presentation=presentation, poster=poster, rating=rating, analytics=analytics,

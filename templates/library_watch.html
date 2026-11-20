@@ -16,6 +16,7 @@
     <h1{% if appearance and not appearance.show_title %} class="visually-hidden"{% endif %}>{{ title }}</h1>
   {% endif %}
   {% if token %}
+    {% if embed %}{% include 'content_warnings.html' %}{% endif %}
     {% if appearance %}
       <div class="archive-player" data-play-position="{{ appearance.play_position }}"
            data-start="{{ start }}"
@@ -89,8 +90,7 @@
     {% if details %}
       {% if details.description and (not appearance or appearance.description) %}<p>{{ details.description }}</p>{% endif %}
       {% if details.rating == 'mature' %}
-        {% set content_labels = {'language': 'Profanity', 'drugs': 'Drug or alcohol use', 'violence': 'Violence', 'nudity': 'Nudity'} %}
-        <p>Mature audiences{% for descriptor in details.content %} · {{ content_labels[descriptor] }}{% endfor %}</p>
+        <p>Mature audiences{% for descriptor in details.content %} · {{ descriptor_labels[descriptor] }}{% endfor %}</p>
       {% endif %}
       {% if details.advertisement %}<p>Contains advertisement</p>{% endif %}
       {% if details.realistic_ai %}<p>Includes realistic AI-generated content</p>{% endif %}

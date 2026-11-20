@@ -1,0 +1,5 @@
+{% if content_labels %}
+<ul aria-label="Content information" class="content-disclosures">
+  {% for label in content_labels %}<li>{{ label }}</li>{% endfor %}
+</ul>
+{% endif %}

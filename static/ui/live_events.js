@@ -491,6 +491,7 @@ function openEditor(current) {
     }
     showEmbedPolicy(values?.embed_policy);
     showRegionalPolicy(values?.regional_policy);
+    showClassification(values?.content_rating);
     syncViewingPassword();
     recurrence();
     syncArchiveOption();
@@ -532,6 +533,20 @@ function showRegionalPolicy(policy) {
     syncRegionalPolicy();
     button("exportEventRegions").hidden = !editing || (editing.event.regional_policy?.mode ?? "anywhere") === "anywhere";
 }
+function syncContentDescriptors() {
+    const mature = field("rating").value === "mature";
+    const options = element("eventContentDescriptors");
+    options.hidden = options.disabled = !mature;
+}
+function showClassification(values) {
+    field("rating").value = values?.rating ?? "unrated";
+    field("advertisement").checked = !!values?.advertisement;
+    field("realistic_ai").checked = !!values?.realistic_ai;
+    for (const item of form.querySelectorAll('input[name="content_descriptor"]')) {
+        item.checked = values?.content.includes(item.value) ?? false;
+    }
+    syncContentDescriptors();
+}
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -546,6 +561,7 @@ field("save_replay").onchange = syncArchiveOption;
 field("embed_mode").onchange = syncEmbedPolicy;
 field("visibility").onchange = syncViewingPassword;
 field("region_mode").onchange = syncRegionalPolicy;
+field("rating").onchange = syncContentDescriptors;
 const regionsFile = input("importEventRegions");
 regionsFile.onchange = () => void action(async () => {
     const file = regionsFile.files?.[0];
@@ -622,6 +638,7 @@ preset.onchange = () => void action(async () => {
     field("timezone").value = value.schedule.timezone;
     showEmbedPolicy(value.embed_policy);
     showRegionalPolicy(value.regional_policy);
+    showClassification(value.content_rating);
     showStartingOptions(options);
 }, "Event settings loaded.");
 form.onsubmit = (event) => {
@@ -652,6 +669,8 @@ form.onsubmit = (event) => {
                 domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean) },
             regional_policy: { mode: field("region_mode").value,
                 areas: field("region_areas").value.split("\n").map((region) => region.trim()).filter(Boolean) },
+            content_rating: { rating: field("rating").value, content: read.getAll("content_descriptor"),
+                advertisement: field("advertisement").checked, realistic_ai: field("realistic_ai").checked },
             save_replay: field("save_replay").checked,
             archive_replay: field("archive_replay").checked,
             dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,

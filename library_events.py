@@ -35,6 +35,7 @@ import event_simulcast
 import event_slide_decks
 import event_speakers
 from catalog import video_version_key
+import content_rating
 from library_actions import title_for
 import library_analytics
 from library_interactivity import text_field
@@ -200,6 +201,8 @@ def edit(raw):
             value["regional_policy"] = regional_availability.validated(raw["regional_policy"])
         except ValueError as error:
             abort(422, str(error))
+    if "content_rating" in raw:
+        value["content_rating"] = content_rating.validate(raw["content_rating"], 422)
     return value
 
 
@@ -418,7 +421,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     @app.get("/operator/live-events")
     def live_event_dashboard():
-        return render_template("live_events.html", public_url=public_url)
+        return render_template("live_events.html", public_url=public_url, rating_labels=content_rating.DESCRIPTORS)
 
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
@@ -453,6 +456,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     event.setdefault("embed_policy", previous["embed_policy"])
                 if "regional_policy" in previous:
                     event.setdefault("regional_policy", previous["regional_policy"])
+                if "content_rating" in previous:
+                    event.setdefault("content_rating", previous["content_rating"])
             enforce_sharing(con, settings=sharing_settings(event))
             check_territories(event)
             access = requested_access(event, body)
@@ -525,6 +530,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     changed.setdefault("embed_policy", prior["embed_policy"])
                 if "regional_policy" in prior:
                     changed.setdefault("regional_policy", prior["regional_policy"])
+                if "content_rating" in prior:
+                    changed.setdefault("content_rating", prior["content_rating"])
                 if "setup" in prior:
                     changed["setup"] = prior["setup"]
                 if "preferred_method" in body:
@@ -1278,6 +1285,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      unlock_token=frame_grant, event_access=access,
                                      current_event_url=viewer_url(row, event, embed, link_key),
+                                     content_labels=content_rating.viewer_labels(event.get("content_rating", {})),
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
                                      if can_participate else None,

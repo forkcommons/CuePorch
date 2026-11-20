@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from flask import abort, request
 
 import review_feedback
+import content_rating
 from browser_account_security import private
 from catalog import video_version_key
 from library_privacy import playback
@@ -17,8 +18,7 @@ CREATE TABLE IF NOT EXISTS library_video_details(
 CREATE TABLE IF NOT EXISTS library_embed_pages(work TEXT PRIMARY KEY, pages TEXT NOT NULL);
 """
 LICENSES = {"by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd", "cc0"}
-CONTENT = {"language", "drugs", "violence", "nudity"}
-RATINGS = {"unrated", "all", "mature"}
+CONTENT = content_rating.DESCRIPTORS.keys()
 PANORAMAS = {"flat", "source", "180-mono", "180-top-bottom", "180-side-by-side",
              "360-mono", "360-top-bottom", "360-side-by-side"}
 
@@ -112,18 +112,12 @@ def parse_details(body):
     license_id = body.get("license")
     if license_id is not None and (not isinstance(license_id, str) or license_id not in LICENSES):
         abort(400, "Choose an available copyright license.")
-    rating = body.get("rating")
-    if not isinstance(rating, str) or rating not in RATINGS:
-        abort(400, "Choose a content rating.")
-    content = labels(body.get("content", []), "content descriptors")
-    if not set(content) <= CONTENT or (content and rating != "mature"):
-        abort(400, "Content descriptors are available for mature videos.")
-    if any(type(body.get(field)) is not bool for field in ("realistic_ai", "advertisement")):
-        abort(400, "Choose a value for each disclosure.")
+    classification = content_rating.validate({key: body.get(key, [] if key == "content" else None)
+                                              for key in content_rating.DEFAULT})
     return dict(
         description=description, tags=tags, categories=categories, license=license_id,
         credits=[dict(name=item["name"].strip(), role=item.get("role", "").strip()) for item in credits],
-        rating=rating, content=content, realistic_ai=body["realistic_ai"], advertisement=body["advertisement"],
+        **classification,
     )
 
 

@@ -188,6 +188,10 @@ def check_event_setup(page, base, auth):
             combo("Visibility").select_option("public")
             combo("Caption language").select_option("fr")
             editor.get_by_label("Live DVR window in seconds").fill("180")
+            editor.get_by_text("Content and disclosures", exact=True).click()
+            combo("Content rating").select_option("mature")
+            editor.get_by_label("Profanity", exact=True).check()
+            editor.get_by_label("Contains advertising").check()
         item = save(slug)
         created[kind] = item
         target = f"{portal}/{item['id']}"
@@ -205,6 +209,8 @@ def check_event_setup(page, base, auth):
     try:
         form.goto(base + source["watch"] + f"?occurrence={opens}")
         expect(form.locator("#eventStatus")).to_have_text("Registration required")
+        expect(form.get_by_role("list", name="Content information")).to_contain_text("Mature audiences")
+        expect(form.get_by_role("list", name="Content information")).to_contain_text("Contains advertising")
         form.get_by_label("Email").fill("prior-attendee@example.invalid")
         form.get_by_role("button", name="Register and watch").click()
         expect(form.locator("#eventStatus")).to_have_text("Scheduled")
@@ -239,6 +245,7 @@ def check_event_setup(page, base, auth):
     assert copied["id"] != source["id"] and copied["publication"] == "private"
     assert copied["event"]["latency"] == "fail-safe"
     assert copied["event"]["description"] == source["event"]["description"]
+    assert copied["event"]["content_rating"] == source["event"]["content_rating"]
     assert all(item["id"] != opens and item["delivery"] == "scheduled" for item in copied["occurrences"])
     assert len(copied["occurrences"]) == 2
     copy = f"{portal}/{copied['id']}"
@@ -266,7 +273,8 @@ def check_event_setup(page, base, auth):
     return dict(types=list(defaults), scratch_without_preset=True, editable_latency=True,
                 preferred_method=True, viewer_registration_enforced=True, private_copy_new_schedule=True,
                 reused_player_and_audience_settings=True, occurrence_override_isolated=True,
-                new_event_has_no_transferred_attendees=True, setup_staff_only=True)
+                new_event_has_no_transferred_attendees=True, setup_staff_only=True,
+                viewer_content_disclosures_and_reuse=True)
 
 
 def check_event_embed_policy(page, browser, base, auth, exhibition, venue):
