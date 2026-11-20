@@ -12,8 +12,7 @@ import uuid
 from PIL import Image
 from playwright.sync_api import expect
 import requests
-from installed_recording import DISPLAY_FIXTURE, PROMPTER_SCRIPT
-from installed_recording import check_voice_prompter
+from installed_recording import DISPLAY_FIXTURE, PROMPTER_SCRIPT, check_guest_prompter, check_voice_prompter
 
 
 def check_brand_kits(page, browser, base, auth, directory, fixture):
@@ -267,4 +266,7 @@ def check_studio_brand_kits(page, base, auth, playwright=None, speech=None):
                   event_artwork_requires_staff=True, teleprompter_reopens_and_scrolls_for_live_studio_recording=True)
     if speech:
         result["voice_prompter"] = check_voice_prompter(playwright, base, auth, speech, studio_path)
+        result["guest_voice_prompter"] = check_guest_prompter(
+            playwright, base, auth, speech, base + f"/api/live-events/{suffix}/speakers",
+        )
     return result

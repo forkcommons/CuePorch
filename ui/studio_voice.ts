@@ -1,4 +1,3 @@
-const ENDPOINT = "/api/studio/teleprompter/voice";
 const LOCAL_UNAVAILABLE = "Local voice recognition is unavailable. Try another speed or check the TextFlowKit setup.";
 
 interface VoiceResult {
@@ -16,7 +15,7 @@ export class StudioVoice {
   private readonly queued: ArrayBuffer[] = [];
   private readonly trackEvents = new AbortController();
 
-  constructor(private credential: string, private receive: (result: VoiceResult) => void,
+  constructor(private endpoint: string, private credential: string, private receive: (result: VoiceResult) => void,
               private unavailable: (message: string) => void) {}
 
   private headers(): Record<string, string> {
@@ -29,7 +28,7 @@ export class StudioVoice {
       await context.audioWorklet.addModule("/static/ui/voice_pcm.js");
       await context.resume();
       if (this.ended) return;
-      const response = await fetch(ENDPOINT, {method: "POST", headers: this.headers(), mode: "same-origin"});
+      const response = await fetch(this.endpoint, {method: "POST", headers: this.headers(), mode: "same-origin"});
       if (!response.ok) throw new Error(LOCAL_UNAVAILABLE);
       this.session = (await response.json()).session;
       if (this.ended) {
@@ -61,7 +60,7 @@ export class StudioVoice {
     this.submitting = true;
     try {
       while (!this.ended && this.queued.length) {
-        const response = await fetch(`${ENDPOINT}/${this.session}?after=${this.after}`, {
+        const response = await fetch(`${this.endpoint}/${this.session}?after=${this.after}`, {
           method: "POST", body: this.queued.shift(), mode: "same-origin",
           headers: {...this.headers(), "Content-Type": "application/octet-stream"},
         });
@@ -87,7 +86,7 @@ export class StudioVoice {
 
   private closeSession() {
     if (!this.session) return;
-    void fetch(ENDPOINT + "/" + this.session, {method: "DELETE", headers: this.headers(),
+    void fetch(this.endpoint + "/" + this.session, {method: "DELETE", headers: this.headers(),
       mode: "same-origin", keepalive: true}).catch(() => {});
     this.session = undefined;
   }

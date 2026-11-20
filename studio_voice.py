@@ -16,7 +16,7 @@ from event_captions import live_runtime
 
 PCM_BYTES = 16000  # Half a second of signed 16-bit, 16 kHz mono audio.
 IDLE_SECONDS = 20
-MAX_RECORDERS = 3
+MAX_RECORDERS = 8
 
 
 class Recognition:
@@ -110,18 +110,21 @@ def register(app, staff):
                     elif monotonic() - session.last_activity >= IDLE_SECONDS:
                         session.cancel()
 
-    @app.post("/api/studio/teleprompter/voice")
-    def start_prompt_voice():
+    def start_for(actor):
         nonlocal keeper
-        actor = staff()
         runtime = live_runtime("en")
         if not runtime:
             abort(503, "Install the local TextFlowKit voice runtime to use Auto.")
         with lock:
             if closed.is_set():
                 abort(503)
+            for key in [key for key, session in sessions.items() if session.done.is_set()]:
+                sessions.pop(key)
             if len(sessions) >= MAX_RECORDERS:
                 abort(503, "There are already active voice sessions. Pause one and try again.")
+            for session in sessions.values():
+                if session.actor == actor:
+                    session.cancel()
             key = uuid4().hex
             try:
                 sessions[key] = Recognition(actor, runtime)
@@ -134,9 +137,7 @@ def register(app, staff):
         response.cache_control.no_store = True
         return response
 
-    @app.route("/api/studio/teleprompter/voice/<key>", methods=("POST", "DELETE"))
-    def prompt_voice(key):
-        actor = staff()
+    def exchange(actor, key):
         with lock:
             session = sessions.get(key)
             if not session or session.actor != actor:
@@ -153,6 +154,14 @@ def register(app, staff):
         response.cache_control.no_store = True
         return response
 
+    @app.post("/api/studio/teleprompter/voice")
+    def start_prompt_voice():
+        return start_for(staff())
+
+    @app.route("/api/studio/teleprompter/voice/<key>", methods=("POST", "DELETE"))
+    def prompt_voice(key):
+        return exchange(staff(), key)
+
     def stop():
         closed.set()
         with lock:
@@ -165,4 +174,4 @@ def register(app, staff):
         if keeper:
             keeper.join(timeout=2)
 
-    return stop
+    return stop, start_for, exchange

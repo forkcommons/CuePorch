@@ -34,6 +34,7 @@
         <p id="guestSlideNumber" role="status"></p>
       </div>
     </details>
+    {% with guest_prompt=true %}{% include "studio_prompter.html" %}{% endwith %}
     {% include 'speaker_chat.html' %}
   </main>
   <script type="module" src="/static/ui/event_speaker.js"></script>

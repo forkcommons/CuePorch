@@ -8,6 +8,7 @@ function words(text) {
 export class StudioPrompter {
     microphone;
     credential;
+    endpoint;
     panel = document.querySelector("#recordPrompterSettings");
     script = document.querySelector("#recordScript");
     view = document.querySelector("#recordPrompter");
@@ -27,9 +28,10 @@ export class StudioPrompter {
     scriptWords = [];
     spokenWord = "";
     cursor = 0;
-    constructor(microphone, credential) {
+    constructor(microphone, credential, endpoint = "/api/studio/teleprompter/voice") {
         this.microphone = microphone;
         this.credential = credential;
+        this.endpoint = endpoint;
         this.script.oninput = () => {
             if (this.speed.value === "auto")
                 this.stop();
@@ -51,6 +53,11 @@ export class StudioPrompter {
         this.panel.ontoggle = () => this.syncVoice();
         window.addEventListener("pagehide", () => this.closeVoice());
         this.update();
+    }
+    show(available) {
+        this.panel.hidden = !available;
+        if (!available)
+            this.stop();
     }
     setContext(sharing, recordingPaused) {
         this.sharing = sharing;
@@ -98,7 +105,7 @@ export class StudioPrompter {
             this.voiceNotice.textContent = "";
             return;
         }
-        if (!this.running || this.view.hidden || !this.panel.open || this.recordingPaused) {
+        if (!this.running || this.view.hidden || this.panel.hidden || !this.panel.open || this.recordingPaused) {
             if (this.voice)
                 this.voiceNotice.textContent = "Voice follow paused.";
             this.closeVoice();
@@ -115,7 +122,7 @@ export class StudioPrompter {
         this.closeVoice();
         this.voiceTrack = track;
         this.voiceNotice.textContent = "Starting local voice recognition…";
-        this.voice = new StudioVoice(this.credential(), result => {
+        this.voice = new StudioVoice(this.endpoint, this.credential(), result => {
             if (result.state === "listening")
                 this.voiceNotice.textContent = "Following your voice with local TextFlowKit.";
             for (const line of result.lines)

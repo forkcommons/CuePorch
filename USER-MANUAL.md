@@ -192,6 +192,8 @@ In Record Studio or Live Studio, enter a script in **Teleprompter**. Set the fon
 
 Choose **Auto (follow my voice)** to keep an English script in step with a connected microphone. Auto uses your installation's local TextFlowKit runtime. Voice recognition does not retain the microphone buffers or recognized text. The normal recording keeps the audio routed to your program mix. If Auto is unavailable, select a fixed scroll speed or scroll by hand.
 
+An admitted guest speaker can open **Teleprompter** in the speaker room and use their own script and microphone. The script stays in the guest's browser. Leaving the room or losing admission cuts off access.
+
 Start, pause, resume and stop the take from the preview. Play or download the result, or choose a library folder and save. CuePorch uses the same folder privacy and upload defaults as an ordinary upload. A browser draft can be recovered when you return to Studio on that browser and app address. Browser storage and device access depend on your browser and its permissions. Desktop loopback and HTTPS installations support media capture.
 
 **Replace** saves another MP4, MOV, WebM or MKV as the current version. CuePorch retains the original of each version and prepares a separate viewing copy. Choose **Restore previous version** in the same dialog to make that cut current again. Timed captions and chapters stay with their cut. Existing exhibition grants continue to play the version selected when the grant was made. A managed public video updates through the existing publication policy and uses the same watch and embed addresses.

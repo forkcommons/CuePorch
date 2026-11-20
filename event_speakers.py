@@ -89,7 +89,7 @@ def chat(con, event, opens, author):
     return confidential(dict(messages=[dict(row) for row in reversed(rows)]))
 
 
-def register(app, tx, staff, slot_access, database):
+def register(app, tx, staff, slot_access, database, start_voice, voice_audio):
     slide_storage = database.parent / "live-slide-decks"
 
     def current(con, guest, event=None, opens=None):
@@ -104,6 +104,15 @@ def register(app, tx, staff, slot_access, database):
             abort(404)
         slot_access(con, row["event"], row["opens"])
         return row
+
+    @app.post("/api/guest-speaker/<guest>/teleprompter/voice")
+    @app.route("/api/guest-speaker/<guest>/teleprompter/voice/<session>", methods=("POST", "DELETE"))
+    def guest_voice(guest, session=None):
+        presented = credential()
+        with tx() as con:
+            admitted(con, guest, presented)
+        actor = f"speaker:{guest}:{presented}"
+        return voice_audio(actor, session) if session else start_voice(actor)
 
     @app.route("/api/live-events/<event>/<int:opens>/speakers/chat", methods=["GET", "POST"])
     def producer_speaker_chat(event, opens):

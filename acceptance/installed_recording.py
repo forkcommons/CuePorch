@@ -1,5 +1,6 @@
 """Record simulated devices through browser MediaRecorder and open the stored video."""
 
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import wave
@@ -57,11 +58,8 @@ def check_prompter_controls(page):
     assert view.evaluate("v => v.scrollTop") == 0
 
 
-def check_voice_prompter(playwright, base, operator, speech, studio_path="/operator/record"):
-    endpoint = base + "/api/studio/teleprompter/voice"
-    assert requests.post(endpoint, timeout=10).status_code == 403
-    script = ("The city council meeting\nwill begin at seven\nthis evening.\n"
-              "Welcome to the public session.\n") * 6
+@contextmanager
+def synthetic_microphone(playwright, speech):
     with TemporaryDirectory() as folder:
         microphone = Path(folder) / "prompt-microphone.wav"
         with wave.open(str(speech), "rb") as source, wave.open(str(microphone), "wb") as target:
@@ -71,42 +69,105 @@ def check_voice_prompter(playwright, base, operator, speech, studio_path="/opera
         flags = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream",
                  f"--use-file-for-fake-audio-capture={microphone}%noloop"]
         with chromium(playwright, flags) as browser:
-            context = browser.new_context(permissions=["camera", "microphone"])
-            page = context.new_page()
-            page.goto(base + studio_path)
-            page.evaluate("(key) => sessionStorage.setItem('cueporchOperator', key)", operator["Authorization"][7:])
-            page.reload()
-            page.get_by_text("Teleprompter", exact=True).click()
-            page.get_by_label("Script", exact=True).fill(script)
-            font = page.get_by_role("slider", name="Font size")
-            font.focus()
-            font.press("End")
-            page.get_by_role("combobox", name="Scroll speed").select_option("auto")
-            play = page.get_by_role("button", name="Play script")
-            view = page.get_by_role("region", name="Teleprompter script")
-            notice = page.locator("#recordPrompterVoice")
-            play.click()
-            expect(notice).to_have_text("Connect your microphone to follow your voice.")
-            with page.expect_response(lambda response: response.url == endpoint and response.request.method == "POST") as opened:
-                page.get_by_role("button", name="Connect camera and microphone").click()
-            assert opened.value.status == 201, opened.value.status
-            session = endpoint + "/" + opened.value.json()["session"]
-            assert requests.post(session, timeout=10).status_code == 403
-            assert requests.post(session, headers=operator, data=b"fixture", timeout=10).status_code == 400
-            expect(notice).to_have_text("Following your voice with local TextFlowKit.", timeout=12000)
-            assert view.evaluate("node => node.scrollTop") == 0
-            page.wait_for_function("() => document.querySelector('#recordPrompter').scrollTop > 60", timeout=25000)
-            used = view.evaluate("node => node.scrollTop")
-            with page.expect_response(lambda response: response.url == session and response.request.method == "DELETE") as stopped:
-                page.get_by_role("button", name="Pause script").click()
-            assert stopped.value.status == 204
-            retired = requests.post(session, headers=operator | {"Content-Type": "application/octet-stream"},
-                                    data=bytes(16000), timeout=10)
-            assert retired.status_code in (404, 410)
-            expect(notice).to_have_text("Voice follow paused.")
-            return dict(engine="local TextFlowKit", silent_script_offset=0, spoken_script_offset=used,
-                        unauthorized_and_malformed_audio_denied=True,
-                        stopped_session_rejects_audio=True)
+            yield browser.new_context(permissions=["camera", "microphone"]).new_page()
+
+
+def set_voice_script(page):
+    script = ("The city council meeting\nwill begin at seven\nthis evening.\n"
+              "Welcome to the public session.\n") * 6
+    page.get_by_text("Teleprompter", exact=True).click()
+    page.get_by_label("Script", exact=True).fill(script)
+    font = page.get_by_role("slider", name="Font size")
+    font.focus()
+    font.press("End")
+    page.get_by_role("combobox", name="Scroll speed").select_option("auto")
+
+
+def spoken_script_offset(page):
+    view = page.get_by_role("region", name="Teleprompter script")
+    expect(page.locator("#recordPrompterVoice")).to_have_text(
+        "Following your voice with local TextFlowKit.", timeout=12000,
+    )
+    assert view.evaluate("node => node.scrollTop") == 0
+    page.wait_for_function("() => document.querySelector('#recordPrompter').scrollTop > 60", timeout=25000)
+    return view.evaluate("node => node.scrollTop")
+
+
+def check_voice_prompter(playwright, base, operator, speech, studio_path="/operator/record"):
+    endpoint = base + "/api/studio/teleprompter/voice"
+    assert requests.post(endpoint, timeout=10).status_code == 403
+    with synthetic_microphone(playwright, speech) as page:
+        page.goto(base + studio_path)
+        page.evaluate("(key) => sessionStorage.setItem('cueporchOperator', key)", operator["Authorization"][7:])
+        page.reload()
+        set_voice_script(page)
+        page.get_by_role("button", name="Play script").click()
+        notice = page.locator("#recordPrompterVoice")
+        expect(notice).to_have_text("Connect your microphone to follow your voice.")
+        with page.expect_response(lambda response: response.url == endpoint and response.request.method == "POST") as opened:
+            page.get_by_role("button", name="Connect camera and microphone").click()
+        assert opened.value.status == 201, opened.value.status
+        session = endpoint + "/" + opened.value.json()["session"]
+        assert requests.post(session, timeout=10).status_code == 403
+        assert requests.post(session, headers=operator, data=b"fixture", timeout=10).status_code == 400
+        used = spoken_script_offset(page)
+        with page.expect_response(lambda response: response.url == session and response.request.method == "DELETE") as stopped:
+            page.get_by_role("button", name="Pause script").click()
+        assert stopped.value.status == 204
+        retired = requests.post(session, headers=operator | {"Content-Type": "application/octet-stream"},
+                                data=bytes(16000), timeout=10)
+        assert retired.status_code in (404, 410)
+        expect(notice).to_have_text("Voice follow paused.")
+        return dict(engine="local TextFlowKit", silent_script_offset=0, spoken_script_offset=used,
+                    unauthorized_and_malformed_audio_denied=True, stopped_session_rejects_audio=True)
+
+
+def check_guest_prompter(playwright, base, operator, speech, speakers):
+    def invite(name):
+        made = requests.post(speakers, headers=operator, json={"name": name}, timeout=10)
+        made.raise_for_status()
+        entry = made.json()
+        return entry, base + "/api/guest-speaker/" + entry["id"]
+
+    first, first_api = invite("Guest with a script")
+    speaker = speakers + "/" + first["id"]
+    endpoint = first_api + "/teleprompter/voice"
+    requests.put(speakers, headers=operator, json={"review": True}, timeout=10).raise_for_status()
+    with synthetic_microphone(playwright, speech) as page:
+        page.goto(base + first["link"])
+        expect(page.get_by_text("Teleprompter", exact=True)).to_be_hidden()
+        with page.expect_response(lambda response: response.url == first_api and response.request.method == "POST") as joined:
+            page.get_by_role("button", name="Join with camera and mic").click()
+        assert joined.value.status == 201
+        first_auth = {"Authorization": "Bearer " + joined.value.json()["session"]}
+        expect(page.locator("#guestSpeakerStatus")).to_have_text("Waiting for the producer to admit you.")
+        assert requests.post(endpoint, headers=first_auth, timeout=10).status_code == 404
+        requests.put(speaker, headers=operator, json={"admit": True}, timeout=10).raise_for_status()
+        set_voice_script(page)
+        with page.expect_response(lambda response: response.url == endpoint and response.request.method == "POST") as opened:
+            page.get_by_role("button", name="Play script").click()
+        assert opened.value.status == 201
+        voice_id = opened.value.json()["session"]
+        voice = endpoint + "/" + voice_id
+        used = spoken_script_offset(page)
+
+        requests.put(speakers, headers=operator, json={"review": False}, timeout=10).raise_for_status()
+        second, second_api = invite("Other guest")
+        joined = requests.post(second_api, timeout=10,
+                               headers={"Authorization": "Bearer " + second["link"].partition("#")[2]})
+        joined.raise_for_status()
+        second_auth = {"Authorization": "Bearer " + joined.json()["session"]}
+        assert requests.get(second_api, headers=second_auth, timeout=10).json()["admitted"]
+        assert requests.delete(second_api + "/teleprompter/voice/" + voice_id, headers=second_auth, timeout=10).status_code == 404
+        assert requests.delete(voice, headers=second_auth, timeout=10).status_code == 404
+
+        requests.delete(speaker, headers=operator, timeout=10).raise_for_status()
+        assert requests.post(voice, headers=first_auth | {"Content-Type": "application/octet-stream"},
+                             data=bytes(16000), timeout=10).status_code == 404
+        expect(page.get_by_text("Teleprompter", exact=True)).to_be_hidden()
+        requests.delete(second_api, headers=second_auth, timeout=10).raise_for_status()
+        return dict(engine="local TextFlowKit", silent_script_offset=0, spoken_script_offset=used,
+                    optional_admission_enforced=True, independent_speaker_denied=True, revoked_speaker_ipc_denied=True)
 
 
 def check_recording(playwright, base, auth, clip_file):

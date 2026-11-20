@@ -1,6 +1,7 @@
 import {gather, speakerRequest, SpeakerRequestError} from "./speaker_connection.js";
 import {speakerChat} from "./speaker_chat.js";
 import {readStudioImage, type SlideProgram} from "./live_slides.js";
+import {StudioPrompter} from "./studio_prompter.js";
 
 interface GuestState {
   name: string; admitted: boolean; on_air: boolean; revision: string | null; answer: string | null; ice: RTCIceServer[];
@@ -34,6 +35,16 @@ let currentImage = "";
 let imageRequest: AbortController | undefined;
 let movingSlide = false;
 const chat = speakerChat(endpoint, () => token);
+const prompter = new StudioPrompter(() => stream?.getAudioTracks().find(track => track.enabled && track.readyState === "live"),
+  () => token, endpoint + "/teleprompter/voice");
+let previousFrame = performance.now();
+
+function scrollPrompt(now: number) {
+  prompter.scroll(now - previousFrame);
+  previousFrame = now;
+  requestAnimationFrame(scrollPrompt);
+}
+requestAnimationFrame(scrollPrompt);
 
 function stop() {
   clearTimeout(timer);
@@ -46,6 +57,7 @@ function stop() {
   preview.hidden = camera.hidden = mic.hidden = leave.hidden = true;
   chat.show(false);
   presentation.hidden = true;
+  prompter.show(false);
   showSlides(null);
 }
 
@@ -153,6 +165,7 @@ async function update() {
     name.hidden = false;
     chat.show(state.admitted);
     presentation.hidden = !state.admitted;
+    prompter.show(state.admitted);
     showSlides(state.slides);
     if (!state.admitted) {
       status.textContent = "Waiting for the producer to admit you.";
@@ -215,7 +228,10 @@ function toggle(kind: "audio" | "video", control: HTMLButtonElement, on: string,
   control.textContent = track.enabled ? on : off;
 }
 camera.onclick = () => toggle("video", camera, "Turn camera off", "Turn camera on");
-mic.onclick = () => toggle("audio", mic, "Mute microphone", "Unmute microphone");
+mic.onclick = () => {
+  toggle("audio", mic, "Mute microphone", "Unmute microphone");
+  prompter.setContext(false, false);
+};
 leave.onclick = async () => {
   stop();
   sessionStorage.removeItem(storageKey);
