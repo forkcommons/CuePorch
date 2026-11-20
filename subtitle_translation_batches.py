@@ -12,6 +12,7 @@ import library_caption_jobs
 import library_languages
 from browser_account_security import private
 from library_trash import hidden
+from team_ai_policy import restriction
 
 
 SCHEMA = """
@@ -23,7 +24,7 @@ CREATE TABLE IF NOT EXISTS subtitle_translation_item(
  job TEXT REFERENCES caption_job(id), reason TEXT, PRIMARY KEY(batch,work));
 """
 LIMIT = 500
-RETRYABLE = {"failed", "superseded", "rejected", "skipped"}
+RETRYABLE = {"blocked", "failed", "superseded", "rejected", "skipped"}
 REPORT = """SELECT i.work,i.title,i.job,
     CASE WHEN a.status='waiting' AND j.state='queued' THEN 'waiting'
          WHEN a.status='rejected' THEN 'rejected' ELSE coalesce(j.state,'skipped') END AS state,
@@ -71,7 +72,7 @@ def batch_id(value):
         abort(400, "Use a valid subtitle translation request ID.")
 
 
-def queue_items(con, action, read_works, batch, selected):
+def queue_items(con, action, read_works, batch, selected, actor):
     works = {work["id"]: work for work in read_works()}
     for uid in selected:
         work = works.get(uid)
@@ -82,7 +83,7 @@ def queue_items(con, action, read_works, batch, selected):
             reason = "This cut has no subtitle track in the source language."
         else:
             try:
-                job = library_caption_jobs.queue(con, action, work, source_language=batch["source"],
+                job = library_caption_jobs.queue(con, action, work, actor, source_language=batch["source"],
                                                  target_language=batch["target"])
             except Conflict as error:
                 reason = error.description
@@ -91,12 +92,19 @@ def queue_items(con, action, read_works, batch, selected):
             (batch["id"], uid, work["title"] if work else uid, job, reason))
 
 
-def register(app, tx, staff, read_works, action):
+def register(app, tx, read_works, action, request_actor):
+    def require_translation(con, actor):
+        denied = restriction(con, "translation", actor[1])
+        if denied:
+            abort(403, denied)
+        if not caption_adapter.translation_runtime():
+            abort(409, "Configure TextFlowKit and a local translation model first.")
+
     @app.route("/api/library/subtitle-translations", methods=("GET", "POST"))
     def subtitle_translations():
-        staff()
         if request.method in ("GET", "HEAD"):
             with tx() as con:
+                request_actor(con)
                 recent = [dict(row) for row in con.execute("""SELECT b.id,b.source,b.target,b.created,count(i.work) AS items
                     FROM subtitle_translation_batch b LEFT JOIN subtitle_translation_item i ON i.batch=b.id
                     GROUP BY b.id ORDER BY b.created DESC LIMIT 30""")]
@@ -112,6 +120,7 @@ def register(app, tx, staff, read_works, action):
         uid = batch_id(body.get("id"))
         saved_selection = json.dumps(works)
         with tx() as con:
+            actor = request_actor(con)
             existing = con.execute("SELECT * FROM subtitle_translation_batch WHERE id=?", (uid,)).fetchone()
             if existing:
                 if (source, target, folder, saved_selection) != (
@@ -119,27 +128,25 @@ def register(app, tx, staff, read_works, action):
                 ):
                     abort(409, "This request ID already belongs to a different subtitle translation batch.")
                 return private(report(con, existing))
-            if not caption_adapter.translation_runtime():
-                abort(409, "Configure TextFlowKit and a local translation model first.")
+            require_translation(con, actor)
             selected = ids_in_folder(con, folder) if folder else works
             if not 1 <= len(selected) <= LIMIT:
                 abort(409, f"Choose a folder with one to {LIMIT} library items.")
             batch = dict(id=uid, source=source, target=target, folder=folder, created=time())
             con.execute("INSERT INTO subtitle_translation_batch VALUES(?,?,?,?,?,?)",
                         (uid, source, target, folder, batch["created"], saved_selection))
-            queue_items(con, action, read_works, batch, selected)
+            queue_items(con, action, read_works, batch, selected, actor)
             return private(report(con, batch), 201)
 
     @app.route("/api/library/subtitle-translations/<uuid:batch_id>", methods=("GET", "PUT"))
     def subtitle_translation_batch(batch_id):
-        staff()
         with tx() as con:
+            actor = request_actor(con)
             batch = con.execute("SELECT * FROM subtitle_translation_batch WHERE id=?", (str(batch_id),)).fetchone()
             if batch is None:
                 abort(404)
             if request.method == "PUT":
-                if not caption_adapter.translation_runtime():
-                    abort(409, "Configure TextFlowKit and a local translation model first.")
+                require_translation(con, actor)
                 retry = [row["work"] for row in con.execute(REPORT, (str(batch_id),)) if row["state"] in RETRYABLE]
-                queue_items(con, action, read_works, batch, retry)
+                queue_items(con, action, read_works, batch, retry, actor)
             return private(report(con, batch))

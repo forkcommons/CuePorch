@@ -1,6 +1,7 @@
 """Restore, translate and play a saved subtitle track using the installed TextFlowKit adapter."""
 
 from contextlib import ExitStack
+import csv
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,8 @@ import secrets
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
+from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 
@@ -53,9 +55,12 @@ class SubtitleTranslation(unittest.TestCase):
             mock = Flask("local-translation-model")
             calls = []
             control = {"available": True}
+            model_started, release_model = Event(), Event()
+            cleanup.callback(release_model.set)
             responses = {"es": "1. Bienvenidos al Consejo.\n2. La sesión pública comienza ahora.",
                          "fr": "1. Bienvenue au Conseil.\n2. La séance publique commence maintenant."}
-            responses.update({"es-mx": responses["es"], "fr-ca": responses["fr"]})
+            responses.update({"es-mx": responses["es"], "fr-ca": responses["fr"],
+                              "es-ar": responses["es"], "es-cl": responses["es"]})
 
             @mock.post("/api/generate")
             def complete():
@@ -66,6 +71,10 @@ class SubtitleTranslation(unittest.TestCase):
                 calls.append(language)
                 if not control["available"]:
                     abort(503)
+                if language == "es-cl":
+                    model_started.set()
+                    if not release_model.wait(15):
+                        abort(503)
                 return dict(done=True, done_reason="stop", response=responses[language])
 
             mock_origin = self.serve(cleanup, mock)
@@ -159,6 +168,7 @@ class SubtitleTranslation(unittest.TestCase):
                 self.assertEqual(api.get(track + "fr", headers=headers).json()["cues"][0]["text"], "Bienvenue au Conseil.")
                 self.assertEqual(calls, ["es", "fr", "fr"])
                 self.verify_batches(page, origin, headers, work, nested, outside, calls, subtitles_path)
+                self.verify_ai_policy(browser, page, origin, headers, work, calls, model_started, release_model)
                 browser.close()
 
     def verify_batches(self, page, origin, headers, work, nested, outside, calls, vtt):
@@ -231,6 +241,120 @@ class SubtitleTranslation(unittest.TestCase):
         page.get_by_role("button", name="Subtitle translation batches").click()
         dialog.get_by_role("button", name="en → fr-ca · 2 items", exact=False).click()
         expect(status).to_have_text("2 of 2 complete.")
+
+    def verify_ai_policy(self, browser, page, origin, headers, work, calls, model_started, release_model):
+        api = page.request
+        settings_api = origin + "/api/team/ai"
+        jobs = origin + f"/api/library/work/{work}/caption-jobs"
+        languages = origin + f"/api/library/work/{work}/languages"
+        batches = origin + "/api/library/subtitle-translations"
+        gate = origin + "/api/policy/translation"
+        team_headers = {"X-CuePorch-Team": "1"}
+        member_headers = {"Authorization": "Bearer team-session"}
+        self.assertEqual(api.get(settings_api + "/usage").status, 403)
+        admin = browser.new_page()
+        invite = api.post(origin + "/api/team/invitations", headers=headers | team_headers,
+                          data=dict(email="caption-admin@station.example", role="admin"))
+        self.assertTrue(invite.ok, invite.text())
+        joined = admin.request.post(origin + "/api/team/join", headers=team_headers, data=dict(
+            invitation=invite.json()["path"].split("#", 1)[1],
+            name="Caption administrator", password="Strong local fixture phrase",
+        ))
+        self.assertEqual(joined.status, 201, joined.text())
+        self.assertEqual(admin.request.get(settings_api, headers=member_headers).status, 403)
+        self.assertTrue(admin.request.get(jobs, headers=member_headers).json()["translation_available"])
+
+        page.goto(origin + "/team/settings")
+        page.get_by_role("link", name="AI settings").click()
+        form = page.locator("#aiSettings")
+        translation = form.get_by_role("group", name="Translate subtitles")
+        captions = form.get_by_role("group", name="Generate captions")
+        translation_enabled = translation.get_by_label("Enable for this workspace")
+        translation_admins = translation.get_by_label("Allow Administrators to run this workflow")
+        original = api.get(languages + "/en", headers=headers).json()
+        version = original["version"]
+        before = api.get(settings_api, headers=headers).json()
+        expect(translation_enabled).to_be_checked()
+        expect(translation_admins).to_be_checked()
+
+        def save():
+            with page.expect_response(lambda response: response.url == settings_api and response.request.method == "PUT") as result:
+                form.get_by_role("button", name="Save AI settings").click()
+            self.assertTrue(result.value.ok, result.value.text())
+            expect(page.get_by_role("status")).to_have_text("AI settings saved.")
+
+        form.get_by_label("Subtitle dictionary").fill("*\tConsejo\tConcejo local\nes-ar\tConsejo\tConcejo de Longmont")
+        captions.get_by_label("Enable for this workspace").uncheck()
+        translation_admins.uncheck()
+        save()
+        self.assertEqual(api.put(settings_api, headers=headers | team_headers, data=before).status, 409)
+        self.assertEqual(api.post(jobs, headers=headers, data=dict(version=version)).status, 403)
+        self.assertTrue(api.put(languages, headers=headers, data=dict(version=version, language="en", generate=True)).ok)
+        self.assertFalse(any(not job["source_language"] for job in api.get(jobs, headers=headers).json()["jobs"]))
+
+        payload = dict(version=version, source_language="en", target_language="es-ar")
+        self.assertEqual(admin.request.post(jobs, headers=member_headers, data=payload).status, 403)
+        self.assertEqual(admin.request.post(batches, headers=member_headers,
+                         data=dict(works=[work], source_language="en", target_language="es-ar")).status, 403)
+        amount = len(calls)
+        self.assertTrue(api.put(gate, headers=headers, data={"required": True}).ok)
+        self.assertTrue(api.post(jobs, headers=headers, data=payload).ok)
+        translation_enabled.uncheck()
+        save()
+        self.assertTrue(api.put(gate, headers=headers, data={"required": False}).ok)
+
+        def job_state(language, state):
+            deadline = monotonic() + 18
+            latest = {}
+            while monotonic() < deadline:
+                report = api.get(jobs, headers=headers)
+                self.assertTrue(report.ok, report.text())
+                latest = next((job for job in report.json()["jobs"] if job["language"] == language), {})
+                if latest.get("state") == state:
+                    return
+                if latest.get("state") in {"complete", "failed", "blocked"}:
+                    break
+                sleep(0.25)
+            self.fail(f"Expected {language} job to be {state}. Last observed: {latest}")
+
+        job_state("es-ar", "blocked")
+        self.assertEqual(len(calls), amount)
+        self.assertEqual(api.get(languages + "/es-ar", headers=headers).status, 404)
+
+        translation_enabled.check()
+        translation_admins.check()
+        save()
+        self.assertTrue(admin.request.post(jobs, headers=member_headers, data=payload).ok)
+        job_state("es-ar", "complete")
+        revised = api.get(languages + "/es-ar", headers=headers).json()
+        self.assertEqual(revised["cues"][0]["text"], "Bienvenidos al Concejo de Longmont.")
+        self.assertEqual(revised["cues"][0]["settings"], original["cues"][0]["settings"])
+        self.assertEqual(api.get(languages + "/en", headers=headers).json(), original)
+
+        payload["target_language"] = "es-cl"
+        self.assertTrue(api.post(jobs, headers=headers, data=payload).ok)
+        try:
+            self.assertTrue(model_started.wait(10))
+            translation_enabled.uncheck()
+            save()
+        finally:
+            release_model.set()
+        job_state("es-cl", "blocked")
+        self.assertEqual(api.get(languages + "/es-cl", headers=headers).status, 404)
+
+        with page.expect_download() as download:
+            form.get_by_role("button", name="Download 90-day usage CSV").click()
+        self.assertEqual(download.value.suggested_filename, "cueporch-ai-usage.csv")
+        with download.value.path().open(encoding="utf8", newline="") as report:
+            rows = list(csv.DictReader(report))
+        recent = [row for row in rows if row["language"] == "es-ar"]
+        self.assertEqual([(row["status"], row["published_cues"]) for row in recent],
+                         [("complete", "2"), ("blocked", "0")])
+        self.assertEqual(recent[0]["requested_by"], "team:" + joined.json()["id"])
+        self.assertEqual(recent[0]["workflow"], "translation")
+        self.assertEqual(recent[0]["work_id"], work)
+        self.assertEqual(admin.request.get(settings_api + "/usage", headers=member_headers).status, 403)
+        print("AI settings: Owner access, disabled/role restrictions, queued and running blocks, dictionary and usage verified.")
 
 
 if __name__ == "__main__":

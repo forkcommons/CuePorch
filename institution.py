@@ -50,6 +50,7 @@ import creator_profiles
 import library_actions
 import library_appearance
 import library_caption_jobs
+import team_ai_policy
 import library_details
 import library_discovery
 import library_embed
@@ -150,6 +151,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_actions.SCHEMA
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
+            + team_ai_policy.SCHEMA
             + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
             + library_discovery.SCHEMA
@@ -265,6 +267,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return actor
 
     workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
+    ai_actor = team_ai_policy.register(app, tx, team_origin, operator_name, team_member)
     sharing_access, enforce_sharing = team_sharing_policy.register(app, tx, team_origin, team_member, operator_name)
     workspace_help.register(app, tx, team_origin, team_member, operator_name,
                             os.environ.get("CUEPORCH_SUPPORT_CONTACT", "Institutional support inbox"),
@@ -1293,7 +1296,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     start_editor, start_file_links = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
-        authorize_editor, operator_name, enforce_sharing, team_origin,
+        authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

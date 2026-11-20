@@ -644,7 +644,7 @@ function showTranslations(batch) {
     const retry = document.createElement("button");
     retry.type = "button";
     retry.textContent = "Retry failed or skipped";
-    retry.disabled = !batch.items.some(item => ["failed", "superseded", "rejected", "skipped"].includes(item.state));
+    retry.disabled = !batch.items.some(item => ["blocked", "failed", "superseded", "rejected", "skipped"].includes(item.state));
     const pending = batch.items.some(item => ["queued", "running", "waiting"].includes(item.state));
     let generation = 0;
     function schedule() {

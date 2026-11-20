@@ -14,6 +14,7 @@ from catalog import video_version_key
 import library_languages
 from library_trash import hidden
 import subtitles
+import team_ai_policy
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS caption_job(
@@ -29,9 +30,11 @@ class Superseded(ValueError):
 
 def initialize(con):
     columns = {row[1] for row in con.execute("PRAGMA table_info(caption_job)")}
-    for column in ("source_language", "source_digest"):
+    for column in ("source_language", "source_digest", "requested_by", "requested_member"):
         if column not in columns:
             con.execute(f"ALTER TABLE caption_job ADD COLUMN {column} TEXT")
+    if "cue_count" not in columns:
+        con.execute("ALTER TABLE caption_job ADD COLUMN cue_count INTEGER NOT NULL DEFAULT 0")
 
 
 def track_digest(work, language):
@@ -44,7 +47,14 @@ def translation_source(work, language):
                  if library_languages.track_language(track) == language), None)
 
 
-def queue(con, action, work, require_missing=False, source_language=None, target_language=None):
+def queue(con, action, work, actor, require_missing=False, source_language=None, target_language=None):
+    requested_by, requested_member = actor
+    feature = "translation" if source_language else "caption"
+    restriction = team_ai_policy.restriction(con, feature, requested_member)
+    if restriction:
+        if require_missing:
+            return None
+        abort(403, restriction)
     language = target_language or library_languages.summary(work)["original_language"]
     source_digest = None
     if source_language:
@@ -84,18 +94,20 @@ def queue(con, action, work, require_missing=False, source_language=None, target
     payload = dict(work=work["id"], version=version, language=language)
     if source_language:
         payload["source_language"] = source_language
-    action(con, uid, "translation" if source_language else "caption", payload)
-    con.execute("""INSERT INTO caption_job(id,work,version,language,replaces,state,created,error,source_language,source_digest)
-                   VALUES(?,?,?,?,?,'queued',?,NULL,?,?)""",
-                (uid, work["id"], version, language, before, time.time(), source_language, source_digest))
+    action(con, uid, feature, payload)
+    con.execute("""INSERT INTO caption_job(id,work,version,language,replaces,state,created,source_language,
+                                          source_digest,requested_by,requested_member)
+                   VALUES(?,?,?,?,?,'queued',?,?,?,?,?)""",
+                (uid, work["id"], version, language, before, time.time(), source_language, source_digest,
+                 requested_by, requested_member))
     return uid
 
 
-def register(app, tx, staff, get_work, action):
+def register(app, tx, get_work, action, request_actor):
     @app.route("/api/library/work/<uid>/caption-jobs", methods=["GET", "POST"])
     def caption_jobs(uid):
-        staff()
         with tx() as con:
+            actor = request_actor(con)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
@@ -107,7 +119,7 @@ def register(app, tx, staff, get_work, action):
                 if "source_language" in body or "target_language" in body:
                     source = library_languages.language_tag(body.get("source_language"))
                     target = library_languages.language_tag(body.get("target_language"))
-                queue(con, action, work, source_language=source, target_language=target)
+                queue(con, action, work, actor, source_language=source, target_language=target)
             jobs = [
                 dict(row) for row in con.execute(
                     """SELECT j.id,j.language,j.source_language,j.created,j.error,
@@ -117,8 +129,11 @@ def register(app, tx, staff, get_work, action):
                     (uid, video_version_key(work)),
                 )
             ]
-        return dict(available=bool(caption_adapter.command()[0]),
-                    translation_available=bool(caption_adapter.translation_runtime()), jobs=jobs)
+            restrictions = {feature: team_ai_policy.restriction(con, feature, actor[1])
+                            for feature in team_ai_policy.FEATURES}
+        return dict(available=bool(caption_adapter.command()[0]) and not restrictions["caption"],
+                    translation_available=bool(caption_adapter.translation_runtime()) and not restrictions["translation"],
+                    restrictions=restrictions, jobs=jobs)
 
 
 def start(app, root, tx, remember_work):
@@ -127,7 +142,7 @@ def start(app, root, tx, remember_work):
     def process():
         with tx() as con:
             job = con.execute(
-                """SELECT j.*,a.status AS gate FROM caption_job j JOIN action a ON j.id=a.id
+                """SELECT j.*,a.status AS gate,a.step FROM caption_job j JOIN action a ON j.id=a.id
                    WHERE j.state IN ('queued','running') AND a.status IN ('eligible','rejected')
                    ORDER BY j.created LIMIT 1"""
             ).fetchone()
@@ -135,6 +150,10 @@ def start(app, root, tx, remember_work):
                 return
             if job["gate"] == "rejected":
                 con.execute("UPDATE caption_job SET state='rejected' WHERE id=?", (job["id"],))
+                return
+            restricted = team_ai_policy.restriction(con, job["step"], job["requested_member"])
+            if restricted:
+                con.execute("UPDATE caption_job SET state='blocked',error=? WHERE id=?", (restricted, job["id"]))
                 return
             work = next(
                 (item for item in json.loads((root / "manifest.json").read_text(encoding="utf8"))["works"]
@@ -173,6 +192,11 @@ def start(app, root, tx, remember_work):
             if stopping.is_set():
                 return
             with tx() as con:
+                _, settings = team_ai_policy.load(con)
+                restricted = team_ai_policy.restriction(con, job["step"], job["requested_member"], settings)
+                if restricted:
+                    con.execute("UPDATE caption_job SET state='blocked',error=? WHERE id=?", (restricted, job["id"]))
+                    return
                 if hidden(con, "work", job["work"]):
                     raise Superseded("The work was removed before captions were ready.")
                 current = next(
@@ -181,8 +205,10 @@ def start(app, root, tx, remember_work):
                 )
                 if current is None or video_version_key(current) != job["version"]:
                     raise Superseded("The cut changed before captions were ready.")
+                cues = team_ai_policy.apply_dictionary(cues, job["language"], settings["dictionary"])
                 remember_work(library_languages.update(root, job["work"], job["version"], apply))
-                con.execute("UPDATE caption_job SET state='complete',error=NULL WHERE id=?", (job["id"],))
+                con.execute("UPDATE caption_job SET state='complete',error=NULL,cue_count=? WHERE id=?",
+                            (len(cues), job["id"]))
             return
         except Superseded as exc:
             state, error = "superseded", str(exc)

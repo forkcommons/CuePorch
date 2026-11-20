@@ -296,10 +296,10 @@ async function renderJobs(data) {
         rejected: "Subtitle generation was rejected.",
         failed: "TextFlowKit could not generate subtitles.",
     };
-    generationStatus.textContent = latest ? (latest.error || messages[latest.state] || "")
+    generationStatus.textContent = data.restrictions.caption || (latest ? (latest.error || messages[latest.state] || "")
         : data.available ? (state.original_language ? "TextFlowKit is ready to caption this cut."
             : "Set the original language to prepare automatic subtitles.")
-            : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.";
+            : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.");
     const translationMessages = {
         queued: "Subtitle translation queued.",
         running: "TextFlowKit is translating subtitles.",
@@ -309,9 +309,9 @@ async function renderJobs(data) {
         rejected: "Subtitle translation was rejected.",
         failed: "TextFlowKit could not translate subtitles.",
     };
-    translationStatus.textContent = translated ? (translated.error || translationMessages[translated.state] || "")
+    translationStatus.textContent = data.restrictions.translation || (translated ? (translated.error || translationMessages[translated.state] || "")
         : !data.translation_available ? "Configure a local TextFlowKit translation model."
-            : !translationSource.value ? "Add a subtitle track to translate." : "";
+            : !translationSource.value ? "Add a subtitle track to translate." : "");
     const completed = data.jobs.filter(job => job.state === "complete").map(job => job.id).join(",");
     if (completed !== refreshedJobs) {
         refreshedJobs = completed;

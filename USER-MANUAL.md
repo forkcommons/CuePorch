@@ -90,6 +90,10 @@ Enable **Match SCIM users to existing team accounts** to transfer existing membe
 
 Owners and Administrators can use **Team settings → Session controls**. Select a fixed time after sign-in or a period of inactivity and choose minutes, hours or days. The initial setting is 12 hours after sign-in. An inactivity policy uses a browser-session cookie, and a provider's earlier expiration continues to apply to a SAML session. Saving a changed setting ends all team sessions in the workspace. Choose **Sign out all team members now** to end them without changing the policy. Viewer accounts and the installation credential continue to work.
 
+The workspace Owner or installation operator can open **Team settings → AI settings** to enable caption generation and subtitle translation independently. Both workflows and Administrator access start enabled. Turning a workflow off prevents new jobs and blocks unpublished results for that workflow. Language settings, manual tracks and published results remain available. Use the operator's workflow approval switches separately when you want a human to review jobs before they run.
+
+Use **Subtitle dictionary** to correct names or preferred terms in newly generated tracks. Enter the output language code, the phrase to replace and the preferred phrase on each line, separated by tabs. Use `*` for all languages. A language-specific entry takes precedence for the same phrase. CuePorch applies the dictionary after generation without changing cue timing. **Download 90-day usage CSV** reports jobs, requesters, status and published cue counts for the current workspace.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.
