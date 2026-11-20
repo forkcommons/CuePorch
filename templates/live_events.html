@@ -132,6 +132,17 @@
       <a id="eventStudio">Open browser studio</a>
       <label><input type="checkbox" id="privateEncoderPreview"> Preview external encoder privately</label>
       <button type="button" id="prepareEncoder">Prepare encoder</button>
+      <div id="backupEncoderOptions" hidden>
+        <label><input type="checkbox" id="enableBackupEncoder"> Use an independent backup encoder</label>
+        <label id="backupOutput" hidden>Backup programme output
+          <select id="backupOutputHeight">
+            <option value="360">360p</option>
+            <option value="720" selected>720p</option>
+            <option value="1080">1080p</option>
+            <option value="2160">2160p</option>
+          </select>
+        </label>
+      </div>
       <button type="button" id="prepareLowRtmp" hidden>Prepare low-latency RTMP</button>
       <button type="button" id="stopLowRtmp" hidden>Stop low-latency RTMP</button>
       <button type="button" id="prepareDash" hidden>Prepare MPEG-DASH contribution</button>
@@ -290,6 +301,11 @@
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>
         <label>Stream key <input id="encoderKey" type="password" readonly></label>
         <button type="button" id="copyEncoderKey">Copy stream key</button>
+        <div id="backupEncoderSettings" hidden>
+          <label>Backup stream key <input id="backupEncoderKey" type="password" readonly></label>
+          <button type="button" id="copyBackupEncoderKey">Copy backup stream key</button>
+          <p>Start the primary encoder first. Then start the backup on the same server with its own key.</p>
+        </div>
       </div>
       <details id="eventSrtPanel">
         <summary>SRT encoder</summary>

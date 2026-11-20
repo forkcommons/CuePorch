@@ -39,7 +39,10 @@ interface LiveEvent {
   preview_encoder: boolean;
 }
 interface Calendar {events: LiveEvent[]; overlaps: string[]; host_ready: boolean; direct_rtmp: boolean;}
-interface Encoder {server: string; secure_server?: string; key: string; public: boolean; preview: boolean;}
+interface Encoder {
+  server: string; secure_server?: string; key: string; public: boolean; preview: boolean;
+  backup_key?: string; output_height?: number;
+}
 interface EncoderPreview {state: "inactive" | "waiting" | "signal" | "ended" | "released"; address: string | null;}
 interface PreviewHls {loadSource(address: string): void; attachMedia(video: HTMLVideoElement): void; destroy(): void;}
 type PreviewHlsFactory = {new (config: object): PreviewHls; isSupported(): boolean};
@@ -137,6 +140,10 @@ const destinationForm = element<HTMLFormElement>("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const backupKey = input("backupEncoderKey");
+const backupEnabled = input("enableBackupEncoder");
+const outputHeight = element<HTMLSelectElement>("backupOutputHeight");
+backupEnabled.onchange = () => { element("backupOutput").hidden = !backupEnabled.checked; };
 const previewEncoder = input("privateEncoderPreview");
 const encoderPreviewPanel = element("encoderPreview");
 const encoderPreviewStatus = element("encoderPreviewStatus");
@@ -304,6 +311,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   output.hidden = false;
   encoder.hidden = true;
   key.value = "";
+  backupKey.value = "";
+  element("backupEncoderSettings").hidden = true;
   element("dashSettings").hidden = true;
   input("dashUploadToken").value = "";
   element("srtSettings").hidden = true;
@@ -340,6 +349,10 @@ function choose(event: LiveEvent, instance: Occurrence) {
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
   const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
   button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
+  element("backupEncoderOptions").hidden = !rtmpAvailable;
+  backupEnabled.checked = false;
+  element("backupOutput").hidden = true;
+  outputHeight.value = "720";
   button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
   button("prepareDash").hidden = button("stopDash").hidden = event.event.latency !== "fail-safe";
   button("prepareDash").disabled = button("prepareEncoder").disabled;
@@ -761,6 +774,8 @@ function showEncoder(connection: Encoder) {
   input("rtmpsServer").value = connection.secure_server || "";
   element("secureEncoder").hidden = !connection.secure_server;
   key.value = connection.key;
+  backupKey.value = connection.backup_key || "";
+  element("backupEncoderSettings").hidden = !connection.backup_key;
   encoder.hidden = false;
   button("withdrawEvent").textContent = "Withdraw this occurrence";
   button("withdrawEvent").disabled = false;
@@ -771,13 +786,18 @@ button("prepareEncoder").onclick = () => void action(async () => {
   showEncoder(await request<Encoder>(mediaPath("encoder"), "POST"));
 });
 button("prepareLowRtmp").onclick = () => void action(async () => {
-  showEncoder(await request<Encoder>(mediaPath("rtmp"), "POST"));
+  showEncoder(await request<Encoder>(mediaPath("rtmp"), "POST",
+    {backup: backupEnabled.checked, height: Number(outputHeight.value)}));
 }, "Low-latency RTMP is ready for the encoder.");
 button("stopLowRtmp").onclick = () => void action(async () => {
   await request(mediaPath("rtmp"), "DELETE");
   encoder.hidden = true;
   key.value = "";
+  backupKey.value = "";
 }, "Low-latency RTMP stopped.");
+button("copyBackupEncoderKey").onclick = () => void action(async () => {
+  await navigator.clipboard.writeText(backupKey.value);
+}, "Backup encoder key copied.");
 button("prepareDash").onclick = () => void action(async () => {
   const connection = await request<{manifest: string; token: string; buffer_seconds: number}>(mediaPath("dash"), "POST");
   input("dashManifest").value = connection.manifest;
@@ -1112,6 +1132,7 @@ button("withdrawEvent").onclick = () => void action(async () => {
   element("dashSettings").hidden = true;
   input("dashUploadToken").value = "";
   key.value = "";
+  backupKey.value = "";
   await request(mediaPath("delivery"), "DELETE");
   await load();
 }, "Occurrence withdrawn.");

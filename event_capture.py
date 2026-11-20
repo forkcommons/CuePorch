@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from filelock import FileLock, Timeout
 import requests
 
+import event_backup
 from event_dash_buffer import Buffer as DashBuffer, TARGET_DELAY
 
 
@@ -261,42 +262,35 @@ class SrtRelay(Relay):
         return dict(server=self.endpoint, passphrase=self.passphrase, key_bytes=16)
 
 
-class RtmpRelay:
-    """Pull an authenticated local MediaMTX publisher into the existing event fanout."""
+class RtmpPublisher:
+    """Provide separate write and read credentials for a MediaMTX input."""
 
-    def __init__(self, encoder, config, lease, playback):
+    def __init__(self, config, stop):
         self.config = config
-        self.lease = lease
-        self.playback = playback
-        self.stop = Event()
-        self.done = Event()
-        self.publisher_seen = Event()
+        self.stop = stop
+        self.seen = Event()
         self.route = uuid4().hex
         self.path = f"cueporch/{self.route}"
         self.write_key = secrets.token_urlsafe(32)
         self.read_key = secrets.token_urlsafe(32)
         self.publishers = set()
+        self.connection = None
         self.auth_lock = Lock()
-        self.progress = None
-        self.public = encoder["public"]
+
+    def read_arguments(self, playback):
+        config = self.config
         query = urlencode({"user": "cueporch-reader", "pass": self.read_key})
         source = f"{config.read}/{self.path}?{query}"
         tls = ["-tls_verify", "1"] if config.read.startswith("rtmps://") else []
-        self.args = ["-fflags", "+genpts", *probe_arguments(playback), "-rtmp_live", "live",
-                     *tls, "-rw_timeout", "3000000", "-i", source, *output_arguments(encoder, playback)]
-        Thread(target=self.run, name="CuePorch RTMP receiver", daemon=True).start()
-
-    @property
-    def process(self):
-        return self.progress.process if self.progress else None
+        return ["-fflags", "+genpts", *probe_arguments(playback), "-rtmp_live", "live",
+                *tls, "-rw_timeout", "3000000", "-i", source]
 
     def credentials(self):
         query = urlencode({"user": "cueporch-publisher", "pass": self.write_key})
-        return dict(server=self.config.publish + "/cueporch", key=self.route + "?" + query,
-                    secure_server=None, public=self.public, preview=False)
+        return dict(server=self.config.publish + "/cueporch", key=self.route + "?" + query, secure_server=None)
 
     def authorize(self, item):
-        if item.get("path") != self.path or self.stop.is_set() or self.done.is_set():
+        if item.get("path") != self.path or self.stop.is_set():
             return False
         user, password, action = (item.get(key) for key in ("user", "password", "action"))
         if not isinstance(password, str):
@@ -313,15 +307,53 @@ class RtmpRelay:
                 if self.stop.is_set():
                     return False
                 self.publishers.add(connection)
-                self.publisher_seen.set()
+                self.connection = connection
+                self.seen.set()
             return True
         return False
+
+    def disconnect(self):
+        with self.auth_lock:
+            publishers = list(self.publishers)
+        protocols = ("rtmps", "rtmp") if self.config.publish.startswith("rtmps://") else ("rtmp", "rtmps")
+        for connection in publishers:
+            for protocol in protocols:
+                with suppress(requests.RequestException):
+                    response = requests.post(
+                        f"{self.config.control}/v3/{protocol}/conns/kick/{connection}", timeout=2)
+                    if response.status_code != 404:
+                        break
+
+
+class RtmpRelay:
+    """Pull an authenticated local MediaMTX publisher into the existing event fanout."""
+
+    def __init__(self, encoder, config, lease, playback):
+        self.lease = lease
+        self.playback = playback
+        self.stop = Event()
+        self.done = Event()
+        self.publisher = RtmpPublisher(config, self.stop)
+        self.progress = None
+        self.public = encoder["public"]
+        self.args = [*self.publisher.read_arguments(playback), *output_arguments(encoder, playback)]
+        Thread(target=self.run, name="CuePorch RTMP receiver", daemon=True).start()
+
+    @property
+    def process(self):
+        return self.progress.process if self.progress else None
+
+    def credentials(self):
+        return self.publisher.credentials() | dict(public=self.public, preview=False)
+
+    def authorize(self, item):
+        return self.publisher.authorize(item)
 
     def run(self):
         deadline = time.monotonic() + 300
         try:
             while not self.stop.is_set() and time.monotonic() < deadline:
-                if not self.publisher_seen.wait(.25):
+                if not self.publisher.seen.wait(.25):
                     continue
                 self.progress = EncoderProgress(self.args, subprocess.DEVNULL, self.playback.path)
                 process = self.process
@@ -340,19 +372,151 @@ class RtmpRelay:
             pass
         finally:
             self.stop.set()
-            with self.auth_lock:
-                publishers = list(self.publishers)
-            protocols = ("rtmps", "rtmp") if self.config.publish.startswith("rtmps://") else ("rtmp", "rtmps")
-            for connection in publishers:
-                for protocol in protocols:
-                    with suppress(requests.RequestException):
-                        response = requests.post(
-                            f"{self.config.control}/v3/{protocol}/conns/kick/{connection}", timeout=2)
-                        if response.status_code != 404:
-                            break
+            self.publisher.disconnect()
             self.playback.close()
             self.lease.release()
             self.done.set()
+
+
+class BackupInput:
+    def __init__(self, config, stop, shared_output, height):
+        self.publisher = RtmpPublisher(config, stop)
+        self.progress = None
+        self.storage = None
+        self.connection = None
+        self.retry_until = 0
+        self.newest = None
+        self.updated = 0
+        self.shared_output = shared_output
+        width = round(height * 8 / 9) * 2
+        scale = f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+        self.arguments = [*self.publisher.read_arguments(True), "-map", "0:v:0", "-map", "0:a:0",
+                          "-vf", f"{scale},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+                          "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+                          "-g", "30", "-sc_threshold", "0", "-c:a", "aac", "-ac", "2", "-ar", "48000",
+                          "-b:a", "128k", "-f", "hls", "-hls_time", "1", "-hls_list_size", "12",
+                          "-hls_flags", "delete_segments+independent_segments+program_date_time+temp_file",
+                          "-hls_segment_filename", "feed-%09d.ts", "feed.m3u8"]
+
+    def poll(self, now):
+        connection = self.publisher.connection
+        if not connection:
+            return []
+        if not self.progress or self.progress.process.poll() is not None:
+            if connection != self.connection:
+                self.connection = connection
+                self.retry_until = now + 8
+                self.newest = None
+            if now < self.retry_until and (not self.progress or not self.progress.latest or self.newest is None):
+                if self.storage:
+                    self.storage.cleanup()
+                self.storage = TemporaryDirectory(dir=self.shared_output, prefix="input-", ignore_cleanup_errors=True)
+                try:
+                    self.progress = EncoderProgress(self.arguments, subprocess.DEVNULL, self.storage.name)
+                except OSError:
+                    self.progress = None
+        if not self.progress or self.progress.process.poll() is not None:
+            return []
+        fragments = event_backup.snapshot(Path(self.storage.name))
+        if fragments and fragments[-1] != self.newest:
+            self.newest = fragments[-1]
+            self.updated = now
+        return fragments if now - self.updated <= event_backup.FRESH_FOR and len(fragments) >= 2 else []
+
+    def finish(self):
+        if self.progress:
+            finish_process(self.progress.process, 0)
+        if self.storage:
+            self.storage.cleanup()
+        self.publisher.disconnect()
+
+
+def finish_process(process, grace):
+    try:
+        process.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            process.kill()
+        process.wait()
+
+
+class RedundantRtmpRelay:
+    def __init__(self, encoder, config, lease, playback, height, end_at):
+        self.lease = lease
+        self.playback = playback
+        self.stop = Event()
+        self.done = Event()
+        self.progress = None
+        self.public = encoder["public"]
+        self.height = height
+        self.end_at = end_at
+        self.connected = dict(primary=False, backup=False)
+        self.feeds = {role: BackupInput(config, self.stop, playback.path, height) for role in self.connected}
+        self.program = event_backup.Program(playback.path, playback.window)
+        self.destination = ingest_address(encoder)
+        Thread(target=self.run, name="CuePorch redundant RTMP programme", daemon=True).start()
+
+    @property
+    def process(self):
+        return self.progress.process if self.progress else None
+
+    def credentials(self):
+        return self.feeds["primary"].publisher.credentials() | dict(
+            public=self.public, preview=False, backup_key=self.feeds["backup"].publisher.credentials()["key"],
+            output_height=self.height)
+
+    def authorize(self, item):
+        return any(feed.publisher.authorize(item) for feed in self.feeds.values())
+
+    def health(self):
+        return dict(selected=self.program.selected if self.connected.get(self.program.selected) else None,
+                    primary=self.connected["primary"], backup=self.connected["backup"])
+
+    def run(self):
+        try:
+            with event_backup.serve_program(self.playback.path) as address:
+                self.relay(address)
+        finally:
+            self.stop.set()
+            for feed in self.feeds.values():
+                feed.finish()
+            self.playback.close()
+            self.lease.release()
+            self.done.set()
+
+    def relay(self, address):
+        arguments = [
+            "-re", "-live_start_index", "0", "-fflags", "+genpts", "-dts_delta_threshold", "0.25",
+            "-protocol_whitelist", "http,tcp,crypto", "-i", address, "-map", "0:v:0", "-map", "0:a:0",
+            "-c", "copy", "-rw_timeout", "10000000", "-f", "flv", self.destination,
+        ]
+        accept_until = time.monotonic() + 300
+        try:
+            while not self.stop.is_set() and time.time() < self.end_at:
+                now = time.monotonic()
+                if not self.program.fragments and now >= accept_until:
+                    break
+                ready = {name: feed.poll(now) for name, feed in self.feeds.items()}
+                self.connected = {name: bool(fragments) for name, fragments in ready.items()}
+                self.program.update(ready)
+                if self.playback.live() and (not self.progress or self.process.poll() is not None):
+                    self.progress = EncoderProgress(arguments, subprocess.DEVNULL, self.playback.path)
+                self.stop.wait(.2)
+        finally:
+            self.stop.set()
+            if self.process:
+                if self.program.fragments:
+                    self.program.publish(ended=True)
+                finish_process(self.process, 5)
+
+
+RTMP_ROOMS = (RtmpRelay, RedundantRtmpRelay)
 
 
 class DashRelay:
@@ -459,26 +623,29 @@ class Studio:
         return self.prepare(uid, opens, lambda lease, playback: SrtRelay(encoder, endpoint, lease, playback),
                             srt_address=endpoint, playback_window=playback_window).credentials()
 
-    def rtmp(self, uid, opens, encoder, config, window):
-        return self.prepare(uid, opens, lambda lease, playback: RtmpRelay(encoder, config, lease, playback),
-                            playback_window=window).credentials()
+    def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None):
+        def receive(lease, playback):
+            if height is not None:
+                return RedundantRtmpRelay(encoder, config, lease, playback, height, end_at)
+            return RtmpRelay(encoder, config, lease, playback)
+        return self.prepare(uid, opens, receive, playback_window=window).credentials()
 
     def rtmp_credentials(self, uid, opens):
         with self.lock:
             room = self.active.get((uid, opens))
-            if isinstance(room, RtmpRelay) and not room.stop.is_set() and not room.done.is_set():
+            if isinstance(room, RTMP_ROOMS) and not room.stop.is_set() and not room.done.is_set():
                 return room.credentials()
         return None
 
     def authorize_rtmp(self, item):
         with self.lock:
-            rooms = [room for room in self.active.values() if isinstance(room, RtmpRelay)]
+            rooms = [room for room in self.active.values() if isinstance(room, RTMP_ROOMS)]
         return any(room.authorize(item) for room in rooms)
 
     def close_rtmp(self, uid, opens):
         with self.lock:
             room = self.active.get((uid, opens))
-            if isinstance(room, RtmpRelay):
+            if isinstance(room, RTMP_ROOMS):
                 room.stop.set()
 
     def dash(self, uid, opens, encoder, window, end_at):
@@ -526,10 +693,13 @@ class Studio:
             if not room or room.done.is_set() or room.stop.is_set():
                 return None
         source = ("browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else
-                  "rtmp" if isinstance(room, RtmpRelay) else "dash" if isinstance(room, DashRelay) else "program")
+                  "rtmp" if isinstance(room, RTMP_ROOMS) else "dash" if isinstance(room, DashRelay) else "program")
         progress = room.progress
         values = progress.sample() if progress else None
-        return dict(source=source, metrics=values)
+        information = dict(source=source, metrics=values)
+        if isinstance(room, RedundantRtmpRelay):
+            information["inputs"] = room.health()
+        return information
 
     def get(self, uid, opens, token):
         with self.lock:

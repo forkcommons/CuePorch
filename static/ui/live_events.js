@@ -73,6 +73,10 @@ const destinationForm = element("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const backupKey = input("backupEncoderKey");
+const backupEnabled = input("enableBackupEncoder");
+const outputHeight = element("backupOutputHeight");
+backupEnabled.onchange = () => { element("backupOutput").hidden = !backupEnabled.checked; };
 const previewEncoder = input("privateEncoderPreview");
 const encoderPreviewPanel = element("encoderPreview");
 const encoderPreviewStatus = element("encoderPreviewStatus");
@@ -236,6 +240,8 @@ function choose(event, instance) {
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
+    backupKey.value = "";
+    element("backupEncoderSettings").hidden = true;
     element("dashSettings").hidden = true;
     input("dashUploadToken").value = "";
     element("srtSettings").hidden = true;
@@ -272,6 +278,10 @@ function choose(event, instance) {
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
     const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
     button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
+    element("backupEncoderOptions").hidden = !rtmpAvailable;
+    backupEnabled.checked = false;
+    element("backupOutput").hidden = true;
+    outputHeight.value = "720";
     button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
     button("prepareDash").hidden = button("stopDash").hidden = event.event.latency !== "fail-safe";
     button("prepareDash").disabled = button("prepareEncoder").disabled;
@@ -703,6 +713,8 @@ function showEncoder(connection) {
     input("rtmpsServer").value = connection.secure_server || "";
     element("secureEncoder").hidden = !connection.secure_server;
     key.value = connection.key;
+    backupKey.value = connection.backup_key || "";
+    element("backupEncoderSettings").hidden = !connection.backup_key;
     encoder.hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
@@ -713,13 +725,17 @@ button("prepareEncoder").onclick = () => void action(async () => {
     showEncoder(await request(mediaPath("encoder"), "POST"));
 });
 button("prepareLowRtmp").onclick = () => void action(async () => {
-    showEncoder(await request(mediaPath("rtmp"), "POST"));
+    showEncoder(await request(mediaPath("rtmp"), "POST", { backup: backupEnabled.checked, height: Number(outputHeight.value) }));
 }, "Low-latency RTMP is ready for the encoder.");
 button("stopLowRtmp").onclick = () => void action(async () => {
     await request(mediaPath("rtmp"), "DELETE");
     encoder.hidden = true;
     key.value = "";
+    backupKey.value = "";
 }, "Low-latency RTMP stopped.");
+button("copyBackupEncoderKey").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(backupKey.value);
+}, "Backup encoder key copied.");
 button("prepareDash").onclick = () => void action(async () => {
     const connection = await request(mediaPath("dash"), "POST");
     input("dashManifest").value = connection.manifest;
@@ -1075,6 +1091,7 @@ button("withdrawEvent").onclick = () => void action(async () => {
     element("dashSettings").hidden = true;
     input("dashUploadToken").value = "";
     key.value = "";
+    backupKey.value = "";
     await request(mediaPath("delivery"), "DELETE");
     await load();
 }, "Occurrence withdrawn.");

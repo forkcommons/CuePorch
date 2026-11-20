@@ -1,6 +1,6 @@
 """Exercise the CuePorch Low transport with real RTMP encoders, browsers and MediaMTX."""
 
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -261,3 +261,151 @@ def relay_fixture(root, app_port, binary, use_tls=True):
 def check_low_rtmp(base, keys, ffmpeg, publish, certificate):
     with sync_playwright() as playwright, chromium(playwright) as browser:
         return measure(browser, base, keys, ffmpeg, publish, certificate)
+
+
+@contextmanager
+def marked_feed(connection, key, ffmpeg, certificate, colour, dimensions, fps, tone):
+    tls = ["-tls_verify", "1", "-ca_file", str(certificate)] if connection.startswith("rtmps://") else []
+    command = [str(ffmpeg), "-nostdin", "-loglevel", "error", "-re", "-f", "lavfi",
+               "-i", f"color={colour}:size={dimensions}:rate={fps}",
+               "-f", "lavfi", "-i", f"sine=frequency={tone}:sample_rate=48000",
+               "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-tune", "zerolatency",
+               "-pix_fmt", "yuv420p", "-g", str(fps), "-sc_threshold", "0", "-c:a", "aac", *tls,
+               "-f", "flv", connection + "/" + key]
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) as process:
+        try:
+            yield process
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(6)
+
+
+CHECK_COLOUR = """idx => {
+  const video = document.querySelector('#eventPlayer video');
+  if (!video || video.paused || video.readyState < 2) return false;
+  const canvas = window.fixtureCanvas ??= document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const context = canvas.getContext('2d', {willReadFrequently: true});
+  context.drawImage(video, video.videoWidth / 2, video.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+  const channels = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  return channels[idx] > 95 && channels.every((value, index) => index === idx || value < 45);
+}"""
+
+
+def check_backup_rtmp(base, keys, ffmpeg, publish, certificate):
+    operator = keys["operator"]
+    auth = {"Authorization": "Bearer " + operator}
+    password = secrets.token_urlsafe(16)
+    now = datetime.now(timezone.utc)
+    title = "Independent Low encoder failover"
+    created = requests.post(base + "/api/live-events", headers=auth, timeout=15, json={
+        "title": title, "type": "live", "latency": "low", "visibility": "password", "view_password": password,
+        "save_replay": False, "dvr_seconds": 120,
+        "schedule": {"timezone": "UTC", "repeat": "none",
+                     "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+                     "end": (now + timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M")},
+    })
+    created.raise_for_status()
+    event = created.json()
+    (slot,) = event["occurrences"]
+    production = f"{base}/api/live-events/{event['id']}/{slot['id']}"
+    stable = urljoin(base, event["watch"]) + f"?occurrence={slot['id']}"
+    endpoint = production + "/rtmp"
+
+    def inputs(primary, backup, selected):
+        deadline = monotonic() + 28
+        while monotonic() < deadline:
+            health = requests.get(production + "/health?source=relay", headers=auth, timeout=8)
+            health.raise_for_status()
+            current = (health.json()["encoder"] or {}).get("inputs")
+            if current == dict(primary=primary, backup=backup, selected=selected):
+                return
+            Event().wait(.3)
+        raise AssertionError(f"Expected input state {(primary, backup, selected)}, got {current}")
+
+    def picture(page, channel):
+        try:
+            page.wait_for_function(CHECK_COLOUR, arg=channel, timeout=23000)
+        except Exception as error:
+            state = page.evaluate("""() => {
+              const container = document.querySelector('#eventPlayer'), v = container.querySelector('video');
+              return {phase: container.dataset.phase, transport: container.dataset.transport?.split(':')[0],
+                      at: v?.currentTime, paused: v?.paused, ready: v?.readyState, error: v?.error?.code,
+                      samePlayer: window.originalVideo === v};
+            }""")
+            raise AssertionError(f"Expected picture channel {channel}, player state {state}") from error
+
+    with sync_playwright() as playwright, chromium(playwright) as browser, ExitStack() as feeds:
+        staff = browser.new_page()
+        staff.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)});")
+        staff.goto(base + "/operator/live-events")
+        staff.get_by_role("button", name=f"Open production for {title}", exact=False).click()
+        staff.get_by_label("Use an independent backup encoder").check()
+        staff.get_by_label("Backup programme output").select_option("360")
+        assert requests.post(endpoint, json={"backup": True}, timeout=8).status_code == 403
+        with staff.expect_response(lambda answer: answer.url == endpoint, timeout=30000) as reply:
+            staff.get_by_role("button", name="Prepare low-latency RTMP").click()
+        assert reply.value.ok, f"Could not prepare dual encoders: HTTP {reply.value.status}"
+        connection = reply.value.json()
+        assert connection["server"] == publish + "/cueporch"
+        assert connection["key"] != connection["backup_key"] and connection["output_height"] == 360
+        assert staff.get_by_label("Backup stream key", exact=True).input_value() == connection["backup_key"]
+        again = requests.post(endpoint, headers=auth, json={"backup": True, "height": 360}, timeout=8)
+        assert again.json() == connection
+        assert requests.post(endpoint, headers=auth, json={"backup": False}, timeout=8).status_code == 409
+        audience = browser.new_page()
+        audience.goto(stable)
+        audience.get_by_label("Event password").fill(password)
+        audience.get_by_role("button", name="Unlock event").click()
+        primary = feeds.enter_context(marked_feed(connection["server"], connection["key"], ffmpeg, certificate,
+                                                   "red", "320x180", 12, 440))
+        inputs(True, False, "primary")
+        status = audience.locator("#eventStatus")
+        expect(status).to_have_text("Live", timeout=25000)
+        player = audience.locator("#eventPlayer video")
+        player.evaluate("v => { v.muted = true; void v.play(); window.originalVideo = v; }")
+        picture(audience, 0)
+        address = urljoin(base, audience.locator("#eventPlayer").get_attribute("data-address"))
+        assert audience.locator("#eventPlayer").get_attribute("data-transport").startswith("local:")
+        assert player.evaluate("v => v.videoWidth") == 640
+        backup = feeds.enter_context(marked_feed(connection["server"], connection["backup_key"], ffmpeg, certificate,
+                                                  "blue", "640x360", 25, 770))
+        inputs(True, True, "primary")
+        wait_for_delivery(production, auth, "live", 40, primary)
+        staff.get_by_role("button", name="Refresh stream status").click()
+        expect(staff.locator("#eventHealthDetails")).to_contain_text("Backup receiving")
+        expect(staff.locator("#eventHealthDetails")).to_contain_text("On air Primary")
+        primary.terminate()
+        started = monotonic()
+        primary.wait(6)
+        inputs(False, True, "backup")
+        picture(audience, 2)
+        failover = round(monotonic() - started, 2)
+        assert audience.evaluate("window.originalVideo === document.querySelector('#eventPlayer video')")
+        assert audience.url == stable and requests.get(address, timeout=8).ok
+        manifest = requests.get(address, timeout=8)
+        assert "#EXT-X-DISCONTINUITY" in manifest.text.splitlines()
+        restored = feeds.enter_context(marked_feed(connection["server"], connection["key"], ffmpeg, certificate,
+                                                    "green", "480x270", 20, 880))
+        inputs(True, True, "backup")
+        assert audience.evaluate(CHECK_COLOUR, 2)
+        backup.terminate()
+        started = monotonic()
+        backup.wait(6)
+        inputs(True, False, "primary")
+        picture(audience, 1)
+        failback = round(monotonic() - started, 2)
+        manifest = requests.get(address, timeout=8)
+        assert manifest.text.splitlines().count("#EXT-X-DISCONTINUITY") == 2
+        wait_for_delivery(production, auth, "live", 20, restored)
+        requests.delete(production + "/delivery", headers=auth, timeout=35).raise_for_status()
+        assert requests.get(address, timeout=8).status_code == 404
+        revoked = feeds.enter_context(marked_feed(connection["server"], connection["backup_key"], ffmpeg, certificate,
+                                                    "blue", "640x360", 25, 770))
+        assert disconnected(restored, 18) and disconnected(revoked, 12)
+        return dict(protocol=urlsplit(publish).scheme, different_input_resolutions=True,
+                    protected_output_width=640, failover_seconds=failover, failback_seconds=failback,
+                    same_open_player=True, primary_recovery_did_not_preempt_backup=True, peertube_live=True,
+                    withdrawal_disconnected_encoder_and_revoked_grants=True)

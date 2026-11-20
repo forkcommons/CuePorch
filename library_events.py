@@ -1146,7 +1146,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             with locked(uid):
                 with tx() as con:
                     _, event = read(con, uid)
-                    selected_open(event, opens)
+                    shift = selected_open(event, opens)
                     if request.method == "POST" and encoder_preview_enabled(con, uid):
                         abort(409, "Use the private encoder preview or turn off preview for this event.")
                 if request.method == "DELETE":
@@ -1155,11 +1155,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 window = direct_window(uid, {"preview": False})
                 if window is None:
                     abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
+                body = request.get_json(silent=True)
+                if body is None:
+                    body = {}
+                if (not isinstance(body, dict) or type(body.get("backup", False)) is not bool or
+                        type(body.get("height", 720)) is not int or body.get("height", 720) not in (360, 720, 1080, 2160)):
+                    abort(422, "Choose whether to prepare a backup encoder and a supported output height.")
+                height = body.get("height", 720) if body.get("backup", False) else None
                 prior = studio.rtmp_credentials(uid, opens)
                 if prior:
+                    if prior.get("output_height") != height:
+                        abort(409, "Stop the current RTMP input before changing its encoder setup.")
                     return private(prior)
                 connection = provision_event(uid, opens, browser=True, preview=False)
-                return private(studio.rtmp(uid, opens, connection, rtmp_config, window))
+                end_at = datetime.fromisoformat(shift["end"]).timestamp()
+                return private(studio.rtmp(uid, opens, connection, rtmp_config, window, height, end_at))
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
