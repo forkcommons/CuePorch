@@ -30,7 +30,9 @@ SAMPLE_AUDIO = """async video => {
       measurement = video.audioFixture = {context, analyser};
     }
     const {context, analyser} = measurement;
-    await context.resume();
+    await Promise.race([context.resume(), new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('The browser audio context did not resume.')), 3000);
+    })]);
     await video.play();
     await new Promise(resolve => setTimeout(resolve, 130));
     const data = new Float32Array(analyser.frequencyBinCount);
@@ -74,7 +76,7 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
 
     def unlock(target):
         expect(target.locator("video")).to_have_count(0)
-        expect(target.get_by_label("Audio track", exact=True)).to_have_count(0)
+        expect(target.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
         target.get_by_label("Video password").fill(password)
         target.get_by_role("button", name="Watch video").click()
         video = target.locator("video")
@@ -87,7 +89,7 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         return measured
 
     def choose(target, value):
-        control = target.get_by_label("Audio track", exact=True)
+        control = target.get_by_role("combobox", name="Audio track", exact=True)
         control.select_option(value)
         video = target.locator("video")
         expect(video).to_have_attribute("data-audio-track", value)
@@ -130,7 +132,7 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         viewer = guest.new_page()
         viewer.goto(watch)
         video = unlock(viewer)
-        expect(viewer.get_by_label("Audio track", exact=True)).to_have_value("original")
+        expect(viewer.get_by_role("combobox", name="Audio track", exact=True)).to_have_value("original")
         original_tone = tone(video, 440)
         video.evaluate("v=>{v.currentTime=2;v.playbackRate=1.25;v.textTracks[0].mode='showing';}")
         viewer.wait_for_function("!document.querySelector('video').seeking")
@@ -183,10 +185,10 @@ def check_audio_tracks(page, browser, base, staff, museum, venue, replacement):
         requests.put(appearance, headers=staff, timeout=10, json=settings | {"audio_tracks": False}).raise_for_status()
         viewer.goto(watch)
         unlock(viewer)
-        expect(viewer.get_by_label("Audio track", exact=True)).to_have_count(0)
+        expect(viewer.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
         viewer.goto(venue)
         unlock(frame)
-        expect(frame.get_by_label("Audio track", exact=True)).to_be_visible()
+        expect(frame.get_by_role("combobox", name="Audio track", exact=True)).to_be_visible()
 
         page.reload()
         page.get_by_role("button", name="Remove en audio description").click()
