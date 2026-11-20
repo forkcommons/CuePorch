@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 from hashlib import sha256
+from hmac import compare_digest
 from ipaddress import ip_address
 import math
 from pathlib import Path
@@ -13,9 +14,10 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
 import time
 from urllib.parse import urlencode, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from filelock import FileLock, Timeout
+import requests
 
 
 CHUNK_BYTES = 3 * 1024 * 1024
@@ -257,6 +259,100 @@ class SrtRelay(Relay):
         return dict(server=self.endpoint, passphrase=self.passphrase, key_bytes=16)
 
 
+class RtmpRelay:
+    """Pull an authenticated local MediaMTX publisher into the existing event fanout."""
+
+    def __init__(self, encoder, config, lease, playback):
+        self.config = config
+        self.lease = lease
+        self.playback = playback
+        self.stop = Event()
+        self.done = Event()
+        self.publisher_seen = Event()
+        self.route = uuid4().hex
+        self.path = f"cueporch/{self.route}"
+        self.write_key = secrets.token_urlsafe(32)
+        self.read_key = secrets.token_urlsafe(32)
+        self.publishers = set()
+        self.auth_lock = Lock()
+        self.progress = None
+        self.public = encoder["public"]
+        query = urlencode({"user": "cueporch-reader", "pass": self.read_key})
+        source = f"{config.read}/{self.path}?{query}"
+        tls = ["-tls_verify", "1"] if config.read.startswith("rtmps://") else []
+        self.args = ["-fflags", "+genpts", *probe_arguments(playback), "-rtmp_live", "live",
+                     *tls, "-rw_timeout", "3000000", "-i", source, *output_arguments(encoder, playback)]
+        Thread(target=self.run, name="CuePorch RTMP receiver", daemon=True).start()
+
+    @property
+    def process(self):
+        return self.progress.process if self.progress else None
+
+    def credentials(self):
+        query = urlencode({"user": "cueporch-publisher", "pass": self.write_key})
+        return dict(server=self.config.publish + "/cueporch", key=self.route + "?" + query,
+                    secure_server=None, public=self.public, preview=False)
+
+    def authorize(self, item):
+        if item.get("path") != self.path or self.stop.is_set() or self.done.is_set():
+            return False
+        user, password, action = (item.get(key) for key in ("user", "password", "action"))
+        if not isinstance(password, str):
+            return False
+        supplied = password.encode("utf8")
+        if action == "read" and user == "cueporch-reader":
+            return compare_digest(supplied, self.read_key.encode("ascii"))
+        if action == "publish" and user == "cueporch-publisher" and compare_digest(supplied, self.write_key.encode("ascii")):
+            try:
+                connection = str(UUID(str(item.get("id"))))
+            except ValueError:
+                return False
+            with self.auth_lock:
+                if self.stop.is_set():
+                    return False
+                self.publishers.add(connection)
+                self.publisher_seen.set()
+            return True
+        return False
+
+    def run(self):
+        deadline = time.monotonic() + 300
+        try:
+            while not self.stop.is_set() and time.monotonic() < deadline:
+                if not self.publisher_seen.wait(.25):
+                    continue
+                self.progress = EncoderProgress(self.args, subprocess.DEVNULL, self.playback.path)
+                process = self.process
+                while process.poll() is None and not self.stop.wait(.25):
+                    pass
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                if self.progress.latest or self.stop.wait(.45):
+                    break
+        except OSError:
+            pass
+        finally:
+            self.stop.set()
+            with self.auth_lock:
+                publishers = list(self.publishers)
+            protocols = ("rtmps", "rtmp") if self.config.publish.startswith("rtmps://") else ("rtmp", "rtmps")
+            for connection in publishers:
+                for protocol in protocols:
+                    with suppress(requests.RequestException):
+                        response = requests.post(
+                            f"{self.config.control}/v3/{protocol}/conns/kick/{connection}", timeout=2)
+                        if response.status_code != 404:
+                            break
+            self.playback.close()
+            self.lease.release()
+            self.done.set()
+
+
 class Studio:
     def __init__(self, database):
         self.directory = database.parent / "event-browser"
@@ -298,6 +394,28 @@ class Studio:
         return self.prepare(uid, opens, lambda lease, playback: SrtRelay(encoder, endpoint, lease, playback),
                             srt_address=endpoint, playback_window=playback_window).credentials()
 
+    def rtmp(self, uid, opens, encoder, config, window):
+        return self.prepare(uid, opens, lambda lease, playback: RtmpRelay(encoder, config, lease, playback),
+                            playback_window=window).credentials()
+
+    def rtmp_credentials(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if isinstance(room, RtmpRelay) and not room.stop.is_set() and not room.done.is_set():
+                return room.credentials()
+        return None
+
+    def authorize_rtmp(self, item):
+        with self.lock:
+            rooms = [room for room in self.active.values() if isinstance(room, RtmpRelay)]
+        return any(room.authorize(item) for room in rooms)
+
+    def close_rtmp(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if isinstance(room, RtmpRelay):
+                room.stop.set()
+
     def program(self, uid, opens, encoder, source):
         args = ["-re", "-protocol_whitelist", "file", "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
                 "-c", "copy", "-rw_timeout", "10000000", "-f", "flv", ingest_address(encoder)]
@@ -325,8 +443,10 @@ class Studio:
             room = self.active.get((uid, opens))
             if not room or room.done.is_set() or room.stop.is_set():
                 return None
-        source = "browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else "program"
-        values = room.progress.sample()
+        source = ("browser" if isinstance(room, Capture) else "srt" if isinstance(room, SrtRelay) else
+                  "rtmp" if isinstance(room, RtmpRelay) else "program")
+        progress = room.progress
+        values = progress.sample() if progress else None
         return dict(source=source, metrics=values)
 
     def get(self, uid, opens, token):
@@ -353,5 +473,5 @@ class Studio:
                 room.stop.set()
         deadline = time.monotonic() + 8
         for room in rooms:
-            if not room.done.wait(max(0, deadline - time.monotonic())) and room.process.poll() is None:
+            if not room.done.wait(max(0, deadline - time.monotonic())) and room.process and room.process.poll() is None:
                 room.process.terminate()

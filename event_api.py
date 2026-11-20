@@ -39,6 +39,7 @@ ROUTES = (
     ("/<uid>/<int:opens>/registrants/<registrant>/join", "revoke_event_join", {"DELETE": "registrations"}),
     ("/<uid>/<int:opens>/health", "event_health", {"GET": "read"}),
     ("/<uid>/<int:opens>/encoder", "prepare_external_encoder", {"POST": "produce"}),
+    ("/<uid>/<int:opens>/rtmp", "event_rtmp_relay", {"POST": "produce", "DELETE": "produce"}),
     ("/<uid>/<int:opens>/preview", "encoder_preview", {"GET": "produce", "POST": "produce"}),
     ("/<uid>/<int:opens>/delivery", "withdraw_event", {"DELETE": "produce"}),
     ("/<uid>/<int:opens>/program", "event_program_settings", {"GET": "produce", "PUT": "produce"}),

@@ -21,6 +21,7 @@ from browser_account_security import private, same_origin, secure_site
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
+import event_rtmp
 import event_analytics
 import event_attendance
 import event_chat
@@ -422,6 +423,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
              sharing_access, enforce_sharing, ai_actor):
     media = Gateway()
     studio = Studio(database)
+    rtmp_config = event_rtmp.configured()
+    event_rtmp.register(app, rtmp_config, studio)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
     recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
     stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
@@ -519,7 +522,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 entries = [summary(con, row, json.loads(row["settings"]), first, last) for row in con.execute(
                     "SELECT * FROM live_event ORDER BY created DESC"
                 )]
-                return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available())
+                return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available(),
+                            direct_rtmp=bool(rtmp_config))
             body = request.get_json()
             event = edit(body)
             setup = validate_setup(body["starting_options"]) if "starting_options" in body else None
@@ -1130,6 +1134,36 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409, str(error))
         except (OSError, ValueError):
             abort(502, "Could not start the SRT listener.")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/rtmp", methods=["POST", "DELETE"])
+    def event_rtmp_relay(uid, opens):
+        staff()
+        if not rtmp_config:
+            abort(409, "This station has no low-latency RTMP relay.")
+        try:
+            with locked(uid):
+                with tx() as con:
+                    _, event = read(con, uid)
+                    selected_open(event, opens)
+                    if request.method == "POST" and encoder_preview_enabled(con, uid):
+                        abort(409, "Use the private encoder preview or turn off preview for this event.")
+                if request.method == "DELETE":
+                    studio.close_rtmp(uid, opens)
+                    return "", 204
+                window = direct_window(uid, {"preview": False})
+                if window is None:
+                    abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
+                prior = studio.rtmp_credentials(uid, opens)
+                if prior:
+                    return private(prior)
+                connection = provision_event(uid, opens, browser=True, preview=False)
+                return private(studio.rtmp(uid, opens, connection, rtmp_config, window))
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the low-latency RTMP relay.")
 
     @app.get("/api/live-events/<uid>/<int:opens>/health")
     def event_health(uid, opens):

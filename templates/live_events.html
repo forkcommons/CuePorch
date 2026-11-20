@@ -132,6 +132,8 @@
       <a id="eventStudio">Open browser studio</a>
       <label><input type="checkbox" id="privateEncoderPreview"> Preview external encoder privately</label>
       <button type="button" id="prepareEncoder">Prepare encoder</button>
+      <button type="button" id="prepareLowRtmp" hidden>Prepare low-latency RTMP</button>
+      <button type="button" id="stopLowRtmp" hidden>Stop low-latency RTMP</button>
       <section id="encoderPreview" aria-labelledby="encoderPreviewHeading" hidden>
         <h3 id="encoderPreviewHeading">Encoder preview</h3>
         <p id="encoderPreviewStatus" role="status"></p>
@@ -277,7 +279,7 @@
         </form>
       </details>
       <div id="encoderSettings" hidden>
-        <label>RTMP server <input id="rtmpServer" readonly></label>
+        <label>RTMP or RTMPS server <input id="rtmpServer" readonly></label>
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>
         <label>Stream key <input id="encoderKey" type="password" readonly></label>
         <button type="button" id="copyEncoderKey">Copy stream key</button>

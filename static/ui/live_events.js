@@ -268,6 +268,9 @@ function choose(event, instance) {
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
+    const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
+    button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
+    button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
     button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
         (instance.delivery !== "scheduled" && !calendar.host_ready);
@@ -691,8 +694,7 @@ previewEncoder.onchange = () => void action(async () => {
         previewEncoder.checked = event.preview_encoder;
     }
 }, "Encoder preview preference saved.");
-button("prepareEncoder").onclick = () => void action(async () => {
-    const connection = await request(mediaPath("encoder"), "POST");
+function showEncoder(connection) {
     input("rtmpServer").value = connection.server;
     input("rtmpsServer").value = connection.secure_server || "";
     element("secureEncoder").hidden = !connection.secure_server;
@@ -702,7 +704,18 @@ button("prepareEncoder").onclick = () => void action(async () => {
     button("withdrawEvent").disabled = false;
     showEncoderPreview(connection.preview);
     health.textContent = connection.preview ? "Encoder prepared for private preview." : "Waiting for the encoder.";
+}
+button("prepareEncoder").onclick = () => void action(async () => {
+    showEncoder(await request(mediaPath("encoder"), "POST"));
 });
+button("prepareLowRtmp").onclick = () => void action(async () => {
+    showEncoder(await request(mediaPath("rtmp"), "POST"));
+}, "Low-latency RTMP is ready for the encoder.");
+button("stopLowRtmp").onclick = () => void action(async () => {
+    await request(mediaPath("rtmp"), "DELETE");
+    encoder.hidden = true;
+    key.value = "";
+}, "Low-latency RTMP stopped.");
 releasePreview.onclick = () => void action(async () => {
     await request(mediaPath("preview"), "POST");
     showEncoderPreview(false);
