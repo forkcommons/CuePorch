@@ -14,5 +14,9 @@
   </div>
   <p id="recordPrompterScreen" hidden>Script preview is off during screen sharing.</p>
   <p id="recordPrompterVoice" role="status"></p>
-  <div id="recordPrompter" tabindex="0" role="region" aria-label="Teleprompter script" hidden></div>
+  <label><input type="checkbox" id="floatPrompter"> Float script window</label>
+  <div id="recordPrompterWindow" hidden>
+    <button type="button" id="movePrompter" title="Drag or use arrow keys to move the script" hidden>Move script</button>
+    <div id="recordPrompter" tabindex="0" role="region" aria-label="Teleprompter script"></div>
+  </div>
 </details>

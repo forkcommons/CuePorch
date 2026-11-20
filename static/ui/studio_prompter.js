@@ -1,4 +1,7 @@
 import { StudioVoice } from "./studio_voice.js";
+const arrowMoves = {
+    ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+};
 function words(text) {
     return Array.from(text.matchAll(/[\p{L}\p{N}\p{M}]+/gu), match => ({
         text: match[0].normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase(), offset: match.index,
@@ -19,6 +22,9 @@ export class StudioPrompter {
     restart = document.querySelector("#recordPrompterReset");
     screenNotice = document.querySelector("#recordPrompterScreen");
     voiceNotice = document.querySelector("#recordPrompterVoice");
+    frame = document.querySelector("#recordPrompterWindow");
+    float = document.querySelector("#floatPrompter");
+    move = document.querySelector("#movePrompter");
     sharing = false;
     recordingPaused = false;
     running = false;
@@ -28,6 +34,8 @@ export class StudioPrompter {
     scriptWords = [];
     spokenWord = "";
     cursor = 0;
+    floatingAt = { left: 16, top: Math.round(window.innerHeight / 6) };
+    drag;
     constructor(microphone, credential, endpoint = "/api/studio/teleprompter/voice") {
         this.microphone = microphone;
         this.credential = credential;
@@ -50,7 +58,37 @@ export class StudioPrompter {
         this.play.onclick = () => { this.running = true; this.update(); };
         this.pause.onclick = () => this.stop();
         this.restart.onclick = () => { this.reset(); this.update(); };
-        this.panel.ontoggle = () => this.syncVoice();
+        this.panel.ontoggle = () => { this.place(this.floatingAt.left, this.floatingAt.top); this.syncVoice(); };
+        this.float.onchange = () => {
+            this.frame.classList.toggle("floating", this.float.checked);
+            this.move.hidden = !this.float.checked;
+            if (!this.float.checked)
+                this.view.style.removeProperty("width");
+            this.place(this.floatingAt.left, this.floatingAt.top);
+        };
+        this.move.onpointerdown = event => {
+            if (event.button !== 0)
+                return;
+            this.move.focus();
+            this.move.setPointerCapture(event.pointerId);
+            this.drag = { pointer: event.pointerId, x: event.clientX - this.floatingAt.left,
+                y: event.clientY - this.floatingAt.top };
+        };
+        this.move.onpointermove = event => {
+            if (this.drag?.pointer === event.pointerId)
+                this.place(event.clientX - this.drag.x, event.clientY - this.drag.y);
+        };
+        this.move.onlostpointercapture = () => { this.drag = undefined; };
+        this.move.onkeydown = event => {
+            const offsets = arrowMoves[event.key];
+            if (!offsets)
+                return;
+            event.preventDefault();
+            const step = event.shiftKey ? 40 : 10;
+            this.place(this.floatingAt.left + offsets[0] * step, this.floatingAt.top + offsets[1] * step);
+        };
+        new ResizeObserver(() => this.place(this.floatingAt.left, this.floatingAt.top)).observe(this.frame);
+        window.addEventListener("resize", () => this.place(this.floatingAt.left, this.floatingAt.top));
         window.addEventListener("pagehide", () => this.closeVoice());
         this.update();
     }
@@ -68,7 +106,7 @@ export class StudioPrompter {
     }
     start() {
         this.reset();
-        if (this.view.hidden)
+        if (this.frame.hidden)
             return;
         this.panel.open = true;
         this.running = this.speed.value !== "0";
@@ -79,7 +117,7 @@ export class StudioPrompter {
         this.update();
     }
     scroll(elapsed) {
-        if (!this.running || this.view.hidden || !this.panel.open || this.recordingPaused || this.speed.value === "auto")
+        if (!this.running || this.frame.hidden || !this.panel.open || this.recordingPaused || this.speed.value === "auto")
             return;
         if (Math.abs(this.view.scrollTop - this.position) > 1)
             this.position = this.view.scrollTop;
@@ -94,6 +132,17 @@ export class StudioPrompter {
         this.cursor = 0;
         this.position = this.view.scrollTop = 0;
     }
+    place(left, top) {
+        if (!this.float.checked || this.frame.hidden || !this.panel.open || this.panel.hidden)
+            return;
+        const margin = 6;
+        this.floatingAt = {
+            left: Math.max(margin, Math.min(left, window.innerWidth - this.frame.offsetWidth - margin)),
+            top: Math.max(margin, Math.min(top, window.innerHeight - this.frame.offsetHeight - margin)),
+        };
+        this.frame.style.left = this.floatingAt.left + "px";
+        this.frame.style.top = this.floatingAt.top + "px";
+    }
     closeVoice() {
         this.voice?.close();
         this.voice = this.voiceTrack = undefined;
@@ -105,7 +154,7 @@ export class StudioPrompter {
             this.voiceNotice.textContent = "";
             return;
         }
-        if (!this.running || this.view.hidden || this.panel.hidden || !this.panel.open || this.recordingPaused) {
+        if (!this.running || this.frame.hidden || this.panel.hidden || !this.panel.open || this.recordingPaused) {
             if (this.voice)
                 this.voiceNotice.textContent = "Voice follow paused.";
             this.closeVoice();
@@ -166,11 +215,12 @@ export class StudioPrompter {
     }
     update() {
         const empty = !this.script.value.trim();
-        this.view.hidden = this.sharing || empty;
+        this.frame.hidden = this.sharing || empty;
         this.screenNotice.hidden = !this.sharing || empty;
-        this.play.disabled = this.view.hidden || this.running || this.speed.value === "0";
-        this.pause.disabled = this.view.hidden || !this.running;
-        this.restart.disabled = this.view.hidden;
+        this.float.disabled = this.frame.hidden;
+        this.play.disabled = this.frame.hidden || this.running || this.speed.value === "0";
+        this.pause.disabled = this.frame.hidden || !this.running;
+        this.restart.disabled = this.frame.hidden;
         this.syncVoice();
     }
 }

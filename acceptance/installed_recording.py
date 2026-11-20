@@ -56,6 +56,27 @@ def check_prompter_controls(page):
     }""") == stationary
     page.get_by_role("button", name="Reset script").click()
     assert view.evaluate("v => v.scrollTop") == 0
+    page.get_by_role("checkbox", name="Float script window").check()
+    handle = page.get_by_role("button", name="Move script")
+    window = page.locator("#recordPrompterWindow")
+    starting = window.bounding_box()
+    handle.press("ArrowRight")
+    moved = window.bounding_box()
+    assert moved["x"] == starting["x"] + 10
+    grip = handle.bounding_box()
+    page.mouse.move(grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(grip["x"] + grip["width"] / 2 + 55, grip["y"] + grip["height"] / 2 + 25, steps=5)
+    page.mouse.up()
+    dragged = window.bounding_box()
+    assert dragged["x"] == moved["x"] + 55 and dragged["y"] == moved["y"] + 25
+    size = view.bounding_box()
+    page.mouse.move(size["x"] + size["width"] - 3, size["y"] + size["height"] - 3)
+    page.mouse.down()
+    page.mouse.move(size["x"] + size["width"] + 39, size["y"] + size["height"] + 41, steps=5)
+    page.mouse.up()
+    resized = view.bounding_box()
+    assert resized["width"] > size["width"] and resized["height"] > size["height"], (size, resized)
 
 
 @contextmanager
@@ -195,6 +216,7 @@ def check_recording(playwright, base, auth, clip_file):
         page.get_by_role("button", name="Share screen", exact=True).click()
         expect(page.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
         expect(page.locator("#recordPrompter")).to_be_hidden()
+        expect(page.get_by_role("button", name="Move script")).to_be_hidden()
         expect(page.get_by_text("Script preview is off during screen sharing.")).to_be_visible()
         page.wait_for_function("""() => {
           const canvas=document.querySelector('#recordCanvas');
@@ -358,4 +380,5 @@ def check_recording(playwright, base, auth, clip_file):
                 saved_to_selected_folder=True, private_before_share=True, installed_library_playback_and_audio=True,
                 editor_clip_upload_and_inline_capture=True, private_clip_sources=True, recovered_three_clip_editor_draft=True,
                 inline_recording_decoded_and_project_rendered=True, decoded_recording_canvas_sizes=recorded_sizes,
-                teleprompter_manual_speed_size_pause_reset_and_screen_suppression=True)
+                teleprompter_manual_speed_size_pause_reset_and_screen_suppression=True,
+                floating_script_drag_resize_and_keyboard_placement=True)

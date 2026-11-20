@@ -190,6 +190,8 @@ Open **Record Studio** from the library. Choose a camera and microphone, connect
 
 In Record Studio or Live Studio, enter a script in **Teleprompter**. Set the font size and scroll speed, or choose **Off** to scroll by hand. Use **Play script**, **Pause script** and **Reset script** to rehearse. Starting a take opens the script and starts scrolling if enabled. CuePorch hides the script preview while sharing your screen.
 
+Choose **Float script window** to position it over your browser. Drag **Move script** or focus that button and use the arrow keys. Drag the lower corner of the script to resize it. Clear the checkbox to return the script to the Studio controls.
+
 Choose **Auto (follow my voice)** to keep an English script in step with a connected microphone. Auto uses your installation's local TextFlowKit runtime. Voice recognition does not retain the microphone buffers or recognized text. The normal recording keeps the audio routed to your program mix. If Auto is unavailable, select a fixed scroll speed or scroll by hand.
 
 An admitted guest speaker can open **Teleprompter** in the speaker room and use their own script and microphone. The script stays in the guest's browser. Leaving the room or losing admission cuts off access.

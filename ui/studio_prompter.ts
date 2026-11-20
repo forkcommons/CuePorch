@@ -1,5 +1,9 @@
 import {StudioVoice} from "./studio_voice.js";
 
+const arrowMoves: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+};
+
 function words(text: string) {
   return Array.from(text.matchAll(/[\p{L}\p{N}\p{M}]+/gu), match => ({
     text: match[0].normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase(), offset: match.index,
@@ -18,6 +22,9 @@ export class StudioPrompter {
   private readonly restart = document.querySelector<HTMLButtonElement>("#recordPrompterReset")!;
   private readonly screenNotice = document.querySelector<HTMLElement>("#recordPrompterScreen")!;
   private readonly voiceNotice = document.querySelector<HTMLElement>("#recordPrompterVoice")!;
+  private readonly frame = document.querySelector<HTMLElement>("#recordPrompterWindow")!;
+  private readonly float = document.querySelector<HTMLInputElement>("#floatPrompter")!;
+  private readonly move = document.querySelector<HTMLButtonElement>("#movePrompter")!;
   private sharing = false;
   private recordingPaused = false;
   private running = false;
@@ -27,6 +34,8 @@ export class StudioPrompter {
   private scriptWords: ReturnType<typeof words> = [];
   private spokenWord = "";
   private cursor = 0;
+  private floatingAt = {left: 16, top: Math.round(window.innerHeight / 6)};
+  private drag?: {pointer: number; x: number; y: number};
 
   constructor(private microphone: () => MediaStreamTrack | undefined, private credential: () => string,
               private endpoint = "/api/studio/teleprompter/voice") {
@@ -46,7 +55,33 @@ export class StudioPrompter {
     this.play.onclick = () => { this.running = true; this.update(); };
     this.pause.onclick = () => this.stop();
     this.restart.onclick = () => { this.reset(); this.update(); };
-    this.panel.ontoggle = () => this.syncVoice();
+    this.panel.ontoggle = () => { this.place(this.floatingAt.left, this.floatingAt.top); this.syncVoice(); };
+    this.float.onchange = () => {
+      this.frame.classList.toggle("floating", this.float.checked);
+      this.move.hidden = !this.float.checked;
+      if (!this.float.checked) this.view.style.removeProperty("width");
+      this.place(this.floatingAt.left, this.floatingAt.top);
+    };
+    this.move.onpointerdown = event => {
+      if (event.button !== 0) return;
+      this.move.focus();
+      this.move.setPointerCapture(event.pointerId);
+      this.drag = {pointer: event.pointerId, x: event.clientX - this.floatingAt.left,
+        y: event.clientY - this.floatingAt.top};
+    };
+    this.move.onpointermove = event => {
+      if (this.drag?.pointer === event.pointerId) this.place(event.clientX - this.drag.x, event.clientY - this.drag.y);
+    };
+    this.move.onlostpointercapture = () => { this.drag = undefined; };
+    this.move.onkeydown = event => {
+      const offsets = arrowMoves[event.key];
+      if (!offsets) return;
+      event.preventDefault();
+      const step = event.shiftKey ? 40 : 10;
+      this.place(this.floatingAt.left + offsets[0] * step, this.floatingAt.top + offsets[1] * step);
+    };
+    new ResizeObserver(() => this.place(this.floatingAt.left, this.floatingAt.top)).observe(this.frame);
+    window.addEventListener("resize", () => this.place(this.floatingAt.left, this.floatingAt.top));
     window.addEventListener("pagehide", () => this.closeVoice());
     this.update();
   }
@@ -65,7 +100,7 @@ export class StudioPrompter {
 
   start() {
     this.reset();
-    if (this.view.hidden) return;
+    if (this.frame.hidden) return;
     this.panel.open = true;
     this.running = this.speed.value !== "0";
     this.update();
@@ -77,7 +112,7 @@ export class StudioPrompter {
   }
 
   scroll(elapsed: number) {
-    if (!this.running || this.view.hidden || !this.panel.open || this.recordingPaused || this.speed.value === "auto") return;
+    if (!this.running || this.frame.hidden || !this.panel.open || this.recordingPaused || this.speed.value === "auto") return;
     if (Math.abs(this.view.scrollTop - this.position) > 1) this.position = this.view.scrollTop;
     const end = Math.max(0, this.view.scrollHeight - this.view.clientHeight);
     this.position = Math.min(end, this.position + Math.min(100, elapsed) * .023 * Number(this.speed.value));
@@ -89,6 +124,17 @@ export class StudioPrompter {
     this.closeVoice();
     this.cursor = 0;
     this.position = this.view.scrollTop = 0;
+  }
+
+  private place(left: number, top: number) {
+    if (!this.float.checked || this.frame.hidden || !this.panel.open || this.panel.hidden) return;
+    const margin = 6;
+    this.floatingAt = {
+      left: Math.max(margin, Math.min(left, window.innerWidth - this.frame.offsetWidth - margin)),
+      top: Math.max(margin, Math.min(top, window.innerHeight - this.frame.offsetHeight - margin)),
+    };
+    this.frame.style.left = this.floatingAt.left + "px";
+    this.frame.style.top = this.floatingAt.top + "px";
   }
 
   private closeVoice() {
@@ -103,7 +149,7 @@ export class StudioPrompter {
       this.voiceNotice.textContent = "";
       return;
     }
-    if (!this.running || this.view.hidden || this.panel.hidden || !this.panel.open || this.recordingPaused) {
+    if (!this.running || this.frame.hidden || this.panel.hidden || !this.panel.open || this.recordingPaused) {
       if (this.voice) this.voiceNotice.textContent = "Voice follow paused.";
       this.closeVoice();
       return;
@@ -159,11 +205,12 @@ export class StudioPrompter {
 
   private update() {
     const empty = !this.script.value.trim();
-    this.view.hidden = this.sharing || empty;
+    this.frame.hidden = this.sharing || empty;
     this.screenNotice.hidden = !this.sharing || empty;
-    this.play.disabled = this.view.hidden || this.running || this.speed.value === "0";
-    this.pause.disabled = this.view.hidden || !this.running;
-    this.restart.disabled = this.view.hidden;
+    this.float.disabled = this.frame.hidden;
+    this.play.disabled = this.frame.hidden || this.running || this.speed.value === "0";
+    this.pause.disabled = this.frame.hidden || !this.running;
+    this.restart.disabled = this.frame.hidden;
     this.syncVoice();
   }
 }
