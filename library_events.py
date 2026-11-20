@@ -12,14 +12,16 @@ import uuid
 
 from filelock import FileLock, Timeout
 from flask import abort, make_response, render_template, request, url_for
-from itsdangerous import BadSignature, URLSafeTimedSerializer
+from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
 import requests
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from browser_account_security import private, same_origin, secure_site
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
 import event_analytics
+import event_attendance
 import event_chat
 import event_captions
 import event_engagement
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
-       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -387,6 +389,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
+    attendance_links = URLSafeSerializer(signing_key, salt="cueporch-event-attendance")
     frames = URLSafeTimedSerializer(signing_key, salt="cueporch-event-frame")
     audiences = URLSafeTimedSerializer(signing_key, salt="cueporch-event-audience")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
@@ -410,15 +413,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if territories(event)["mode"] != "anywhere" and not analytics_proxies:
             abort(422, "Connect a trusted region proxy before setting territories.")
 
-    def viewer_enrolled(token, scope, released_archive):
+    def viewer_enrollment(con, token, scope, released_archive):
         try:
             registered_scope = guests.loads(token, max_age=12 * 3600)
         except BadSignature:
-            return False
+            return False, None
+        if isinstance(registered_scope, list) and len(registered_scope) == 6:
+            joined = registered_scope[5]
+            admitted = registered_scope[:5] == scope and event_attendance.active(con, joined, scope)
+            return admitted, joined if admitted else None
         # A submitted registration covers the other released entries of the same event playlist.
         # Media, captions and engagement continue to check the exact occurrence being requested.
-        return registered_scope == scope or (released_archive and isinstance(registered_scope, list)
-            and len(registered_scope) == 5 and registered_scope[:2] == scope[:2] and registered_scope[3:] == scope[3:])
+        carried = (released_archive and isinstance(registered_scope, list) and len(registered_scope) == 5
+                   and registered_scope[:2] == scope[:2] and registered_scope[3:] == scope[3:])
+        return bool(registered_scope == scope or carried), None
 
     def locked(uid):
         if not re.fullmatch(r"[a-f0-9]{32}", uid):
@@ -622,6 +630,66 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(404)
         return candidate
 
+    @app.post("/api/live-events/<uid>/<int:opens>/registrants")
+    def add_event_registrant(uid, opens):
+        staff()
+        body = request.get_json()
+        with tx() as con:
+            row, event = read(con, uid)
+            slot = selected_open(event, opens)
+            delivery = occurrence(con, uid, opens)
+            form = library_registration.active(con, "event", uid)
+            if not form or event["visibility"] in ("private", "embed_only") or (delivery and delivery["delivery"] in (
+                    "withdrawing", "withdrawn", "replay")):
+                abort(409, "Choose a current watchable occurrence with registration enabled.")
+            registrant, created = event_attendance.enroll(con, uid, row["revision"], slot, form, body)
+        address = url_for("event_attendance_join", slug=row["slug"])
+        return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
+
+    @app.delete("/api/live-events/<uid>/<int:opens>/registrants/<registrant>/join")
+    def revoke_event_join(uid, opens, registrant):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            selected_open(event, opens)
+            event_attendance.revoke(con, uid, opens, registrant)
+        return "", 204
+
+    @app.route("/events/<slug>/join", methods=["GET", "POST"])
+    def event_attendance_join(slug):
+        origin = library_analytics.source_origin(public_url)
+        secure = secure_site(origin)
+        if request.method in ("GET", "HEAD"):
+            return private(render_template("event_attendance_join.html"))
+        same_origin(secure)
+        body = request.get_json()
+        supplied = body.get("token") if isinstance(body, dict) else None
+        joined = event_attendance.decode(attendance_links, supplied) if isinstance(supplied, str) and len(supplied) <= 150 else None
+        if not joined:
+            abort(404)
+        with tx() as con:
+            row, event = read(con, slug, True)
+            if event["visibility"] in ("private", "embed_only") or publication(con, row, event) != "eligible":
+                abort(404)
+            enforce_territories(event)
+            form = library_registration.active(con, "event", row["id"])
+            entry = con.execute("SELECT opens,expires FROM live_attendance_link WHERE id=?", (joined,)).fetchone()
+            if not form or not entry:
+                abort(404)
+            opens = entry["opens"]
+            scope = [row["id"], row["revision"], opens, form["revision"], False]
+            selected_open(event, opens)
+            delivery = occurrence(con, row["id"], opens)
+            if not event_attendance.active(con, joined, scope) or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
+                abort(404)
+            key = access_settings(con, row["id"])[0] if event["visibility"] == "unlisted" else None
+            watch = viewer_url(row, event, False, key, opens)
+        response = private(dict(watch=watch))
+        remaining = max(0, entry["expires"] - int(datetime.now(timezone.utc).timestamp()))
+        response.set_cookie("cueporch_event_" + row["id"], supplied, max_age=remaining, httponly=True,
+                            secure=secure, samesite="Lax", path=viewer_url(row, event, False))
+        return response
+
     def operator_chat(con, uid, opens):
         _, event = read(con, uid)
         selected_open(event, opens)
@@ -672,7 +740,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if not on_playlist and delivery and delivery["delivery"] == "replay" and event_player.settings(con, row["id"])["show_latest"]:
                 featured = event_playlist.latest_released(con, row["id"])
             carried_grant = on_playlist or (featured and featured["opens"] == opens)
-            if not viewer_enrolled(request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], carried_grant):
+            admitted, _ = viewer_enrollment(con, request.headers.get("X-CuePorch-Event-Viewer", ""),
+                                             scope + [embed], carried_grant)
+            if not admitted:
                 abort(404)
         now = datetime.now(timezone.utc)
         active = now < datetime.fromisoformat(slot["end"]) and (not delivery or delivery["delivery"] != "replay")
@@ -1084,9 +1154,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         except (BadSignature, ValueError, requests.RequestException):
             abort(404)
 
-    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope):
+    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope, joined=None):
         address = analytics_token = None
         status = "Scheduled"
+        attendance = [joined] if joined else []
         try:
             if native_video:
                 raw = media.metadata(delivery["origin"], delivery["remote"])
@@ -1096,7 +1167,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if available:
                     gateway, filename = hls_manifest(delivery, raw, host_private)
                     replay = observed["state"] == "replay"
-                    session = files.dumps(scope + [delivery["remote"], gateway, replay])
+                    session = files.dumps(scope + [delivery["remote"], gateway, replay] + attendance)
                     address = url_for("event_media_file", token=session, filename=filename)
                     status = "Replay" if replay else "Live"
                 duration = raw.get("duration")
@@ -1111,7 +1182,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 duration_ms = (round(duration * 1000) if replay and type(duration) in (int, float)
                                and math.isfinite(duration) and .001 <= duration <= 7 * 86400 else None)
                 analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex,
-                                                              [*analytics_scope, duration_ms]])
+                                                              [*analytics_scope, duration_ms]] + attendance)
                 if not native_video:
                     address += "?api=1"
             if observed["state"] == "waiting_for_encoder":
@@ -1174,6 +1245,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
         grant = None
+        joined = None
         enrollment = None
         form_error = None
         archives = None
@@ -1226,19 +1298,27 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
                     if not form_error:
                         grant = guests.dumps(scope)
-                elif token := request.headers.get("X-CuePorch-Event-Viewer"):
+                else:
                     on_playlist = playlist_enabled and (withdrawn or (delivery and delivery["delivery"] == "replay"))
-                    if viewer_enrolled(token, scope, on_playlist):
+                    token = request.headers.get("X-CuePorch-Event-Viewer", "")
+                    admitted, joined = viewer_enrollment(con, token, scope, on_playlist)
+                    if admitted:
                         grant = token
+                    elif not embed and not withdrawn:
+                        saved = request.cookies.get("cueporch_event_" + row["id"], "")
+                        candidate = event_attendance.decode(attendance_links, saved) if len(saved) <= 150 else None
+                        if event_attendance.active(con, candidate, scope):
+                            joined = candidate
+                            grant = guests.dumps([*scope, joined])
                 if not grant and not json_status and not withdrawn:
                     enrollment = forms.dumps(scope)
-            if playlist_enabled and (not form or grant):
+            if playlist_enabled and not joined and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
             managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
             latest_managed = False
-            if shown and not withdrawn and artwork["show_latest"] and (not form or grant):
+            if shown and not withdrawn and not joined and artwork["show_latest"] and (not form or grant):
                 saved = event_playlist.latest_released(con, row["id"])
                 if saved and saved["opens"] != shown["id"]:
                     latest = saved
@@ -1291,15 +1371,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 delivery["delivery"] == "ready" and event["latency"] == "low" and not captioned) else None
             if source:
                 transport = f"local:{source.identity}"
-                session = files.dumps(scope + [delivery["remote"], transport, False])
+                attendance = [joined] if joined else []
+                session = files.dumps(scope + [delivery["remote"], transport, False] + attendance)
                 address = url_for("event_media_file", token=session, filename="0.m3u8")
                 native_video, status = True, "Live"
                 if reporting_scope is not None:
                     analytics_token = measurement.dumps(scope + [delivery["remote"], False, uuid.uuid4().hex,
-                                                                  [*reporting_scope, None]])
+                                                                  [*reporting_scope, None]] + attendance)
             else:
                 address, analytics_token, status = viewer_playback(
-                    event, delivery, scope, native_video, host_private, reporting_scope)
+                    event, delivery, scope, native_video, host_private, reporting_scope, joined)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
@@ -1381,7 +1462,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def delivered(con, uid, revision, opens, form_revision, remote, replay):
+    def delivered(con, uid, revision, opens, form_revision, remote, replay, embed=False, joined=None):
         row, event = read(con, uid)
         delivery = occurrence(con, uid, opens)
         form = library_registration.active(con, "event", uid)
@@ -1390,20 +1471,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 replay != (delivery["delivery"] == "replay") or
                 (form["revision"] if form else None) != form_revision):
             abort(404)
+        if joined is not None and not event_attendance.active(con, joined, [uid, revision, opens, form_revision, embed]):
+            abort(404)
         enforce_territories(event)
         return delivery
 
     @app.post("/api/event-playback")
     def event_playback_sample():
         try:
-            uid, revision, opens, form_revision, _, remote, replay, nonce, *reporting = measurement.loads(
+            uid, revision, opens, form_revision, embed, remote, replay, nonce, *reporting = measurement.loads(
                 request.headers.get("X-CuePorch-Playback", ""), max_age=12 * 3600
             )
         except (BadSignature, ValueError):
             abort(404)
         if library_analytics.permitted():
             with tx() as con:
-                delivered(con, uid, revision, opens, form_revision, remote, replay)
+                joined = reporting[1] if len(reporting) > 1 else None
+                delivered(con, uid, revision, opens, form_revision, remote, replay, embed, joined)
                 event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, request.get_json(),
                                        report_scope=reporting[0] if reporting else None, viewer_key=viewer_key)
         return "", 204
@@ -1411,14 +1495,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.get("/event-media/<token>/<filename>")
     def event_media_file(token, filename):
         try:
-            uid, revision, opens, form_revision, _, remote, gateway, replay = files.loads(token, max_age=12 * 3600)
+            uid, revision, opens, form_revision, embed, remote, gateway, replay, *attendance = files.loads(
+                token, max_age=12 * 3600)
         except (BadSignature, ValueError):
             abort(404)
         if not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
         local = isinstance(gateway, str) and gateway.startswith("local:")
         with tx() as con:
-            delivery = delivered(con, uid, revision, opens, form_revision, remote, replay)
+            delivery = delivered(con, uid, revision, opens, form_revision, remote, replay, embed,
+                                 attendance[0] if attendance else None)
             if local and (replay or event_captions.active_track(con, uid, opens)):
                 abort(404)
         try:

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Join your event · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="live-event-page">
+  <main>
+    <h1>Join your event</h1>
+    <p id="attendanceStatus" role="status">Opening your event…</p>
+    <noscript>This personal link needs JavaScript. Enable it and open the original link again, or register on the event page.</noscript>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/event_attendance.js') }}"></script>
+</body>
+</html>

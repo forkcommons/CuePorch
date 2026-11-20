@@ -56,7 +56,7 @@ Routes below are relative to `/api/v1/live-events`. The event ID and occurrence 
 | `read` | `GET` at the base path, `GET /{event}`, `GET /{event}/{opens}/health` | Read the calendar, current revision, playback URLs, occurrences and host health. |
 | `schedule` | `POST` at the base path, `PUT /{event}` | Create or update the same event record as the operator console. The update body supplies the last returned `revision`. An older revision returns HTTP 409. |
 | `produce` | `POST /{event}/{opens}/encoder`, `GET or POST /{event}/{opens}/preview`, `GET or PUT /{event}/{opens}/program`, `DELETE /{event}/{opens}/delivery` | Prepare the encoder, inspect or release a private preview, configure a prerecorded program or withdraw delivery. Encoder credentials are sensitive. |
-| `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export` | Manage the form and retrieve attendee data. Only give this scope to an application authorized to handle those records. |
+| `registrations` | `GET or PUT /{event}/registration`, `GET /{event}/registration/export`, `POST /{event}/{opens}/registrants`, `DELETE /{event}/{opens}/registrants/{id}/join` | Manage the form, retrieve attendee data, enroll for an occurrence and revoke its personal link. Only give this scope to an application authorized to handle those records. |
 
 ```sh
 curl --header "Authorization: Bearer $CUEPORCH_EVENT_TOKEN" "https://media.example.org/api/v1/live-events?from=2026-11-01&to=2026-11-30"
@@ -82,6 +82,8 @@ Send `application/json` for writes. The event body includes a title, event type,
 ```
 
 The response supplies the accepted settings, publication state, stable event links and matching occurrences. Use its event ID to manage registration and its occurrence ID to prepare the encoder. To create a registered webinar, enable its form before preparing the encoder.
+
+To register someone through a trusted attendee application, supply `email`, applicable `first_name` and `last_name` values, and the enabled form's required answer keys in the registrant request. Supply checkbox answers as booleans or as `"yes"` and `"no"`. A retry for the same address and occurrence updates the stored answers and returns the same join link. The response includes the registrant identifier, the relative `join` URL and `expires_at` in epoch seconds. Deliver the full URL, including its fragment, privately to that attendee. The browser redeems it using a first-party cookie for the occurrence. An event password still applies. The event's ordinary form serves embedded viewers. When the occurrence ends, the personal link and its playback grants expire. Revoking the link immediately invalidates media URLs issued through it. Registration data remains available to the authorized organizer.
 
 The API responds with HTTP 401 for missing, expired or revoked tokens, HTTP 403 for insufficient scope, and HTTP 429 with `Retry-After` after 120 authorized requests in a UTC minute. This limit is per credential. Use the workspace Owner's authenticated panel or `/api/operator/live-api/credentials` to list, issue or revoke tokens. A full private instance backup includes credential records. Portable collection exports exclude them.
 
