@@ -1,5 +1,5 @@
 import { viewerRequest } from "./audience_api.js";
-import { requestSignInCode, resetSignInCode } from "./sign_in_factor.js";
+import { requestSignInCode, resetSignInCode, signInValues } from "./sign_in_factor.js";
 const top = document.querySelector("#viewerAccount");
 const status = document.querySelector("#viewerAccountStatus");
 const entrance = document.querySelector("#viewerEntrance");
@@ -87,9 +87,10 @@ function connect(form, method) {
     form.onsubmit = event => {
         event.preventDefault();
         void perform(async () => {
-            const response = await viewerRequest(method === "sign in" ? "session" : "signup", "POST", values(form));
+            const body = method === "sign in" ? signInValues(form, event.submitter) : values(form);
+            const response = await viewerRequest(method === "sign in" ? "session" : "signup", "POST", body);
             if (response.status === 428 && method === "sign in")
-                return requestSignInCode(form, status);
+                return requestSignInCode(form, status, await response.json());
             if (!response.ok)
                 return failure(response, {
                     ...messages, 401: "The email or password did not match.", 409: "That email address is already in use.",

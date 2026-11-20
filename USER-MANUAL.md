@@ -34,6 +34,8 @@ In **Viewer account**, you can change your display name, pronouns or sign-in ema
 
 When account mail is configured, choose **Send verification code** in Account security. Enter the eight-digit code from your email within ten minutes. Changing a viewer account's email clears verification so you can verify the new address.
 
+After verification, you can choose **Turn on email sign-in codes** in Account security. CuePorch sends an eight-digit security code after checking your password. Use **Send another code** if you need a fresh one, or use a saved single-use recovery code. Turn off email sign-in before changing your email or switching to the authenticator app. Turning this option on or off signs out your other sessions.
+
 Use **Forgot your password?** on the Viewer or Team sign-in page. CuePorch sends a short-lived reset link to a verified address. An account with an authenticator also requires a current app code or an unused recovery code. Changing the password through the link signs out every session for that account.
 
 Use **Viewing preferences** to show everything, hide mature videos, or hide selected descriptors and unrated videos. The setting follows your account and applies to Explore, search, Staff Picks and your Feed. A direct link to a filtered public video gives you the option to show it. The video's publishing and registration rules still apply.

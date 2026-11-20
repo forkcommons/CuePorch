@@ -19,6 +19,7 @@
     <label>Password <input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
     {% include "sign_in_factor.html" %}
     <button>Sign in to team</button>
+    <button type="submit" formnovalidate hidden data-send-email-factor>Send another code</button>
     {% if can_recover %}<a href="{{ url_for('team_password_reset') }}">Forgot your password?</a>{% endif %}
   </form>
   <section id="teamLibrary" hidden>

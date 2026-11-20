@@ -74,6 +74,86 @@ class Relay(StreamRequestHandler):
 
 
 class InvitationDelivery(unittest.TestCase):
+    def verify_email_factor(self, browser, base, relay, db, authenticated, scope, email, password):
+        api = f"{base}/api/{scope}"
+        prefix = "/team" if scope == "team" else "/account"
+        headers = {"X-CuePorch-" + scope.capitalize(): "1"}
+        credentials = dict(email=email, password=password)
+        page = authenticated.new_page()
+        page.goto(base + prefix + "/security")
+        section = page.locator("#emailFactor")
+        status = section.get_by_role("status")
+        expect(status).to_have_text("Email sign-in codes are off.")
+        section.locator("#emailFactorEnable").get_by_label("Current password").fill(password)
+        section.get_by_role("button", name="Turn on email sign-in codes").click()
+        expect(status).to_have_text("Email sign-in codes are on.")
+        recovery = page.locator("#authenticatorRecovery li").all_text_contents()
+        self.assertEqual(len(recovery), 10)
+
+        with browser.new_context() as fresh:
+            session = api + "/session"
+            before = len(relay.deliveries)
+            if scope == "viewer":
+                self.assertEqual(fresh.request.post(session, headers=headers,
+                                                   data=credentials | {"password": "A wrong password"}).status, 401)
+                self.assertEqual(len(relay.deliveries), before)
+            sign_in = fresh.new_page()
+            sign_in.goto(base + prefix)
+            form = sign_in.locator("#teamSignIn" if scope == "team" else "#viewerSignIn")
+            form.get_by_label("Email").fill(email)
+            form.get_by_label("Password").fill(password)
+            submit = form.get_by_role("button", name="Sign in" if scope == "viewer" else "Sign in to team", exact=True)
+            submit.click()
+            code_field = form.get_by_label("Email security code or recovery code")
+            expect(code_field).to_be_visible()
+            self.assertEqual(len(relay.deliveries), before + 1)
+            self.assertEqual(fresh.request.get(api + "/account").status, 401)
+
+            def read_challenge():
+                code = next(line for line in relay.deliveries[-1].get_content().splitlines()
+                            if re.fullmatch(r"[0-9]{8}", line))
+                ticket = form.get_attribute("data-email-ticket")
+                with closing(sqlite3.connect(db)) as con:
+                    revision, proof = con.execute("""SELECT revision,proof FROM account_email_factor_challenge
+                                                     WHERE scope=?""", (scope,)).fetchone()
+                self.assertNotEqual(revision, ticket)
+                self.assertNotIn(code.encode(), proof)
+                return {"code": code, "email_ticket": ticket}
+
+            first = read_challenge()
+            self.assertEqual(fresh.request.post(session, headers=headers,
+                                               data=credentials | {"code": first["code"]}).status, 422)
+            resend = form.get_by_role("button", name="Send another code")
+            resend.click()
+            expect(sign_in.get_by_role("status").first).to_contain_text("wait before sending another")
+            self.assertEqual(len(relay.deliveries), before + 1)
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE account_email_factor_challenge SET expires=0 WHERE scope=?", (scope,))
+            self.assertEqual(fresh.request.post(session, headers=headers, data=credentials | first).status, 422)
+            resend.click()
+            expect(sign_in.get_by_role("status").first).to_contain_text("Check your email for a security code")
+            second = read_challenge()
+            self.assertNotEqual(second["email_ticket"], first["email_ticket"])
+            code_field.fill(second["code"])
+            submit.click()
+            expect(form).to_be_hidden()
+            self.assertTrue(fresh.request.get(api + "/account").ok)
+            self.assertEqual(fresh.request.post(session, headers=headers, data=credentials | second).status, 422)
+
+            self.assertTrue(fresh.request.post(session, headers=headers, data=credentials | {"code": recovery[0]}).ok)
+            with closing(sqlite3.connect(db)) as con:
+                self.assertEqual(con.execute("SELECT count(*) FROM account_recovery_code WHERE scope=?",
+                                             (scope,)).fetchone()[0], 9)
+            section.locator("#emailFactorDisable").get_by_label("Current password").fill(password)
+            section.get_by_role("button", name="Send a code to turn off email sign-in").click()
+            expect(status).to_have_text("Check your email for the security code.")
+            disable_code = next(line for line in relay.deliveries[-1].get_content().splitlines()
+                                if re.fullmatch(r"[0-9]{8}", line))
+            section.get_by_label("Email security code or recovery code").fill(disable_code)
+            section.get_by_role("button", name="Turn off email sign-in codes").click()
+            expect(status).to_have_text("Email sign-in codes are off.")
+            self.assertEqual(fresh.request.get(api + "/account").status, 401)
+
     def verify_password_recovery(self, browser, base, relay, db, live_account, scope, address, password):
         prefix = "/team" if scope == "team" else "/account"
         header = {"X-CuePorch-" + scope.capitalize(): "1"}
@@ -239,6 +319,8 @@ class InvitationDelivery(unittest.TestCase):
             expect(email_status).to_have_text("Email verified.")
             self.assertEqual(browser_scope.request.put(mailbox, headers=headers, data={"code": new_code}).status, 422)
 
+            self.verify_email_factor(browser, base, relay, db, browser_scope, "viewer", address, credentials)
+            self.verify_email_factor(browser, base, relay, db, browser_scope, "team", address, credentials)
             credentials = self.verify_password_recovery(browser, base, relay, db, browser_scope, "viewer",
                                                         address, credentials)
             self.verify_password_recovery(browser, base, relay, db, browser_scope, "team", address,

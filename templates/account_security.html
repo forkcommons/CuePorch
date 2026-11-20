@@ -47,6 +47,20 @@
         <button type="submit">Verify email</button>
       </form>
     </section>
+    <section id="emailFactor" aria-labelledby="emailFactorHeading" hidden>
+      <h2 id="emailFactorHeading">Email sign-in codes</h2>
+      <p id="emailFactorStatus" role="status"></p>
+      <form id="emailFactorEnable" method="post" hidden>
+        <label>Current password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+        <button type="submit">Turn on email sign-in codes</button>
+      </form>
+      <form id="emailFactorDisable" method="post" hidden>
+        <label>Current password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+        <button type="button" id="emailFactorSend">Send a code to turn off email sign-in</button>
+        <label>Email security code or recovery code <input name="code" maxlength="32" autocomplete="one-time-code" required></label>
+        <button type="submit">Turn off email sign-in codes</button>
+      </form>
+    </section>
   </main>
   <script type="module" src="/static/ui/account_security.js"></script>
 </body>

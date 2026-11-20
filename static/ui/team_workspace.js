@@ -1,6 +1,6 @@
 import { uploadLibraryFile } from "./library_upload.js";
 import { checked, roleLabels, sessionMarker, teamRequest } from "./team_api.js";
-import { requestSignInCode, resetSignInCode } from "./sign_in_factor.js";
+import { requestSignInCode, resetSignInCode, signInValues } from "./sign_in_factor.js";
 const workspace = document.querySelector("#teamWorkspace");
 const status = document.querySelector("#teamStatus");
 const join = document.querySelector("#teamJoin");
@@ -98,9 +98,9 @@ else if (signIn && upload) {
     signIn.onsubmit = event => {
         event.preventDefault();
         void task(async () => {
-            const response = await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn)));
+            const response = await teamRequest("session", "POST", signInValues(signIn, event.submitter));
             if (response.status === 428)
-                return requestSignInCode(signIn, status);
+                return requestSignInCode(signIn, status, await response.json());
             await checked(response);
             signIn.reset();
             reveal(await response.json());

@@ -40,6 +40,7 @@ import analytics_reports
 import account_email
 import account_recovery
 import account_totp
+import account_email_factor
 import audience_accounts
 import audience_comments
 import content_rating
@@ -148,6 +149,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + audience_accounts.SCHEMA
             + account_totp.SCHEMA
             + account_email.SCHEMA
+            + account_email_factor.SCHEMA
             + account_recovery.SCHEMA
             + team_accounts.SCHEMA
             + team_branding.SCHEMA

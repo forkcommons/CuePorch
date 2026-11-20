@@ -12,6 +12,7 @@ from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import account_email
+import account_email_factor
 import account_recovery
 import account_totp
 import audience_comments
@@ -145,6 +146,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     )
     email_security = account_email.register(app, tx, "viewer", operator, public_origin, scheme, mutation,
                                             security_account, limit)
+    email_factor = account_email_factor.register(app, tx, email_security, authenticator, scheme, mutation,
+                                                security_account, limit, rotate_security_session, cookie)
 
     def reset_password(con, uid, encoded):
         con.execute("UPDATE audience_account SET password_hash=? WHERE id=?", (encoded, uid))
@@ -196,6 +199,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 authenticator.forget(con, row["id"])
+                email_factor.forget(con, row["id"])
                 email_security.forget(con, row["id"])
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
@@ -212,6 +216,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
             if con.execute("SELECT 1 FROM audience_account WHERE email=? AND id<>?", (email, row["id"])).fetchone():
                 abort(409, "That email address is already in use.")
             if email != row["email"]:
+                if email_factor.enabled(con, row["id"]):
+                    abort(409, "Turn off email sign-in before changing the address.")
                 email_security.forget(con, row["id"])
             con.execute("UPDATE audience_account SET name=?,email=?,pronouns=? WHERE id=?", (name, email, pronouns, row["id"]))
         return private(dict(name=name, email=email, pronouns=pronouns))
@@ -254,8 +260,11 @@ def register(app, tx, origin_url, operator, listing, action, staff):
             row = con.execute("SELECT * FROM audience_account WHERE id=? AND email=?", (row["id"], email)).fetchone()
             if row is None or row["password_hash"] != expected:
                 abort(401, "The email or password did not match.")
-            authenticator.check(con, row["id"], body.get("code"))
-            token = issue(con, row["id"], old)
+            needs_mail, prepared = email_factor.check(con, row, body)
+            if not needs_mail:
+                token = issue(con, row["id"], old)
+        if needs_mail:
+            return email_factor.deliver(tx, row, prepared)
         return cookie(private(account_view(row)), secure, token)
 
     @app.put("/api/viewer/password")

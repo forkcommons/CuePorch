@@ -97,7 +97,7 @@ main { max-width: 65rem; }
 .viewer-account .account-entrance:not([hidden]) {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1.35rem;
 }
-.viewer-account form { display: grid; gap: .45rem; max-width: 25rem; }
+.viewer-account form:not([hidden]) { display: grid; gap: .45rem; max-width: 25rem; }
 .viewer-account form input { display: block; width: 100%; }
 .viewer-account form input[type="checkbox"] { display: inline; width: auto; }
 .viewer-account form fieldset label { display: block; }
@@ -289,11 +289,11 @@ h1 { margin: 0 0 1.2rem; font-size: clamp(2rem, 5vw, 3.5rem); }
 #workspaceLogoPreview { object-fit: contain; max-width: 10rem; max-height: 5rem; }
 h2 { margin: 2rem 0 .7rem; }
 a { color: #13596a; text-underline-offset: .15em; }
-form { display: grid; gap: .8rem; max-width: 42rem; margin: 1rem 0; }
+form:not([hidden]) { display: grid; gap: .8rem; max-width: 42rem; margin: 1rem 0; }
 #teamSettingsAccess[hidden], #teamBranding[hidden],
 #teamAnalyticsAccess[hidden], #teamAnalyticsSettings[hidden] { display: none; }
 label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-form label { display: grid; gap: .15rem; }
+form label:not([hidden]) { display: grid; gap: .15rem; }
 input, select, textarea, button { font: inherit; }
 input, select, textarea { padding: .45rem .6rem; border: 1px solid #6e8387; border-radius: .3rem; min-width: 0; }
 input[type=checkbox] { width: 1.1rem; height: 1.1rem; accent-color: #175663; }

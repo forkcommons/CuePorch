@@ -13,6 +13,7 @@ from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import account_email
+import account_email_factor
 import account_recovery
 import account_totp
 import creator_profiles
@@ -244,6 +245,13 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         app, tx, "team", key, origin, lambda: secure_site(origin), mutation, security_account, limit,
         lambda con, actor: note(con, actor_id(actor), "email_verified", actor["id"]),
     )
+    email_factor = account_email_factor.register(
+        app, tx, email_security, authenticator, lambda: secure_site(origin), mutation, security_account, limit,
+        rotate_security_session,
+        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
+        lambda con, actor, enabled: note(con, actor_id(actor),
+                                         "email_factor_enabled" if enabled else "email_factor_disabled", actor["id"]),
+    )
 
     def reset_password(con, uid, encoded):
         con.execute("UPDATE team_member SET password_hash=? WHERE id=? AND removed IS NULL", (encoded, uid))
@@ -335,8 +343,12 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 WHERE id=? AND password_hash=? AND removed IS NULL""", (row["id"], row["password_hash"])).fetchone()
             if logged_in is None:
                 abort(401, "The email or password did not match an active team member.")
-            authenticator.check(con, row["id"], body.get("code"))
-            token = issue_session(con, row["id"], secure)
+            factor_actor = dict(logged_in, password_hash=row["password_hash"])
+            needs_mail, prepared = email_factor.check(con, factor_actor, body)
+            if not needs_mail:
+                token = issue_session(con, row["id"], secure)
+        if needs_mail:
+            return email_factor.deliver(tx, factor_actor, prepared)
         return session_response(dict(logged_in), secure, token)
 
     @app.post("/api/team/join")
@@ -473,6 +485,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
                 authenticator.forget(con, uid)
+                email_factor.forget(con, uid)
                 email_security.forget(con, uid)
                 con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))

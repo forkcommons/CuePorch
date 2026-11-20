@@ -15,6 +15,7 @@ from flask import abort, render_template, request
 from werkzeug.security import check_password_hash
 
 from browser_account_security import password, private, workspace_session
+from account_email_factor import is_enabled as email_factor_enabled
 
 
 SCHEMA = """
@@ -47,6 +48,19 @@ class Authenticator:
 
     def recovery_hash(self, account, value):
         return hmac.digest(self.key, (account + ":" + value.replace("-", "").lower()).encode(), "sha256")
+
+    def issue_recovery_codes(self, con, uid):
+        codes = [f"{secrets.token_hex(4)}-{secrets.token_hex(4)}" for _ in range(10)]
+        con.executemany("INSERT INTO account_recovery_code VALUES(?,?,?)",
+                        [(self.scope, uid, self.recovery_hash(uid, value)) for value in codes])
+        return codes
+
+    def use_recovery_code(self, con, uid, value):
+        code = value.strip().lower() if isinstance(value, str) and len(value) <= 32 else ""
+        if not RECOVERY.fullmatch(code):
+            return False
+        return bool(con.execute("DELETE FROM account_recovery_code WHERE scope=? AND account=? AND code_hash=?",
+                               (self.scope, uid, self.recovery_hash(uid, code))).rowcount)
 
     def binding(self, account, secure):
         return [account["id"], account["password_hash"], workspace_session(self.scope, secure)]
@@ -87,10 +101,7 @@ class Authenticator:
         uid = account["id"]
         con.execute("INSERT INTO account_authenticator VALUES(?,?,?,?)",
                     (self.scope, uid, self.cipher.encrypt(seed.encode()), first))
-        codes = [f"{secrets.token_hex(4)}-{secrets.token_hex(4)}" for _ in range(10)]
-        con.executemany("INSERT INTO account_recovery_code VALUES(?,?,?)",
-                        [(self.scope, uid, self.recovery_hash(uid, value)) for value in codes])
-        return {"enabled": True, "recovery_codes": codes}
+        return {"enabled": True, "recovery_codes": self.issue_recovery_codes(con, uid)}
 
     def check(self, con, uid, value):
         registered = self.state(con, uid)
@@ -101,12 +112,9 @@ class Authenticator:
         if not isinstance(value, str) or len(value) > 32:
             abort(422, "Use a current authenticator or unused recovery code.")
         code = value.strip().lower()
-        if RECOVERY.fullmatch(code):
-            used = con.execute("DELETE FROM account_recovery_code WHERE scope=? AND account=? AND code_hash=?",
-                               (self.scope, uid, self.recovery_hash(uid, code)))
-            if used.rowcount:
-                return
-        elif OTP.fullmatch(code):
+        if self.use_recovery_code(con, uid, code):
+            return
+        if OTP.fullmatch(code):
             try:
                 seed = self.cipher.decrypt(registered["seed"]).decode()
             except InvalidToken:
@@ -148,6 +156,8 @@ def register(app, tx, scope, signing_key, scheme, mutation, account_for, throttl
             if current["id"] != actor["id"] or current["password_hash"] != actor["password_hash"]:
                 abort(409, "Your account changed. Try again.")
             state = authenticator.state(con, current["id"])
+            if request.method in ("POST", "PUT") and email_factor_enabled(con, scope, current["id"]):
+                abort(409, "Turn off email sign-in before enabling the authenticator app.")
             if request.method == "POST":
                 if state:
                     abort(409, "The authenticator is already enabled.")
