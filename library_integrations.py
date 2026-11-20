@@ -14,6 +14,7 @@ from werkzeug.exceptions import TooManyRequests
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
+import zoom_recordings
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -128,14 +129,17 @@ def import_verified(import_video, provider, actor, identity, name, folder, size,
                         total += len(chunk)
                         if total > size:
                             abort(422, "The video changed during transfer. Try again.")
-                        checksum.update(chunk)
+                        if checksum is not None:
+                            checksum.update(chunk)
                         stream.write(chunk)
             except requests.RequestException:
                 abort(502, "The provider interrupted the transfer. Try again.")
-            if total != size or not hmac.compare_digest(checksum.hexdigest(), expected):
-                abort(422, "The video did not match its listed size and checksum. Try again.")
+            invalid_hash = expected is not None and not hmac.compare_digest(checksum.hexdigest(), expected)
+            if total != size or invalid_hash:
+                description = "size and checksum" if expected is not None else "size"
+                abort(422, f"The video did not match its listed {description}. Try again.")
 
-    work = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cueporch/{provider}/{identity}/{expected}"))
+    work = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cueporch/{provider}/{identity}/{expected or ''}"))
     return import_video(actor, work, name, folder, save, authorize)
 
 
@@ -211,18 +215,31 @@ def import_google_video(import_video, connection, revision, actor, item, folder,
                            folder, int(size), checksum, expected, download, authorize)
 
 
+def import_zoom_video(import_video, connection, revision, actor, occurrence, folder, authorize, exact=None):
+    title, recording = zoom_recordings.select(connection, revision, occurrence, exact)
+    return import_verified(
+        import_video, "zoom", actor, f"{occurrence}/{recording['id']}", title, folder, recording["file_size"],
+        None, None, lambda: zoom_recordings.download(connection, revision, recording["download_url"]), authorize,
+    )
+
+
 def register(app, tx, staff, operator, origin, import_video, database):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
         "dropbox", "Dropbox", DROPBOX_AUTH, DROPBOX_TOKEN, DROPBOX_RPC + "/auth/token/revoke",
-        DROPBOX_SCOPE, dict(token_access_type="offline"), revoke_using_access_token=True,
+        DROPBOX_SCOPE, dict(token_access_type="offline"), revoke_style="access-bearer",
     ), tx, operator)
     box = Connection(Config("box", "Box", BOX_AUTH, BOX_ORIGIN + "/oauth2/token", BOX_ORIGIN + "/oauth2/revoke",
                             BOX_SCOPE, pkce=False), tx, operator)
     meet = Connection(Config("google-meet", "Google Meet", AUTH, TOKEN_URL, REVOKE,
                              google_meet_recordings.SCOPES, dict(access_type="offline", prompt="consent")), tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet)}
+    zoom = Connection(Config(
+        "zoom", "Zoom", zoom_recordings.ORIGIN + "/oauth/authorize", zoom_recordings.ORIGIN + "/oauth/token",
+        zoom_recordings.ORIGIN + "/oauth/revoke", zoom_recordings.SCOPES,
+        revoke_style="access-form", public_client=True, authorize_scope=False,
+    ), tx, operator)
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom)}
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -232,7 +249,6 @@ def register(app, tx, staff, operator, origin, import_video, database):
             import_video, dropbox, revision, actor, row, folder, authorize,
         ),
     )
-    app.extensions["stop_dropbox_watch"] = watch.stop
     meet_watch = Watch(
         app, tx, database, meet, lambda state: google_meet_recordings.scan_new_recordings(meet, state),
         lambda entry, state: entry,
@@ -240,8 +256,21 @@ def register(app, tx, staff, operator, origin, import_video, database):
             import_video, meet, revision, actor, row["rev"], folder, authorize,
         ), interval=google_meet_recordings.POLL_SECONDS,
     )
-    app.extensions["stop_google_meet_watch"] = meet_watch.stop
-    watches = {dropbox.config.key: watch, meet.config.key: meet_watch}
+    zoom_watch = Watch(
+        app, tx, database, zoom, lambda state: zoom_recordings.scan_new_recordings(zoom, state),
+        lambda entry, state: entry,
+        lambda revision, actor, row, folder, authorize: import_zoom_video(
+            import_video, zoom, revision, actor, row["id"], folder, authorize, exact=row["rev"],
+        ), interval=zoom_recordings.POLL_SECONDS,
+    )
+    meetings = {meet.config.key: meet, zoom.config.key: zoom}
+    watches = {dropbox.config.key: watch, meet.config.key: meet_watch, zoom.config.key: zoom_watch}
+
+    def stop_watches():
+        for active_watch in watches.values():
+            active_watch.stop()
+
+    app.extensions["stop_integration_watches"] = stop_watches
 
     def site():
         secure = secure_site(origin)
@@ -283,11 +312,11 @@ def register(app, tx, staff, operator, origin, import_video, database):
         with tx() as con:
             return private(dict(integrations=[dict(
                 id=item.config.key, name=item.config.name,
-                category="Communications" if item is meet else "Cloud storage",
-                description=("Copy recordings from ended Google Meet conferences into your private Library."
-                             if item is meet else "Browse and copy videos into your private Library."),
+                category="Communications" if item.config.key in meetings else "Cloud storage",
+                description=("Copy meeting recordings into your private Library."
+                             if item.config.key in meetings else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
-                browse_folders=item is not drive,
+                browse_folders=item in (dropbox, box, meet), meeting=item.config.key in meetings,
             ) for item in connections.values()]))
 
     @app.post("/api/integrations/<provider>/connect")
@@ -370,17 +399,41 @@ def register(app, tx, staff, operator, origin, import_video, database):
                                               lambda con: meet.authorize(con, revision))
         return private(receipt, status)
 
-    @app.post("/api/integrations/google-meet/watch")
-    def configure_meet_archive():
+    @app.post("/api/integrations/<provider>/watch")
+    def configure_meeting_archive(provider):
         actor, body, _, _ = mutate()
+        if provider not in meetings:
+            abort(404)
+        active_watch = watches[provider]
         if type(body.get("enabled")) is not bool:
-            abort(400, "Choose whether to archive new Google Meet recordings automatically.")
+            abort(400, "Choose whether to archive new recordings automatically.")
         if body["enabled"]:
-            revision = meet.revision()
-            meet_watch.enable(revision, "", destination_folder(body.get("destination")), actor, "")
+            revision = meetings[provider].revision()
+            active_watch.enable(revision, "", destination_folder(body.get("destination")), actor, "")
         else:
-            meet_watch.disable()
-        return private(meet_watch.receipt())
+            active_watch.disable()
+        return private(active_watch.receipt())
+
+    @app.get("/api/integrations/zoom/files")
+    def zoom_files():
+        read_api()
+        revision = zoom.revision()
+        cursor = request.args.get("cursor", "")
+        if len(cursor) > 2048:
+            abort(400, "The Zoom page token is invalid.")
+        result = zoom_recordings.browse(zoom, revision, cursor, request.args.get("q", "")[:160].casefold().strip())
+        with tx() as con:
+            zoom.authorize(con, revision)
+        return private(result)
+
+    @app.post("/api/integrations/zoom/import")
+    def zoom_import():
+        actor, body, _, _ = mutate()
+        folder = destination_folder(body.get("folder"))
+        revision = zoom.revision()
+        receipt, status = import_zoom_video(import_video, zoom, revision, actor, body.get("file"), folder,
+                                            lambda con: zoom.authorize(con, revision))
+        return private(receipt, status)
 
     @app.get("/api/integrations/dropbox/files")
     def dropbox_files():

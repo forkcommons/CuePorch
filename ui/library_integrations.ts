@@ -8,6 +8,7 @@ interface Integration {
   configured: boolean;
   connected: boolean;
   browse_folders: boolean;
+  meeting: boolean;
 }
 interface DriveFile {id: string; name: string}
 interface Folder {id: string; name: string; parent: string | null}
@@ -154,7 +155,7 @@ function render() {
     card.append(name, description, state);
     if (item.connected) {
       if (item.configured) {
-        card.append(button(item.id === "google-meet" ? "Browse recordings" : "Browse videos", () => openPicker(item)));
+        card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {
         const result = await api<{provider_revoked: boolean}>(pathFor(item, "disconnect"), {});
@@ -206,9 +207,9 @@ async function openPicker(item: Integration) {
   batchReceipts.replaceChildren();
   pickerHeading.textContent = `Import from ${active.name}`;
   remoteFolder.hidden = !active.browse_folders;
-  const meeting = active.id === "google-meet";
+  const meeting = active.meeting;
   watch.hidden = !meeting && active.id !== "dropbox";
-  watchHeading.textContent = meeting ? "Automatic Google Meet archive" : "Dropbox auto-import";
+  watchHeading.textContent = meeting ? `Automatic ${active.name} archive` : "Dropbox auto-import";
   watchDescription.textContent = meeting
     ? "Copy generated recordings from meetings that end after you enable archiving."
     : "Copy new videos from this Dropbox folder into the selected Library destination.";
@@ -271,7 +272,7 @@ async function loadPage(append: boolean) {
 
 function renderWatch(data: WatchReceipt) {
   currentWatch = data;
-  const meeting = active.id === "google-meet";
+  const meeting = active.meeting;
   disableWatch.hidden = !data.enabled;
   refreshWatch.hidden = !data.enabled;
   const selected = meeting ? "" : source.at(-1)?.id || "";
@@ -286,7 +287,7 @@ function renderWatch(data: WatchReceipt) {
   const target = Array.from(destination.options).find(option => option.value === data.destination)?.text
     || (data.destination ? "Previously selected Library folder" : "Library root");
   const checked = data.checked ? ` Last checked ${new Date(data.checked * 1000).toLocaleString()}.` : "";
-  const mode = meeting ? "Archiving new Google Meet recordings." : `Watching ${folder}.`;
+  const mode = meeting ? `Archiving new ${active.name} recordings.` : `Watching ${folder}.`;
   watchState.textContent = data.enabled ? `${mode} Destination: ${target}.${checked}${data.error ? " " + data.error : ""}`
     : meeting ? "Automatic archive is off." : "Folder watching is off.";
   watchJobs.replaceChildren(...data.jobs.map(job => {

@@ -54,7 +54,9 @@ class Config:
     scope: str
     authorization_parameters: dict = field(default_factory=dict)
     pkce: bool = True
-    revoke_using_access_token: bool = False
+    revoke_style: str = "refresh-form"
+    public_client: bool = False
+    authorize_scope: bool = True
 
 
 def provider_request(method, url, **kwargs):
@@ -97,7 +99,7 @@ class Connection:
         environment = "CUEPORCH_" + config.key.replace("-", "_").upper()
         self.client = os.environ.get(environment + "_CLIENT_ID", "").strip()
         self.secret = os.environ.get(environment + "_CLIENT_SECRET", "").strip()
-        self.configured = bool(self.client and self.secret)
+        self.configured = bool(self.client and (self.secret or config.public_client))
         self.callback = CALLBACK_ROOT + config.key + "/callback"
         self.cookie = config.key + "-oauth"
         self.cipher = Fernet(base64.urlsafe_b64encode(hmac.digest(
@@ -121,9 +123,7 @@ class Connection:
             abort(409, "Disconnect and reconnect using the current workspace credentials.")
 
     def exchange(self, fields, previous_refresh=None):
-        with provider_request("POST", self.config.token_url, data=fields | {
-            "client_id": self.client, "client_secret": self.secret,
-        }) as response:
+        with provider_request("POST", self.config.token_url, data=fields | self.client_fields()) as response:
             if response.status_code == 429:
                 check_provider(response)
             data = response_object(response)
@@ -137,11 +137,17 @@ class Connection:
         scope = data.get("scope", self.config.scope)
         if not (isinstance(access, str) and 1 <= len(access) <= 4096 and access.isascii()
                 and access.isprintable() and isinstance(refresh, str) and 1 <= len(refresh) <= 4096
-                and isinstance(expires, int) and 1 <= expires <= 86400
+                and type(expires) is int and 1 <= expires <= 90 * 86400
                 and isinstance(scope, str) and set(self.config.scope.split()) <= set(scope.split())
                 and str(data.get("token_type", "")).casefold() == "bearer"):
             abort(502, "The storage provider did not grant the offline read access needed for imports.")
         return dict(access=access, refresh=refresh, expires=int(time.time()) + expires)
+
+    def client_fields(self):
+        fields = {"client_id": self.client}
+        if not self.config.public_client:
+            fields["client_secret"] = self.secret
+        return fields
 
     def require_configured(self):
         if not self.configured:
@@ -171,7 +177,7 @@ class Connection:
         params = self.config.authorization_parameters | dict(
             client_id=self.client, response_type="code", redirect_uri=redirect_uri, state=state,
         )
-        if self.config.scope:
+        if self.config.scope and self.config.authorize_scope:
             params["scope"] = self.config.scope
         if verifier:
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
@@ -232,14 +238,19 @@ class Connection:
                     clear_related(con)
             if not row:
                 return True
+            if not self.config.revoke_url:
+                return False
             try:
                 saved = self.tokens(row)
-                if self.config.revoke_using_access_token:
+                if self.config.revoke_style != "refresh-form":
                     if saved["expires"] <= time.time() + 30:
                         saved = self.refresh(saved)
-                    fields = dict(headers={"Authorization": "Bearer " + saved["access"]})
+                    if self.config.revoke_style == "access-bearer":
+                        fields = dict(headers={"Authorization": "Bearer " + saved["access"]})
+                    else:
+                        fields = dict(data=self.client_fields() | {"token": saved["access"]})
                 else:
-                    fields = dict(data={"token": saved["refresh"], "client_id": self.client, "client_secret": self.secret})
+                    fields = dict(data=self.client_fields() | {"token": saved["refresh"]})
                 with provider_request("POST", self.config.revoke_url, **fields) as response:
                     return 200 <= response.status_code < 300
             except HTTPException:
