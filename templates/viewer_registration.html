@@ -48,7 +48,7 @@
         </select></label>
       {% elif field.type == 'checkbox' %}
         <label><input type="checkbox" name="{{ field.id }}" value="yes" {% if request.form.get(field.id) == 'yes' %}checked{% endif %} {% if field.required %}required{% endif %}>{{ field.label }}</label>
-      {% else %}
+      {% elif field.type == 'text' %}
         <label>{{ field.label }} <input name="{{ field.id }}" maxlength="50" value="{{ request.form.get(field.id, '') }}" {% if field.required %}required{% endif %}></label>
       {% endif %}
     {% endfor %}

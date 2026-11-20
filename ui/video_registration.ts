@@ -1,6 +1,14 @@
 import {checked} from "./team_api.js";
 
-interface Field { id: string; type: string; label: string; required: boolean; options: string[]; }
+interface Field {
+  id: string;
+  type: string;
+  label: string;
+  required: boolean;
+  options: string[];
+  parameter?: string;
+  default_value?: string;
+}
 const imageFields = ["logo", "background_image"] as const;
 type ImageField = typeof imageFields[number];
 interface Appearance {
@@ -70,13 +78,20 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     const label = field(row, "label");
     const options = field<HTMLTextAreaElement>(row, "options");
     const required = field(row, "required");
+    const parameter = field(row, "parameter");
+    const defaultValue = field(row, "default_value");
     kind.value = value.type;
     label.value = value.label;
     options.value = value.options.join("\n");
     required.checked = value.required;
+    parameter.value = value.parameter ?? "";
+    defaultValue.value = value.default_value ?? "";
     function controls() {
       row.querySelector<HTMLElement>("[data-field-options]")!.hidden = kind.value !== "select";
-      row.querySelector<HTMLElement>("[data-field-required]")!.hidden = kind.value === "description";
+      row.querySelector<HTMLElement>("[data-field-required]")!.hidden = ["description", "hidden"].includes(kind.value);
+      row.querySelector<HTMLElement>("[data-field-hidden]")!.hidden = kind.value !== "hidden";
+      parameter.disabled = kind.value !== "hidden";
+      parameter.required = kind.value === "hidden";
     }
     kind.onchange = controls;
     controls();
@@ -173,6 +188,8 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
       id: row.dataset.fieldId!, type: field(row, "kind").value, label: field(row, "label").value,
       required: field(row, "required").checked,
       options: field(row, "options").value.split("\n").map(value => value.trim()).filter(Boolean),
+      parameter: field(row, "parameter").value,
+      default_value: field(row, "default_value").value,
     }));
     return {
       enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,

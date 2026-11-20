@@ -1,7 +1,9 @@
 """Exercise one reusable registration design on the three real visitor surfaces."""
 
 from contextlib import ExitStack
+import csv
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -52,6 +54,7 @@ class RegistrationAppearance(unittest.TestCase):
                 "CUEPORCH_SMTP_FROM": "crew@example.test", "CUEPORCH_SMTP_USER": "fixture",
                 "CUEPORCH_SMTP_PASSWORD": "mail-credential", "SSL_CERT_FILE": str(cert),
             }))
+            cleanup.enter_context(patch("institution.library_worker.start"))
             operator = secrets.token_urlsafe(32)
             app = create_app(root, root / "workspace.sqlite", operator, "station")
             for name, stop in app.extensions.items():
@@ -136,6 +139,11 @@ class RegistrationAppearance(unittest.TestCase):
                 editor.get_by_label("Background color", exact=True).fill("#0f3132")
                 editor.get_by_label("Overlay color").fill("#61255c")
                 editor.get_by_label("Overlay opacity").fill("62")
+                editor.get_by_role("button", name="Add field").click()
+                editor.get_by_label("Field type").select_option("hidden")
+                editor.get_by_label("Field label").fill("Campaign reference")
+                editor.get_by_label("URL parameter after reg_").fill("campaign")
+                editor.get_by_label("Default answer").fill("direct audience")
                 editor.get_by_label("Save as registration preset").fill("Arts screenings")
                 editor.get_by_role("button", name="Preview registration").click()
                 frame = page.locator("#registrationPreview")
@@ -162,6 +170,7 @@ class RegistrationAppearance(unittest.TestCase):
                 expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
 
                 settings = send("GET", endpoint)
+                hidden_field = settings["settings"]["fields"][0]["id"]
                 invalid = settings["settings"] | {"appearance": settings["settings"]["appearance"] | {"opacity": 101}}
                 self.assertEqual(422, api.put(endpoint, headers=auth,
                     json={"settings": invalid, "revision": settings["revision"]}).status_code)
@@ -185,12 +194,14 @@ class RegistrationAppearance(unittest.TestCase):
                         visitor = guests.new_page()
                         targets = [(f"/watch/work/{work}", True), (gallery["watch"], True), (event["watch"], False)]
                         for index, (path, playable) in enumerate(targets):
-                            visitor.goto(base + path)
+                            campaign = "?reg_campaign=%3Darts-invite" if viewport["width"] == 1280 else ""
+                            visitor.goto(base + path + campaign)
                             if path == targets[0][0]:
                                 expect(visitor.locator(".registration-gate")).to_have_count(0)
                                 visitor.get_by_label("Video password").fill(pw)
                                 visitor.get_by_role("button", name="Watch video").click()
                             check_design(visitor)
+                            expect(visitor.get_by_text("Campaign reference", exact=True)).to_have_count(0)
                             expect(visitor.locator("video")).to_have_count(0)
                             email = f"visitor-{viewport['width']}-{index}@example.test"
                             visitor.get_by_label("Email", exact=True).fill(email)
@@ -240,6 +251,16 @@ class RegistrationAppearance(unittest.TestCase):
                             self.assertEqual(422, visitor.request.post(base + path, form=details).status)
 
                 self.assertEqual(6, len(relay.deliveries))
+                for index, form_path in enumerate((endpoint, f"/api/showcases/{gallery['id']}/registration",
+                                                    f"/api/live-events/{event['id']}/registration")):
+                    answers = {row["email"]: row["answers"][hidden_field] for row in send("GET", form_path)["registrants"]}
+                    self.assertEqual({f"visitor-1280-{index}@example.test": "=arts-invite",
+                                      f"visitor-390-{index}@example.test": "direct audience"}, answers)
+                    export = api.get(form_path + "/export", headers=auth)
+                    self.assertEqual(200, export.status_code)
+                    rows = {row["email"]: row[hidden_field] for row in csv.DictReader(StringIO(export.get_data(as_text=True)))}
+                    self.assertEqual("'=arts-invite", rows[f"visitor-1280-{index}@example.test"])
+                print("Hidden campaign values, defaults and escaped CSV verified on all three registration forms.")
                 with browser.new_context() as visitor_context:
                     visitor = visitor_context.new_page()
                     video_path = base + f"/watch/work/{work}"

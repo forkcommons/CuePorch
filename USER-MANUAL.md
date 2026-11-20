@@ -198,6 +198,8 @@ In **Registration**, turn on the form to require an email before CuePorch-hosted
 
 Under **Registration appearance**, choose the form alignment, organizer logo, background image or color, and overlay color and opacity. Select **Preview registration** to view the draft at desktop or mobile width, then choose **Save registration** to apply it. The same controls and presets are available for a video, showcase or live event.
 
+Use a **Hidden** field to record a value such as a campaign code alongside a registration. For example, set the URL parameter to `campaign` and share a link with `?reg_campaign=fall-screenings`. Direct visitors produce the configured default answer.
+
 Preview **Already registered** to see the returning visitor screen. A workspace with a public HTTPS address and a configured mail relay can send a one-time code to the address used for registration. That code opens the original video, showcase or event occurrence. Existing password, embed and visibility rules still apply. If the organizer added required questions after you registered, use the current form.
 
 Open **Analytics** from the workspace to see impressions, views, view rate, finishes and time watched on CuePorch watch pages and embeds. One loaded player counts as an impression. Its first play counts as a view, and time watched includes repeat playback. Filter by dates in UTC and by playback surface. The retention graph and its accessible table show which portions of the current cut were played. Select a position to seek in the operator preview. The daily CSV follows your date and surface filters.

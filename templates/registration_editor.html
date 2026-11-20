@@ -54,10 +54,14 @@
     <li>
       <label>Field type <select name="kind">
         <option value="text">Text</option><option value="select">Dropdown</option>
-        <option value="checkbox">Checkbox</option><option value="description">Description</option>
+        <option value="checkbox">Checkbox</option><option value="description">Description</option><option value="hidden">Hidden</option>
       </select></label>
       <label>Field label <input name="label" maxlength="240" required></label>
       <label data-field-options hidden>Choices, one per line <textarea name="options" rows="3"></textarea></label>
+      <div data-field-hidden hidden>
+        <label>URL parameter after reg_ <input name="parameter" maxlength="40" pattern="[a-z][a-z0-9_]{0,39}"></label>
+        <label>Default answer <input name="default_value" maxlength="250"></label>
+      </div>
       <label data-field-required><input type="checkbox" name="required"> Required field</label>
       <button type="button" data-remove-field>Remove field</button>
     </li>

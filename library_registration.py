@@ -30,7 +30,7 @@ DEFAULT = dict(enabled=False, heading="Register to watch", description="", priva
                attendance_analytics=False)
 DEFAULT_APPEARANCE = dict(alignment="center", logo=None, background_image=None,
                           background="#e7eee5", overlay="#ffffff", opacity=25)
-FORM_TYPES = ("text", "select", "checkbox", "description")
+FORM_TYPES = ("text", "select", "checkbox", "description", "hidden")
 EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 
 
@@ -86,6 +86,7 @@ def validation(body, kind="video"):
         abort(422, "A registration form can have up to 20 custom fields.")
     fields = []
     keys = set()
+    parameters = set()
     for entry in custom:
         if not isinstance(entry, dict) or entry.get("type") not in FORM_TYPES:
             abort(422, "Choose a supported field type.")
@@ -94,7 +95,7 @@ def validation(body, kind="video"):
             abort(422, "Each custom field needs a unique identifier.")
         keys.add(key)
         label = text_field(entry.get("label"), "a field label", 240, True)
-        required = entry.get("required", False) if kind != "description" else False
+        required = entry.get("required", False) if kind not in ("description", "hidden") else False
         if type(required) is not bool:
             abort(422, "Choose whether the field is required.")
         choices = []
@@ -105,7 +106,16 @@ def validation(body, kind="video"):
             choices = [text_field(option, "a dropdown choice", 80, True) for option in options]
             if len(set(choices)) != len(choices):
                 abort(422, "Use distinct dropdown choices.")
-        fields.append(dict(id=key, type=kind, label=label, required=required, options=choices))
+        field = dict(id=key, type=kind, label=label, required=required, options=choices)
+        if kind == "hidden":
+            parameter = entry.get("parameter")
+            if (not isinstance(parameter, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", parameter)
+                    or parameter in parameters):
+                abort(422, "Enter a unique hidden field parameter using lowercase letters, digits and underscores.")
+            parameters.add(parameter)
+            field["parameter"] = parameter
+            field["default_value"] = text_field(entry.get("default_value", ""), "a hidden field default", 250)
+        fields.append(field)
     return dict(result, fields=fields)
 
 
@@ -141,7 +151,7 @@ def answers_from(definition, fields):
         values[field] = name
     for field in definition["fields"]:
         key, form_type = field["id"], field["type"]
-        if form_type == "description":
+        if form_type in ("description", "hidden"):
             continue
         answer = fields.get(key, "").strip()
         if form_type == "checkbox":
@@ -183,6 +193,9 @@ def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_r
             value = query.get(key, "")[:250]
             if value:
                 values[key] = value
+    for field in definition["fields"]:
+        if field["type"] == "hidden":
+            values[field["id"]] = query.get("reg_" + field["parameter"], field["default_value"])[:250]
     address_key = address.casefold()
     conflict = ("DO UPDATE SET email=excluded.email,answers=excluded.answers" if replace else "DO NOTHING")
     con.execute("INSERT INTO viewer_registrant VALUES(?,?,?,?,?,?) ON CONFLICT(kind,subject,email_key) " + conflict,
