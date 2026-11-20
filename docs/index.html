@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CuePorch | Video publishing for public media and the arts</title>
+<meta name="description" content="CuePorch by ForkCommons keeps a verified master of every video, publishes through your own PeerTube host, and grants time-limited screenings to venues. Imports from Vimeo. AGPL-3.0-or-later.">
+<meta property="og:title" content="CuePorch | Video publishing for public media and the arts">
+<meta property="og:description" content="Keep the master. Publish the viewing copy. Grant one film to one venue for one window.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#f5f5ee">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23152e33'/%3E%3Cpath d='M12 9.5v13l11-6.5z' fill='%23e0ece7'/%3E%3C/svg%3E">
+<link rel="preload" href="assets/fonts/dm-serif-text-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="CuePorch home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#152e33"/><path d="M12 9.5v13l11-6.5z" fill="#e0ece7"/></svg>
+      CuePorch
+    </a>
+    <nav class="site-nav" aria-label="Primary">
+      <a href="#capabilities">What it does</a>
+      <a class="hide-sm" href="#migrate">Vimeo move</a>
+      <a class="hide-sm" href="#exhibit">Exhibition</a>
+      <a class="hide-sm" href="#live">Live</a>
+      <a class="hide-sm" href="#architecture">Architecture</a>
+      <a href="#start">Install</a>
+      <a href="#status">Status</a>
+      <a class="nav-cta" href="https://github.com/forkcommons/CuePorch">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<div class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">By ForkCommons &middot; Version 0.2.0</p>
+      <h1>Keep the master. Publish the viewing copy.</h1>
+      <p class="lede">CuePorch preserves and publishes video for public media stations and arts institutions. It keeps a hashed master of every work, delivers viewing copies through a PeerTube host you control, and lets a museum screen one film for one window without handing out the file.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/forkcommons/CuePorch/blob/main/USER-MANUAL.md">Read the user manual</a>
+        <a class="btn btn-ghost" href="#start">How to install</a>
+      </div>
+      <ul class="facts" aria-label="Key facts">
+        <li>Windows x64, macOS Apple Silicon, Ubuntu 24.04</li>
+        <li>Self-hosted</li>
+        <li>AGPL-3.0-or-later</li>
+      </ul>
+    </div>
+
+    <figure class="figure" style="margin:0">
+      <svg class="flow" viewBox="0 0 560 360" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">How a work moves through CuePorch</title>
+        <desc id="flow-desc">Vimeo, CivicCast packages and browser uploads feed the CuePorch institution service. The service delivers viewing copies to PeerTube for public viewers and issues expiring screening sessions to authorized venues.</desc>
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrowhead"/></marker></defs>
+
+        <rect class="box-line" x="6" y="24" width="140" height="62" rx="10"/>
+        <text class="t-lg" x="20" y="50">Vimeo</text><text class="t-sm" x="20" y="70">account or simulator</text>
+        <rect class="box-line" x="6" y="148" width="140" height="62" rx="10"/>
+        <text class="t-lg" x="20" y="174">CivicCast</text><text class="t-sm" x="20" y="194">station package</text>
+        <rect class="box-line" x="6" y="272" width="140" height="62" rx="10"/>
+        <text class="t-lg" x="20" y="298">Browser upload</text><text class="t-sm" x="20" y="318">artists and operators</text>
+
+        <path class="arrow" d="M146 55 H196 V110 H214" marker-end="url(#ah)"/>
+        <path class="arrow" d="M146 179 H214" marker-end="url(#ah)"/>
+        <path class="arrow" d="M146 303 H196 V248 H214" marker-end="url(#ah)"/>
+
+        <rect class="box-ink" x="216" y="62" width="136" height="236" rx="12"/>
+        <text class="t-lg t-on-ink" x="232" y="94">CuePorch</text>
+        <text class="t-sm t-on-ink" x="232" y="114">institution service</text>
+        <line x1="232" y1="130" x2="336" y2="130" stroke="#5c7a7e"/>
+        <text class="t-sm t-on-ink" x="232" y="154">Masters and hashes</text>
+        <text class="t-sm t-on-ink" x="232" y="178">Jobs and routes</text>
+        <text class="t-sm t-on-ink" x="232" y="202">Screening grants</text>
+        <text class="t-sm t-on-ink" x="232" y="226">Approval policy</text>
+        <text class="t-sm t-on-ink" x="232" y="250">Delivery worker</text>
+        <text class="t-sm t-on-ink" x="232" y="282" style="font-size:11px">Flask + SQLite</text>
+
+        <path class="arrow" d="M352 110 H400 V80 H416" marker-end="url(#ah)"/>
+        <path class="arrow" d="M352 250 H400 V280 H416" marker-end="url(#ah)"/>
+
+        <rect class="box" x="418" y="38" width="138" height="62" rx="10"/>
+        <text class="t-lg" x="432" y="64">PeerTube</text><text class="t-sm" x="432" y="84">hosting and player</text>
+        <path class="arrow" d="M487 100 V148" marker-end="url(#ah)"/>
+        <rect class="box-line" x="418" y="150" width="138" height="48" rx="10"/>
+        <text class="t-lg" x="432" y="180">Public viewer</text>
+
+        <rect class="box" x="418" y="250" width="138" height="62" rx="10"/>
+        <text class="t-lg" x="432" y="276">Venue</text><text class="t-sm" x="432" y="296">expiring session</text>
+        <text class="t-sm" x="360" y="336" style="font-size:11px;fill:#37585a">grant-checked copy</text>
+      </svg>
+      <figcaption>Redrawn from the component diagram in the user manual. The CuePorch service keeps the master; PeerTube hosts public playback; venues get a viewing copy that CuePorch checks on every request.</figcaption>
+    </figure>
+  </div>
+</div>
+
+<!-- PROBLEM -->
+<section class="band-sea" id="what">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it is</p>
+      <h2>Built for institutions that cannot lose the original.</h2>
+      <p>A station&rsquo;s meeting archive or a museum&rsquo;s loaned film outlasts any one hosting account. CuePorch separates the thing you must keep from the thing you show.</p>
+    </div>
+    <div class="pair">
+      <div>
+        <h3>The master stays yours</h3>
+        <p>Every import and upload is stored as a hashed object next to an SQLite database in your own library folder. <code>python cueporch.py verify COLLECTION</code> checks the stored files, and <code>export_institution.py</code> writes a portable export with media, hashes, agreements, case history and routes. Uninstalling removes program files separately from the library.</p>
+      </div>
+      <div>
+        <h3>Publishing is a step, not a side effect</h3>
+        <p>Imports start private. Delivery goes through a worker that applies the institution&rsquo;s approval policy and records a receipt binding each work to its hosted video. Publication updates a stable institutional watch route once the destination has finished processing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CAPABILITIES -->
+<section id="capabilities">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Capabilities</p>
+      <h2>One library, six jobs.</h2>
+      <p>Each item below is documented in the <a href="https://github.com/forkcommons/CuePorch/blob/main/USER-MANUAL.md">user manual</a> and has a matching screen or endpoint in the source.</p>
+    </div>
+    <ul class="caps">
+      <li class="cap">
+        <span class="num">01</span>
+        <h3>Move from Vimeo</h3>
+        <p>Preview an owner account, transfer privately, then publish what is eligible. Source IDs keep identically named cuts apart, and checkpoints avoid repeat transfers.</p>
+        <ul>
+          <li>Captions and chapters carried over</li>
+          <li>Reports works that lack media</li>
+          <li>Exports an embed map as CSV</li>
+        </ul>
+        <p class="qual">Partial. Tested against a simulated source; production Vimeo sign-in is unobserved.</p>
+      </li>
+      <li class="cap">
+        <span class="num">02</span>
+        <h3>Publish on your own PeerTube</h3>
+        <p>Connect an existing PeerTube host, or have the launcher provision one with Docker Compose. CuePorch serves institution-controlled watch and embed routes that play the hosted copy.</p>
+        <ul>
+          <li>Private first, public when approved</li>
+          <li>Playback, upload and replay tested with real PeerTube</li>
+          <li>Optional JavaScript Player API</li>
+        </ul>
+      </li>
+      <li class="cap">
+        <span class="num">03</span>
+        <h3>Exhibit one film in many venues</h3>
+        <p>A grant ties one cut to one origin and one agreement window. The venue&rsquo;s server asks CuePorch for a session and embeds the expiring player. Revoking one venue leaves the others playing.</p>
+        <ul>
+          <li>Separate screening copy from the private master</li>
+          <li>Anonymous requests denied</li>
+        </ul>
+      </li>
+      <li class="cap">
+        <span class="num">04</span>
+        <h3>Review, approve, respond</h3>
+        <p>Share a review link with an expiry, optional password and time-coded comments with replies and @mentions. Approval switches gate steps such as intake, captions, publication and restoration. Complaints open a case with history.</p>
+        <ul>
+          <li>Versions kept; restore a previous cut</li>
+          <li>Per-link settings and device notifications</li>
+        </ul>
+      </li>
+      <li class="cap">
+        <span class="num">05</span>
+        <h3>Go live and record</h3>
+        <p>Schedule events, prepare an RTMP encoder, or broadcast from the browser studio with scenes, slides, audience Q&amp;A and polls. Record Studio captures camera and screen with a teleprompter.</p>
+        <ul>
+          <li>Up to seven invited guests per occurrence</li>
+          <li>Registration, waiting room, DVR window, replay</li>
+        </ul>
+        <p class="qual">Live features need a live-enabled PeerTube host.</p>
+      </li>
+      <li class="cap">
+        <span class="num">06</span>
+        <h3>Give viewers a catalog</h3>
+        <p>A public Watch page with categories, search, channels and Staff Picks. Viewers can sign in, keep Watch Later, like videos and build collections. Operators get captions, alternate audio, chapters, analytics and team accounts.</p>
+        <ul>
+          <li>Subtitles from WebVTT or SRT; optional TextFlowKit generation</li>
+          <li>Impressions, views and time watched</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- MIGRATE -->
+<section class="band-ink" id="migrate">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">The Vimeo move</p>
+      <h2>Preview, transfer privately, then publish.</h2>
+      <p>The migration screen follows four steps, and nothing becomes public until an operator publishes it.</p>
+    </div>
+    <ol class="steps">
+      <li><h3>Preview</h3><p>Read the owner account and see an inventory with the expected quality of each recovery before anything moves.</p></li>
+      <li><h3>Transfer privately</h3><p>Fetch the accessible media and captions. Hashes, checkpoints and exceptions are saved, so an interrupted run resumes.</p></li>
+      <li><h3>Deliver</h3><p>Eligible media goes to PeerTube privately. A receipt links each work to its hosted video and processing state.</p></li>
+      <li><h3>Publish</h3><p>Check retrieval quality, captions and visibility, then publish eligible imports and replace embeds using the exported map.</p></li>
+    </ol>
+    <p style="margin-top:2rem;color:#c9d9d5">When the account owner has not supplied an original, CuePorch recovers the best advertised downloadable file and tells you if neither exists. Replacing embeds on sites outside your institution still requires edits by those site owners.</p>
+  </div>
+</section>
+
+<!-- EXHIBIT -->
+<section id="exhibit">
+  <div class="wrap split">
+    <div>
+      <p class="eyebrow">Exhibition</p>
+      <h2>Lend a film without lending the file.</h2>
+      <p style="margin-top:1rem;color:var(--muted)">A museum visitor authenticates on the museum&rsquo;s own site. The museum&rsquo;s server presents the grant secret and receives a relative embed path with an expiry. CuePorch checks the grant on each player, caption and media request.</p>
+      <ul class="checklist">
+        <li>A grant names the cut, the allowed origin including scheme and port, and the agreement dates.</li>
+        <li>Each exhibitor gets a separate grant, so one revocation does not affect another venue.</li>
+        <li>A decision to suspend screenings for the <em>work</em> has broader effect than revoking a single grant.</li>
+        <li>An existing grant keeps playing the version selected when it was issued.</li>
+      </ul>
+    </div>
+    <div>
+      <p class="code-label">Venue server, from the HTTP integration table</p>
+<pre class="code"><span class="c"># issue a screening session for one grant</span>
+POST /api/grants/&lt;uid&gt;/session
+Authorization: Bearer &lt;grant secret&gt;
+
+<span class="c"># response carries</span>
+{ "embed": "/screen/...", "expires": &lt;unix time&gt; }
+
+<span class="c"># resolve the path against the CuePorch origin,
+# then embed it with</span>
+&lt;iframe referrerpolicy="origin" ...&gt;</pre>
+      <p style="margin-top:1rem;color:var(--muted);font-size:.95rem">The installed acceptance runs exercised an authorized venue playing a viewing copy, an anonymous request being denied, and revocation and restoration. They used short fixtures.</p>
+    </div>
+  </div>
+</section>
+
+<!-- LIVE -->
+<section class="band-sea" id="live">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Live events and recording</p>
+      <h2>From a scheduled program to a saved replay.</h2>
+    </div>
+    <div class="split">
+      <div>
+        <h3>Schedule and transmit</h3>
+        <ul class="checklist">
+          <li>Daily, weekly or monthly recurrence, with an end date or occurrence count.</li>
+          <li>An external encoder over RTMP or RTMPS, an SRT listener, or the browser studio.</li>
+          <li>A private encoder preview before you go live; stream status with viewer count and latency mode.</li>
+          <li>Viewer registration, a waiting room, a live DVR window, and a replay that can be held for approval.</li>
+          <li>Finished broadcasts can be saved to the Library as a private MP4.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Produce in the browser</h3>
+        <ul class="checklist">
+          <li>Scenes with templates, lower thirds and a logo; take a scene to change the live output.</li>
+          <li>Present a PDF or PowerPoint deck of up to 100 MB and 500 slides. PowerPoint import uses LibreOffice Impress on the machine running CuePorch.</li>
+          <li>Audio mixer, audience Q&amp;A and polls shown on screen.</li>
+          <li>Invite up to seven guests by one-use link; guest links need a reachable HTTPS address outside localhost.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Architecture</p>
+      <h2>Three languages, each with one job.</h2>
+      <p>The README states the split plainly. Flask and Waitress serve the institutional UI and API; PeerTube owns transcoding and hosted playback.</p>
+    </div>
+    <dl class="stack">
+      <div><dt>Python</dt><dd>The institutional service, Vimeo importer, grants, approval policy, delivery worker and publication queue.</dd></div>
+      <div><dt>TypeScript</dt><dd>The operator, creator, viewer and screening interfaces, built with <code>tsc</code> and with hls.js 1.6.18 as its one dependency.</dd></div>
+      <div><dt>Rust</dt><dd>A thin desktop launcher that starts the bundled service and opens your browser. It accepts <code>--data PATH</code> and <code>--headless</code>.</dd></div>
+      <div><dt>PeerTube</dt><dd>Public hosting and transcoding. Bring an existing host or let the launcher provision one with Compose.</dd></div>
+      <div><dt>CivicCast (optional)</dt><dd>A station can hand its cable file package and caption sidecar to CuePorch. CivicCast keeps schedule, playout and local recording.</dd></div>
+      <div><dt>Ports</dt><dd>Defaults are 19001 for the app, 19000 for PeerTube HTTP and 11935 for RTMP, each adjustable for additional institutions.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<!-- START -->
+<section class="band-sea" id="start">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Install</p>
+      <h2>Install on the machine that will host it.</h2>
+      <p>These steps come from the README for the 0.2.0 release baseline. Local library and exhibition work can begin before a video host is connected.</p>
+    </div>
+    <div class="starts">
+      <div class="start">
+        <h3>Windows</h3>
+        <ol>
+          <li>Run the signed Setup EXE and keep the suggested library folder.</li>
+          <li>Open CuePorch from the Start menu.</li>
+          <li>Enter your institution name, choose <strong>Save setup</strong>, then <strong>Open operator console</strong>.</li>
+          <li>To publish online, add your PeerTube host&rsquo;s HTTPS address and credentials.</li>
+        </ol>
+        <p>The installer bundles Python and FFmpeg. To provision a local host, start a Docker-compatible Linux container engine and select <strong>Set up a local video host</strong>.</p>
+      </div>
+      <div class="start">
+        <h3>macOS and Linux</h3>
+        <ol>
+          <li>Install the macOS package and open CuePorch from Applications, or install the Debian package and launch it from the applications menu.</li>
+          <li>Use <code>--data PATH</code> to open an existing library.</li>
+        </ol>
+        <p>The Mac package carries an ad-hoc signature and is not notarized by Apple. Linux packages are tested on Ubuntu 24.04 amd64.</p>
+      </div>
+      <div class="start">
+        <h3>From source</h3>
+<pre class="code">python launch.py ../station \
+  --institution station \
+  --existing-peer https://video.example.org</pre>
+        <p style="margin-top:.8rem">Set <code>PEERTUBE_USERNAME</code> and <code>PEERTUBE_PASSWORD</code> first. Omit <code>--existing-peer</code> to provision a host. Building packages needs Python 3.13, Rust, Node.js and PyInstaller; see the README.</p>
+      </div>
+    </div>
+    <p style="margin-top:1.6rem;color:var(--muted)">Upgrading an existing institution: stop the previous version, back up its complete private data directory and video host, then point Setup at the folder containing <code>operator.json</code> and <code>institution.sqlite</code>. The <a href="https://github.com/forkcommons/CuePorch/blob/main/OPERATIONS.md">operations guide</a> covers public deployments and recovery. Checksums for the three 0.2.0 installers are in <a href="https://github.com/forkcommons/CuePorch/blob/main/SHA256SUMS">SHA256SUMS</a>.</p>
+  </div>
+</section>
+
+<!-- STATUS -->
+<section class="band-ink" id="status">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Project status</p>
+      <h2>What has been tested, and what has not.</h2>
+      <p>Version 0.2.0 is the public release baseline. The main branch contains later development work that the baseline does not describe.</p>
+    </div>
+    <div class="status">
+      <div>
+        <h3><span class="tag">Tested</span> On three platforms</h3>
+        <ul>
+          <li>Fresh and upgraded libraries on Windows x64, macOS 15 Apple Silicon and Ubuntu 24.04 amd64.</li>
+          <li>Restricted exhibition playback and real PeerTube publishing from the installed packages.</li>
+          <li>A 0.1.0 station library kept its watch URL, video identity and operator keys on upgrade.</li>
+        </ul>
+      </div>
+      <div>
+        <h3><span class="tag tag-warn">Limits</span> Of that testing</h3>
+        <ul>
+          <li>The tests used short fixtures and a simulated Vimeo account.</li>
+          <li>Full-scale migration time, production Vimeo OAuth and station cutover are unmeasured.</li>
+          <li>Physical cable reception, public DNS cutover and staffed support were not observed.</li>
+        </ul>
+      </div>
+      <div>
+        <h3><span class="tag tag-warn">Gaps</span> Known</h3>
+        <ul>
+          <li>Per the acceptance record: historical analytics, commerce, showcase reconstruction and Vimeo-specific player scripting.</li>
+          <li>The Vimeo comparison gives no row full-equivalence credit.</li>
+          <li>Native macOS builds are not notarized.</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:2rem;color:#c9d9d5">Read the evidence yourself: the <a href="https://github.com/forkcommons/CuePorch/blob/main/evidence/ACCEPTANCE.md">acceptance record</a> and the <a href="https://github.com/forkcommons/CuePorch/blob/main/evidence/vimeo-comparison.md">Vimeo feature comparison</a>. The comparison is a 0.1.0 snapshot, so some workflows it lists as missing now have screens in the current source. The manual describes the current behavior.</p>
+  </div>
+</section>
+
+<!-- FINAL -->
+<section class="final" id="contribute">
+  <div class="wrap">
+    <h2>Read the manual, then try it on a copy of your library.</h2>
+    <p>CuePorch is open source under AGPL-3.0-or-later. Questions, defects and requests go to the issue tracker. The bundled FFmpeg binary comes from the imageio-ffmpeg 0.6.0 distribution; other components keep their own licenses, listed in <a href="https://github.com/forkcommons/CuePorch/blob/main/NOTICES.md">NOTICES.md</a>.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/forkcommons/CuePorch/blob/main/USER-MANUAL.md">User manual</a>
+      <a class="btn btn-ghost" href="https://github.com/forkcommons/CuePorch/issues">Open an issue</a>
+      <a class="btn btn-ghost" href="https://github.com/forkcommons/CuePorch/tree/v0.2.0">Browse v0.2.0 source</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <p><strong>CuePorch</strong> by ForkCommons. Video publishing for public media and the arts.</p>
+      <p>Licensed AGPL-3.0-or-later. Fonts DM Serif Text and Source Sans 3 are bundled under the SIL Open Font License.</p>
+    </div>
+    <ul aria-label="Project links">
+      <li><a href="https://github.com/forkcommons/CuePorch">Repository</a></li>
+      <li><a href="https://github.com/forkcommons/CuePorch/blob/main/USER-MANUAL.md">User manual</a></li>
+      <li><a href="https://github.com/forkcommons/CuePorch/blob/main/OPERATIONS.md">Operations</a></li>
+      <li><a href="https://github.com/forkcommons/CuePorch/blob/main/LICENSE">License</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>
