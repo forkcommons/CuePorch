@@ -2,10 +2,16 @@
 
 import csv
 from datetime import datetime, timezone
+from email.errors import HeaderParseError
+from email.headerregistry import Address
+from email.message import EmailMessage
 import hashlib
 import hmac
 from io import StringIO
+import os
 import secrets
+import smtplib
+import ssl
 import time
 import uuid
 
@@ -62,6 +68,42 @@ SESSION_SECONDS = 12 * 3600
 INVITE_SECONDS = 7 * 86400
 SESSION_MARKER = "team-session"
 MUTATION_HEADER = "X-CuePorch-Team"
+
+
+def invitation_mail_config(origin):
+    host = os.environ.get("CUEPORCH_SMTP_HOST", "").strip()
+    sender = os.environ.get("CUEPORCH_SMTP_FROM", "").strip()
+    username = os.environ.get("CUEPORCH_SMTP_USER", "")
+    secret = os.environ.get("CUEPORCH_SMTP_PASSWORD", "")
+    if not origin.startswith("https://") or not host or not sender or bool(username) != bool(secret):
+        return None
+    try:
+        port = int(os.environ.get("CUEPORCH_SMTP_PORT", "465"))
+        sender = Address(addr_spec=sender).addr_spec
+    except (ValueError, HeaderParseError):
+        return None
+    return (host, port, sender, username, secret) if 0 < port < 65536 and "@" in sender else None
+
+
+def email_invitation(config, address, url, note):
+    host, port, sender, username, secret = config
+    message = EmailMessage()
+    message["Subject"] = "Your CuePorch team invitation"
+    accepted = False
+    try:
+        message["From"] = sender
+        message["To"] = address
+        introduction = note + "\n\n" if note else ""
+        message.set_content(introduction + "Join the CuePorch team at:\n\n" + url +
+                            "\n\nThis private link expires in seven days and can be used once.\n")
+        with smtplib.SMTP_SSL(host, port, timeout=6, context=ssl.create_default_context()) as relay:
+            if username:
+                relay.login(username, secret)
+            relay.send_message(message, from_addr=sender, to_addrs=[address])
+            accepted = True
+    except (OSError, ValueError):
+        pass
+    return "accepted" if accepted else "failed"
 
 
 def initialize_permissions(con):
@@ -179,6 +221,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
              entry_payload):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
+    invitation_mail = invitation_mail_config(origin)
 
     def limit(con, operation, subject=""):
         now = time.time()
@@ -257,7 +300,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     @app.get("/team/members")
     def team_members_page():
         secure_site(origin)
-        return private(render_template("team_members.html", brand=workspace_brand()))
+        return private(render_template("team_members.html", brand=workspace_brand(),
+                                       invitation_mail=bool(invitation_mail)))
 
     @app.get("/api/team/account")
     def team_account():
@@ -378,16 +422,26 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         secure = secure_site(origin)
         body = mutation(secure)
         email, role = email_key(body.get("email")), role_from(body)
+        send_email, message = body.get("send_email", False), body.get("message", "")
+        if not isinstance(send_email, bool):
+            abort(400, "Choose whether to email the invitation.")
+        if not isinstance(message, str) or len(message) > 1000:
+            abort(400, "Use at most 1000 characters for the invitation message.")
         uid, token = str(uuid.uuid4()), secrets.token_urlsafe(32)
         with tx() as con:
             actor = manager(con)
+            if send_email and not invitation_mail:
+                abort(409, "Invitation email needs a configured relay and a public HTTPS address.")
             if con.execute("SELECT 1 FROM team_member WHERE email=? AND removed IS NULL", (email,)).fetchone():
                 abort(409, "This email already has an active team membership.")
             con.execute("""INSERT INTO team_invitation VALUES(?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET
                 id=excluded.id,role=excluded.role,token_hash=excluded.token_hash,expires=excluded.expires""",
                 (uid, email, role, token_hash(token), time.time() + INVITE_SECONDS))
             note(con, actor, "invited", uid, role)
-        return private(dict(id=uid, path=url_for("team_join_page") + "#" + token), 201)
+        path = url_for("team_join_page") + "#" + token
+        url = origin + path if origin.startswith("https://") else None
+        delivery = email_invitation(invitation_mail, email, url, message.strip()) if send_email else None
+        return private(dict(id=uid, path=path, url=url, delivery=delivery), 201)
 
     @app.delete("/api/team/invitations/<uuid:invitation>")
     def team_cancel_invitation(invitation):

@@ -25,6 +25,7 @@ const credential = access.querySelector<HTMLInputElement>("input")!;
 const management = document.querySelector<HTMLElement>("#teamManagement")!;
 const status = document.querySelector<HTMLElement>("#teamMembersStatus")!;
 const invite = document.querySelector<HTMLFormElement>("#teamInvite")!;
+const emailInvite = invite.querySelector<HTMLInputElement>("[name=send_email]");
 const invitationBox = document.querySelector<HTMLElement>("#teamInvitationLink")!;
 const invitationLink = invitationBox.querySelector<HTMLInputElement>("input")!;
 const invitations = document.querySelector<HTMLUListElement>("#teamInvitations")!;
@@ -56,13 +57,12 @@ function call(path: string, method = "GET", body = {}) {
   return teamRequest(path, method, body, credential.value).then(checked);
 }
 
-async function task(action: () => Promise<void>, success = "") {
+async function task(action: () => Promise<void | string>, success = "") {
   if (working) return;
   working = true;
   status.textContent = "";
   try {
-    await action();
-    status.textContent = success;
+    status.textContent = await action() ?? success;
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
   } finally {
@@ -243,12 +243,17 @@ async function loadMembers() {
     const item = document.createElement("li");
     const valid = pending.expires * 1000 > Date.now();
     item.append(`${pending.email} · ${roleLabels[pending.role]} · ${valid ? "Expires " : "Expired "}${date.format(pending.expires * 1000)} `,
-      button("Replace link", () => void task(() => createInvitation({email: pending.email, role: pending.role}), "New invitation link created.")),
+      button("Replace link", () => void task(async () => {
+        await createInvitation({email: pending.email, role: pending.role});
+      }, "New invitation link created.")),
       button("Cancel invitation", () => void task(async () => {
         await call(`invitations/${pending.id}`, "DELETE");
         clearInvitation();
         await loadMembers();
       }, "Invitation canceled.")));
+    if (emailInvite) item.append(button("Email replacement link", () => void task(() =>
+      createInvitation({email: pending.email, role: pending.role, send_email: true}),
+    )));
     invitations.append(item);
   }
   for (const member of roster.members) {
@@ -299,18 +304,24 @@ document.querySelector<HTMLButtonElement>("#downloadTeamRoster")!.onclick = () =
 }, "Roster downloaded.");
 
 async function createInvitation(body: object) {
-  const {path}: {path: string} = await (await call("invitations", "POST", body)).json();
+  const {path, url, delivery}: {path: string; url: string | null; delivery: "accepted" | "failed" | null} =
+    await (await call("invitations", "POST", body)).json();
   await loadMembers();
-  invitationLink.value = new URL(path, location.origin).href;
+  invitationLink.value = new URL(url ?? path, location.origin).href;
   invitationBox.hidden = false;
+  if (delivery === "accepted") return "The mail relay accepted the invitation.";
+  if (delivery === "failed") return "Email delivery failed. Copy the private link to share it.";
+  return "Invitation link created.";
 }
 
 invite.onsubmit = event => {
   event.preventDefault();
   void task(async () => {
-    await createInvitation(Object.fromEntries(new FormData(invite)));
+    const form = Object.fromEntries(new FormData(invite));
+    const outcome = await createInvitation({...form, send_email: emailInvite?.checked ?? false});
     invite.reset();
-  }, "Invitation link created.");
+    return outcome;
+  });
 };
 
 invitationBox.querySelector("button")!.onclick = () => void task(async () => {

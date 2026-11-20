@@ -20,11 +20,15 @@
         <option value="viewer">Viewer</option><option value="contributor">Contributor</option>
         <option value="contributor_plus">Contributor Plus</option><option value="admin">Administrator</option>
       </select></label>
+      {% if invitation_mail %}
+      <label><input name="send_email" type="checkbox" checked> Email the invitation</label>
+      <label>Invitation message (optional) <textarea name="message" maxlength="1000" rows="2"></textarea></label>
+      {% endif %}
       <button>Create invitation</button>
     </form>
     <div id="teamInvitationLink" hidden>
       <label>Private invitation link <input readonly></label><button type="button">Copy link</button>
-      <p>Send this link privately to the person you invited. It can be used once within seven days.</p>
+      <p>Use this link to share the invitation privately. It can be used once within seven days.</p>
     </div>
     <h2>Pending invitations</h2>
     <ul id="teamInvitations"></ul>
