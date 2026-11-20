@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Watch · {{ name }} · CuePorch</title>
+  <title>Watch · {{ brand.label }} · CuePorch</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="watch-catalog">
   {% set sections = [('explore', 'Explore'), ('picks', 'Staff Picks'), ('categories', 'Categories'), ('channels', 'Channels')] %}
   <header class="watch-banner">
-    <p>{{ name }}</p>
+    {% include "workspace_mark.html" %}
     <h1>Watch</h1>
     <nav aria-label="Watch">
       {% for key, label in sections %}

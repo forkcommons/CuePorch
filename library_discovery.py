@@ -6,6 +6,7 @@ import uuid
 from flask import abort, make_response, render_template, request, send_file, url_for
 
 import library_details
+import team_branding
 from library_privacy import playback
 from library_thumbnail import selected_thumbnail, thumbnail_type
 
@@ -97,6 +98,7 @@ def register(app, tx, staff, public_listing, root, institution):
         with tx() as con:
             entries = public_listing(con)
             _, keys = picks(con)
+            brand = team_branding.read(con, institution)
         featured = [entries[key] for key in keys if key in entries]
         videos = ordered(entry for entry in entries.values() if entry["kind"] != "channel")
         labels = {}
@@ -124,7 +126,7 @@ def register(app, tx, staff, public_listing, root, institution):
                            page=number, q=query or None, category=category or None)
 
         return no_store(render_template(
-            "catalog.html", name=institution, section=section, q=query, category=category, categories=categories,
+            "catalog.html", brand=brand, section=section, q=query, category=category, categories=categories,
             rows=[entry_payload(entry) for entry in videos[start:start + PAGE_SIZE]],
             featured=[entry_payload(entry) for entry in featured[:6]] if show_spotlight else [],
             previous=page_link(page - 1) if page > 1 else None, next_page=page_link(page + 1) if page < count else None,

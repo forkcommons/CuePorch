@@ -74,6 +74,7 @@ def export(collection, database, target):
                 "team_membership_event",
                 "team_workspace_link",
                 "team_workspace_link_group",
+                "team_branding",
             ):
                 if has_table(db, table):
                     tables[table] = "SELECT * FROM " + table
@@ -85,6 +86,19 @@ def export(collection, database, target):
                 row["metadata"] = json.loads(row["metadata"])
             for row in record.get("video_file_link", []):
                 row["renditions"] = json.loads(row["renditions"]) if row["renditions"] else None
+            for brand in record.get("team_branding", []):
+                if not (digest := brand["logo"]):
+                    continue
+                image = db.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
+                if image is None:
+                    raise ValueError("Missing workspace logo.")
+                folder = root / "workspace-branding"
+                folder.mkdir(exist_ok=True)
+                file = folder / digest
+                file.write_bytes(image["content"])
+                if checksum(file) != digest:
+                    raise ValueError("Workspace logo verification failed.")
+                brand["artwork"] = dict(path=file.relative_to(root).as_posix(), mime=image["mime"])
             if "video_rating_widget" in record:
                 record["video_rating_summary"] = [dict(row) for row in db.execute(
                     """SELECT work,version,mode,score,count(*) AS responses FROM video_rating

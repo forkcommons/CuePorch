@@ -226,6 +226,10 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 }
 h1, h2 { font-family: "DM Serif Text", Georgia, serif; line-height: 1.16; font-weight: 500; }
 h1 { margin: 0 0 1.2rem; font-size: clamp(2rem, 5vw, 3.5rem); }
+.workspace-mark { display: flex; align-items: center; gap: .85rem; padding-inline-start: .75rem; border-inline-start: .35rem solid var(--workspace-accent); margin-block-end: 1rem; }
+.workspace-mark h1, .workspace-mark p { margin: 0; }
+.workspace-mark img { object-fit: contain; max-width: 4rem; }
+#workspaceLogoPreview { object-fit: contain; max-width: 10rem; max-height: 5rem; }
 h2 { margin: 2rem 0 .7rem; }
 a { color: #13596a; text-underline-offset: .15em; }
 form { display: grid; gap: .8rem; max-width: 42rem; margin: 1rem 0; }

@@ -68,6 +68,7 @@ import media_bandwidth
 import review_links
 import review_push
 import team_accounts
+import team_branding
 import team_workspaces
 import timeline_jobs
 import vimeo_privacy
@@ -136,6 +137,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA
             + team_accounts.SCHEMA
+            + team_branding.SCHEMA
             + team_workspaces.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
@@ -227,6 +229,8 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(403)
         return actor
 
+    workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
+
     def action(con, uid, step, payload):
         if step not in STEPS:
             abort(400)
@@ -294,7 +298,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator")
     def console():
-        return render_template("console.html", institution=institution)
+        return render_template("console.html", brand=workspace_brand())
 
     # Keep credentials in process memory. After a process restart a new request can
     # resume from disk using the same source identity and work checkpoints.
@@ -520,7 +524,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/submit")
     def submission_form():
-        return render_template("submission_form.html")
+        return render_template("submission_form.html", brand=workspace_brand())
 
     @app.post("/api/submissions")
     def submit():
@@ -1208,7 +1212,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_discovery.register(app, tx, staff, public_listing, root, institution)
     audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
-    authorize_editor = team_accounts.register(app, tx, team_origin, operator, institution, operator_name,
+    authorize_editor = team_accounts.register(app, tx, team_origin, operator, workspace_brand, operator_name,
                                                read_library_works, library_actions.title_for, root)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)

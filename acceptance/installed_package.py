@@ -222,6 +222,8 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
     assert any(edge["team_group"] == group and edge["permission"] == "edit" for edge in rights["team_group_folder"])
     assert any(row["work"] == private_work for row in rights["library_video_details"])
     assert any(row["work"] == public_link.rsplit("/", 1)[1] for row in rights["video_file_link"])
+    brand, = rights["team_branding"]
+    assert brand["label"] == "Station archive" and brand["artwork"]["mime"] == "image/jpeg"
     hashes = json.loads((portable / "SHA256.json").read_text(encoding="utf8"))
     for file, digest in hashes.items():
         with (portable / file).open("rb") as media:
@@ -239,6 +241,9 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
         assert rendition.status_code == 206 and len(rendition.content) == 64
         with browser.new_context() as guest:
             restored = guest.new_page()
+            assert restored.goto(base + "/watch").ok
+            expect(restored.locator(".workspace-mark")).to_have_text("Station archive")
+            assert restored.locator(".workspace-mark img").evaluate("async img => {await img.decode(); return img.naturalWidth}") == 48
             assert restored.goto(base + public_link).ok
             assert restored.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == 320
             museum.embed = base + restricted_embed
@@ -262,7 +267,7 @@ def rehearse_account_restore(browser, base, home, env, auth, email, private_work
         return dict(offline_copy_recovered=True, portable_hash_files=len(hashes), retained_inventory=len(work_ids),
                     protected_embed_width=width, public_and_group_video_width=320,
                     source_rights_and_edit_group_retained=True, portable_team_secrets_excluded=True,
-                    migrated_direct_link_recovered=True)
+                    migrated_direct_link_recovered=True, workspace_branding_restored=True)
     finally:
         museum.embed = previous
         stop_candidate(proc)

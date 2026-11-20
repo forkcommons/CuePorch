@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="/static/cueporch.css">
 <title>Team · CuePorch</title>
 <main id="teamWorkspace" hidden>
-  <h1>{{ institution }} team</h1>
+  {% set workspace_heading = brand.label ~ ' team' %}{% include "workspace_mark.html" %}
   {% if joining %}
   <form id="teamJoin">
     <h2>Accept team invitation</h2>

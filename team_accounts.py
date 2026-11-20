@@ -149,7 +149,7 @@ def group_selection(values, available, label):
     return selection
 
 
-def register(app, tx, origin, key, institution, operator_name, read_works, title_for, root):
+def register(app, tx, origin, key, workspace_brand, operator_name, read_works, title_for, root):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
 
@@ -218,17 +218,17 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
     @app.get("/team/join")
     def team_join_page():
         secure_site(origin)
-        return private(render_template("team_sign_in.html", institution=institution, joining=True))
+        return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=True))
 
     @app.get("/team")
     def team_sign_in_page():
         secure_site(origin)
-        return private(render_template("team_sign_in.html", institution=institution, joining=False))
+        return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=False))
 
     @app.get("/team/members")
     def team_members_page():
         secure_site(origin)
-        return private(render_template("team_members.html", institution=institution))
+        return private(render_template("team_members.html", brand=workspace_brand()))
 
     @app.get("/api/team/account")
     def team_account():

@@ -1,0 +1,5 @@
+<div class="workspace-mark" style="--workspace-accent:{{ brand.accent }}">
+  {% if brand.logo %}<img src="{{ brand.logo }}" alt="" width="64" height="48">{% endif %}
+  {% if workspace_heading %}<h1>{{ workspace_heading }}</h1>
+  {% else %}<p>{{ brand.label }}</p>{% endif %}
+</div>
