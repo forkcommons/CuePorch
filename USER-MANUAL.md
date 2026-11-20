@@ -272,6 +272,8 @@ Open **Showcases** from the library. **New showcase** creates a private gallery.
 
 Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
 
+Enable **Offer downloads where the video allows them** to show the download link on permitted videos. **Copy link to this video** opens the selected title in the same showcase. Visitors still pass the gallery's passwords and registration.
+
 Choose **Public**, **Password** or **Embed only** to create viewer links. The optional list of allowed sites restricts embeds. A public showcase lists publicly visible videos. A password-protected showcase can play other restricted videos when their embed settings permit it. Private videos stay in the operator preview. A video with its own registration form keeps that gate and is omitted from guest playlists. Use **Registration** to require a form for the whole showcase and export the answers as CSV. Use **Make a copy** to start a private gallery with the same presentation and video order.
 
 Under **Playback and discovery**, use **Search result preview** to see the draft title, address and description. Blank search fields use the gallery title and description. Save a public showcase with indexing enabled to publish its metadata and optional keywords.

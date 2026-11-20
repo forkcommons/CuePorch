@@ -55,23 +55,29 @@
       {% endif %}
       {% if entries %}
       {% set grid_players = settings.layout == 'grid' and settings.grid_media == 'players' %}
+      {% set active = entries[playing] %}
       <div class="showcase-watch">
         <section class="showcase-screen" aria-labelledby="nowPlaying">
-          <h2 id="nowPlaying" aria-live="polite">{{ entries[0].title }}</h2>
-          <p id="showcasePlayingDescription" {% if not entries[0].description %}hidden{% endif %}>{{ entries[0].description }}</p>
-          {% if not grid_players %}{{ player(entries[0], 'nowPlaying', 'metadata') }}{% endif %}
+          <h2 id="nowPlaying" aria-live="polite">{{ active.title }}</h2>
+          <p id="showcasePlayingDescription" {% if not active.description %}hidden{% endif %}>{{ active.description }}</p>
+          <a id="showcaseDownload" {% if active.download %}href="{{ active.download }}"{% else %}hidden{% endif %}>Download video</a>
+          {% if settings.copy_link and not internal and not embed %}
+          <button type="button" id="showcaseCopyVideo">Copy link to this video</button>
+          <span id="showcaseCopyVideoStatus" role="status"></span>
+          {% endif %}
+          {% if not grid_players %}{{ player(active, 'nowPlaying', 'metadata') }}{% endif %}
         </section>
         <section aria-label="Playlist" class="showcase-playlist">
           {% if settings.search %}<label>Search videos <input type="search" id="showcaseSearch"></label>{% endif %}
           <ol>
             {% for item in entries %}
             {% if grid_players %}
-            <li data-index="{{ loop.index0 }}"{% if loop.first %} aria-current="true"{% endif %}>
+            <li data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
               <p id="showcaseCardTitle{{ loop.index0 }}">{{ item.title }}</p>
               {{ player(item, 'showcaseCardTitle' ~ loop.index0, 'none') }}
             </li>
             {% else %}
-            <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.first %} aria-current="true"{% endif %}>
+            <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
               {% if item.poster %}<img alt="" src="{{ item.poster }}" loading="lazy">{% endif %}
               <span>{{ item.title }}</span>
             </button></li>

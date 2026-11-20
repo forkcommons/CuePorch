@@ -1,24 +1,30 @@
 interface Item {
+  id: string;
   title: string;
   description: string;
   media: string;
+  download: string | null;
   poster: string | null;
   captions: { language: string; url: string }[];
 }
 
-const copy = document.querySelector<HTMLButtonElement>("#showcaseCopy");
-if (copy) {
-  copy.onclick = async () => {
-    const status = document.querySelector<HTMLElement>("#showcaseCopyStatus")!;
-    const link = new URL(location.pathname, location.origin).href;
+function copyLink(id: string, makeLink: () => URL, confirmation: string) {
+  const button = document.querySelector<HTMLButtonElement>("#" + id);
+  if (!button) return;
+  button.onclick = async () => {
+    const status = document.querySelector<HTMLElement>("#" + id + "Status")!;
+    const link = makeLink().href;
     try {
       await navigator.clipboard.writeText(link);
-      status.textContent = "Showcase link copied.";
+      status.textContent = confirmation;
     } catch {
       status.textContent = link;
     }
   };
 }
+
+const galleryLink = () => new URL(location.pathname, location.origin);
+copyLink("showcaseCopy", galleryLink, "Showcase link copied.");
 
 const contents = document.querySelector<HTMLScriptElement>("#showcaseContents");
 if (contents) {
@@ -28,7 +34,13 @@ if (contents) {
   const video = document.querySelector<HTMLVideoElement>(".showcase-screen video");
   const heading = document.querySelector<HTMLElement>("#nowPlaying")!;
   const description = document.querySelector<HTMLElement>("#showcasePlayingDescription")!;
-  let current = 0;
+  const download = document.querySelector<HTMLAnchorElement>("#showcaseDownload")!;
+  let current = cards.findIndex((card) => card.hasAttribute("aria-current"));
+  copyLink("showcaseCopyVideo", () => {
+    const link = galleryLink();
+    link.searchParams.set("video", items[current].id);
+    return link;
+  }, "Link to this video copied.");
 
   function setCurrent(index: number) {
     cards[current].removeAttribute("aria-current");
@@ -38,6 +50,9 @@ if (contents) {
     heading.textContent = item.title;
     description.textContent = item.description;
     description.hidden = !item.description;
+    download.hidden = !item.download;
+    if (item.download) download.href = item.download;
+    else download.removeAttribute("href");
   }
 
   function advance(playItem: (index: number) => void) {

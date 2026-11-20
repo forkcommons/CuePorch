@@ -39,6 +39,7 @@ DEFAULTS = dict(
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
     feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
+    download=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
@@ -123,7 +124,7 @@ def validate_settings(con, raw, lookup):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
     for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled",
-                 "navigation", "product_brand"):
+                 "navigation", "product_brand", "download"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
@@ -176,14 +177,14 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
         policy = (target_settings(work)[0] if work["provider"] == "vimeo"
                   else dict(privacy.DEFAULTS, visibility="public", embed="anywhere"))
     if internal:
-        return file
+        return file, policy
     if not permits(work, policy):
         return None
     mode = policy["visibility"]
     if showcase["visibility"] == "public" and mode != "public":
         return None
     if not embed and (showcase["visibility"] == "public" or mode == "public"):
-        return file if mode == "public" else None
+        return (file, policy) if mode == "public" else None
     if mode == "private":
         return None
     if showcase["visibility"] != "password" and mode not in ("public", "embed_only"):
@@ -192,7 +193,7 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
         return None
     if policy["embed"] == "domains" and not privacy.allowed_ancestor(ancestor, policy["domains"]):
         return None
-    return file
+    return file, policy
 
 
 def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url):
@@ -387,8 +388,10 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         work = works.get(uid)
                         if not work or (not internal and library_registration.active(con, "video", uid)):
                             continue
-                        if not content_policy(con, work, permits, values, embed, origin, internal):
+                        allowed = content_policy(con, work, permits, values, embed, origin, internal)
+                        if not allowed:
                             continue
+                        _, sharing = allowed
                         policy = privacy.get_privacy(con, uid)
                         token = media.dumps([row["id"], row["revision"], uid, video_version_key(work),
                                              policy["revision"] if policy else None, internal, embed, origin, form_revision])
@@ -396,12 +399,17 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         entries.append(dict(id=uid, title=title_for(con, work),
                                             description=details.get("description", ""),
                                             media=url_for("showcase_file", token=token),
+                                            download=url_for("showcase_file", token=token, download=1)
+                                            if not internal and values["download"] and sharing.get("download") else None,
                                             poster=url_for("showcase_file", token=token, poster=1)
                                             if selected_thumbnail(con, work) else None,
                                             captions=[dict(language=track.get("language") or "und",
                                                            url=url_for("showcase_file", token=token, track=index))
                                                       for index, track in enumerate(tracks_for(work))]))
+        selection = request.args.get("video")
+        playing = next((index for index, entry in enumerate(entries) if entry["id"] == selection), 0)
         response = make_response(render_template("showcase_view.html", settings=values, entries=entries, logo=logo,
+                                                playing=playing,
                                                 feature_image=feature_image,
                                                 locked=locked, wrong=locked and request.method == "POST",
                                                 unlock_token=frame, embed=embed, internal=internal,
@@ -444,9 +452,14 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             form = None if internal else library_registration.active(con, "showcase", uid)
             if (form["revision"] if form else None) != form_revision:
                 abort(404)
-            copy = content_policy(con, work, permits, values, embed, origin, internal)
-            if not copy:
+            allowed = content_policy(con, work, permits, values, embed, origin, internal)
+            if not allowed:
                 abort(404)
+            copy, sharing = allowed
+            download = request.args.get("download") == "1"
+            if download and (internal or not values["download"] or not sharing.get("download")
+                             or "poster" in request.args or "track" in request.args):
+                abort(403)
             digest, kind = copy["sha256"], "video/mp4"
             if request.args.get("poster") == "1":
                 digest, kind = selected_thumbnail(con, work), None
@@ -456,16 +469,17 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 if not 0 <= index < len(tracks):
                     abort(404)
                 digest, kind = tracks[index]["sha256"], "text/vtt"
-        return serve_file(work_id, digest, kind)
+        return serve_file(work_id, digest, kind, download)
 
-    def serve_file(work_id, digest, kind):
+    def serve_file(work_id, digest, kind, download=False):
         path = root / "objects" / digest if digest else None
         if path is None or not path.is_file():
             abort(404)
         kind = kind or thumbnail_type(path)
         if not kind:
             abort(415)
-        response = send_file(path, mimetype=kind, conditional=True, max_age=0)
+        response = send_file(path, mimetype=kind, conditional=True, max_age=0, as_attachment=download,
+                             download_name="video.mp4" if download else None)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.cache_control.no_store = True
         response.cache_control.private = True
@@ -486,7 +500,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             return None
         # A device does not arrive from an allowed embed site. Apply the existing
         # embed rules as well as public showcase and source privacy.
-        return content_policy(con, work, permits, settings, True, "", False)
+        allowed = content_policy(con, work, permits, settings, True, "", False)
+        return allowed[0] if allowed else None
 
     @app.get("/showcases/tv/roku/<uid>.json")
     def showcase_roku(uid):

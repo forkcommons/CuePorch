@@ -1,17 +1,21 @@
-const copy = document.querySelector("#showcaseCopy");
-if (copy) {
-    copy.onclick = async () => {
-        const status = document.querySelector("#showcaseCopyStatus");
-        const link = new URL(location.pathname, location.origin).href;
+function copyLink(id, makeLink, confirmation) {
+    const button = document.querySelector("#" + id);
+    if (!button)
+        return;
+    button.onclick = async () => {
+        const status = document.querySelector("#" + id + "Status");
+        const link = makeLink().href;
         try {
             await navigator.clipboard.writeText(link);
-            status.textContent = "Showcase link copied.";
+            status.textContent = confirmation;
         }
         catch {
             status.textContent = link;
         }
     };
 }
+const galleryLink = () => new URL(location.pathname, location.origin);
+copyLink("showcaseCopy", galleryLink, "Showcase link copied.");
 const contents = document.querySelector("#showcaseContents");
 if (contents) {
     const items = JSON.parse(contents.textContent);
@@ -20,7 +24,13 @@ if (contents) {
     const video = document.querySelector(".showcase-screen video");
     const heading = document.querySelector("#nowPlaying");
     const description = document.querySelector("#showcasePlayingDescription");
-    let current = 0;
+    const download = document.querySelector("#showcaseDownload");
+    let current = cards.findIndex((card) => card.hasAttribute("aria-current"));
+    copyLink("showcaseCopyVideo", () => {
+        const link = galleryLink();
+        link.searchParams.set("video", items[current].id);
+        return link;
+    }, "Link to this video copied.");
     function setCurrent(index) {
         cards[current].removeAttribute("aria-current");
         cards[index].setAttribute("aria-current", "true");
@@ -29,6 +39,11 @@ if (contents) {
         heading.textContent = item.title;
         description.textContent = item.description;
         description.hidden = !item.description;
+        download.hidden = !item.download;
+        if (item.download)
+            download.href = item.download;
+        else
+            download.removeAttribute("href");
     }
     function advance(playItem) {
         if (document.body.dataset.next !== "yes")
