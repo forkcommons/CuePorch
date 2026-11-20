@@ -12,8 +12,10 @@ function field(name) {
 function render(result) {
     revision = result.revision;
     if (field("enabled")) {
-        field("enabled").checked = result.settings.enabled;
-        for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute"]) {
+        for (const key of ["enabled", "jit", "force"]) {
+            field(key).checked = result.settings[key];
+        }
+        for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "default_role"]) {
             field(key).value = result.settings[key];
         }
         field("domains").value = result.settings.domains.join("\n");
@@ -54,6 +56,9 @@ settings.onsubmit = event => {
         login_url: field("login_url").value,
         signing_certificate: field("signing_certificate").value,
         email_attribute: field("email_attribute").value,
+        jit: field("jit").checked,
+        force: field("force").checked,
+        default_role: field("default_role").value,
         domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
     });
 };

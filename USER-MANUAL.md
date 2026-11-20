@@ -76,6 +76,8 @@ Use the installation credential to assign an active member as **Owner**. The Own
 
 The Owner or installation credential can open **Single sign-on** from **Team members** on a workspace with a public HTTPS address. Copy the service provider entity ID and assertion consumer URL into your SAML identity provider. Set HTTP Redirect for requests and HTTP POST for responses, sign assertions with SHA-256 or stronger, and include a stable NameID and your selected email attribute. In CuePorch, enter the provider's entity ID, HTTPS sign-in URL and PEM certificate. List the exact email domains your workspace trusts. Invited members on those domains can choose **Sign in with your organization** after accepting their invitation. CuePorch keeps their assigned team roles. The Owner uses their local account. Changing the connection ends sessions created through it.
 
+To let your identity provider create accounts on first sign-in, enable **Create accounts for new members** and select a default team role. A current invitation takes precedence over the default role. Removing a member blocks automatic recreation of their account. You can also require SAML for workspace members on the authorized domains. This ends their current sessions and requires SAML for future sign-ins, including after accepting an invitation. The Owner keeps access through their local credentials and the installation credential remains available for recovery.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

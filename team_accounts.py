@@ -238,8 +238,13 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         return con.execute("SELECT id,email,password_hash FROM team_member WHERE id=?", (uid,)).fetchone()
 
     def rotate_security_session(con, uid, secure):
+        federated = con.execute("""SELECT s.expires FROM team_session s JOIN team_saml_session f USING(token_hash)
+                                 WHERE s.member=? AND s.token_hash=?""", (uid, workspace_session("team", secure))).fetchone()
         con.execute("DELETE FROM team_session WHERE member=?", (uid,))
-        return issue_session(con, uid, secure)
+        token = issue_session(con, uid, secure)
+        if federated:
+            team_saml.mark_session(con, token, federated["expires"])
+        return token
 
     def note_authenticator(con, actor, enabled):
         note(con, actor_id(actor), "authenticator_enabled" if enabled else "authenticator_disabled", actor["id"])
@@ -266,11 +271,14 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         con.execute("DELETE FROM team_session WHERE member=?", (uid,))
         note(con, "team:" + uid, "password_recovered", uid)
 
+    def password_account(con, address):
+        actor = con.execute("SELECT id,email,role,password_hash FROM team_member WHERE email=? AND removed IS NULL",
+                            (address,)).fetchone()
+        return actor if team_saml.allows_password(con, actor) else None
+
     account_recovery.register(
         app, tx, "team", origin, email_security, lambda: secure_site(origin), mutation,
-        lambda con, address: con.execute(
-            "SELECT id,email,password_hash FROM team_member WHERE email=? AND removed IS NULL", (address,),
-        ).fetchone(),
+        password_account,
         limit, authenticator, reset_password,
     )
 
@@ -344,14 +352,17 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             limit(con, "sign-in", email)
             row = con.execute("SELECT id,password_hash FROM team_member WHERE email=? AND removed IS NULL",
                               (email,)).fetchone()
-        if not check_password_hash(row["password_hash"] if row else dummy, entered) or row is None:
+        if not check_password_hash(row["password_hash"] if row and row["password_hash"] else dummy, entered) or row is None:
             abort(401, "The email or password did not match an active team member.")
         with tx() as con:
             logged_in = con.execute("""SELECT id,email,name,role FROM team_member
-                WHERE id=? AND password_hash=? AND removed IS NULL""", (row["id"], row["password_hash"])).fetchone()
+                WHERE id=? AND email=? AND password_hash=? AND removed IS NULL""",
+                (row["id"], email, row["password_hash"])).fetchone()
             if logged_in is None:
                 abort(401, "The email or password did not match an active team member.")
             factor_actor = dict(logged_in, password_hash=row["password_hash"])
+            if not team_saml.allows_password(con, factor_actor):
+                abort(403, "Use your organization's single sign-on for this account.")
             needs_mail, prepared = email_factor.check(con, factor_actor, body)
             if not needs_mail:
                 token = issue_session(con, row["id"], secure)
@@ -390,7 +401,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                         (uid, pending["email"], name, pending["role"], encoded, time.time()))
             con.execute("DELETE FROM team_invitation WHERE id=?", (pending["id"],))
             note(con, "team:" + uid, "joined", uid, pending["role"])
-            token = issue_session(con, uid, secure)
+            token = None if team_saml.forces_saml(team_saml.configured(con)[1], pending) else issue_session(con, uid, secure)
         return session_response(dict(id=uid, email=pending["email"], name=name, role=pending["role"]), secure, token, 201)
 
     @app.get("/api/team/members")
@@ -437,6 +448,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(409, "The owner changed. Reload the roster before assigning ownership.")
             if member_role(con, uid) == "owner":
                 return private("", 204)
+            if not con.execute("SELECT password_hash FROM team_member WHERE id=?", (uid,)).fetchone()["password_hash"]:
+                abort(409, "Choose a member who can recover the workspace with a local account.")
             if current_owner:
                 con.execute("UPDATE team_member SET role='admin' WHERE id=?", (current_owner,))
             con.execute("UPDATE team_member SET role='owner' WHERE id=?", (uid,))

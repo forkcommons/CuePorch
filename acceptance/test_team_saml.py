@@ -111,7 +111,7 @@ class TeamSAML(unittest.TestCase):
                 cleanup.callback(app.extensions[name])
             self.server(cleanup, app, port, tls)
             idp = Flask("fixture-identity-provider")
-            policy = dict(subject="fixture-user", expired=False, audience=None, foreign=False)
+            policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False)
             pending = {}
 
             @idp.get("/authorize")
@@ -122,7 +122,7 @@ class TeamSAML(unittest.TestCase):
                 state = request.args["RelayState"]
                 self.assertRegex(state, re.compile(r"^[A-Za-z0-9_-]{43}$"))
                 sign_key, sign_cert = (foreign_key, foreign_cert) if policy["foreign"] else (private_key, certificate)
-                response = saml_document(origin, document.get("ID"), EMAIL, policy["subject"], sign_key, sign_cert,
+                response = saml_document(origin, document.get("ID"), policy["email"], policy["subject"], sign_key, sign_cert,
                                          audience=policy["audience"], expired=policy["expired"])
                 pending.clear()
                 pending.update(RelayState=state, SAMLResponse=response)
@@ -143,23 +143,33 @@ class TeamSAML(unittest.TestCase):
                     page.get_by_role("button", name="Open single sign-on settings").click()
                     status = page.locator("#teamIdentityStatus")
                     expect(status).to_have_text("Single sign-on is off.")
-                    invite = admin.request.post(origin + "/api/team/invitations", headers=operator_headers,
-                                                data={"email": EMAIL, "role": "contributor"})
-                    self.assertTrue(invite.ok)
-                    invitation = invite.json()["path"].split("#", 1)[1]
-                    joined = local.request.post(origin + "/api/team/join", headers=TEAM, data=dict(
-                        invitation=invitation, name="Station crew", password="Strong local fixture phrase",
-                    ))
-                    self.assertEqual(joined.status, 201)
+                    local_password = "Strong local fixture phrase"
+
+                    def join(context, email, role, name):
+                        invite = admin.request.post(origin + "/api/team/invitations", headers=operator_headers,
+                                                    data={"email": email, "role": role})
+                        self.assertTrue(invite.ok)
+                        invitation = invite.json()["path"].split("#", 1)[1]
+                        joined = context.request.post(origin + "/api/team/join", headers=TEAM, data=dict(
+                            invitation=invitation, name=name, password=local_password,
+                        ))
+                        self.assertEqual(joined.status, 201)
+                        return joined.json()["id"]
+
+                    join(local, EMAIL, "contributor", "Station crew")
                     self.assertEqual(local.request.get(origin + "/api/team/identity",
                                      headers={"Authorization": "Bearer team-session"}).status, 403)
 
-                    page.get_by_label("Allow team members to sign in with SAML").check()
-                    page.get_by_label("Identity provider entity ID").fill(ISSUER)
-                    page.get_by_label("Identity provider sign-in URL").fill(idp_origin + "/authorize")
-                    page.get_by_label("Identity provider signing certificate").fill(certificate)
-                    page.get_by_label("Authorized email domains").fill("station.example")
                     save = page.get_by_role("button", name="Save single sign-on settings")
+
+                    def set_provider():
+                        page.get_by_label("Allow team members to sign in with SAML").check()
+                        page.get_by_label("Identity provider entity ID").fill(ISSUER)
+                        page.get_by_label("Identity provider sign-in URL").fill(idp_origin + "/authorize")
+                        page.get_by_label("Identity provider signing certificate").fill(certificate)
+                        page.get_by_label("Authorized email domains, one per line", exact=True).fill("station.example")
+
+                    set_provider()
                     save.click()
                     expect(status).to_have_text("Single sign-on is enabled.")
                     settings = admin.request.get(origin + "/api/team/identity", headers=operator_headers).json()
@@ -200,8 +210,43 @@ class TeamSAML(unittest.TestCase):
                         self.assertEqual(federated.request.get(origin + "/api/team/account").status, 401)
                         self.assertTrue(local.request.get(origin + "/api/team/account").ok)
                         self.assertEqual(admin.request.get(settings["metadata"]).status, 404)
+
+                        with browser.new_context(ignore_https_errors=True) as owner:
+                            owner_email = "owner@station.example"
+                            owner_id = join(owner, owner_email, "admin", "Station owner")
+                            self.assertTrue(admin.request.put(origin + "/api/team/owner/" + owner_id,
+                                            headers=operator_headers, data={"previous": None}).ok)
+                            set_provider()
+                            page.get_by_label("Create accounts for new members").check()
+                            page.get_by_label("Default role for new members").select_option("contributor_plus")
+                            page.get_by_label("Require SAML for team members").check()
+                            save.click()
+                            expect(status).to_have_text("Single sign-on is enabled.")
+                            self.assertEqual(local.request.get(origin + "/api/team/account").status, 401)
+                            self.assertEqual(local.request.post(origin + "/api/team/session", headers=TEAM,
+                                             data=dict(email=EMAIL, password=local_password)).status, 403)
+                            self.assertTrue(owner.request.post(origin + "/api/team/session", headers=TEAM,
+                                            data=dict(email=owner_email, password=local_password)).ok)
+                            join(unrelated, "invited@station.example", "viewer", "Invited crew")
+                            self.assertEqual(unrelated.request.get(origin + "/api/team/account").status, 401)
+                            policy.update(subject="new-fixture-user", email="new@station.example")
+                            new = start(federated)
+                            new.get_by_role("button", name="Continue as station crew").click()
+                            expect(new.get_by_text("new@station.example · Contributor Plus")).to_be_visible()
+                            new_id = federated.request.get(origin + "/api/team/account").json()["id"]
+                            result = admin.request.put(origin + "/api/team/owner/" + new_id, headers=operator_headers,
+                                                       data={"previous": owner_id})
+                            self.assertEqual(result.status, 409)
+                            self.assertTrue(admin.request.delete(origin + "/api/team/members/" + new_id,
+                                                                 headers=operator_headers, data={}).ok)
+                            self.assertEqual(federated.request.get(origin + "/api/team/account").status, 401)
+                            second_attempt = start(federated)
+                            second_attempt.get_by_role("button", name="Continue as station crew").click()
+                            expect(second_attempt.get_by_role("heading", name="Forbidden")).to_be_visible()
+
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
-                    self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled"} <= {row["action"] for row in audit})
+                    self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
+                                    {row["action"] for row in audit})
                 browser.close()
 
 

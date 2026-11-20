@@ -7,6 +7,7 @@ import secrets
 from datetime import UTC, datetime
 from time import time
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -38,13 +39,32 @@ CALLBACK = "/team/sso/acs"
 METADATA = "/team/sso/metadata"
 STATE_SECONDS = 300
 MAX_ASSERTION_AGE = 300
-DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email")
+DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email",
+               jit=False, force=False, default_role="viewer")
+PROVISIONED_ROLES = ("viewer", "contributor", "contributor_plus", "admin")
 DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 def configured(con):
     row = con.execute("SELECT revision, settings FROM team_saml_settings WHERE slot=1").fetchone()
-    return (row["revision"], json.loads(row["settings"])) if row else ("", DEFAULT.copy())
+    return (row["revision"], DEFAULT | json.loads(row["settings"])) if row else ("", DEFAULT.copy())
+
+
+def forces_saml(settings, member):
+    return bool(settings["enabled"] and settings["force"] and member["role"] != "owner"
+                and member["email"].rsplit("@", 1)[-1] in settings["domains"])
+
+
+def allows_password(con, member):
+    return bool(member and member["password_hash"] and not forces_saml(configured(con)[1], member))
+
+
+def mark_session(con, token, expiry):
+    digest = token_hash(token)
+    if expiry is not None:
+        con.execute("UPDATE team_session SET expires=min(expires,?) WHERE token_hash=?", (expiry, digest))
+    con.execute("DELETE FROM team_saml_session WHERE token_hash NOT IN (SELECT token_hash FROM team_session)")
+    con.execute("INSERT INTO team_saml_session VALUES(?)", (digest,))
 
 
 def canonical_https(origin):
@@ -93,6 +113,15 @@ def validated_settings(body, origin):
     if any(not isinstance(value, str) or not DOMAIN.fullmatch(value.strip().lower()) for value in domains):
         abort(400, "Enter exact email domains such as example.org.")
     settings["domains"] = sorted({value.strip().lower() for value in domains})
+    for key in ("jit", "force"):
+        value = body.get(key, DEFAULT[key])
+        if not isinstance(value, bool):
+            abort(400, "Choose which single sign-on policies to enable.")
+        settings[key] = value
+    role = body.get("default_role", DEFAULT["default_role"])
+    if role not in PROVISIONED_ROLES:
+        abort(400, "Choose a default role for new members.")
+    settings["default_role"] = role
     try:
         saml_settings(settings, origin)
     except OneLogin_Saml2_Error:
@@ -153,16 +182,20 @@ def assertion_for(settings, origin, encoded, expected):
             return None
         subject = response.get_nameid()
         assertion_id = response.get_assertion_id()
-        address = response.get_attributes().get(settings["email_attribute"], [])
+        attributes = response.get_attributes()
+        address = attributes.get(settings["email_attribute"], [])
         if not subject or len(subject) > 512 or not assertion_id or len(assertion_id) > 256 or len(address) != 1:
             return None
         session_expiry = response.get_session_not_on_or_after()
-        return subject, address[0], assertion_id, min(expiry, issued + MAX_ASSERTION_AGE), session_expiry
+        name = " ".join(value for key in ("firstName", "lastName") for value in attributes.get(key, [])[:1]).strip()
+        if not 1 <= len(name) <= 120 or any(ord(char) < 32 for char in name):
+            name = address[0][:120]
+        return subject, address[0], name, assertion_id, min(expiry, issued + MAX_ASSERTION_AGE), session_expiry
     except (OneLogin_Saml2_Error, XMLSyntaxError, ValueError, TypeError, AttributeError, OverflowError):
         return None
 
 
-def team_for_assertion(con, settings, subject, address):
+def team_for_assertion(con, settings, subject, address, name, note):
     if address.rsplit("@", 1)[-1] not in settings["domains"]:
         return None
     issuer = settings["entity_id"]
@@ -171,7 +204,16 @@ def team_for_assertion(con, settings, subject, address):
         return con.execute("SELECT id FROM team_member WHERE id=? AND email=? AND role<>'owner' AND removed IS NULL",
                            (identity["member"], address)).fetchone()
     member = con.execute("SELECT id,role FROM team_member WHERE email=? AND removed IS NULL", (address,)).fetchone()
-    if not member or member["role"] == "owner":
+    if member is None:
+        if not settings["jit"] or con.execute("SELECT 1 FROM team_member WHERE email=?", (address,)).fetchone():
+            return None
+        invitation = con.execute("SELECT role FROM team_invitation WHERE email=? AND expires>?", (address, time())).fetchone()
+        uid, role = str(uuid4()), invitation["role"] if invitation else settings["default_role"]
+        con.execute("INSERT INTO team_member VALUES(?,?,?,?,?,?,NULL)", (uid, address, name, role, "", time()))
+        con.execute("DELETE FROM team_invitation WHERE email=?", (address,))
+        note(con, "saml", "saml_provisioned", uid, role)
+        member = dict(id=uid, role=role)
+    if member["role"] == "owner":
         return None
     result = con.execute("INSERT OR IGNORE INTO team_saml_identity VALUES(?,?,?)", (issuer, subject, member["id"]))
     return member if result.rowcount else None
@@ -220,6 +262,10 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             con.execute("DELETE FROM team_saml_request")
             con.execute("DELETE FROM team_session WHERE token_hash IN (SELECT token_hash FROM team_saml_session)")
             con.execute("DELETE FROM team_saml_session")
+            if configuration["enabled"] and configuration["force"]:
+                members = con.execute("SELECT id,email,role FROM team_member WHERE removed IS NULL AND role<>'owner'")
+                con.executemany("DELETE FROM team_session WHERE member=?",
+                                [(member["id"],) for member in members if forces_saml(configuration, member)])
             note(con, actor, "saml_enabled" if configuration["enabled"] else "saml_disabled", "workspace")
         return private(dict(revision=revision, settings=configuration))
 
@@ -281,7 +327,7 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
         verified = assertion_for(settings, origin, encoded, pending["request"])
         if not verified:
             abort(403, "The identity provider's sign-in could not be verified.")
-        subject, address, assertion, expires, session_expiry = verified
+        subject, address, name, assertion, expires, session_expiry = verified
         if session_expiry is not None and session_expiry <= time():
             abort(403, "This single sign-on session has expired.")
         address = email_key(address)
@@ -293,15 +339,11 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             if not con.execute("INSERT OR IGNORE INTO team_saml_assertion VALUES(?,?,?)",
                                (settings["entity_id"], assertion, expires)).rowcount:
                 abort(403, "This sign-in has already been used.")
-            member = team_for_assertion(con, settings, subject, address)
+            member = team_for_assertion(con, settings, subject, address, name, note)
             if not member:
                 abort(403, "This identity is not linked to an eligible workspace member.")
             token = issue(con, member["id"], True)
-            cookie_hash = token_hash(token)
-            if session_expiry:
-                con.execute("UPDATE team_session SET expires=min(expires,?) WHERE token_hash=?", (session_expiry, cookie_hash))
-            con.execute("DELETE FROM team_saml_session WHERE token_hash NOT IN (SELECT token_hash FROM team_session)")
-            con.execute("INSERT INTO team_saml_session VALUES(?)", (cookie_hash,))
+            mark_session(con, token, session_expiry)
             note(con, "team:" + member["id"], "saml_signed_in", member["id"])
         response = cookie(private(redirect("/team", code=303)), True, token)
         response.delete_cookie(state_cookie(), secure=True, httponly=True, samesite="None", path="/")

@@ -7,6 +7,9 @@ type Settings = {
   signing_certificate: string;
   email_attribute: string;
   domains: string[];
+  jit: boolean;
+  force: boolean;
+  default_role: string;
 };
 
 const access = document.querySelector<HTMLFormElement>("#teamIdentityAccess")!;
@@ -18,14 +21,16 @@ let revision = "";
 let busy = false;
 
 function field(name: keyof Settings) {
-  return settings.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement;
+  return settings.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 }
 
 function render(result: {revision: string; settings: Settings}) {
   revision = result.revision;
   if (field("enabled")) {
-    (field("enabled") as HTMLInputElement).checked = result.settings.enabled;
-    for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute"] as const) {
+    for (const key of ["enabled", "jit", "force"] as const) {
+      (field(key) as HTMLInputElement).checked = result.settings[key];
+    }
+    for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "default_role"] as const) {
       field(key).value = result.settings[key];
     }
     field("domains").value = result.settings.domains.join("\n");
@@ -66,6 +71,9 @@ settings.onsubmit = event => {
     login_url: field("login_url").value,
     signing_certificate: field("signing_certificate").value,
     email_attribute: field("email_attribute").value,
+    jit: (field("jit") as HTMLInputElement).checked,
+    force: (field("force") as HTMLInputElement).checked,
+    default_role: field("default_role").value,
     domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
   });
 };
