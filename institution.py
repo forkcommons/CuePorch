@@ -33,7 +33,7 @@ from flask import (
 )
 from waitress import serve
 
-from cueporch import verify
+from cueporch import dump, verify
 import analytics_reports
 import audience_accounts
 import audience_comments
@@ -291,7 +291,36 @@ def create_app(root, database, operator, institution, simulation=None):
     # resume from disk using the same source identity and work checkpoints.
     transfer_lock = Lock()
     transfer_directory = database.parent / (database.stem + "-vimeo")
+    transfer_inventory = transfer_directory / "inventory.json"
+    transfer_progress = database.with_name(database.stem + "-vimeo-progress.json")
     transfer_status = {"state": "idle"}
+    try:
+        saved = json.loads(transfer_progress.read_text(encoding="utf8"))
+        if isinstance(saved, dict) and saved.get("state") in (
+            "running", "waiting", "inventoried", "transferred", "rejected", "failed"
+        ):
+            transfer_status = saved
+    except FileNotFoundError:
+        if transfer_inventory.is_file():
+            transfer_status = {"state": "inventoried"}
+    except (ValueError, OSError):
+        app.logger.warning("Could not read the saved Vimeo migration status")
+    if transfer_status["state"] in ("running", "waiting"):
+        transfer_status = {
+            "state": "interrupted",
+            "detail": "CuePorch restarted. Enter the Vimeo token again. Preview if no inventory is available.",
+        }
+
+    def update_transfer(state, uid, detail=None):
+        nonlocal transfer_status
+        status = dict(state=state, action=uid)
+        if detail:
+            status["detail"] = detail
+        try:
+            dump(transfer_progress, status)
+        except OSError:
+            app.logger.warning("Could not save the Vimeo migration status")
+        transfer_status = status
 
     @app.route("/operator/migration")
     def migration_screen():
@@ -300,7 +329,23 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/api/migration")
     def migration_status():
         staff()
-        return dict(transfer_status)
+        status = dict(transfer_status)
+        state = status["state"]
+        if state in ("inventoried", "transferred") or (state == "interrupted" and transfer_inventory.is_file()):
+            snapshot = transfer_directory / "manifest.json" if state == "transferred" else transfer_inventory
+            try:
+                data = json.loads(snapshot.read_text(encoding="utf8"))
+                showcases = data.get("showcases", [])
+                if state == "transferred" and showcases:
+                    with tx() as con:
+                        targets = library_showcases.imported_targets(con)
+                    for showcase in showcases:
+                        showcase["target"] = targets.get(showcase["uri"])
+                status.update(works=data["works"], showcases=showcases,
+                              showcase_issue=data.get("showcase_issue"))
+            except (ValueError, OSError, KeyError):
+                return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
+        return status
 
     @app.post("/api/migration")
     def begin_transfer():
@@ -313,7 +358,7 @@ def create_app(root, database, operator, institution, simulation=None):
         token = request.json.get("token") or os.environ.get("VIMEO_ACCESS_TOKEN")
         if not simulation and not token:
             abort(400, "Supply the account owner's Vimeo token")
-        if not dry and not (transfer_directory / "inventory.json").exists():
+        if not dry and not transfer_inventory.is_file():
             abort(409, "Preview the source inventory before transfer")
         if not transfer_lock.acquire(blocking=False):
             abort(409, "A transfer is already running")
@@ -323,8 +368,7 @@ def create_app(root, database, operator, institution, simulation=None):
             with tx() as con:
                 if not dry:
                     action(con, uid, "migration", {"institution": institution})
-            transfer_status.clear()
-            transfer_status.update(state="running", action=uid)
+            update_transfer("running", uid)
 
             def worker():
                 try:
@@ -335,13 +379,15 @@ def create_app(root, database, operator, institution, simulation=None):
                                     "SELECT status FROM action WHERE id=?", (uid,)
                                 ).fetchone()[0]
                             if state == "rejected":
-                                transfer_status.update(state="rejected")
+                                update_transfer("rejected", uid)
                                 return
                             if state == "eligible":
                                 break
-                            transfer_status.update(state="waiting")
+                            if transfer_status["state"] != "waiting":
+                                update_transfer("waiting", uid)
                             time.sleep(0.5)
-                    transfer_status.update(state="running")
+                    if transfer_status["state"] != "running":
+                        update_transfer("running", uid)
                     migrate(institution, transfer_directory, source, dry)
                     filename = "inventory.json" if dry else "manifest.json"
                     data = json.loads(
@@ -379,18 +425,9 @@ def create_app(root, database, operator, institution, simulation=None):
                                             prior[1] if prior else 0,
                                             prior[2] if prior else "work",
                                         )
-                    transfer_status.update(
-                        state="inventoried" if dry else "transferred",
-                        works=data["works"],
-                        showcases=data.get("showcases", []),
-                        showcase_issue=data.get("showcase_issue"),
-                    )
+                    update_transfer("inventoried" if dry else "transferred", uid)
                 except (ValueError, OSError, KeyError) as exc:
-                    transfer_status.update(
-                        state="failed",
-                        detail=type(exc).__name__
-                        + ". Retry from the source inventory.",
-                    )
+                    update_transfer("failed", uid, type(exc).__name__ + ". Retry from the source inventory.")
                 finally:
                     transfer_lock.release()
 

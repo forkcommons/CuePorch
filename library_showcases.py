@@ -52,8 +52,12 @@ def import_showcases(con, records):
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, slug, uuid.uuid4().hex, json.dumps(settings), datetime.now(timezone.utc).isoformat()))
             con.execute("INSERT INTO video_showcase_migration VALUES(?,?,?)", (record["uri"], uid, snapshot))
-        chosen = prior["showcase"] if prior else uid
-        record["target"] = chosen if con.execute("SELECT 1 FROM video_showcase WHERE id=?", (chosen,)).fetchone() else None
+
+
+def imported_targets(con):
+    return dict(con.execute("""SELECT migration.source, showcase.id
+        FROM video_showcase_migration migration
+        JOIN video_showcase showcase ON showcase.id=migration.showcase""").fetchall())
 
 
 def get_showcase(con, value, by_slug=False):
