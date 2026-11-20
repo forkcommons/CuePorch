@@ -4,17 +4,19 @@ import hashlib
 import hmac
 import json
 import re
+from urllib.parse import urlsplit
 import uuid
 
 import requests
 from flask import abort, render_template, request
+from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from dropbox_watch import Watch
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
-    CALLBACK_ROOT, DIRECTORY, Config, Connection, check_provider, response_object,
+    CALLBACK_ROOT, DIRECTORY, Config, Connection, check_provider, provider_request, response_object,
 )
 
 AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -32,6 +34,11 @@ DROPBOX_RPC = "https://api.dropboxapi.com/2"
 DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 DROPBOX_SCOPE = "files.metadata.read files.content.read"
 DROPBOX_ID = re.compile(r"id:[A-Za-z0-9_-]{1,256}")
+BOX_AUTH = "https://account.box.com/api/oauth2/authorize"
+BOX_ORIGIN = "https://api.box.com"
+BOX_SCOPE = "root_readwrite"
+BOX_ID = re.compile(r"[0-9]{1,24}")
+BOX_FIELDS = "id,type,name,permissions,is_download_available"
 FOLDER_ID = re.compile(r"[a-f0-9]{32}")
 BLOCK_BYTES = 4 * 1024 * 1024
 
@@ -53,6 +60,28 @@ def video_file(row):
         and not row.get("trashed")
         and isinstance(row.get("capabilities"), dict) and row["capabilities"].get("canDownload") is True
     )
+
+
+def box_video(row):
+    if row.get("type") != "file" or not video_name(row.get("name")):
+        return False
+    permissions = row.get("permissions")
+    return (row.get("is_download_available") is not False
+            and (permissions is None or isinstance(permissions, dict) and permissions.get("can_download") is True))
+
+
+def box_download_url(location):
+    try:
+        target = urlsplit(location)
+        allowed = (target.scheme == "https" and target.hostname is not None
+                   and re.fullmatch(r"dl[0-9]*\.boxcloud\.com", target.hostname)
+                   and target.port in (None, 443) and target.username is None and target.password is None
+                   and target.path.startswith("/d/") and not target.fragment)
+    except ValueError:
+        allowed = False
+    if not allowed:
+        abort(502, "Box returned an unexpected download address.")
+    return location
 
 
 def valid_hash(value, digits):
@@ -151,7 +180,9 @@ def register(app, tx, staff, operator, origin, import_video, database):
         "dropbox", "Dropbox", DROPBOX_AUTH, DROPBOX_TOKEN, DROPBOX_RPC + "/auth/token/revoke",
         DROPBOX_SCOPE, dict(token_access_type="offline"), revoke_using_access_token=True,
     ), tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox)}
+    box = Connection(Config("box", "Box", BOX_AUTH, BOX_ORIGIN + "/oauth2/token", BOX_ORIGIN + "/oauth2/revoke",
+                            BOX_SCOPE, pkce=False), tx, operator)
+    connections = {item.config.key: item for item in (drive, dropbox, box)}
     watch = Watch(
         app, tx, database, dropbox, lambda revision, cursor: dropbox_entries(dropbox, revision, cursor=cursor),
         dropbox_video,
@@ -203,7 +234,7 @@ def register(app, tx, staff, operator, origin, import_video, database):
                 id=item.config.key, name=item.config.name, category="Cloud storage",
                 description="Browse and copy videos into your private Library.",
                 configured=item.configured, connected=item.connection(con) is not None,
-                browse_folders=item is dropbox,
+                browse_folders=item is not drive,
             ) for item in connections.values()]))
 
     @app.post("/api/integrations/<provider>/connect")
@@ -350,3 +381,74 @@ def register(app, tx, staff, operator, origin, import_video, database):
         mutate()
         watch.retry(job)
         return private(watch.receipt())
+
+    @app.get("/api/integrations/box/files")
+    def box_files():
+        read_api()
+        revision = box.revision()
+        source = request.args.get("folder") or "0"
+        cursor = request.args.get("cursor", "")
+        if not BOX_ID.fullmatch(source) or len(cursor) > 2048:
+            abort(400, "Choose a Box folder and page from the picker.")
+        params = dict(usemarker="true", limit=50, fields=BOX_FIELDS)
+        if cursor:
+            params["marker"] = cursor
+        with box.api(revision, "GET", f"{BOX_ORIGIN}/2.0/folders/{source}/items", params=params) as response:
+            check_provider(response)
+            page = response_object(response)
+        rows, marker = page.get("entries"), page.get("next_marker")
+        if not isinstance(rows, list) or (marker is not None and
+                                         (not isinstance(marker, str) or len(marker) > 2048)):
+            abort(502, "Box returned an invalid folder listing.")
+        search = request.args.get("q", "")[:160].casefold().strip()
+        files, folders = [], []
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                    or not BOX_ID.fullmatch(row["id"]) or not listed_name(row.get("name"))):
+                continue
+            item = dict(id=row["id"], name=row["name"])
+            if row.get("type") == "folder":
+                folders.append(item)
+            elif box_video(row) and search in row["name"].casefold():
+                files.append(item)
+        with tx() as con:
+            box.authorize(con, revision)
+        return private(dict(files=files, folders=folders, cursor=marker))
+
+    @app.post("/api/integrations/box/import")
+    def box_import():
+        actor, body, _, _ = mutate()
+        item, folder = body.get("file"), destination_folder(body.get("folder"))
+        if not isinstance(item, str) or not BOX_ID.fullmatch(item):
+            abort(400, "Choose a Box video.")
+        revision = box.revision()
+        url = f"{BOX_ORIGIN}/2.0/files/{item}"
+        with box.api(revision, "GET", url,
+                     params={"fields": BOX_FIELDS + ",size,sha1,file_version,item_status"}) as response:
+            check_provider(response)
+            row = response_object(response)
+        if row.get("id") != item or row.get("item_status") != "active" or not box_video(row):
+            abort(415, "Choose a supported video that its owner allows you to download.")
+        size, expected, version = row.get("size"), row.get("sha1"), row.get("file_version")
+        version = version.get("id") if isinstance(version, dict) else None
+        if type(size) is not int or not valid_hash(expected, 40) or not isinstance(version, str) or not BOX_ID.fullmatch(version):
+            abort(422, "Box did not provide a verifiable video version.")
+
+        def download():
+            response = box.api(revision, "GET", url + "/content", params={"version": version}, stream=True)
+            if response.status_code == 202:
+                with response:
+                    wait = response.headers.get("Retry-After", "")
+                    raise TooManyRequests("Box is preparing this file. Wait and try again.",
+                                          retry_after=int(wait) if re.fullmatch(r"\d{1,8}", wait) else None)
+            if response.status_code != 302:
+                return response
+            with response:
+                target = box_download_url(response.headers.get("Location", ""))
+            # The signed Box URL already contains its own grant. Keep the workspace bearer on the API origin.
+            return provider_request("GET", target, stream=True)
+
+        receipt, status = import_verified(import_video, "box", actor, f"{item}/{version}", row["name"], folder,
+                                          size, hashlib.sha1(usedforsecurity=False), expected, download,
+                                          lambda con: box.authorize(con, revision))
+        return private(receipt, status)
