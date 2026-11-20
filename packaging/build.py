@@ -64,6 +64,8 @@ def build():
         "tzdata",
         "--collect-all",
         "pypdfium2_raw",
+        "--collect-data",
+        "onelogin.saml2",
         "--copy-metadata",
         "pypdfium2",
         "--copy-metadata",

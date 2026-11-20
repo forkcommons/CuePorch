@@ -21,6 +21,7 @@
     <button>Sign in to team</button>
     <button type="submit" formnovalidate hidden data-send-email-factor>Send another code</button>
     {% if can_recover %}<a href="{{ url_for('team_password_reset') }}">Forgot your password?</a>{% endif %}
+    {% if saml_available %}<a href="{{ url_for('start_team_saml') }}">Sign in with your organization</a>{% endif %}
   </form>
   <section id="teamLibrary" hidden>
     <h2 id="teamIdentity"></h2>

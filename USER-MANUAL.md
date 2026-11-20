@@ -74,6 +74,8 @@ The Owner or installation credential can open **Sharing restrictions** in **Team
 
 Use the installation credential to assign an active member as **Owner**. The Owner can transfer ownership to another active member from **Team members**. The previous Owner becomes an Administrator. The installation credential can recover ownership if the Owner loses access. Team administrators can choose **Download team roster** for a CSV of members and invitations, including roles, dates and membership status.
 
+The Owner or installation credential can open **Single sign-on** from **Team members** on a workspace with a public HTTPS address. Copy the service provider entity ID and assertion consumer URL into your SAML identity provider. Set HTTP Redirect for requests and HTTP POST for responses, sign assertions with SHA-256 or stronger, and include a stable NameID and your selected email attribute. In CuePorch, enter the provider's entity ID, HTTPS sign-in URL and PEM certificate. List the exact email domains your workspace trusts. Invited members on those domains can choose **Sign in with your organization** after accepting their invitation. CuePorch keeps their assigned team roles. The Owner uses their local account. Changing the connection ends sessions created through it.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

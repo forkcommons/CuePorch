@@ -14,6 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import account_email
 import account_email_factor
+import team_saml
 import account_recovery
 import account_totp
 import creator_profiles
@@ -93,7 +94,8 @@ def permission_from(body):
 
 def current(con, secure):
     return con.execute("""SELECT m.id,m.name,m.email,m.role FROM team_session s JOIN team_member m ON m.id=s.member
-        WHERE s.token_hash=? AND s.expires>? AND m.removed IS NULL""",
+        WHERE s.token_hash=? AND s.expires>? AND m.removed IS NULL AND
+        (m.role<>'owner' OR NOT EXISTS(SELECT 1 FROM team_saml_session f WHERE f.token_hash=s.token_hash))""",
         (workspace_session("team", secure), time.time())).fetchone()
 
 
@@ -225,6 +227,12 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     def session_response(body, secure, token=None, status=200):
         return workspace_session_cookie(private(body, status), "team", secure, SESSION_SECONDS, token)
 
+    saml_available = team_saml.register(
+        app, tx, origin, operator_name, ownership, mutation, issue_session,
+        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
+        note, limit,
+    )
+
     def security_account(con, secure):
         uid = member(con, secure)["id"]
         return con.execute("SELECT id,email,password_hash FROM team_member WHERE id=?", (uid,)).fetchone()
@@ -308,7 +316,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     def team_sign_in_page():
         secure_site(origin)
         return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=False,
-                                       can_recover=bool(email_security.config)))
+                                       can_recover=bool(email_security.config), saml_available=saml_available()))
 
     @app.get("/team/members")
     def team_members_page():

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team single sign-on · CuePorch</title>
+<main id="teamIdentitySettings">
+  <nav aria-label="Team"><a href="/team/members">Team members</a> · <a href="/team">Team workspace</a></nav>
+  <h1>Team single sign-on</h1>
+  <form id="teamIdentityAccess" method="post">
+    <label>Installation credential <input type="password" autocomplete="current-password" required></label>
+    <button>Open single sign-on settings</button>
+  </form>
+  <p id="teamIdentityStatus" role="status"></p>
+  <form id="teamSamlSettings" method="post" hidden>
+    {% if public_origin %}
+    <label>Service provider entity ID and metadata <input readonly value="{{ public_origin }}/team/sso/metadata"></label>
+    <label>Assertion consumer URL <input readonly value="{{ public_origin }}/team/sso/acs"></label>
+    <p>Use HTTP Redirect for requests and HTTP POST for responses. Sign assertions using SHA-256 or stronger.</p>
+    <label><input type="checkbox" name="enabled"> Allow team members to sign in with SAML</label>
+    <label>Identity provider entity ID <input name="entity_id" maxlength="512"></label>
+    <label>Identity provider sign-in URL <input type="url" name="login_url" maxlength="2048"></label>
+    <label>Identity provider signing certificate (PEM) <textarea name="signing_certificate" rows="7" maxlength="8192"></textarea></label>
+    <label>Authorized email domains, one per line <textarea name="domains" rows="3" maxlength="5000"></textarea></label>
+    <label>Email attribute name <input name="email_attribute" value="email" maxlength="256"></label>
+    <p>Saving a changed connection signs out members who used it. The workspace Owner signs in with their local account.</p>
+    <button>Save single sign-on settings</button>
+    {% else %}
+    <p>Configure the workspace public HTTPS address to enable single sign-on.</p>
+    {% endif %}
+  </form>
+</main>
+<script type="module" src="/static/ui/team_identity.js"></script>
+</html>

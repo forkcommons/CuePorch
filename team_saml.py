@@ -1,0 +1,311 @@
+"""Workspace SAML policy and service-provider-initiated team sign-in."""
+
+import hmac
+import json
+import re
+import secrets
+from datetime import UTC, datetime
+from time import time
+from urllib.parse import urlsplit
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from flask import abort, current_app, redirect, render_template, request
+from lxml.etree import XMLSyntaxError
+from onelogin.saml2.auth import OneLogin_Saml2_Auth
+from onelogin.saml2.constants import OneLogin_Saml2_Constants as SAML
+from onelogin.saml2.response import OneLogin_Saml2_Response
+from onelogin.saml2.settings import OneLogin_Saml2_Settings
+from onelogin.saml2.utils import OneLogin_Saml2_Error, OneLogin_Saml2_Utils
+
+from browser_account_security import TOKEN, email_key, private, same_origin, secure_site, token_hash
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS team_saml_settings(
+ slot INTEGER PRIMARY KEY CHECK(slot=1), revision TEXT NOT NULL, settings TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS team_saml_request(
+ state TEXT PRIMARY KEY, request TEXT NOT NULL, revision TEXT NOT NULL, expires REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS team_saml_assertion(
+ issuer TEXT NOT NULL, assertion TEXT NOT NULL, expires REAL NOT NULL, PRIMARY KEY(issuer,assertion));
+CREATE TABLE IF NOT EXISTS team_saml_identity(
+ issuer TEXT NOT NULL, subject TEXT NOT NULL, member TEXT NOT NULL, PRIMARY KEY(issuer,subject),
+ UNIQUE(issuer,member));
+CREATE TABLE IF NOT EXISTS team_saml_session(token_hash TEXT PRIMARY KEY);
+"""
+CALLBACK = "/team/sso/acs"
+METADATA = "/team/sso/metadata"
+STATE_SECONDS = 300
+MAX_ASSERTION_AGE = 300
+DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email")
+DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def configured(con):
+    row = con.execute("SELECT revision, settings FROM team_saml_settings WHERE slot=1").fetchone()
+    return (row["revision"], json.loads(row["settings"])) if row else ("", DEFAULT.copy())
+
+
+def canonical_https(origin):
+    return origin.startswith("https://") and urlsplit(origin).netloc.casefold() == request.host.casefold()
+
+
+def current_certificate(value):
+    cert = x509.load_pem_x509_certificate(value.encode("ascii"))
+    if not cert.not_valid_before_utc <= datetime.now(UTC) < cert.not_valid_after_utc:
+        raise ValueError("The identity provider certificate is outside its validity period.")
+    return cert
+
+
+def validated_settings(body, origin):
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        abort(400, "Choose whether to enable team single sign-on.")
+    if not enabled:
+        return DEFAULT.copy()
+    if not origin.startswith("https://"):
+        abort(409, "Configure the workspace's public HTTPS address first.")
+    settings = {"enabled": True}
+    for key, limit in (("entity_id", 512), ("login_url", 2048), ("signing_certificate", 8192), ("email_attribute", 256)):
+        value = body.get(key)
+        if not isinstance(value, str) or not (1 <= len(value.strip()) <= limit):
+            abort(400, "Fill in the identity provider, its login URL, certificate and email attribute.")
+        settings[key] = value.strip()
+    try:
+        login = urlsplit(settings["login_url"])
+        entity = urlsplit(settings["entity_id"])
+        if (login.scheme != "https" or not login.hostname or login.username is not None or login.fragment
+                or any(ch.isspace() for ch in settings["login_url"])
+                or entity.scheme not in ("http", "https", "urn") or any(ch.isspace() for ch in settings["entity_id"])):
+            raise ValueError
+        cert = current_certificate(settings["signing_certificate"])
+        key = cert.public_key()
+        if not ((isinstance(key, rsa.RSAPublicKey) and key.key_size >= 2048)
+                or (isinstance(key, ec.EllipticCurvePublicKey) and key.key_size >= 256)):
+            abort(400, "Use an identity provider certificate with a supported signing key.")
+        settings["signing_certificate"] = cert.public_bytes(serialization.Encoding.PEM).decode().strip()
+    except (ValueError, UnicodeError):
+        abort(400, "Use an HTTPS login URL, a valid issuer ID and a PEM signing certificate.")
+    domains = body.get("domains")
+    if not isinstance(domains, list) or not 1 <= len(domains) <= 50:
+        abort(400, "Enter at least one authorized email domain.")
+    if any(not isinstance(value, str) or not DOMAIN.fullmatch(value.strip().lower()) for value in domains):
+        abort(400, "Enter exact email domains such as example.org.")
+    settings["domains"] = sorted({value.strip().lower() for value in domains})
+    try:
+        saml_settings(settings, origin)
+    except OneLogin_Saml2_Error:
+        abort(400, "Check the identity provider configuration.")
+    return settings
+
+
+def saml_settings(settings, origin):
+    return OneLogin_Saml2_Settings({
+        "strict": True,
+        "sp": {
+            "entityId": origin + METADATA,
+            "assertionConsumerService": {"url": origin + CALLBACK, "binding": SAML.BINDING_HTTP_POST},
+            "NameIDFormat": SAML.NAMEID_UNSPECIFIED,
+        },
+        "idp": {
+            "entityId": settings["entity_id"],
+            "singleSignOnService": {"url": settings["login_url"], "binding": SAML.BINDING_HTTP_REDIRECT},
+            "x509cert": settings["signing_certificate"],
+        },
+        "security": {
+            "wantAssertionsSigned": True,
+            "wantNameId": True,
+            "requestedAuthnContext": False,
+            "rejectDeprecatedAlgorithm": True,
+        },
+    })
+
+
+def assertion_for(settings, origin, encoded, expected):
+    now = time()
+    request_data = {"https": "on", "http_host": urlsplit(origin).netloc, "script_name": CALLBACK}
+    try:
+        current_certificate(settings["signing_certificate"])
+        response = OneLogin_Saml2_Response(saml_settings(settings, origin), encoded)
+        document = response.get_xml_document()
+        if (document.getroottree().docinfo.doctype or document.get("Destination") != origin + CALLBACK
+                or response.get_in_response_to() != expected or not response.is_valid(request_data, expected)):
+            return None
+        assertion = document.find("saml:Assertion", SAML.NSMAP)
+        issued = response.get_assertion_issue_instant()
+        if assertion is None or not now - MAX_ASSERTION_AGE < issued <= now + 60:
+            return None
+        expiry = response.get_assertion_not_on_or_after()
+        if not expiry or not now < expiry:
+            return None
+        confirmations = assertion.findall("saml:Subject/saml:SubjectConfirmation", SAML.NSMAP)
+        for confirmation in confirmations:
+            data = confirmation.find("saml:SubjectConfirmationData", SAML.NSMAP)
+            if (data is not None and confirmation.get("Method") == SAML.CM_BEARER
+                    and data.get("Recipient") == origin + CALLBACK and data.get("InResponseTo") == expected
+                    and data.get("NotOnOrAfter") and OneLogin_Saml2_Utils.parse_SAML_to_time(data.get("NotOnOrAfter")) == expiry):
+                break
+        else:
+            return None
+        restrictions = assertion.findall("saml:Conditions/saml:AudienceRestriction", SAML.NSMAP)
+        if not restrictions or any(origin + METADATA not in [node.text for node in item] for item in restrictions):
+            return None
+        subject = response.get_nameid()
+        assertion_id = response.get_assertion_id()
+        address = response.get_attributes().get(settings["email_attribute"], [])
+        if not subject or len(subject) > 512 or not assertion_id or len(assertion_id) > 256 or len(address) != 1:
+            return None
+        session_expiry = response.get_session_not_on_or_after()
+        return subject, address[0], assertion_id, min(expiry, issued + MAX_ASSERTION_AGE), session_expiry
+    except (OneLogin_Saml2_Error, XMLSyntaxError, ValueError, TypeError, AttributeError, OverflowError):
+        return None
+
+
+def team_for_assertion(con, settings, subject, address):
+    if address.rsplit("@", 1)[-1] not in settings["domains"]:
+        return None
+    issuer = settings["entity_id"]
+    identity = con.execute("SELECT member FROM team_saml_identity WHERE issuer=? AND subject=?", (issuer, subject)).fetchone()
+    if identity:
+        return con.execute("SELECT id FROM team_member WHERE id=? AND email=? AND role<>'owner' AND removed IS NULL",
+                           (identity["member"], address)).fetchone()
+    member = con.execute("SELECT id,role FROM team_member WHERE email=? AND removed IS NULL", (address,)).fetchone()
+    if not member or member["role"] == "owner":
+        return None
+    result = con.execute("INSERT OR IGNORE INTO team_saml_identity VALUES(?,?,?)", (issuer, subject, member["id"]))
+    return member if result.rowcount else None
+
+
+def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note, limit):
+    def settings_actor(con):
+        actor = operator(con)
+        if not actor or not ownership(con, actor)["can_transfer"]:
+            abort(403, "Only the workspace Owner or installation credential can configure SSO.")
+        return actor
+
+    def available():
+        if not canonical_https(origin):
+            return False
+        with tx() as con:
+            return configured(con)[1]["enabled"]
+
+    @app.get("/team/identity")
+    def identity_settings_page():
+        secure_site(origin)
+        return private(render_template("team_identity.html", public_origin=origin if origin.startswith("https://") else ""))
+
+    @app.route("/api/team/identity", methods=("GET", "PUT"))
+    def identity_settings():
+        secure = secure_site(origin)
+        same_origin(secure)
+        with tx() as con:
+            settings_actor(con)
+            revision, configuration = configured(con)
+        if request.method in ("GET", "HEAD"):
+            return private(dict(revision=revision, settings=configuration,
+                                metadata=origin + METADATA if origin.startswith("https://") else "",
+                                callback=origin + CALLBACK if origin.startswith("https://") else ""))
+        body = mutation(secure)
+        configuration = validated_settings(body, origin)
+        with tx() as con:
+            actor = settings_actor(con)
+            previous, old = configured(con)
+            if body.get("revision") != previous:
+                abort(409, "SSO settings changed. Reload before saving.")
+            if configuration == old:
+                return private(dict(revision=previous, settings=old))
+            revision = secrets.token_hex(16)
+            con.execute("INSERT OR REPLACE INTO team_saml_settings VALUES(1,?,?)", (revision, json.dumps(configuration)))
+            con.execute("DELETE FROM team_saml_request")
+            con.execute("DELETE FROM team_session WHERE token_hash IN (SELECT token_hash FROM team_saml_session)")
+            con.execute("DELETE FROM team_saml_session")
+            note(con, actor, "saml_enabled" if configuration["enabled"] else "saml_disabled", "workspace")
+        return private(dict(revision=revision, settings=configuration))
+
+    @app.get(METADATA)
+    def team_saml_metadata():
+        if not canonical_https(origin):
+            abort(404)
+        with tx() as con:
+            _, settings = configured(con)
+        if not settings["enabled"]:
+            abort(404)
+        response = private(saml_settings(settings, origin).get_sp_metadata())
+        response.mimetype = "application/samlmetadata+xml"
+        return response
+
+    def state_cookie():
+        return "__Host-cueporch-sso-" + current_app.config["WORKSPACE_COOKIE_SCOPE"]
+
+    @app.get("/team/sso")
+    def start_team_saml():
+        if not canonical_https(origin):
+            abort(404)
+        same_origin(True)
+        with tx() as con:
+            revision, settings = configured(con)
+            if not settings["enabled"]:
+                abort(404)
+            limit(con, "saml-start")
+            state = secrets.token_urlsafe(32)
+            auth = OneLogin_Saml2_Auth({}, saml_settings(settings, origin))
+            target = auth.login(return_to=state, set_nameid_policy=False)
+            con.execute("DELETE FROM team_saml_request WHERE expires<=?", (time(),))
+            con.execute("INSERT INTO team_saml_request VALUES(?,?,?,?)",
+                        (token_hash(state), auth.get_last_request_id(), revision, time() + STATE_SECONDS))
+        response = private(redirect(target))
+        response.set_cookie(state_cookie(), state, max_age=STATE_SECONDS, secure=True, httponly=True, samesite="None", path="/")
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    @app.post(CALLBACK)
+    def finish_team_saml():
+        if not canonical_https(origin) or request.mimetype != "application/x-www-form-urlencoded":
+            abort(404)
+        if not request.content_length or request.content_length > 192 * 1024:
+            abort(413)
+        state = request.form.get("RelayState", "")
+        encoded = request.form.get("SAMLResponse", "")
+        browser_state = request.cookies.get(state_cookie(), "")
+        if not TOKEN.fullmatch(state) or not hmac.compare_digest(state, browser_state) or not encoded:
+            abort(403, "Start single sign-on from this workspace again.")
+        digest = token_hash(state)
+        with tx() as con:
+            limit(con, "saml-response")
+            revision, settings = configured(con)
+            pending = con.execute("SELECT request FROM team_saml_request WHERE state=? AND revision=? AND expires>?",
+                                  (digest, revision, time())).fetchone()
+        if not settings["enabled"] or not pending:
+            abort(403, "Start single sign-on from this workspace again.")
+        verified = assertion_for(settings, origin, encoded, pending["request"])
+        if not verified:
+            abort(403, "The identity provider's sign-in could not be verified.")
+        subject, address, assertion, expires, session_expiry = verified
+        if session_expiry is not None and session_expiry <= time():
+            abort(403, "This single sign-on session has expired.")
+        address = email_key(address)
+        with tx() as con:
+            if (configured(con)[0] != revision or not con.execute(
+                    "DELETE FROM team_saml_request WHERE state=? AND expires>?", (digest, time())).rowcount):
+                abort(403, "Start single sign-on from this workspace again.")
+            con.execute("DELETE FROM team_saml_assertion WHERE expires<=?", (time(),))
+            if not con.execute("INSERT OR IGNORE INTO team_saml_assertion VALUES(?,?,?)",
+                               (settings["entity_id"], assertion, expires)).rowcount:
+                abort(403, "This sign-in has already been used.")
+            member = team_for_assertion(con, settings, subject, address)
+            if not member:
+                abort(403, "This identity is not linked to an eligible workspace member.")
+            token = issue(con, member["id"], True)
+            cookie_hash = token_hash(token)
+            if session_expiry:
+                con.execute("UPDATE team_session SET expires=min(expires,?) WHERE token_hash=?", (session_expiry, cookie_hash))
+            con.execute("DELETE FROM team_saml_session WHERE token_hash NOT IN (SELECT token_hash FROM team_session)")
+            con.execute("INSERT INTO team_saml_session VALUES(?)", (cookie_hash,))
+            note(con, "team:" + member["id"], "saml_signed_in", member["id"])
+        response = cookie(private(redirect("/team", code=303)), True, token)
+        response.delete_cookie(state_cookie(), secure=True, httponly=True, samesite="None", path="/")
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    return available

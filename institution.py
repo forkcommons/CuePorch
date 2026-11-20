@@ -75,6 +75,7 @@ import media_bandwidth
 import review_links
 import review_push
 import team_accounts
+import team_saml
 import team_brand_kits
 import team_branding
 import team_sharing_policy
@@ -152,6 +153,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + account_email_factor.SCHEMA
             + account_recovery.SCHEMA
             + team_accounts.SCHEMA
+            + team_saml.SCHEMA
             + team_branding.SCHEMA
             + team_brand_kits.SCHEMA
             + team_sharing_policy.SCHEMA
