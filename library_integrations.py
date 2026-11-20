@@ -430,7 +430,7 @@ def register(app, tx, staff, operator, origin, import_video, database):
             abort(400, "Choose whether to archive new recordings automatically.")
         if body["enabled"]:
             revision = meetings[provider].revision()
-            active_watch.enable(revision, "", destination_folder(body.get("destination")), actor, "")
+            active_watch.enable(revision, "", destination_folder(body.get("destination")), actor, "", keep_queue=True)
         else:
             active_watch.disable()
         return private(active_watch.receipt())

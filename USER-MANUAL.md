@@ -139,6 +139,8 @@ For Zoom, connect an account with cloud recording access. **Browse recordings** 
 
 For Webex, connect an account with cloud recordings. You can copy accessible MP4 recordings from **Browse recordings** or enable the archive for new recordings you own. A recording needs a direct download grant from Webex. Disconnection deletes the workspace’s stored Webex tokens and stops the archive. Manage the provider-side grant in Webex if you also want to withdraw it there.
 
+For any of the meeting archives, select a different **Library destination** and choose **Change archive destination**. Future and pending copies go to the new folder. Previously imported copies stay in their original folders, and their receipts stay in the archive history.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.

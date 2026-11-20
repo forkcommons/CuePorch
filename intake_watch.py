@@ -82,7 +82,7 @@ class Watch:
         with self.tx() as con:
             self.clear(con)
 
-    def enable(self, connection, source, destination, actor, cursor):
+    def enable(self, connection, source, destination, actor, cursor, keep_queue=False):
         with self.tx() as con:
             self.connection.authorize(con, connection)
             if destination and not con.execute(
@@ -91,11 +91,20 @@ class Watch:
                 (destination, destination),
             ).fetchone():
                 abort(404, "The selected Library folder no longer exists.")
-            self.clear(con)
-            con.execute("""INSERT INTO workspace_intake_watch(
-                            provider,revision,connection,source,destination,actor,cursor,started)
-                            VALUES(?,?,?,?,?,?,?,?)""",
-                        (self.provider, uuid.uuid4().hex, connection, source, destination, actor, cursor, int(time.time())))
+            active = self.current(con)
+            revision = uuid.uuid4().hex
+            if (keep_queue and active and (active["connection"], active["source"]) == (connection, source)):
+                if (active["destination"], active["actor"]) == (destination, actor):
+                    return
+                con.execute("""UPDATE workspace_intake_watch SET revision=?,destination=?,actor=? WHERE provider=?""",
+                            (revision, destination, actor, self.provider))
+                con.execute("UPDATE workspace_intake_queue SET watch=? WHERE watch=?", (revision, active["revision"]))
+            else:
+                self.clear(con)
+                con.execute("""INSERT INTO workspace_intake_watch(
+                                provider,revision,connection,source,destination,actor,cursor,started)
+                                VALUES(?,?,?,?,?,?,?,?)""",
+                            (self.provider, revision, connection, source, destination, actor, cursor, int(time.time())))
         self.wake.set()
 
     def receipt(self):

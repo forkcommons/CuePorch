@@ -1,12 +1,13 @@
 """Exercise privately importing and automatically archiving Webex recordings."""
 
 import base64
-from contextlib import ExitStack
+from contextlib import closing, ExitStack
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import secrets
+import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -131,6 +132,19 @@ class WebexImport(unittest.TestCase):
             api.headers["Authorization"] = "Bearer " + operator
             watch = base + "/api/integrations/webex/watch"
             files = base + "/api/integrations/webex/files"
+            folder = api.post(base + "/api/library/folders", timeout=5,
+                              json=dict(name="Archived meetings", color="#75198a", parent=None))
+            folder.raise_for_status()
+            folder_id = folder.json()["id"]
+
+            def archived(count):
+                deadline = monotonic() + 15
+                while monotonic() < deadline:
+                    jobs = api.get(watch, timeout=5).json()["jobs"]
+                    if len(jobs) == count and all(job["state"] == "imported" for job in jobs):
+                        return jobs
+                    sleep(.1)
+                self.fail(f"Expected {count} completed Webex jobs, got {jobs!r}.")
 
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 page = browser.new_page()
@@ -160,22 +174,26 @@ class WebexImport(unittest.TestCase):
                 expect(page.locator("#dropboxWatchStatus")).to_contain_text("Archiving new Webex recordings.")
                 now = datetime.now(timezone.utc).isoformat()
                 observed["automatic"] = [recording("automatic", now), recording("shared", now, shared=True)]
-                deadline = monotonic() + 15
-                while monotonic() < deadline:
-                    jobs = api.get(watch, timeout=5).json()["jobs"]
-                    if any(job["state"] == "imported" for job in jobs):
-                        break
-                    sleep(.1)
-                else:
-                    self.fail("The new Webex recording did not finish automatic import.")
-                self.assertEqual(1, len(jobs))
+                previous = archived(1)[0]
                 self.assertEqual(["first", "automatic"], observed["downloads"])
+                page.get_by_label("Library destination").select_option(folder_id)
+                page.get_by_role("button", name="Change archive destination").click()
+                expect(page.locator("#dropboxWatchStatus")).to_contain_text("Archived meetings")
+                self.assertEqual(previous, archived(1)[0])
+                self.assertEqual(["first", "automatic"], observed["downloads"])
+                observed["automatic"].append(recording("follow-up", datetime.now(timezone.utc).isoformat()))
+                follow_up, retained = archived(2)
+                self.assertEqual(previous, retained)
+                with closing(sqlite3.connect(root / "workspace.sqlite")) as database:
+                    placement = database.execute("SELECT folder FROM library_placement WHERE work=?",
+                                                 (follow_up["work"],)).fetchone()
+                self.assertEqual((folder_id,), placement)
                 page.get_by_role("button", name="Disconnect Webex", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("remove CuePorch access in your Webex account")
                 self.assertEqual(409, api.get(files, timeout=5).status_code)
                 self.assertEqual({"enabled": False, "jobs": []}, api.get(watch, timeout=5).json())
         print("Webex PKCE, token refresh, checked continuation, 320px private playback, signed CDN without bearer,"
-              " owned-recording automatic archive and local disconnect passed.")
+              " owned-recording automatic archive, destination change with queue retention and disconnect passed.")
 
 
 if __name__ == "__main__":
