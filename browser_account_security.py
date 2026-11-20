@@ -57,16 +57,20 @@ def is_loopback(value):
         return False
 
 
-def secure_site(public_origin):
+def secure_site(public_origin, required=True):
     site = source_origin(request.host_url)
     if site == "Unknown":
-        abort(400)
+        if required:
+            abort(400)
+        return None
     host = urlsplit(site).hostname
     if request.is_secure or (public_origin.startswith("https://") and
                              source_origin("https://" + request.host) == public_origin):
         return True
     if not is_loopback(host) or not is_loopback(request.remote_addr):
-        abort(403, "Open CuePorch using its HTTPS address.")
+        if required:
+            abort(403, "Open CuePorch using its HTTPS address.")
+        return None
     return False
 
 

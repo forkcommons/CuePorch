@@ -109,6 +109,59 @@ def check_audience_accounts(browser, base, staff, sample):
         signed_in(other_session, "Maya Gallery")
         other_session.get_by_role("link", name="Watch Later").click()
         expect(other_session.get_by_role("link", name=title)).to_be_visible()
+
+        details_url = f"{base}/api/library/work/{video}/details"
+        metadata = requests.get(details_url, headers=staff, timeout=15)
+        metadata.raise_for_status()
+        requests.put(details_url, headers=staff, timeout=15,
+                     json=dict(metadata.json(), rating="mature", content=["violence"])).raise_for_status()
+        preferences = first.locator("#viewerPreferences")
+        mode = preferences.get_by_role("combobox", name="Mature content", exact=True)
+        save = preferences.get_by_role("button", name="Save viewing preferences")
+
+        def saved_mode(value):
+            mode.select_option(value)
+            save.click()
+            expect(first.locator("#viewerAccountStatus")).to_have_text("Viewing preferences saved.")
+
+        saved_mode("hide_mature")
+        preferences_url = base + "/api/viewer/preferences"
+        search_url = base + "/watch?q=Independent+Gallery+Session"
+        assert returning.request.get(preferences_url).json() == {"mode": "hide_mature", "excluded": []}
+        assert b.request.get(preferences_url).json()["mode"] == "all"
+        assert returning.request.put(preferences_url, headers=MUTATION | {"Origin": "https://different.invalid"},
+                                     data={"mode": "all"}).status == 403
+        other_session.goto(search_url)
+        expect(other_session.get_by_role("link", name=title)).to_have_count(0)
+        second.goto(search_url)
+        expect(second.get_by_role("link", name=title)).to_be_visible()
+        assert title in requests.get(search_url, timeout=10).text
+        warning = other_session.goto(base + path + "?start=0.1")
+        assert "private" in warning.headers["cache-control"] and "no-store" in warning.headers["cache-control"]
+        expect(other_session.locator("video")).to_have_count(0)
+        other_session.get_by_role("link", name="Show this video").click()
+        assert other_session.url.endswith("?start=0.1&show_content=1")
+        assert other_session.locator("video").evaluate(
+            "async v => { v.muted = true; await v.play(); return v.videoWidth; }"
+        ) == 256
+
+        mode.select_option("custom")
+        preferences.get_by_role("checkbox", name="Unrated videos").check()
+        preferences.get_by_role("checkbox", name="Nudity").check()
+        saved_mode("custom")
+        other_session.goto(search_url)
+        expect(other_session.get_by_role("link", name=title)).to_be_visible()
+        preferences.get_by_role("checkbox", name="Violence").check()
+        saved_mode("custom")
+        other_session.reload()
+        expect(other_session.get_by_role("link", name=title)).to_have_count(0)
+        requests.put(details_url, headers=staff, timeout=15,
+                     json=dict(metadata.json(), rating="unrated", content=[])).raise_for_status()
+        other_session.reload()
+        expect(other_session.get_by_role("link", name=title)).to_have_count(0)
+        saved_mode("all")
+        other_session.reload()
+        expect(other_session.get_by_role("link", name=title)).to_be_visible()
         change = first.locator("#changeViewerPassword")
         change.get_by_label("Current password").fill(original)
         change.get_by_label("New password").fill(updated)
@@ -132,6 +185,7 @@ def check_audience_accounts(browser, base, staff, sample):
         expect(first.locator("#viewerAccountStatus")).to_have_text("The email or password did not match.")
         sign_in(first, new_email, updated)
         signed_in(first, "Maya Gallery")
+        saved_mode("hide_mature")
         first.get_by_text("Delete account", exact=True).click()
         removal = first.locator("#deleteViewerAccount")
         removal.get_by_label("Current password").fill(updated)
@@ -140,8 +194,11 @@ def check_audience_accounts(browser, base, staff, sample):
         signup(first, "Maya Returned", new_email)
         signed_in(first, "Maya Returned")
         assert a.request.get(base + saved_path).json() == {"saved": False}
+        assert a.request.get(preferences_url).json() == {"mode": "all", "excluded": []}
         assert b.request.get(base + account_path).json()["name"] == "Jo"
         return dict(account_free_public_playback_width=256, separate_operator_access=True, cross_origin_changes_denied=True,
                     own_watch_later_isolated=True, save_resumes_after_signup=True, status_persisted_across_browsers=True,
                     saved_private_video_hidden_and_denied=True, account_details_updated=True, login_cookie_rotated=True,
-                    revoke_other_sessions_on_password_change=True, remove_and_sign_out=True, deletion_discards_list=True)
+                    revoke_other_sessions_on_password_change=True, remove_and_sign_out=True, deletion_discards_list=True,
+                    mature_and_custom_account_filters=True, independent_anonymous_catalog=True,
+                    direct_link_warning_then_playback_width=256, deletion_resets_viewing_preferences=True)

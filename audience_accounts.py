@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import time
@@ -15,6 +16,7 @@ import audience_library
 from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
                                       workspace_session, workspace_session_cookie)
 import community_analytics
+import content_rating
 import creator_profiles
 from library_analytics import source_origin
 from library_discovery import PAGE_SIZE, entry_payload, ordered
@@ -33,6 +35,8 @@ CREATE INDEX IF NOT EXISTS audience_attempt_expiry ON audience_auth_attempt(expi
 CREATE TABLE IF NOT EXISTS audience_watch_later(
  account TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL, saved REAL NOT NULL,
  PRIMARY KEY(account,kind,slug));
+CREATE TABLE IF NOT EXISTS audience_view_preferences(
+ account TEXT PRIMARY KEY, maturity TEXT NOT NULL);
 """ + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
 VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|watch/feed)")
@@ -50,6 +54,11 @@ def fields(body):
 
 def account_view(row):
     return {key: row[key] for key in ("name", "email", "pronouns")}
+
+
+def account_preferences(con, account):
+    saved = con.execute("SELECT maturity FROM audience_view_preferences WHERE account=?", (account,)).fetchone()
+    return json.loads(saved["maturity"]) if saved else content_rating.PREFERENCE_DEFAULT
 
 
 def register(app, tx, origin_url, operator, listing, action, staff):
@@ -74,6 +83,12 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         if row is None and required:
             abort(401, "Sign in to your viewer account.")
         return row
+
+    def viewing_preferences(con):
+        secure = secure_site(public_origin, required=False)
+        session = browser_session(secure) if secure is not None else None
+        account = current(con, session, required=False) if session else None
+        return account_preferences(con, account["id"]) if account else content_rating.PREFERENCE_DEFAULT
 
     def limit(con, action, subject=None):
         now = time.time()
@@ -118,8 +133,21 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     def viewer_account_page():
         scheme()
         destination = request.args.get("next", "")
-        return private(render_template("viewer_account.html",
+        return private(render_template("viewer_account.html", content_choices=content_rating.PREFERENCE_CHOICES,
                                        destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else ""))
+
+    @app.route("/api/viewer/preferences", methods=("GET", "PUT"))
+    def viewer_preferences():
+        secure = scheme()
+        session = browser_session(secure)
+        settings = content_rating.validate_preference(mutation(secure)) if request.method == "PUT" else None
+        with tx() as con:
+            account = current(con, session)["id"]
+            if settings is None:
+                return private(account_preferences(con, account))
+            con.execute("""INSERT INTO audience_view_preferences VALUES(?,?) ON CONFLICT(account)
+                           DO UPDATE SET maturity=excluded.maturity""", (account, json.dumps(settings)))
+        return private(settings)
 
     @app.route("/api/viewer/account", methods=("GET", "PUT", "DELETE"))
     def viewer_account():
@@ -138,6 +166,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 audience_library.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
             return cookie(private("", 204), secure)
@@ -257,4 +286,5 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
-                                       ordered, PAGE_SIZE)
+                                       ordered, PAGE_SIZE, account_preferences)
+    return viewing_preferences

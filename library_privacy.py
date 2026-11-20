@@ -300,7 +300,7 @@ def apply_settings(con, action, work, settings, password_hash):
 
 
 def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
-             operator_name, authorize_editor, sharing_access, enforce_sharing):
+             operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -430,6 +430,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             video = playback(work) if work else None
             if video is None or not permits(work, settings):
                 abort(404)
+            if mode == "public" and not embed and request.method in ("GET", "HEAD"):
+                notice = content_rating.screening_notice(title_for(con, work), viewing_preferences(con),
+                                                         details_for(con, work))
+                if notice is not None:
+                    return notice
             form = library_registration.active(con, "video", uid)
             enrollment = request.form.get("enrollment", "")
             enrollment_scope = [uid, row["revision"], alias["revision"] if alias else None,
@@ -523,7 +528,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        if analytics or form:
+        if analytics or form or not embed:
             response.cache_control.private = True
             response.cache_control.no_store = True
         return response

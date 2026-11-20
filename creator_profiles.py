@@ -6,6 +6,7 @@ import uuid
 
 from flask import abort, make_response, render_template, request, url_for
 
+import content_rating
 from browser_account_security import private, same_origin, secure_site
 from library_interactivity import text_field, web_link
 from library_trash import hidden
@@ -36,7 +37,7 @@ def follower_count(con, uid):
     return con.execute("SELECT count(*) FROM audience_creator_follow WHERE member=?", (uid,)).fetchone()[0]
 
 
-def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size):
+def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size, account_preferences):
     @app.route("/api/viewer/follow/<handle>", methods=("GET", "PUT", "DELETE"))
     def viewer_follow_creator(handle):
         if not HANDLE.fullmatch(handle):
@@ -77,8 +78,10 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                     WHERE f.account=? AND {VISIBLE}
                 """, (account["id"],))}
                 if owned:
+                    preference = account_preferences(con, account["id"])
                     entries = ordered(entry for (kind, slug), entry in listing(con).items()
-                                      if kind == "work" and slug in owned)
+                                      if kind == "work" and slug in owned
+                                      and not content_rating.filtered(preference, entry))
                     entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)
                     rows = [dict(entry_payload(entry), creator=owned[entry["slug"]]) for entry in entries]
         start = (page - 1) * page_size

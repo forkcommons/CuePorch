@@ -42,6 +42,25 @@
           <button type="submit">Save account details</button>
         </form>
       </section>
+      <section id="viewerPreferences" aria-labelledby="viewerPreferencesHeading" hidden>
+        <h2 id="viewerPreferencesHeading">Viewing preferences</h2>
+        <form method="post">
+          <label>Mature content
+            <select name="mode">
+              <option value="all">Show everything</option>
+              <option value="hide_mature">Hide mature videos</option>
+              <option value="custom">Choose what to hide</option>
+            </select>
+          </label>
+          <fieldset hidden>
+            <legend>Hide videos with these ratings or descriptors</legend>
+            {% for value, text in content_choices.items() %}
+            <label><input type="checkbox" name="excluded" value="{{ value }}"> {{ text }}</label>
+            {% endfor %}
+          </fieldset>
+          <button type="submit">Save viewing preferences</button>
+        </form>
+      </section>
       <section aria-labelledby="changeViewerPasswordHeading">
         <h2 id="changeViewerPasswordHeading">Change password</h2>
         <form id="changeViewerPassword" method="post">

@@ -39,6 +39,7 @@ from cueporch import dump, verify
 import analytics_reports
 import audience_accounts
 import audience_comments
+import content_rating
 from browser_account_security import same_origin, secure_site
 import community_analytics
 import creator_profiles
@@ -1121,19 +1122,27 @@ def create_app(root, database, operator, institution, simulation=None):
                 (kind, slug),
             ).fetchone()
             creator = creator_profiles.for_work(con, slug) if row and kind == "work" and not embed else None
+            if row and kind in ("work", "meeting") and not embed and request.method in ("GET", "HEAD"):
+                retained = works.get(slug) if kind == "work" else None
+                notice = content_rating.screening_notice(
+                    row["description"] or row["slug"], viewing_preferences(con),
+                    library_details.details_for(con, retained) if retained else {},
+                )
+                if notice is not None:
+                    return notice
         if not row:
             abort(404)
         if request.method == "POST":
             abort(405)
         if embed:
             return redirect(library_embed.peertube_address(row["destination"], request.args), code=302)
-        return render_template(
+        return library_discovery.no_store(render_template(
             "watch.html",
             title=row["description"] or row["slug"],
             url=row["destination"],
             slug=slug, save_kind=kind if kind in ("work", "meeting") else None, save_slug=slug,
             creator=creator,
-        )
+        ))
 
     @app.get("/support")
     def support():
@@ -1242,8 +1251,10 @@ def create_app(root, database, operator, institution, simulation=None):
     def public_listing(con, item=None):
         return library_discovery.listing(con, read_library_works, library_actions.title_for, vimeo_privacy.permits, item)
 
-    library_discovery.register(app, tx, staff, public_listing, root, institution)
-    audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
+    viewing_preferences = audience_accounts.register(
+        app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
+    )
+    library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
     authorize_editor = team_accounts.register(app, tx, team_origin, operator, workspace_brand, operator_name,
                                                read_library_works, library_actions.title_for, root,
                                                public_listing, library_discovery.entry_payload, sharing_access)
@@ -1270,7 +1281,7 @@ def create_app(root, database, operator, institution, simulation=None):
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
         vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
-        operator_name, authorize_editor, sharing_access, enforce_sharing,
+        operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences,
     )
 
     @app.get("/api/library")

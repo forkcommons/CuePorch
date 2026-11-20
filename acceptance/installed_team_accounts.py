@@ -553,6 +553,20 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             expect(profile_visitor.locator(".watch-card")).to_have_text([draft_name, second_title])
             feed.goto(base + "/watch/feed")
             expect(feed.locator(".watch-card")).to_have_text([draft_name, second_title])
+            maturity = f"{base}/api/library/work/{second_work}/details"
+            metadata = requests.get(maturity, headers=auth, timeout=15)
+            metadata.raise_for_status()
+            requests.put(maturity, headers=auth, timeout=15,
+                         json=dict(metadata.json(), rating="mature", content=["language"])).raise_for_status()
+            viewing = base + "/api/viewer/preferences"
+            marker = {"X-CuePorch-Viewer": "1"}
+            assert guest.request.put(viewing, headers=marker, data={"mode": "hide_mature"}).ok
+            feed.reload()
+            expect(feed.locator(".watch-card")).to_have_text([draft_name])
+            assert guest.request.put(viewing, headers=marker, data={"mode": "all"}).ok
+            feed.reload()
+            expect(feed.locator(".watch-card")).to_have_text([draft_name, second_title])
+            requests.put(maturity, headers=auth, timeout=15, json=metadata.json()).raise_for_status()
             independent_feed = viewer.new_page()
             independent_feed.goto(base + "/watch/feed")
             expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
@@ -613,6 +627,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
                 private_feed_follows_publication_order_and_account_removal=True,
+                feed_observes_viewer_rating_preference=True,
                 sharing_restrictions=sharing_restrictions, support_requests=support, workspace_updates=updates), email("contributor")
 
 

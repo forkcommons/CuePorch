@@ -30,6 +30,8 @@ Open **Viewer account** from Watch to create an account or sign in. Use **Save t
 
 In **Viewer account**, you can change your display name, pronouns or sign-in email, update your password, sign out, and delete the account and its list. Use your current password to change email, change password or delete the account. Changing your password signs out your other browsers. Browsing and public playback are available to signed-out visitors.
 
+Use **Viewing preferences** to show everything, hide mature videos, or hide selected descriptors and unrated videos. The setting follows your account and applies to Explore, search, Staff Picks and your Feed. A direct link to a filtered public video gives you the option to show it. The video's publishing and registration rules still apply.
+
 On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.
 
 On a public watch page, read the discussion under **Comments**. Search by text or author and sort newest or oldest first. Sign in to post under your display name or delete one of your own comments. If the operator requires approval, see the comment’s status under **Your unpublished comments**.

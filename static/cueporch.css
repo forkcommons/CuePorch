@@ -99,6 +99,8 @@ main { max-width: 65rem; }
 }
 .viewer-account form { display: grid; gap: .45rem; max-width: 25rem; }
 .viewer-account form input { display: block; width: 100%; }
+.viewer-account form input[type="checkbox"] { display: inline; width: auto; }
+.viewer-account form fieldset label { display: block; }
 .viewer-account form button { justify-self: start; }
 .viewer-account #viewerManagement > * { margin-block: 1.25rem; }
 .save-video { margin-block: .7rem; }
