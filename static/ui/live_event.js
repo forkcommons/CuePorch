@@ -34,7 +34,9 @@ const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const audienceAccess = lobby.dataset.audienceAccess || "";
 const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
-const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
+const latencyMode = lobby.dataset.latency || "standard";
+const liveSyncSegments = new Map([["low", 2], ["standard", 2], ["fail-safe", 10]]);
+const liveSegments = liveSyncSegments.get(latencyMode) ?? 2;
 function showBranding(value) {
     logo.hidden = !value.logo;
     if (value.logo && logo.getAttribute("src") !== value.logo)
@@ -105,8 +107,18 @@ function renderVideo(address, phase, analytics, video) {
     }
     stopMeasuring = measureEventPlayback(video, analytics);
     const replay = phase === "Replay";
-    controls.attach(video, !replay);
     const currentVideo = video;
+    controls.attach(video, !replay, () => {
+        const ranges = currentVideo.seekable;
+        if (!ranges.length)
+            return null;
+        const last = ranges.length - 1;
+        const start = ranges.start(last);
+        const end = ranges.end(last);
+        const position = hls ? hls.liveSyncPosition : end - liveSegments * (latencyMode === "low" ? 2 : 4);
+        return position === null || !Number.isFinite(position) || end - start < 1
+            ? null : Math.min(end - .5, Math.max(start, position));
+    });
     currentVideo.onended = replay ? () => {
         const following = neighboringArchive(1);
         if (playlist?.autoplay_next && following)
@@ -122,7 +134,7 @@ function renderVideo(address, phase, analytics, video) {
         const session = new Hls({
             enableWorker: true,
             liveDurationInfinity: true,
-            liveSyncDurationCount: liveSyncSegments.get(lobby.dataset.latency || "") ?? 5,
+            liveSyncDurationCount: liveSegments,
         });
         session.loadSource(address);
         session.attachMedia(video);

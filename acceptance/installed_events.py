@@ -1066,8 +1066,17 @@ def check_live_diagnostics(operator, guest, health, auth):
         return from - v.currentTime;
     }""")
     assert rewind >= 9.5
+    before = video.evaluate("video => video.currentTime")
+    guest.get_by_role("button", name="Return to live", exact=True).click()
+    guest.wait_for_function("""before => {
+      const video = document.querySelector('#eventPlayer video');
+      return video && !video.paused && !video.seeking && video.videoWidth > 0 &&
+             video.currentTime > before + 3;
+    }""", arg=before, timeout=20000)
+    advance = video.evaluate("video => video.currentTime") - before
     return dict(measured_encoder_fps=values["fps"], measured_encoder_kbps=values["bitrate"],
                 peer_dvr_window_seconds=120, live_rewind_decoded_seconds=round(rewind, 2),
+                return_to_live_seconds=round(advance, 2),
                 diagnostics_require_operator=True)
 
 

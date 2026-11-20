@@ -45,6 +45,7 @@
         </span>
       </div>
     </div>
+    <button type="button" id="eventReturnLive" hidden>Return to live</button>
     <template id="eventControls">
       {% with appearance = dict(progress=true, allow_seek=true, volume=true, pip=true, fullscreen=true), tracks = [] %}
         {% include 'archive_player_controls.html' %}

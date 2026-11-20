@@ -6,7 +6,9 @@ export type EventAppearance = Record<typeof playerSwitches[number], boolean> &
 export function eventControls(player: HTMLElement, title: HTMLElement, initial: EventAppearance) {
   let appearance = initial;
   let refresh = () => {};
+  let listeners: AbortController | undefined;
   const template = document.querySelector<HTMLTemplateElement>("#eventControls")!;
+  const returnLive = document.querySelector<HTMLButtonElement>("#eventReturnLive")!;
 
   function setAppearance(value: EventAppearance) {
     appearance = value;
@@ -14,7 +16,10 @@ export function eventControls(player: HTMLElement, title: HTMLElement, initial: 
     refresh();
   }
 
-  function attach(video: HTMLVideoElement, live: boolean) {
+  function attach(video: HTMLVideoElement, live: boolean, livePosition: () => number | null) {
+    reset();
+    listeners = new AbortController();
+    const {signal} = listeners;
     const controls = template.content.firstElementChild!.cloneNode(true) as HTMLElement;
     const get = <T extends HTMLElement>(name: string) => controls.querySelector<T>(`[data-control="${name}"]`)!;
     const play = get<HTMLButtonElement>("play");
@@ -42,6 +47,9 @@ export function eventControls(player: HTMLElement, title: HTMLElement, initial: 
     function syncPosition() {
       const range = seekable();
       position.disabled = !range;
+      returnLive.hidden = !live || !appearance.live_seek || !range;
+      const target = live ? livePosition() : null;
+      returnLive.disabled = target === null || target <= video.currentTime + 1;
       if (!range) {
         clock.textContent = "";
         return;
@@ -74,6 +82,12 @@ export function eventControls(player: HTMLElement, title: HTMLElement, initial: 
       if (video.paused) void video.play().catch(fail);
       else video.pause();
     };
+    returnLive.onclick = () => {
+      const target = livePosition();
+      if (returnLive.hidden || returnLive.disabled || target === null) return;
+      video.currentTime = target;
+      if (video.paused) void video.play().catch(fail);
+    };
     position.oninput = () => { video.currentTime = position.valueAsNumber; };
     mute.onclick = () => { video.muted = !video.muted; };
     volume.oninput = () => {
@@ -89,11 +103,11 @@ export function eventControls(player: HTMLElement, title: HTMLElement, initial: 
       void change.catch(fail);
     };
 
-    video.addEventListener("play", () => { started = true; syncPlayback(); });
-    video.addEventListener("pause", syncPlayback);
-    video.addEventListener("ended", syncPlayback);
-    for (const event of ["timeupdate", "loadedmetadata", "progress"]) video.addEventListener(event, syncPosition);
-    video.addEventListener("volumechange", syncVolume);
+    video.addEventListener("play", () => { started = true; syncPlayback(); }, {signal});
+    video.addEventListener("pause", syncPlayback, {signal});
+    video.addEventListener("ended", syncPlayback, {signal});
+    for (const event of ["timeupdate", "loadedmetadata", "progress"]) video.addEventListener(event, syncPosition, {signal});
+    video.addEventListener("volumechange", syncVolume, {signal});
     refresh = () => {
       const {customize, progress, live_seek} = appearance;
       player.classList.toggle("archive-player", customize);
@@ -116,6 +130,9 @@ export function eventControls(player: HTMLElement, title: HTMLElement, initial: 
   }
 
   function reset() {
+    listeners?.abort();
+    returnLive.hidden = true;
+    returnLive.onclick = null;
     refresh = () => {};
     player.classList.remove("archive-player");
   }
