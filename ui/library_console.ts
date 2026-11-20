@@ -1173,6 +1173,12 @@ async function copyText(field: HTMLInputElement | HTMLTextAreaElement) {
 async function shareDialog(work: Work, copy?: "watch" | "embed") {
   const info = await getWorkInfo(work);
   openWorkDialog("Share " + info.title);
+  if (!work.asset_type || work.asset_type === "video") {
+    const social = document.createElement("a");
+    social.href = `/operator/videos/${work.id}/social`;
+    social.textContent = "Publish to YouTube";
+    workDialogBody.append(social);
+  }
   if (!info.watch && !info.embed) {
     const link = document.createElement("a");
     link.href = "/operator/exhibitions";

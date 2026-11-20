@@ -82,6 +82,7 @@ import library_trash
 import library_upload
 import library_integrations
 import intake_watch
+import social_publication
 import library_worker
 import media_bandwidth
 import registration_return
@@ -194,6 +195,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_oauth.SCHEMA
             + intake_watch.SCHEMA
             + folder_slack.SCHEMA
+            + social_publication.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -806,6 +808,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM studio_script_job WHERE state='queued')""", (step,))
+                if step == "publication":
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM social_publication WHERE state='queued' AND probe=0 AND offset=0)""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1369,7 +1375,9 @@ def create_app(root, database, operator, institution, simulation=None):
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
-    library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
+    youtube = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
+    social_publication.register(app, tx, database, root, team_origin, youtube, read_library_works,
+                                library_actions.title_for, staff, action, sharing_access, enforce_sharing)
     app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(

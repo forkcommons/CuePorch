@@ -147,6 +147,8 @@ Open a Library folder and choose **Slack notifications**. Select uploads, review
 
 The same dialog can include subfolders, change the message language between English and Spanish and send notices for title, thumbnail, removal, privacy and showcase changes. Clear **Send Slack notifications** and save to pause delivery and keep the channel for later.
 
+To send a native video to YouTube, connect its channel in **Integrations**, then choose **Publish to YouTube** from a video’s Share controls. Choose the destination title, description, visibility and audience. Visibility starts at Private. If the workspace enables Publication approval, the upload waits there. The upload history shows confirmed bytes, the destination link and the visibility returned by YouTube. Changing or removing the local CuePorch copy leaves the uploaded copy on its destination channel. [Vimeo’s social publishing workflow](https://help.vimeo.com/hc/en-us/articles/12427472505873-How-to-publish-my-video-on-social-media)
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.
@@ -497,6 +499,8 @@ For Webex, create a user integration with `meeting:recordings_read`. Register th
 Meeting completion notices reuse the [workspace SMTP relay](OPERATIONS.md#webinar-email-relay). Set `CUEPORCH_MEETING_ARCHIVE_EMAIL` if you also want notices for archives configured with the bootstrap operator credential. If relay delivery fails, CuePorch retries the email independently of the saved recording. The archive history shows whether the relay accepted the message.
 
 For Slack's channel chooser, register an app with the `incoming-webhook` bot scope. Add the workspace HTTPS callback ending in `/integration/oauth/slack/callback`. Set `CUEPORCH_SLACK_CLIENT_ID` and `CUEPORCH_SLACK_CLIENT_SECRET`. CuePorch keeps each selected channel's encrypted webhook for folder delivery. [Slack OAuth installation](https://docs.slack.dev/authentication/installing-with-oauth/) · [Slack webhook scope](https://docs.slack.dev/reference/scopes/incoming-webhook/)
+
+For YouTube publishing, enable YouTube Data API v3 for your Google project and register the callback ending in `/integration/oauth/youtube/callback`. Set `CUEPORCH_YOUTUBE_CLIENT_ID` and `CUEPORCH_YOUTUBE_CLIENT_SECRET` for its OAuth client. CuePorch requests the `youtube.upload` scope, keeps the resumable session encrypted, and checks the server’s accepted byte range after an interrupted upload. If YouTube loses the session after the final request, check the channel before starting another copy. [YouTube upload API](https://developers.google.com/youtube/v3/docs/videos/insert) · [Resumable upload contract](https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol)
 
 Use `Authorization: Bearer <credential>` with the credential for the operation. Send mutation bodies as JSON except for file uploads. The institution origin and the video-host origin serve different APIs.
 

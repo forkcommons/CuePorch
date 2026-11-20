@@ -10,6 +10,7 @@ interface Integration {
   browse_folders: boolean;
   meeting: boolean;
   manage_path?: string;
+  publishing?: boolean;
 }
 interface DriveFile {id: string; name: string}
 interface Folder {id: string; name: string; parent: string | null}
@@ -164,7 +165,12 @@ function render() {
       card.append(manage);
     } else if (item.connected) {
       if (item.configured) {
-        card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
+        if (item.publishing) {
+          const library = document.createElement("a");
+          library.href = "/operator/library";
+          library.textContent = "Choose a video in Library";
+          card.append(library);
+        } else card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {
         const result = await api<{provider_revoked: boolean}>(pathFor(item, "disconnect"), {});

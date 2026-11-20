@@ -18,9 +18,11 @@ from browser_account_security import json_mutation, private, same_origin, secure
 from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
 import mail_relay
+import social_publication
 from team_accounts import MANAGERS
 import webex_recordings
 import zoom_recordings
+import youtube_upload
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -287,7 +289,8 @@ def register(app, tx, staff, operator, origin, import_video, database):
         "webex", "Webex", webex_recordings.API + "/authorize", webex_recordings.API + "/access_token",
         "", webex_recordings.SCOPE,
     ), tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)}
+    youtube = Connection(youtube_upload.OAUTH, tx, operator)
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, youtube)}
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -371,11 +374,14 @@ def register(app, tx, staff, operator, origin, import_video, database):
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category="Communications" if item.config.key in meetings else "Cloud storage",
-                description=("Copy meeting recordings into your private Library."
+                category=("Social publishing" if item is youtube else
+                          "Communications" if item.config.key in meetings else "Cloud storage"),
+                description=("Upload a native video from the Library to your channel."
+                             if item is youtube else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
                 browse_folders=item in (dropbox, box, meet), meeting=item.config.key in meetings,
+                publishing=item is youtube,
             ) for item in connections.values()]
             slack = con.execute("""SELECT 1 FROM folder_slack s WHERE NOT EXISTS(
                 SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=s.folder) LIMIT 1""").fetchone()
@@ -399,8 +405,10 @@ def register(app, tx, staff, operator, origin, import_video, database):
         mutate()
         connection = configured_provider(provider)
         active_watch = watches.get(provider)
-        return private(dict(connected=False,
-                            provider_revoked=connection.disconnect(active_watch.clear if active_watch else None)))
+        cleanup = active_watch.clear if active_watch else None
+        if connection is youtube:
+            cleanup = lambda con: social_publication.disconnect(con, provider)
+        return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():
@@ -664,3 +672,5 @@ def register(app, tx, staff, operator, origin, import_video, database):
                                           size, hashlib.sha1(usedforsecurity=False), expected, download,
                                           lambda con: box.authorize(con, revision))
         return private(receipt, status)
+
+    return youtube

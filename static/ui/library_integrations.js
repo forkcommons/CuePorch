@@ -134,7 +134,14 @@ function render() {
         }
         else if (item.connected) {
             if (item.configured) {
-                card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
+                if (item.publishing) {
+                    const library = document.createElement("a");
+                    library.href = "/operator/library";
+                    library.textContent = "Choose a video in Library";
+                    card.append(library);
+                }
+                else
+                    card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
             }
             card.append(button(`Disconnect ${item.name}`, async () => {
                 const result = await api(pathFor(item, "disconnect"), {});
