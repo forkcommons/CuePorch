@@ -222,12 +222,14 @@ class Connection:
     def refresh(self, saved):
         return self.exchange({"grant_type": "refresh_token", "refresh_token": saved["refresh"]}, saved["refresh"])
 
-    def disconnect(self):
+    def disconnect(self, clear_related=None):
         with self.lock:
             with self.tx() as con:
                 row = self.connection(con)
                 con.execute("DELETE FROM workspace_integration_attempt WHERE provider=?", (self.config.key,))
                 con.execute("DELETE FROM workspace_integration_connection WHERE provider=?", (self.config.key,))
+                if clear_related:
+                    clear_related(con)
             if not row:
                 return True
             try:

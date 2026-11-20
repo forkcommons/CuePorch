@@ -10,6 +10,7 @@ import requests
 from flask import abort, render_template, request
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
+from dropbox_watch import Watch
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -143,7 +144,7 @@ def import_dropbox(import_video, connection, revision, actor, row, folder, autho
                            folder, size, DropboxHash(), expected, download, authorize)
 
 
-def register(app, tx, staff, operator, origin, import_video):
+def register(app, tx, staff, operator, origin, import_video, database):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -151,6 +152,14 @@ def register(app, tx, staff, operator, origin, import_video):
         DROPBOX_SCOPE, dict(token_access_type="offline"), revoke_using_access_token=True,
     ), tx, operator)
     connections = {item.config.key: item for item in (drive, dropbox)}
+    watch = Watch(
+        app, tx, database, dropbox, lambda revision, cursor: dropbox_entries(dropbox, revision, cursor=cursor),
+        dropbox_video,
+        lambda revision, actor, row, folder, authorize: import_dropbox(
+            import_video, dropbox, revision, actor, row, folder, authorize,
+        ),
+    )
+    app.extensions["stop_dropbox_watch"] = watch.stop
 
     def site():
         secure = secure_site(origin)
@@ -209,7 +218,9 @@ def register(app, tx, staff, operator, origin, import_video):
     @app.post("/api/integrations/<provider>/disconnect")
     def disconnect(provider):
         mutate()
-        return private(dict(connected=False, provider_revoked=configured_provider(provider).disconnect()))
+        connection = configured_provider(provider)
+        return private(dict(connected=False,
+                            provider_revoked=connection.disconnect(watch.clear if connection is dropbox else None)))
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():
@@ -307,3 +318,35 @@ def register(app, tx, staff, operator, origin, import_video):
         receipt, status = import_dropbox(import_video, dropbox, revision, actor, row, folder,
                                          lambda con: dropbox.authorize(con, revision))
         return private(receipt, status)
+
+    @app.get("/api/integrations/dropbox/watch")
+    def dropbox_watch_status():
+        read_api()
+        return private(watch.receipt())
+
+    @app.post("/api/integrations/dropbox/watch")
+    def configure_dropbox_watch():
+        actor, body, _, _ = mutate()
+        if type(body.get("enabled")) is not bool:
+            abort(400, "Choose whether to watch a Dropbox folder.")
+        if not body["enabled"]:
+            watch.disable()
+            return private(watch.receipt())
+        source, destination = body.get("source"), destination_folder(body.get("destination"))
+        if not isinstance(source, str) or (source and not DROPBOX_ID.fullmatch(source)):
+            abort(400, "Choose a folder in Dropbox.")
+        revision = dropbox.revision()
+        with dropbox.api(revision, "POST", DROPBOX_RPC + "/files/list_folder/get_latest_cursor",
+                         json=dict(path=source, recursive=False, include_non_downloadable_files=False)) as response:
+            check_provider(response)
+            cursor = response_object(response).get("cursor")
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+            abort(502, "Dropbox returned an invalid folder cursor.")
+        watch.enable(revision, source, destination, actor, cursor)
+        return private(watch.receipt())
+
+    @app.post("/api/integrations/dropbox/watch/<int:job>/retry")
+    def retry_dropbox_watch_job(job):
+        mutate()
+        watch.retry(job)
+        return private(watch.receipt())

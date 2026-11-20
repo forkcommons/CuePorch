@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -51,7 +52,9 @@ class DropboxImport(unittest.TestCase):
             source_folder = {".tag": "folder", "name": "Festivals", "id": "id:festival"}
             row = {".tag": "file", "name": "Opening.mp4", "id": "id:opening",
                    "rev": "aaaaa0000000000000099", "size": len(media), "content_hash": content_hash}
-            observed = {"revocations": 0, "downloads": 0}
+            added = row | {"name": "Automatically imported.mp4", "id": "id:automatic",
+                           "rev": "aaaaa0000000000000077"}
+            observed = {"revocations": 0, "downloads": 0, "watch_ready": False, "damaged": True}
             provider = Flask("mock-dropbox")
             provider_server = make_server("127.0.0.1", 0, provider, threaded=True, request_handler=QuietHandler)
             provider_url = f"http://127.0.0.1:{provider_server.server_port}"
@@ -67,6 +70,7 @@ class DropboxImport(unittest.TestCase):
                 "CUEPORCH_GOOGLE_DRIVE_CLIENT_SECRET": "",
                 "CUEPORCH_PUBLIC_URL": "",
             }))
+            cleanup.enter_context(patch("dropbox_watch.POLL_SECONDS", .25))
             operator = secrets.token_urlsafe(32)
             with patch("institution.library_worker.start", return_value=lambda: None):
                 app = create_app(root, root / "workspace.sqlite", operator, "station")
@@ -111,8 +115,18 @@ class DropboxImport(unittest.TestCase):
 
             @provider.post("/2/files/list_folder/continue")
             def list_more():
-                assert request.json == {"cursor": "dropbox-next-page"}
-                return dict(entries=[row], cursor="dropbox-last-page", has_more=False)
+                cursor = request.json["cursor"]
+                if cursor == "dropbox-next-page":
+                    return dict(entries=[row], cursor="dropbox-last-page", has_more=False)
+                if cursor == "watch-baseline" and observed["watch_ready"]:
+                    return dict(entries=[source_folder, added], cursor="watch-following", has_more=False)
+                assert cursor in {"watch-baseline", "watch-following"}
+                return dict(entries=[], cursor=cursor, has_more=False)
+
+            @provider.post("/2/files/list_folder/get_latest_cursor")
+            def start_watch():
+                assert request.json["path"] == source_folder["id"] and request.json["recursive"] is False
+                return dict(cursor="watch-baseline")
 
             @provider.post("/2/files/get_metadata")
             def metadata():
@@ -121,8 +135,11 @@ class DropboxImport(unittest.TestCase):
 
             @provider.post("/2/files/download")
             def download():
-                assert json.loads(request.headers["Dropbox-API-Arg"]) == {"path": "rev:" + row["rev"]}
+                path = json.loads(request.headers["Dropbox-API-Arg"])["path"]
+                assert path in {"rev:" + row["rev"], "rev:" + added["rev"]}
                 observed["downloads"] += 1
+                if path == "rev:" + added["rev"] and observed["damaged"]:
+                    return Response(media[:-1], mimetype="application/octet-stream")
                 return Response(media, mimetype="application/octet-stream")
 
             @provider.post("/2/auth/token/revoke")
@@ -132,6 +149,20 @@ class DropboxImport(unittest.TestCase):
 
             cleanup.enter_context(service_worker(provider_server))
             cleanup.enter_context(service_worker(service))
+            api = cleanup.enter_context(requests.Session())
+            api.headers.update({"Authorization": "Bearer " + operator, cloud.MARKER: "1"})
+            watch_api = base + "/api/integrations/dropbox/watch"
+
+            def wait_watch(state):
+                deadline = monotonic() + 15
+                while monotonic() < deadline:
+                    result = api.get(watch_api, timeout=5)
+                    result.raise_for_status()
+                    if any(job["state"] == state for job in result.json()["jobs"]):
+                        return result.json()
+                    sleep(.1)
+                self.fail("Dropbox watch did not reach " + state)
+
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 page = browser.new_page()
                 page.goto(base + "/operator/integrations")
@@ -159,11 +190,37 @@ class DropboxImport(unittest.TestCase):
                 expect(preview).to_be_visible()
                 self.assertEqual(320, preview.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
                 page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Browse videos").click()
+                page.get_by_role("button", name="Open folder Festivals").click()
+                page.get_by_role("button", name="Watch this folder").click()
+                expect(page.locator("#dropboxWatchStatus")).to_contain_text("Watching Festivals.")
+                self.assertEqual([], api.get(watch_api, timeout=5).json()["jobs"])
+                observed["watch_ready"] = True
+                failed = wait_watch("failed")
+                self.assertEqual(1, len(failed["jobs"]))
+                self.assertIn("checksum", failed["jobs"][0]["error"])
+                page.get_by_role("button", name="Refresh watch status").click()
+                expect(page.get_by_role("button", name="Retry Automatically imported.mp4")).to_be_visible()
+                observed["damaged"] = False
+                page.get_by_role("button", name="Retry Automatically imported.mp4").click()
+                imported = wait_watch("imported")
+                self.assertEqual(1, len(imported["jobs"]))
+                automatic = imported["jobs"][0]["work"]
+                self.assertNotEqual(work, automatic)
+                page.get_by_role("button", name="Refresh watch status").click()
+                page.get_by_role("link", name="Automatically imported.mp4").click()
+                expect(preview).to_be_visible()
+                self.assertEqual(320, preview.evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}"))
+                page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Browse videos").click()
+                page.get_by_role("button", name="Stop watching").click()
+                expect(page.locator("#dropboxWatchStatus")).to_have_text("Folder watching is off.")
+                self.assertEqual({"enabled": False, "jobs": []}, api.get(watch_api, timeout=5).json())
                 page.get_by_role("button", name="Disconnect Dropbox").click()
                 expect(page.locator("#integrationStatus")).to_have_text("Dropbox disconnected.")
                 self.assertEqual(1, observed["revocations"])
-        print("Dropbox folder navigation, paginated video listing, revision download, content hash, "
-              "private Library playback at 320px and disconnect passed.")
+        print("Dropbox manual import and automatic folder watch passed: new-only cursor, failed-copy retry, "
+              "private Library playback at 320px, disable and disconnect.")
 
 
 if __name__ == "__main__":

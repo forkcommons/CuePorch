@@ -11,6 +11,15 @@ interface Integration {
 }
 interface DriveFile {id: string; name: string}
 interface Folder {id: string; name: string; parent: string | null}
+interface WatchJob {id: number; name: string; state: string; work: string | null; error: string | null}
+interface WatchReceipt {
+  enabled: boolean;
+  source?: string;
+  destination?: string | null;
+  checked?: number | null;
+  error?: string | null;
+  jobs: WatchJob[];
+}
 
 const access = document.querySelector<HTMLFormElement>("#integrationAccess")!;
 const key = access.querySelector<HTMLInputElement>("input")!;
@@ -34,6 +43,12 @@ const videos = document.querySelector<HTMLUListElement>("#driveVideos")!;
 const noVideos = document.querySelector<HTMLElement>("#driveEmpty")!;
 const more = document.querySelector<HTMLButtonElement>("#driveMore")!;
 const receipt = document.querySelector<HTMLElement>("#driveReceipt")!;
+const watch = document.querySelector<HTMLElement>("#dropboxWatch")!;
+const watchState = document.querySelector<HTMLElement>("#dropboxWatchStatus")!;
+const watchJobs = document.querySelector<HTMLUListElement>("#dropboxWatchJobs")!;
+const enableWatch = document.querySelector<HTMLButtonElement>("#enableDropboxWatch")!;
+const disableWatch = document.querySelector<HTMLButtonElement>("#disableDropboxWatch")!;
+const refreshWatch = document.querySelector<HTMLButtonElement>("#refreshDropboxWatch")!;
 const params = new URLSearchParams(location.search);
 let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
 if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
@@ -47,9 +62,19 @@ let query = "";
 let busy = false;
 let active: Integration;
 let source: DriveFile[] = [];
+let currentWatch: WatchReceipt;
+const recentFolders = new Map<string, string>();
 
 function pathFor(item: Integration, action: string) {
   return `/api/integrations/${encodeURIComponent(item.id)}/${action}`;
+}
+
+function videoLink(work: string, title: string) {
+  const link = document.createElement("a");
+  const slug = encodeURIComponent(work);
+  link.href = credential === sessionMarker ? `/team/video/${slug}/details` : `/operator/videos/${slug}`;
+  link.textContent = title;
+  return link;
 }
 
 function message(error: unknown) {
@@ -158,11 +183,13 @@ async function openPicker(item: Integration) {
   source = [];
   pickerHeading.textContent = `Import from ${active.name}`;
   remoteFolder.hidden = !active.browse_folders;
+  watch.hidden = active.id !== "dropbox";
   picker.hidden = false;
   receipt.hidden = true;
   query = "";
   videoName.value = "";
   await loadPage(false);
+  if (!watch.hidden) await loadWatch();
   videoName.focus();
 }
 
@@ -177,6 +204,7 @@ async function loadPage(append: boolean) {
   remoteUp.hidden = source.length === 0;
   remotePath.textContent = [active.name, ...source.map(folder => folder.name)].join(" / ");
   for (const folder of page.folders || []) {
+    recentFolders.set(folder.id, folder.name);
     const row = document.createElement("li");
     row.append(button(`Open folder ${folder.name}`, () => navigateSource([...source, folder])));
     videos.append(row);
@@ -188,17 +216,45 @@ async function loadPage(append: boolean) {
       status.textContent = `Importing ${file.name}…`;
       const saved = await api<{id: string; visibility: string}>(pathFor(active, "import"),
         {file: file.id, folder: destination.value || null});
-      const link = document.createElement("a");
-      const slug = encodeURIComponent(saved.id);
-      link.href = credential === sessionMarker ? `/team/video/${slug}/details` : `/operator/videos/${slug}`;
-      link.textContent = file.name;
-      receipt.replaceChildren("Library video: ", link, ` (${saved.visibility})`);
+      receipt.replaceChildren("Library video: ", videoLink(saved.id, file.name), ` (${saved.visibility})`);
       receipt.hidden = false;
       status.textContent = "Import ready.";
     }));
     videos.append(row);
   }
   noVideos.hidden = videos.childElementCount > 0;
+  if (!watch.hidden && currentWatch) renderWatch(currentWatch);
+}
+
+function renderWatch(data: WatchReceipt) {
+  currentWatch = data;
+  disableWatch.hidden = !data.enabled;
+  refreshWatch.hidden = !data.enabled;
+  const selected = source.at(-1)?.id || "";
+  enableWatch.hidden = data.enabled && data.source === selected && (data.destination || "") === destination.value;
+  enableWatch.textContent = data.enabled ? "Change watched folder or destination" : "Watch this folder";
+  const folder = data.source
+    ? recentFolders.get(data.source) || "Previously selected Dropbox folder"
+    : "Dropbox root";
+  const target = Array.from(destination.options).find(option => option.value === data.destination)?.text
+    || (data.destination ? "Previously selected Library folder" : "Library root");
+  const checked = data.checked ? ` Last checked ${new Date(data.checked * 1000).toLocaleString()}.` : "";
+  watchState.textContent = data.enabled
+    ? `Watching ${folder}. Destination: ${target}.${checked}${data.error ? " " + data.error : ""}`
+    : "Folder watching is off.";
+  watchJobs.replaceChildren(...data.jobs.map(job => {
+    const line = document.createElement("li");
+    line.append(job.work ? videoLink(job.work, job.name) : job.name, ` — ${job.state}`);
+    if (job.error) line.append(`. ${job.error}`);
+    if (job.state === "failed") line.append(button(`Retry ${job.name}`, async () => {
+      renderWatch(await api<WatchReceipt>(pathFor(active, `watch/${job.id}/retry`), {}));
+    }));
+    return line;
+  }));
+}
+
+async function loadWatch() {
+  renderWatch(await api<WatchReceipt>(pathFor(active, "watch")));
 }
 
 async function navigateSource(path: DriveFile[]) {
@@ -257,4 +313,14 @@ driveSearch.onsubmit = event => {
 };
 more.onclick = () => void run(() => loadPage(true));
 remoteUp.onclick = () => void run(() => navigateSource(source.slice(0, -1)));
+destination.onchange = () => { if (!watch.hidden && currentWatch) renderWatch(currentWatch); };
+refreshWatch.onclick = () => void run(loadWatch);
+enableWatch.onclick = () => void run(async () => {
+  renderWatch(await api<WatchReceipt>(pathFor(active, "watch"), {
+    enabled: true, source: source.at(-1)?.id || "", destination: destination.value || null,
+  }));
+});
+disableWatch.onclick = () => void run(async () => {
+  renderWatch(await api<WatchReceipt>(pathFor(active, "watch"), {enabled: false}));
+});
 void loadDirectory();

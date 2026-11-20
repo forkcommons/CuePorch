@@ -28,6 +28,7 @@ from flask import (
     Response,
     abort,
     g,
+    has_request_context,
     redirect,
     render_template,
     request,
@@ -79,6 +80,7 @@ import library_timeline
 import library_trash
 import library_upload
 import library_integrations
+import dropbox_watch
 import library_worker
 import media_bandwidth
 import registration_return
@@ -189,6 +191,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_activity.SCHEMA
             + workspace_updates.SCHEMA
             + workspace_oauth.SCHEMA
+            + dropbox_watch.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -256,7 +259,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
 
     def team_member(con=None):
-        if request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:
+        if not has_request_context() or request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:
             return None
         secure = secure_site(team_origin)
         same_origin(secure)
@@ -1362,7 +1365,7 @@ def create_app(root, database, operator, institution, simulation=None):
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
-    library_integrations.register(app, tx, staff, operator, team_origin, import_video)
+    library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
