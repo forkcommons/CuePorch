@@ -57,6 +57,7 @@ function show(details) {
     }
     for (const name of ["tags", "categories"])
         input(name).value = details[name].join("\n");
+    input("embed_pages").value = details.embed_pages.join("\n");
     input("credits").value = details.credits.map(({ name, role }) => role ? `${name} | ${role}` : name).join("\n");
     input("realistic_ai").checked = details.realistic_ai;
     input("advertisement").checked = details.advertisement;
@@ -172,6 +173,7 @@ form.onsubmit = async (event) => {
         const body = {
             title: input("title").value,
             description: input("description").value,
+            embed_pages: lines("embed_pages"),
             tags: lines("tags"),
             categories: lines("categories"),
             credits: lines("credits").map((value) => {

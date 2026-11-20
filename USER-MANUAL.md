@@ -49,6 +49,8 @@ For an actual account, start a separate installation without `--simulate`. Use t
 
 When CuePorch restarts, **Move from Vimeo** shows the saved inventory or result to an authorized operator. If the service stopped during a transfer, re-enter the same Vimeo account token and choose **Transfer privately**. CuePorch reuses verified files from that job. The token stays in process memory.
 
+To record where a video is already embedded, open **Edit video details** and enter each page URL under **Pages that embed this video**. Save the details before downloading the embed map. Each recorded page gets its own row, and the entries stay with the work when you transfer the Vimeo account again.
+
 After transfer, choose **Restore Vimeo privacy** from the imported video’s actions to prepare viewer links from its recorded visibility, embed allowlist and download permission. Use a replacement password for a password-protected transfer. Unlisted videos receive a CuePorch key. If the source embed allowlist is unavailable, CuePorch keeps embedding off. For a public work previously delivered by CuePorch, the service verifies its PeerTube copy has become private before it switches the existing CuePorch work addresses to the new player. The operator can see the handoff status from the same action. Designated public records continue to use their protected routes. [Vimeo’s documented privacy settings](https://developer.vimeo.com/api/guides/videos/interact)
 
 ### Organize imported works

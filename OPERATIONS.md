@@ -45,6 +45,8 @@ Check failed or waiting jobs in the operator library and approval queue. Retryin
 
 Use the versions in requirements.txt for the product. Browser cases additionally need Playwright and a headless Chromium browser. The Windows rehearsal used Edge. The station integration tests use CivicCast's Python package and, for captions, its built portal-public bundle at revision 0b8ab5accac4fc6ebbc6886d5d3d9006bdc0c65f. Run the exact commands in the acceptance record. Run separate copies for different institutions and migrations. A customer Vimeo account is optional.
 
+For a grouped development rehearsal, build the browser UI with `npm ci --prefix ui` and `npm run build --prefix ui`, then run `python acceptance/installed_package.py desktop_service.py . cutover.json --source --only fresh --cutover-only`. Install the packages in `requirements-acceptance.txt` and have FFmpeg on `PATH`. This starts the local Python service and uses a headless browser to check a simulated Vimeo move, team permissions, actual video playback, and embed cutover. Run the native launcher for package acceptance.
+
 For a portable exit, pause institutional writes and run `python export_institution.py COLLECTION DATABASE NEW_DIRECTORY`. Store this export privately. It includes the media, hashes, screening agreements, case history, routes and saved slide presentations. The presentation records identify the original files and PNGs for reuse. Use the full offline snapshot to preserve credentials and resume service.
 
 Configure named editorial contacts with CUEPORCH_OPERATOR_KEYS and publish CUEPORCH_SUPPORT_CONTACT, CUEPORCH_SUPPORT_HOURS, CUEPORCH_ESCALATION_CONTACT and CUEPORCH_RECOVERY_CONTACT. The institution owns these contacts and monitors the case inbox.

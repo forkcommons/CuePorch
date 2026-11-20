@@ -89,10 +89,24 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         password = "migration-replacement-password"
         paths = restore(password_id, password)["paths"]
         assert paths["watch"] and paths["embed_url"]
-        replacement = next(row for row in download_map() if row["work_id"] == password_id)
-        assert replacement["embed_url"] == base + paths["embed_url"]
+        pages = [venue + "/screenings/premiere", venue + "/screenings/matinee"]
+        page.goto(base + "/operator/videos/" + password_id)
+        page.get_by_label("Pages that embed this video").fill("\n".join(pages + pages[:1]))
+        page.get_by_role("button", name="Save video details").click()
+        expect(page.locator("#detailsStatus")).to_have_text("Video details saved.")
+        details_url = base + work_path(password_id, "/details")
+        assert requests.get(details_url, timeout=10).status_code == 403
+        details = requests.get(details_url, headers=auth, timeout=10).json()
+        assert details["embed_pages"] == pages
+        bad = requests.put(details_url, headers=auth, timeout=10,
+                           json=dict(details, embed_pages=["https://user:secret@example.org/"]))
+        assert bad.status_code == 400
+        replacements = [row for row in download_map() if row["work_id"] == password_id]
+        assert [row["external_page"] for row in replacements] == pages
+        assert {row["embed_url"] for row in replacements} == {base + paths["embed_url"]}
+        replacement = replacements[0]
         museum.embed = replacement["embed_url"]
-        viewer.goto(venue)
+        viewer.goto(replacement["external_page"])
         frame = viewer.frame_locator("iframe")
         frame.get_by_label("Video password").fill(password)
         frame.get_by_role("button", name="Watch video").click()
@@ -121,6 +135,7 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         assert requests.get(base + previously_unlisted_media, timeout=10).status_code == 404
         response = requests.get(base + work_path(unlisted), headers=auth, timeout=10)
         assert response.json()["watch"] is None
+        assert requests.get(details_url, headers=auth, timeout=10).json()["embed_pages"] == pages
     finally:
         source.privacy_fixture = None
         museum.embed = previous_embed
@@ -128,6 +143,7 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
 
     return dict(unlisted_key_and_source_map=True, browser_playback_width=320,
                 preview_restored_on_reload=True, protected_map_download=True, controlled_embed_rollback=True,
+                known_embed_pages_survive_reimport=True,
                 replacement_password_and_embed_allowlist=True, embed_only_preserved=True,
                 missing_source_allowlist_stays_private=True, repeat_import_revokes_old_access=True)
 

@@ -55,6 +55,7 @@ def export(collection, database, target):
                 "library_star",
                 "library_title",
                 "library_thumbnail",
+                "library_embed_pages",
                 "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
@@ -68,6 +69,8 @@ def export(collection, database, target):
                     tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
+            for row in record.get("library_embed_pages", []):
+                row["pages"] = json.loads(row["pages"])
             if "video_rating_widget" in record:
                 record["video_rating_summary"] = [dict(row) for row in db.execute(
                     """SELECT work,version,mode,score,count(*) AS responses FROM video_rating

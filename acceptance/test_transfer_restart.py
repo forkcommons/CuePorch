@@ -138,4 +138,15 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
         assert completed["showcases"][0]["target"]
         library = requests.get(base + "/api/library", headers=auth, timeout=10).json()
         assert {work["id"] for work in completed["works"]} == {work["id"] for work in library}
+        work_id = completed["works"][0]["id"]
+        details_url = base + f"/api/library/work/{work_id}/details"
+        details = requests.get(details_url, headers=auth, timeout=10).json()
+        pages = ["https://station.example/archive/meeting"]
+        requests.put(details_url, headers=auth, timeout=10,
+                     json=dict(details, embed_pages=pages)).raise_for_status()
         close(process, base, shell_auth)
+        export = tmp_path / "portable"
+        subprocess.run([sys.executable, str(ROOT / "export_institution.py"), str(home / "collection"),
+                        str(home / "institution.sqlite"), str(export)], check=True)
+        exported = json.loads((export / "rights-and-routes.json").read_text(encoding="utf8"))
+        assert exported["library_embed_pages"] == [{"work": work_id, "pages": pages}]

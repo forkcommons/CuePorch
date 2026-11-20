@@ -1,6 +1,7 @@
 """Version-independent editorial metadata for a retained video."""
 
 import json
+from urllib.parse import urlsplit
 
 from flask import abort, request
 
@@ -12,10 +13,32 @@ from media_tools import video_properties
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_video_details(
  work TEXT PRIMARY KEY, metadata TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS library_embed_pages(work TEXT PRIMARY KEY, pages TEXT NOT NULL);
 """
 LICENSES = {"by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd", "cc0"}
 CONTENT = {"language", "drugs", "violence", "nudity"}
 RATINGS = {"unrated", "all", "mature"}
+
+
+def parse_embed_pages(pages):
+    if not isinstance(pages, list) or len(pages) > 100:
+        abort(400, "Enter up to 100 pages where this video is embedded.")
+    cleaned = []
+    for value in pages:
+        if not isinstance(value, str) or not 1 <= len(url := value.strip()) <= 2048 or any(
+            char.isspace() or ord(char) < 32 or char == "\\" for char in url
+        ):
+            abort(400, "Enter one complete website URL per line.")
+        try:
+            parts = urlsplit(url)
+            valid = (parts.scheme in ("http", "https") and parts.hostname and parts.username is None
+                     and (parts.port is None or parts.port > 0))
+        except ValueError:
+            valid = False
+        if not valid:
+            abort(400, "Use HTTP or HTTPS page URLs without credentials.")
+        cleaned.append(url)
+    return list(dict.fromkeys(cleaned))
 
 
 def names(values):
@@ -124,9 +147,17 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
+            saved_pages = con.execute("SELECT pages FROM library_embed_pages WHERE work=?", (uid,)).fetchone()
+            embed_pages = json.loads(saved_pages[0]) if saved_pages else work.get("known_embed_pages", [])
+            if not isinstance(embed_pages, list):
+                embed_pages = []
             if request.method == "PUT":
                 body = request.get_json()
                 state = parse_details(body)
+                if "embed_pages" in body:
+                    embed_pages = parse_embed_pages(body["embed_pages"])
+                    con.execute("""INSERT INTO library_embed_pages VALUES(?,?)
+                        ON CONFLICT(work) DO UPDATE SET pages=excluded.pages""", (uid, json.dumps(embed_pages)))
                 save_title(con, work, body.get("title"))
                 con.execute(
                     """INSERT INTO library_video_details VALUES(?,?) ON CONFLICT(work) DO UPDATE SET
@@ -138,7 +169,7 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
         media = next((item for item in work["files"] if item["role"] == "original"), None) or playback(work)
         measured = video_properties(root / "objects" / media["sha256"]) if media else {}
         return dict(
-            **state, title=title,
+            **state, title=title, embed_pages=embed_pages,
             media=dict(**measured, format=media["format"], bytes=media["bytes"]) if media else None,
             duration_seconds=work.get("duration_seconds"),
             projection=work.get("source_projection"),

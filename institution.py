@@ -1299,6 +1299,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 if not library_privacy.blocked(con, row["work"])
                 and not library_privacy.protected_route(con, row["work"])
             }
+            embed_pages = {row["work"]: json.loads(row["pages"])
+                           for row in con.execute("SELECT work,pages FROM library_embed_pages")}
         buf = io.StringIO(newline="")
         csvout = csv.writer(buf)
         csvout.writerow(
@@ -1322,7 +1324,7 @@ def create_app(root, database, operator, institution, simulation=None):
             else:
                 paths = dict(watch="/watch/" + prefix if kind else None,
                              embed_url="/embed/" + prefix if kind else None)
-            for site in w.get("known_embed_pages", []) or [""]:
+            for site in embed_pages.get(w["id"], w.get("known_embed_pages", [])) or [""]:
                 csvout.writerow(
                     [
                         w["source_id"],

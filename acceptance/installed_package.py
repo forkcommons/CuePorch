@@ -1,4 +1,4 @@
-"""Exercise the actual installed launcher on a new institution and on 0.1.0 data."""
+"""Exercise the installed launcher or run a fresh headless source rehearsal."""
 
 import argparse, hashlib, json, os, socket, subprocess, sys, tempfile, threading, time
 from contextlib import ExitStack
@@ -45,6 +45,7 @@ p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("baseline", type=Path)
 p.add_argument("report", type=Path)
+p.add_argument("--source", action="store_true", help="Run desktop_service.py as the launcher for a fresh rehearsal")
 p.add_argument("--review-push", action="store_true", help="Use the local encrypted review push receiver")
 p.add_argument("--caption-speech", type=Path, help="Synthetic narration for the installed local TextFlowKit runtime")
 p.add_argument(
@@ -73,11 +74,19 @@ p.add_argument("--analytics-unique", action="store_true", help="Check distinct v
 p.add_argument("--analytics-captions", action="store_true", help="Check usage of captions actually shown during playback")
 p.add_argument("--analytics-community", action="store_true", help="Check audience likes and published comment reporting")
 args = p.parse_args()
+if args.source and (args.only != "fresh" or args.windows_setup or args.windows_baseline_setup):
+    p.error("--source requires --only fresh and runs without an installer")
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
 if args.only == "0.2.0" and not args.windows_baseline_setup:
     p.error("--only 0.2.0 requires --windows-baseline-setup")
 results = []
+
+
+def save_report():
+    execution = "source" if args.source else "installed"
+    report = [dict(result, execution=execution) for result in results]
+    args.report.write_text(json.dumps(report, indent=2), encoding="utf8")
 
 
 def serve(server):
@@ -127,7 +136,7 @@ def wait_for_desktop(proc, home):
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"{home.name}: installed service exited with code {proc.returncode}")
+            raise RuntimeError(f"{home.name}: CuePorch service exited with code {proc.returncode}")
         try:
             return json.loads(marker.read_text(encoding="utf8"))["url"]
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
@@ -135,6 +144,16 @@ def wait_for_desktop(proc, home):
     service_log = home / "service.log"
     log_size = service_log.stat().st_size if service_log.is_file() else None
     raise TimeoutError(f"{home.name}: no readable desktop session after 60 seconds. Service log bytes: {log_size}")
+
+
+def start_candidate(home, env):
+    launcher = str(args.launcher.resolve())
+    if args.source:
+        home.mkdir(parents=True, exist_ok=True)
+        with (home / "service.log").open("ab") as log:
+            return subprocess.Popen([sys.executable, launcher, "--data", str(home)],
+                                    stdout=log, stderr=log, env=env)
+    return subprocess.Popen([launcher, "--data", str(home), "--headless"], env=env)
 
 
 def prepare_previous_windows(home, source, venue):
@@ -240,7 +259,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         for version in baselines:
             if args.only and args.only != (version or "fresh"):
                 continue
-            print(f"Running installed baseline {version or 'fresh'}", flush=True)
+            target = "source" if args.source else "installed"
+            print(f"Running {target} rehearsal ({version or 'fresh'})", flush=True)
             upgrade = version is not None
             home = root / ("upgrade-" + version if upgrade else "new")
             if version == "0.2.0":
@@ -271,15 +291,13 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                 port = sock.getsockname()[1]
             base = f"http://127.0.0.1:{port}"
             analytics_env = {"CUEPORCH_ANALYTICS_PROXIES": PROXY_ADDRESS} if args.analytics_region_proxy else {}
-            proc = subprocess.Popen(
-                [str(args.launcher.resolve()), "--data", str(home), "--headless"],
-                env=dict(
-                    os.environ,
-                    CUEPORCH_DESKTOP_PORT=str(port),
-                    CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
-                    CUEPORCH_SIMULATOR=source,
-                ) | (push_fixture["env"] if push_fixture else {}) | analytics_env,
-            )
+            candidate_env = dict(
+                os.environ,
+                CUEPORCH_DESKTOP_PORT=str(port),
+                CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
+                CUEPORCH_SIMULATOR=source,
+            ) | (push_fixture["env"] if push_fixture else {}) | analytics_env
+            proc = start_candidate(home, candidate_env)
             try:
                 desktop = wait_for_desktop(proc, home)
                 with sync_playwright() as pw:
@@ -387,7 +405,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             results[-1]["cutover"] = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     if args.discovery_only or args.audience_accounts_only:
                         discovery = check_discovery(page, browser, base, auth, replacement)
@@ -401,7 +419,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             results[-1]["audience_comments"] = check_audience_comments(browser, base, auth, replacement)
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     if args.audio_tracks_only:
                         audio = check_audio_tracks(page, browser, base, auth, museum, venue, replacement)
@@ -410,7 +428,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             playback_width=width, setup_seconds=setup_seconds, audio=audio))
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     if args.analytics_only:
                         if args.analytics_captions:
@@ -435,7 +453,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             advanced_analytics=advanced))
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
@@ -524,7 +542,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         )
                     )
                 shut_down(proc, base, desktop, home)
-                args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                save_report()
             finally:
                 if proc.poll() is None:
                     import psutil
