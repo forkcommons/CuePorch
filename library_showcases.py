@@ -325,6 +325,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 form = None if internal else library_registration.active(con, "showcase", row["id"])
                 form_revision = form["revision"] if form else None
                 scope = [row["id"], row["revision"], form_revision, origin, embed]
+                admitted = False
+                sign_on = None
                 if enrollment:
                     try:
                         issued = registration.loads(enrollment, max_age=1200)
@@ -332,10 +334,10 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         abort(403, "Open the registration form again.")
                     if not form or scope != issued:
                         abort(403, "Open the registration form again.")
-                    form_error = library_registration.enroll(con, "showcase", row["id"], form, request.form, request.args)
-                if form and (not enrollment or form_error):
+                    admitted, sign_on, form_error = library_registration.admit(con, "showcase", row["id"], form, scope)
+                if form and not admitted:
                     form_token = registration.dumps(scope)
-                    registration_view = library_registration.presentation(con, form)
+                    registration_view = library_registration.presentation(con, form, sign_on)
                 logo = brand_image(con, values["logo"])
                 if not form_token:
                     works = library()

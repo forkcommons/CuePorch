@@ -3,13 +3,18 @@
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import re
 import secrets
+from socketserver import TCPServer
+import ssl
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 import unittest
+from unittest.mock import patch
 import uuid
 
 from PIL import Image
@@ -18,6 +23,8 @@ import requests
 from werkzeug.serving import make_server
 
 from browser import chromium
+from installed_simulcast import tls_certificate
+from test_team_invitation_delivery import Relay
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
@@ -29,6 +36,22 @@ class RegistrationAppearance(unittest.TestCase):
             root = Path(cleanup.enter_context(TemporaryDirectory()))
             (root / "objects").mkdir()
             (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
+            cert, key = tls_certificate(root)
+            relay = cleanup.enter_context(TCPServer(("127.0.0.1", 0), Relay))
+            relay.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            relay.tls.load_cert_chain(cert, key)
+            relay.deliveries = []
+            relay.delivered = Event()
+            listener = Thread(target=relay.serve_forever, daemon=True)
+            listener.start()
+            cleanup.callback(listener.join)
+            cleanup.callback(relay.shutdown)
+            cleanup.enter_context(patch.dict(os.environ, {
+                "CUEPORCH_PUBLIC_URL": "https://cueporch-registration.example.test",
+                "CUEPORCH_SMTP_HOST": "127.0.0.1", "CUEPORCH_SMTP_PORT": str(relay.server_address[1]),
+                "CUEPORCH_SMTP_FROM": "crew@example.test", "CUEPORCH_SMTP_USER": "fixture",
+                "CUEPORCH_SMTP_PASSWORD": "mail-credential", "SSL_CERT_FILE": str(cert),
+            }))
             operator = secrets.token_urlsafe(32)
             app = create_app(root, root / "workspace.sqlite", operator, "station")
             for name, stop in app.extensions.items():
@@ -81,7 +104,7 @@ class RegistrationAppearance(unittest.TestCase):
                     start=(now + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M"),
                     end=(now + timedelta(minutes=55)).strftime("%Y-%m-%dT%H:%M"))))
 
-            def check_design(view):
+            def check_design(view, heading="Register for screenings"):
                 gate = view.locator(".registration-gate")
                 expect(gate).to_have_attribute("data-alignment", "end")
                 self.assertEqual(["flex-end", "rgb(15, 49, 50)", "rgb(97, 37, 92)", "0.62"], gate.evaluate("""
@@ -95,7 +118,7 @@ class RegistrationAppearance(unittest.TestCase):
                     "async node => {await node.decode();return node.naturalWidth}"))
                 self.assertEqual(80, gate.locator(".registration-background").evaluate(
                     "async node => {await node.decode();return node.naturalWidth}"))
-                expect(view.get_by_role("heading", name="Register for screenings")).to_be_visible()
+                expect(view.get_by_role("heading", name=heading)).to_be_visible()
 
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 page = browser.new_page()
@@ -123,9 +146,19 @@ class RegistrationAppearance(unittest.TestCase):
                 editor.get_by_label("Form preview device").select_option("mobile")
                 self.assertEqual(390, frame.evaluate("node => node.getBoundingClientRect().width"))
                 check_design(preview)
+                editor.get_by_label("Preview screen").select_option("sign-on")
+                editor.get_by_role("button", name="Preview registration").click()
+                check_design(preview, "Already registered")
+                expect(preview.get_by_role("button", name="Send code")).to_be_visible()
+                editor.get_by_label("Form preview device").select_option("desktop")
+                self.assertEqual(800, frame.evaluate("node => node.getBoundingClientRect().width"))
+                check_design(preview, "Already registered")
+                self.assertEqual([], relay.deliveries)
                 self.assertFalse(send("GET", endpoint)["settings"]["enabled"])
                 self.assertEqual(403, api.post("/api/registration/preview", json={}).status_code)
-                editor.get_by_role("button", name="Save registration").click()
+                save_button = editor.get_by_role("button", name="Save registration")
+                save_button.scroll_into_view_if_needed()
+                save_button.click()
                 expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
 
                 settings = send("GET", endpoint)
@@ -151,7 +184,7 @@ class RegistrationAppearance(unittest.TestCase):
                     with browser.new_context(viewport=viewport) as guests:
                         visitor = guests.new_page()
                         targets = [(f"/watch/work/{work}", True), (gallery["watch"], True), (event["watch"], False)]
-                        for path, playable in targets:
+                        for index, (path, playable) in enumerate(targets):
                             visitor.goto(base + path)
                             if path == targets[0][0]:
                                 expect(visitor.locator(".registration-gate")).to_have_count(0)
@@ -159,7 +192,8 @@ class RegistrationAppearance(unittest.TestCase):
                                 visitor.get_by_role("button", name="Watch video").click()
                             check_design(visitor)
                             expect(visitor.locator("video")).to_have_count(0)
-                            visitor.get_by_label("Email", exact=True).fill("visitor@example.test")
+                            email = f"visitor-{viewport['width']}-{index}@example.test"
+                            visitor.get_by_label("Email", exact=True).fill(email)
                             visitor.get_by_role("button", name="Register and watch").click()
                             expect(visitor.locator(".registration-gate")).to_have_count(0)
                             if playable:
@@ -168,6 +202,77 @@ class RegistrationAppearance(unittest.TestCase):
                             else:
                                 expect(visitor.locator("#eventStatus")).to_have_text("Scheduled")
                                 self.assertTrue(visitor.locator("#eventLobby").get_attribute("data-viewer-grant"))
+
+                            visitor.goto(base + path)
+                            if index == 0:
+                                visitor.get_by_label("Video password").fill(pw)
+                                visitor.get_by_role("button", name="Watch video").click()
+                            visitor.get_by_role("button", name="Already registered?").click()
+                            check_design(visitor, "Already registered")
+                            visitor.get_by_label("Email", exact=True).fill(email.upper())
+                            relay.delivered.clear()
+                            visitor.get_by_role("button", name="Send code").click()
+                            expect(visitor.get_by_label("Registration code")).to_be_visible()
+                            self.assertTrue(relay.delivered.wait(5), "No code reached the TLS fixture")
+                            message = relay.deliveries[-1]
+                            self.assertEqual(email, message["To"])
+                            code = re.search(r"\b[0-9]{8}\b", message.get_content())[0]
+                            details = {"registration_action": "verify", "return_code": code,
+                                       "return_challenge": visitor.locator("[name=return_challenge]").input_value(),
+                                       "enrollment": visitor.locator("[name=enrollment]").input_value()}
+                            if index == 0:
+                                other = guests.new_page()
+                                other.goto(base + gallery["watch"])
+                                wrong_scope = details | {"enrollment": other.locator("[name=enrollment]").input_value()}
+                                self.assertEqual(422, other.request.post(other.url, form=wrong_scope).status)
+                                other.close()
+                                visitor.get_by_label("Registration code").fill("00000000" if code != "00000000" else "99999999")
+                                visitor.get_by_role("button", name="Open registration").click()
+                                expect(visitor.get_by_role("alert")).to_have_text("The code was invalid or expired.")
+                            visitor.get_by_label("Registration code").fill(code)
+                            visitor.get_by_role("button", name="Open registration").click()
+                            expect(visitor.locator(".registration-gate")).to_have_count(0)
+                            if playable:
+                                self.assertEqual(320, visitor.locator("video").evaluate(
+                                    "async v => {v.muted=true; await v.play(); return v.videoWidth;}"))
+                            else:
+                                self.assertTrue(visitor.locator("#eventLobby").get_attribute("data-viewer-grant"))
+                            self.assertEqual(422, visitor.request.post(base + path, form=details).status)
+
+                self.assertEqual(6, len(relay.deliveries))
+                with browser.new_context() as visitor_context:
+                    visitor = visitor_context.new_page()
+                    video_path = base + f"/watch/work/{work}"
+                    visitor.goto(video_path)
+                    visitor.get_by_label("Video password").fill(pw)
+                    visitor.get_by_role("button", name="Watch video").click()
+                    visitor.get_by_label("Email", exact=True).fill("old-consent@example.test")
+                    visitor.get_by_role("button", name="Register and watch").click()
+                    expect(visitor.locator("video")).to_be_visible()
+                    current = send("GET", endpoint)
+                    requirement = dict(id="field_new_consent", type="checkbox", label="I agree to the new terms", required=True)
+                    send("PUT", endpoint, {"revision": current["revision"],
+                        "settings": current["settings"] | {"fields": [requirement]}})
+                    visitor.goto(video_path)
+                    visitor.get_by_label("Video password").fill(pw)
+                    visitor.get_by_role("button", name="Watch video").click()
+                    visitor.get_by_role("button", name="Already registered?").click()
+                    visitor.get_by_label("Email", exact=True).fill("old-consent@example.test")
+                    relay.delivered.clear()
+                    visitor.get_by_role("button", name="Send code").click()
+                    expect(visitor.get_by_text("If that address has a registration", exact=False)).to_be_visible()
+                    self.assertFalse(relay.delivered.wait(1))
+                    visitor.get_by_role("button", name="Back to registration").click()
+                    expect(visitor.get_by_label("I agree to the new terms")).to_be_visible()
+                    expect(visitor.locator("video")).to_have_count(0)
+                    visitor.get_by_label("Email", exact=True).fill("old-consent@example.test")
+                    visitor.get_by_label("I agree to the new terms").check()
+                    visitor.get_by_role("button", name="Register and watch").click()
+                    expect(visitor.locator("video")).to_be_visible()
+                roster = f"/api/live-events/{event['id']}/{event['occurrences'][0]['id']}/registration/export"
+                exported = api.get(roster, headers=auth)
+                self.assertEqual(200, exported.status_code)
+                self.assertEqual(3, len(exported.get_data(as_text=True).splitlines()))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 
-from flask import Response, abort, make_response, render_template, request
+from flask import Response, abort, current_app, make_response, render_template, request
 
 from library_appearance import brand_image
 from library_interactivity import image_id, text_field, web_link
@@ -115,24 +115,29 @@ def check_images(con, settings):
         appearance[name] = image_id(con, appearance[name])
 
 
-def presentation(con, form):
+def presentation(con, form, sign_on=None):
     appearance = form["appearance"]
     return dict(form, logo_src=brand_image(con, appearance["logo"]),
-                background_src=brand_image(con, appearance["background_image"]))
+                background_src=brand_image(con, appearance["background_image"]),
+                can_sign_on=bool(current_app.extensions["registration_sign_on"].relay), sign_on=sign_on)
 
 
-def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_record=None):
-    address = fields.get("email", "").strip()
+def admit(con, kind, uid, form, scope, occurrence=None, on_record=None):
+    if request.form.get("registration_action"):
+        return current_app.extensions["registration_sign_on"].attempt(con, kind, uid, form, scope, occurrence)
+    error = enroll(con, kind, uid, form, request.form, request.args, on_record=on_record)
+    return error is None, None, error
+
+
+def answers_from(definition, fields):
     values = {}
-    if len(address) > 254 or not EMAIL.fullmatch(address):
-        return "Enter a valid email address."
     for field in ("first_name", "last_name"):
         mode = definition[field]
         if mode == "off":
             continue
         name = fields.get(field, "").strip()
         if len(name) > 80 or (mode == "required" and not name):
-            return "Enter the required name fields."
+            return "Enter the required name fields.", {}
         values[field] = name
     for field in definition["fields"]:
         key, form_type = field["id"], field["type"]
@@ -142,16 +147,37 @@ def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_r
         if form_type == "checkbox":
             value = answer == "yes"
             if field["required"] and not value:
-                return "Check the required boxes."
+                return "Check the required boxes.", {}
         else:
             value = answer
             if field["required"] and not value:
-                return "Complete all required fields."
+                return "Complete all required fields.", {}
             if form_type == "select" and value and value not in field["options"]:
-                return "Choose an option from the form."
+                return "Choose an option from the form.", {}
             if form_type == "text" and len(value) > 50:
-                return "Use up to 50 characters in each text response."
+                return "Use up to 50 characters in each text response.", {}
         values[key] = value
+    return None, values
+
+
+def meets_current_requirements(form, saved):
+    required = dict(form, fields=[field for field in form["fields"] if field["required"]])
+    for name in ("first_name", "last_name"):
+        if required[name] != "required":
+            required[name] = "off"
+    values = {key: "yes" if value is True else value for key, value in saved.items()
+              if isinstance(value, str) or value is True}
+    error, _ = answers_from(required, values)
+    return error is None
+
+
+def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_record=None):
+    address = fields.get("email", "").strip()
+    if len(address) > 254 or not EMAIL.fullmatch(address):
+        return "Enter a valid email address."
+    error, values = answers_from(definition, fields)
+    if error:
+        return error
     if definition["collect_utm"]:
         for key in UTM_FIELDS:
             value = query.get(key, "")[:250]
@@ -236,10 +262,13 @@ def register(app, tx, staff, get_work, protected_public):
         body = request.get_json()
         if not isinstance(body, dict):
             abort(422, "Choose a registration preview.")
+        screen = body.get("screen", "form")
+        if screen not in ("form", "sign-on"):
+            abort(422, "Choose a registration preview screen.")
         settings = validation(body.get("settings"), "event" if body.get("event") is True else "video")
         with tx() as con:
             check_images(con, settings)
-            form = presentation(con, settings)
+            form = presentation(con, settings, {"step": "email"} if screen == "sign-on" else None)
         response = make_response(dict(html=render_template(
             "registration_preview.html", registration=form, enrollment="",
             registration_preview=True, offer_attendee_sharing=form["attendance_analytics"],

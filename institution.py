@@ -80,6 +80,7 @@ import library_trash
 import library_upload
 import library_worker
 import media_bandwidth
+import registration_return
 import review_links
 import review_push
 import subtitle_translation_batches
@@ -188,6 +189,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
+            + registration_return.SCHEMA
             + library_events.SCHEMA
             + event_api.SCHEMA
             + event_webhooks.SCHEMA
@@ -245,6 +247,9 @@ def create_app(root, database, operator, institution, simulation=None):
         raise ValueError("Each operator credential must contain at least 24 characters")
 
     team_origin = library_analytics.source_origin(os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+    app.extensions["registration_sign_on"] = registration_return.SignOn(
+        tx, operator, team_origin, app.extensions["account_reset_delivery"],
+    )
 
     def team_member(con=None):
         if request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:

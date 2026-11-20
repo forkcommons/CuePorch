@@ -452,10 +452,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 enrollment or (request.method == "POST"
                                and try_password(con, operator, uid, request.form.get("password", ""), row["password_hash"]))
             )
-            form_error = None
+            admitted = False
+            sign_on = form_error = None
             if enrollment:
-                form_error = library_registration.enroll(con, "video", uid, form, request.form, request.args)
-            needs_registration = not locked and form and (not enrollment or form_error)
+                admitted, sign_on, form_error = library_registration.admit(con, "video", uid, form, enrollment_scope)
+            needs_registration = not locked and form and not admitted
             can_watch = not locked and not needs_registration
             surface = "embed" if embed else "watch"
             details = details_for(con, work) if can_watch else None
@@ -510,7 +511,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if duration and start >= duration:
                 start = 0
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
-            registration_view = library_registration.presentation(con, form) if form_token else None
+            registration_view = library_registration.presentation(con, form, sign_on) if form_token else None
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             save_kind="work" if mode == "public" and not embed else None, save_slug=uid,

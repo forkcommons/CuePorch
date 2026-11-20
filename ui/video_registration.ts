@@ -196,11 +196,13 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   }
 
   const size = field<HTMLSelectElement>(form, "preview_size");
+  const screen = field<HTMLSelectElement>(form, "preview_screen");
   size.onchange = () => { preview.dataset.size = size.value; };
   showPreview.onclick = () => {
     if (!form.reportValidity()) return;
     void useDraft(async (settings, context) => {
-      const response = await request<{html: string}>("/api/registration/preview", {settings, event: !!attendeeAnalytics});
+      const response = await request<{html: string}>("/api/registration/preview",
+        {settings, screen: screen.value, event: !!attendeeAnalytics});
       if (context !== current || form.hidden) return;
       preview.dataset.size = size.value;
       preview.srcdoc = response.html;

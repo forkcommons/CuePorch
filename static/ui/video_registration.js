@@ -160,12 +160,13 @@ export function setupRegistration(call, download, credential) {
         busy = showPreview.disabled = save.disabled = presets.disabled = false;
     }
     const size = field(form, "preview_size");
+    const screen = field(form, "preview_screen");
     size.onchange = () => { preview.dataset.size = size.value; };
     showPreview.onclick = () => {
         if (!form.reportValidity())
             return;
         void useDraft(async (settings, context) => {
-            const response = await request("/api/registration/preview", { settings, event: !!attendeeAnalytics });
+            const response = await request("/api/registration/preview", { settings, screen: screen.value, event: !!attendeeAnalytics });
             if (context !== current || form.hidden)
                 return;
             preview.dataset.size = size.value;

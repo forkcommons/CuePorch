@@ -1519,6 +1519,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         enrollment = None
         form_error = None
         registration_view = None
+        sign_on = None
         archives = None
         latest = latest_slot = None
         latest_captioned = False
@@ -1574,12 +1575,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         if offer_sharing and request.form.get("share_watch_time") == "yes":
                             sharing = event_registrants.share(con, registrant)
 
-                    form_error = library_registration.enroll(
-                        con, "event", row["id"], form, request.form, request.args,
+                    admitted, sign_on, form_error = library_registration.admit(
+                        con, "event", row["id"], form, scope, shown["id"],
                         on_record=remember)
-                    if not form_error:
+                    if admitted:
                         grant = guests.dumps([*scope, None, sharing] if sharing else scope)
-                        if mail_configured and event["visibility"] in event_mail.WATCHABLE:
+                        if (mail_configured and not request.form.get("registration_action")
+                                and event["visibility"] in event_mail.WATCHABLE):
                             _, rules = event_mail.settings(con, row["id"])
                             if event_mail.enabled(rules):
                                 attendee, created = event_attendance.issue(
@@ -1601,7 +1603,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                             grant = guests.dumps([*scope, joined])
                 if not grant and not json_status and not withdrawn:
                     enrollment = forms.dumps(scope)
-                    registration_view = library_registration.presentation(con, form)
+                    registration_view = library_registration.presentation(con, form, sign_on)
             if playlist_enabled and not joined and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
