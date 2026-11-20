@@ -16,6 +16,13 @@ const access = document.querySelector<HTMLFormElement>("#teamIdentityAccess")!;
 const credential = access.querySelector<HTMLInputElement>("input")!;
 const settings = document.querySelector<HTMLFormElement>("#teamSamlSettings")!;
 const feedback = document.querySelector<HTMLElement>("#teamIdentityStatus")!;
+const provisioning = document.querySelector<HTMLElement>("#teamProvisioning")!;
+const provisioningStatus = document.querySelector<HTMLElement>("#teamProvisioningStatus")!;
+const endpoint = document.querySelector<HTMLInputElement>("#teamProvisioningEndpoint")!;
+const createToken = document.querySelector<HTMLButtonElement>("#createProvisioningToken")!;
+const revokeToken = document.querySelector<HTMLButtonElement>("#revokeProvisioningToken")!;
+const tokenLabel = document.querySelector<HTMLLabelElement>("#newProvisioningToken")!;
+const tokenValue = tokenLabel.querySelector("input")!;
 let authorization = sessionStorage.getItem("cueporchOperator") || "";
 let revision = "";
 let busy = false;
@@ -47,6 +54,7 @@ async function update(method: "GET" | "PUT", body: object = {}) {
   try {
     const response = await checked(await teamRequest("identity", method, body, authorization));
     render(await response.json());
+    await provisioningRequest("GET");
   } catch (error) {
     feedback.textContent = error instanceof Error ? error.message : String(error);
   } finally {
@@ -54,6 +62,34 @@ async function update(method: "GET" | "PUT", body: object = {}) {
     settings.removeAttribute("aria-busy");
   }
 }
+
+async function provisioningRequest(method: "GET" | "POST" | "DELETE") {
+  const response = await checked(await teamRequest("identity/provisioning", method, {}, authorization));
+  const result = await response.json();
+  provisioning.hidden = !result.available;
+  endpoint.value = result.endpoint;
+  createToken.textContent = result.active ? "Rotate provisioning token" : "Create provisioning token";
+  revokeToken.hidden = !result.active;
+  tokenLabel.hidden = !result.token;
+  tokenValue.value = result.token || "";
+  provisioningStatus.textContent = result.active ? "Provisioning is enabled." : "Provisioning is off.";
+  if (result.token) tokenValue.select();
+}
+
+async function changeProvisioning(method: "POST" | "DELETE") {
+  if (busy) return;
+  busy = true;
+  try {
+    await provisioningRequest(method);
+  } catch (error) {
+    provisioningStatus.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    busy = false;
+  }
+}
+
+createToken.onclick = () => void changeProvisioning("POST");
+revokeToken.onclick = () => void changeProvisioning("DELETE");
 
 access.onsubmit = event => {
   event.preventDefault();

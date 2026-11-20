@@ -12,6 +12,7 @@ interface Audit {actor: string; action: string; subject: string; detail: string 
 interface GroupFolder {id: string; title: string}
 interface Group {
   id: string; name: string; revision: string; members: string[]; folders: string[]; edit_folders: string[];
+  managed?: boolean;
   unavailable_folders?: GroupFolder[];
 }
 interface GroupOptions {
@@ -145,7 +146,7 @@ shareFolderButton.onclick = () => void task(async () => {
   await loadShares();
 }, "Folder shared.");
 
-function checkbox(name: string, value: string, label: string, selected: boolean) {
+function checkbox(name: string, value: string, label: string, selected: boolean, disabled = false) {
   const row = document.createElement("div");
   const caption = document.createElement("label");
   const input = document.createElement("input");
@@ -153,6 +154,7 @@ function checkbox(name: string, value: string, label: string, selected: boolean)
   input.name = name;
   input.value = value;
   input.checked = selected;
+  input.disabled = disabled;
   caption.append(input, " ", label);
   row.append(caption);
   return row;
@@ -165,9 +167,11 @@ function selectedGroup() {
 function showGroup() {
   const group = selectedGroup();
   groupName.value = group?.name ?? "";
-  deleteGroup.disabled = !group;
+  groupName.readOnly = Boolean(group?.managed);
+  deleteGroup.disabled = !group || Boolean(group.managed);
+  document.querySelector<HTMLElement>("#teamGroupManagement")!.hidden = !group?.managed;
   groupMembers.replaceChildren(...groupOptions.members.map(member =>
-    checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false)));
+    checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false, group?.managed)));
   groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder => {
     const value = group?.edit_folders.includes(folder.id) ? "edit" : group?.folders.includes(folder.id) ? "view" : "";
     const select = permissionSelect(value, true);

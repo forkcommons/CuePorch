@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import account_email
 import account_email_factor
 import team_saml
+import team_scim
 import account_recovery
 import account_totp
 import creator_profiles
@@ -282,6 +283,28 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         limit, authenticator, reset_password,
     )
 
+    def revoke_member_access(con, uid):
+        con.execute("DELETE FROM team_session WHERE member=?", (uid,))
+        authenticator.forget(con, uid)
+        email_factor.forget(con, uid)
+        email_security.forget(con, uid)
+        con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
+        con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
+        con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
+            WHERE id IN (SELECT team_group FROM team_group_member WHERE member=?)""", (uid,))
+        con.execute("DELETE FROM team_group_member WHERE member=?", (uid,))
+
+    def delete_group(con, uid):
+        con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
+        con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
+        con.execute("""UPDATE team_workspace_link SET revision=lower(hex(randomblob(16)))
+            WHERE id IN (SELECT workspace FROM team_workspace_link_group WHERE team_group=?)""", (uid,))
+        con.execute("DELETE FROM team_workspace_link_group WHERE team_group=?", (uid,))
+        con.execute("DELETE FROM team_scim_group WHERE team_group=?", (uid,))
+        con.execute("DELETE FROM team_group WHERE id=?", (uid,))
+
+    team_scim.register(app, tx, origin, operator_name, ownership, mutation, note, revoke_member_access, delete_group)
+
     def eligible_works(con, ids=None):
         return {work["id"]: work for work in read_works() if (ids is None or work["id"] in ids)
                 and playback(work) and grant_available(con, work["id"])}
@@ -504,15 +527,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(409, "Transfer ownership before changing this member's role or removing access.")
             if request.method == "DELETE":
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
-                con.execute("DELETE FROM team_session WHERE member=?", (uid,))
-                authenticator.forget(con, uid)
-                email_factor.forget(con, uid)
-                email_security.forget(con, uid)
-                con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
-                con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
-                con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))
-                    WHERE id IN (SELECT team_group FROM team_group_member WHERE member=?)""", (uid,))
-                con.execute("DELETE FROM team_group_member WHERE member=?", (uid,))
+                revoke_member_access(con, uid)
                 note(con, actor, "removed", uid, previous)
             elif (role := role_from(body)) != previous:
                 con.execute("UPDATE team_member SET role=? WHERE id=?", (role, uid))
@@ -533,8 +548,9 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             members = [dict(row) for row in con.execute("""SELECT id,name,email FROM team_member
                 WHERE removed IS NULL ORDER BY name COLLATE NOCASE,email""")]
             folders = [dict(row) for row in visible_folders(con)]
-            groups = {row["id"]: dict(row, members=[], folders=[], edit_folders=[]) for row in con.execute(
-                "SELECT id,name,revision FROM team_group ORDER BY name COLLATE NOCASE")}
+            groups = {row["id"]: dict(row, managed=bool(row["managed"]), members=[], folders=[], edit_folders=[]) for row in con.execute(
+                """SELECT g.id,g.name,g.revision,(s.team_group IS NOT NULL) AS managed
+                    FROM team_group g LEFT JOIN team_scim_group s ON s.team_group=g.id ORDER BY g.name COLLATE NOCASE""")}
             for group_id, member_id in con.execute("SELECT team_group,member FROM team_group_member"):
                 if group_id in groups:
                     groups[group_id]["members"].append(member_id)
@@ -557,28 +573,29 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         uid = str(group or uuid.uuid4())
         with tx() as con:
             actor = manager(con)
+            managed = False
             if group:
                 current = con.execute("SELECT name,revision FROM team_group WHERE id=?", (uid,)).fetchone()
                 if current is None:
                     abort(404)
                 if body.get("revision") != current["revision"]:
                     abort(409, "This group changed. Reload it before saving.")
+                managed = con.execute("SELECT 1 FROM team_scim_group WHERE team_group=?", (uid,)).fetchone() is not None
             if request.method == "DELETE":
-                con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
-                con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
-                con.execute("""UPDATE team_workspace_link SET revision=lower(hex(randomblob(16)))
-                    WHERE id IN (SELECT workspace FROM team_workspace_link_group WHERE team_group=?)""", (uid,))
-                con.execute("DELETE FROM team_workspace_link_group WHERE team_group=?", (uid,))
-                con.execute("DELETE FROM team_group WHERE id=?", (uid,))
+                if managed:
+                    abort(409, "Remove this group from the identity provider.")
+                delete_group(con, uid)
                 note(con, actor, "group_removed", uid, current["name"])
                 return private("", 204)
             name = body.get("name")
-            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 64:
+            if managed:
+                name = current["name"]
+            elif not isinstance(name, str) or not 1 <= len(name.strip()) <= 64:
                 abort(400, "Enter a group name of up to 64 characters.")
             name = name.strip()
             if con.execute("SELECT 1 FROM team_group WHERE name=? COLLATE NOCASE AND id<>?", (name, uid)).fetchone():
                 abort(409, "A group already has this name.")
-            members = group_selection(body.get("members"), {row[0] for row in con.execute(
+            members = [] if managed else group_selection(body.get("members"), {row[0] for row in con.execute(
                 "SELECT id FROM team_member WHERE removed IS NULL")}, "members")
             available = {row["id"] for row in visible_folders(con)}
             existing = {row[0] for row in con.execute("""SELECT g.folder FROM team_group_folder g
@@ -588,9 +605,10 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             revision = uuid.uuid4().hex
             con.execute("""INSERT INTO team_group VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,revision=excluded.revision""", (uid, name, revision))
-            con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
+            if not managed:
+                con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
+                con.executemany("INSERT INTO team_group_member VALUES(?,?)", [(uid, member) for member in members])
             con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
-            con.executemany("INSERT INTO team_group_member VALUES(?,?)", [(uid, member) for member in members])
             con.executemany("INSERT INTO team_group_folder VALUES(?,?,?)", [
                 (uid, folder, "edit" if folder in editors else "view") for folder in folders
             ])

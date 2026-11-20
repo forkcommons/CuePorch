@@ -3,6 +3,13 @@ const access = document.querySelector("#teamIdentityAccess");
 const credential = access.querySelector("input");
 const settings = document.querySelector("#teamSamlSettings");
 const feedback = document.querySelector("#teamIdentityStatus");
+const provisioning = document.querySelector("#teamProvisioning");
+const provisioningStatus = document.querySelector("#teamProvisioningStatus");
+const endpoint = document.querySelector("#teamProvisioningEndpoint");
+const createToken = document.querySelector("#createProvisioningToken");
+const revokeToken = document.querySelector("#revokeProvisioningToken");
+const tokenLabel = document.querySelector("#newProvisioningToken");
+const tokenValue = tokenLabel.querySelector("input");
 let authorization = sessionStorage.getItem("cueporchOperator") || "";
 let revision = "";
 let busy = false;
@@ -32,6 +39,7 @@ async function update(method, body = {}) {
     try {
         const response = await checked(await teamRequest("identity", method, body, authorization));
         render(await response.json());
+        await provisioningRequest("GET");
     }
     catch (error) {
         feedback.textContent = error instanceof Error ? error.message : String(error);
@@ -41,6 +49,35 @@ async function update(method, body = {}) {
         settings.removeAttribute("aria-busy");
     }
 }
+async function provisioningRequest(method) {
+    const response = await checked(await teamRequest("identity/provisioning", method, {}, authorization));
+    const result = await response.json();
+    provisioning.hidden = !result.available;
+    endpoint.value = result.endpoint;
+    createToken.textContent = result.active ? "Rotate provisioning token" : "Create provisioning token";
+    revokeToken.hidden = !result.active;
+    tokenLabel.hidden = !result.token;
+    tokenValue.value = result.token || "";
+    provisioningStatus.textContent = result.active ? "Provisioning is enabled." : "Provisioning is off.";
+    if (result.token)
+        tokenValue.select();
+}
+async function changeProvisioning(method) {
+    if (busy)
+        return;
+    busy = true;
+    try {
+        await provisioningRequest(method);
+    }
+    catch (error) {
+        provisioningStatus.textContent = error instanceof Error ? error.message : String(error);
+    }
+    finally {
+        busy = false;
+    }
+}
+createToken.onclick = () => void changeProvisioning("POST");
+revokeToken.onclick = () => void changeProvisioning("DELETE");
 access.onsubmit = event => {
     event.preventDefault();
     authorization = credential.value;

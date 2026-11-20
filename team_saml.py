@@ -71,6 +71,13 @@ def canonical_https(origin):
     return origin.startswith("https://") and urlsplit(origin).netloc.casefold() == request.host.casefold()
 
 
+def require_owner(con, operator, ownership):
+    actor = operator(con)
+    if not actor or not ownership(con, actor)["can_transfer"]:
+        abort(403, "Only the workspace Owner or installation credential can configure identity.")
+    return actor
+
+
 def current_certificate(value):
     cert = x509.load_pem_x509_certificate(value.encode("ascii"))
     if not cert.not_valid_before_utc <= datetime.now(UTC) < cert.not_valid_after_utc:
@@ -215,17 +222,14 @@ def team_for_assertion(con, settings, subject, address, name, note):
         member = dict(id=uid, role=role)
     if member["role"] == "owner":
         return None
+    managed = con.execute("SELECT issuer FROM team_scim_user WHERE member=?", (member["id"],)).fetchone()
+    if managed and managed["issuer"] != issuer:
+        return None
     result = con.execute("INSERT OR IGNORE INTO team_saml_identity VALUES(?,?,?)", (issuer, subject, member["id"]))
     return member if result.rowcount else None
 
 
 def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note, limit):
-    def settings_actor(con):
-        actor = operator(con)
-        if not actor or not ownership(con, actor)["can_transfer"]:
-            abort(403, "Only the workspace Owner or installation credential can configure SSO.")
-        return actor
-
     def available():
         if not canonical_https(origin):
             return False
@@ -242,7 +246,7 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
         secure = secure_site(origin)
         same_origin(secure)
         with tx() as con:
-            settings_actor(con)
+            require_owner(con, operator, ownership)
             revision, configuration = configured(con)
         if request.method in ("GET", "HEAD"):
             return private(dict(revision=revision, settings=configuration,
@@ -251,7 +255,7 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
         body = mutation(secure)
         configuration = validated_settings(body, origin)
         with tx() as con:
-            actor = settings_actor(con)
+            actor = require_owner(con, operator, ownership)
             previous, old = configured(con)
             if body.get("revision") != previous:
                 abort(409, "SSO settings changed. Reload before saving.")
@@ -262,6 +266,8 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             con.execute("DELETE FROM team_saml_request")
             con.execute("DELETE FROM team_session WHERE token_hash IN (SELECT token_hash FROM team_saml_session)")
             con.execute("DELETE FROM team_saml_session")
+            if not configuration["enabled"] or configuration["entity_id"] != old["entity_id"]:
+                con.execute("DELETE FROM team_scim_token")
             if configuration["enabled"] and configuration["force"]:
                 members = con.execute("SELECT id,email,role FROM team_member WHERE removed IS NULL AND role<>'owner'")
                 con.executemany("DELETE FROM team_session WHERE member=?",

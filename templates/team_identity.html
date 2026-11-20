@@ -37,6 +37,16 @@
     <p>Configure the workspace public HTTPS address to enable single sign-on.</p>
     {% endif %}
   </form>
+  <section id="teamProvisioning" hidden aria-labelledby="teamProvisioningHeading">
+    <h2 id="teamProvisioningHeading">SCIM provisioning</h2>
+    <label>Provisioning base URL <input id="teamProvisioningEndpoint" readonly></label>
+    <p id="teamProvisioningStatus" role="status"></p>
+    <button id="createProvisioningToken" type="button">Create provisioning token</button>
+    <button id="revokeProvisioningToken" type="button" hidden>Revoke provisioning token</button>
+    <label id="newProvisioningToken" hidden>Copy this token to your identity provider. CuePorch displays it once.
+      <input readonly autocomplete="off">
+    </label>
+  </section>
 </main>
 <script type="module" src="/static/ui/team_identity.js"></script>
 </html>

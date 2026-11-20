@@ -125,7 +125,7 @@ shareFolderButton.onclick = () => void task(async () => {
     folderPermission.value = "view";
     await loadShares();
 }, "Folder shared.");
-function checkbox(name, value, label, selected) {
+function checkbox(name, value, label, selected, disabled = false) {
     const row = document.createElement("div");
     const caption = document.createElement("label");
     const input = document.createElement("input");
@@ -133,6 +133,7 @@ function checkbox(name, value, label, selected) {
     input.name = name;
     input.value = value;
     input.checked = selected;
+    input.disabled = disabled;
     caption.append(input, " ", label);
     row.append(caption);
     return row;
@@ -143,8 +144,10 @@ function selectedGroup() {
 function showGroup() {
     const group = selectedGroup();
     groupName.value = group?.name ?? "";
-    deleteGroup.disabled = !group;
-    groupMembers.replaceChildren(...groupOptions.members.map(member => checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false)));
+    groupName.readOnly = Boolean(group?.managed);
+    deleteGroup.disabled = !group || Boolean(group.managed);
+    document.querySelector("#teamGroupManagement").hidden = !group?.managed;
+    groupMembers.replaceChildren(...groupOptions.members.map(member => checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false, group?.managed)));
     groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder => {
         const value = group?.edit_folders.includes(folder.id) ? "edit" : group?.folders.includes(folder.id) ? "view" : "";
         const select = permissionSelect(value, true);

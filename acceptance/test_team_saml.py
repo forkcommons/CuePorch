@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import subprocess
 import sys
 import tempfile
 from threading import Thread
@@ -27,6 +28,7 @@ from browser import chromium
 from installed_simulcast import free_port, tls_certificate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from cueporch import import_collection
 from institution import create_app
 
 
@@ -105,8 +107,16 @@ class TeamSAML(unittest.TestCase):
             cleanup.enter_context(patch.dict("os.environ", {"CUEPORCH_PUBLIC_URL": origin}))
             for worker in ("library_worker", "library_caption_jobs", "review_push"):
                 cleanup.enter_context(patch(f"institution.{worker}.start"))
-            (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
-            app = create_app(root, root / "institution.sqlite", operator, "station")
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=160x90:r=12:d=2",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(root / "clip.mp4")], check=True)
+            intake, collection = root / "intake.json", root / "collection"
+            intake.write_text(json.dumps(dict(institution="station", works=[dict(
+                title="Private station film", provider="fixture", source_id="film", source_url="",
+                files=[dict(role="playback", format="mp4", path="clip.mp4")],
+            )])))
+            import_collection(intake, collection)
+            work = json.loads((collection / "manifest.json").read_text())["works"][0]["id"]
+            app = create_app(collection, root / "institution.sqlite", operator, "station")
             for name in ("stop_event_capture", "stop_editor", "stop_file_links"):
                 cleanup.callback(app.extensions[name])
             self.server(cleanup, app, port, tls)
@@ -243,11 +253,112 @@ class TeamSAML(unittest.TestCase):
                             second_attempt = start(federated)
                             second_attempt.get_by_role("button", name="Continue as station crew").click()
                             expect(second_attempt.get_by_role("heading", name="Forbidden")).to_be_visible()
+                            self.verify_scim(page, admin, federated, start, origin, policy, operator_headers, work)
 
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
                     self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
                                     {row["action"] for row in audit})
                 browser.close()
+
+    def verify_scim(self, page, admin, federated, start, origin, policy, operator, work):
+        api = admin.request
+        page.get_by_role("button", name="Create provisioning token").click()
+        status = page.locator("#teamProvisioningStatus")
+        expect(status).to_have_text("Provisioning is enabled.")
+        token = page.locator("#newProvisioningToken input").input_value()
+        self.assertRegex(token, r"^[A-Za-z0-9_-]{43}$")
+        base = page.get_by_label("Provisioning base URL").input_value()
+        self.assertEqual(base, origin + "/scim/v2")
+        auth = {"Authorization": "Bearer " + token, "Content-Type": "application/scim+json"}
+        self.assertNotIn("token", api.get(origin + "/api/team/identity/provisioning", headers=operator).json())
+        self.assertEqual(api.get(base + "/Users", headers=operator).status, 401)
+        self.assertTrue(api.get(base + "/ServiceProviderConfig", headers=auth).json()["patch"]["supported"])
+
+        original = "scim@station.example"
+        new_address = "editor@station.example"
+        response = api.post(base + "/Users", headers=auth, data=dict(
+            userName=original, externalId="directory-person-001", name=dict(givenName="Private", familyName="Editor"),
+        ))
+        self.assertEqual((response.status, response.headers["content-type"]), (201, "application/scim+json"))
+        user = response.json()
+        self.assertEqual(user["displayName"], "Private Editor")
+        uri = response.headers["location"]
+
+        def update(path, *operations):
+            return api.patch(path, headers=auth, data={
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], "Operations": list(operations),
+            })
+
+        filtered = api.get(base + "/Users", headers=auth, params={"filter": f'userName eq "{original}"'}).json()
+        self.assertEqual((filtered["totalResults"], filtered["Resources"][0]["id"]), (1, user["id"]))
+        empty = api.get(base + "/Users", headers=auth, params={"startIndex": 2, "count": 1}).json()
+        self.assertEqual((empty["totalResults"], empty["itemsPerPage"]), (1, 0))
+        self.assertEqual(api.post(base + "/Users", headers=auth, data=dict(userName=original)).status, 409)
+        policy.update(subject="scim-directory-001", email=original)
+        screen = start(federated)
+        screen.get_by_role("button", name="Continue as station crew").click()
+        expect(screen.get_by_text("Private Editor · Contributor Plus")).to_be_visible()
+        media = origin + f"/team/video/{work}/media"
+        self.assertEqual(federated.request.get(media).status, 404)
+
+        group_response = api.post(base + "/Groups", headers=auth, data={
+            "displayName": "Station editors", "externalId": "directory-group-001",
+        })
+        self.assertEqual(group_response.status, 201)
+        group = group_response.json()
+        group_uri = group_response.headers["location"]
+        listed = api.get(base + "/Groups", headers=auth, params={
+            "filter": 'displayName eq "Station editors"', "excludedAttributes": "members",
+        }).json()
+        self.assertNotIn("members", listed["Resources"][0])
+        folder = api.post(origin + "/api/library/folders", headers=operator, data={"name": "Station work", "color": "#22555a"})
+        self.assertTrue(folder.ok)
+        self.assertTrue(api.put(origin + "/api/library/placement", headers=operator,
+                                data={"works": [work], "folder": folder.json()["id"]}).ok)
+        local_group = api.get(origin + "/api/team/groups", headers=operator).json()["groups"][0]
+        self.assertTrue(local_group["managed"])
+        local_uri = origin + "/api/team/groups/" + group["id"]
+        self.assertTrue(api.put(local_uri, headers=operator, data=dict(local_group, folders=[folder.json()["id"]])).ok)
+        add = dict(op="Add", path="members", value=[{"value": user["id"]}])
+        self.assertEqual(update(group_uri, add).status, 204)
+        screen.goto(origin + "/team")
+        screen.get_by_role("link", name="Private station film").click()
+        width = screen.locator("video").evaluate("async video => {video.muted=true; await video.play(); return video.videoWidth;}")
+        self.assertEqual(width, 160)
+        remove = dict(op="Remove", path=f'members[value eq "{user["id"]}"]')
+        self.assertEqual(update(group_uri, remove).status, 204)
+        self.assertEqual(federated.request.get(media).status, 404)
+        self.assertEqual(update(group_uri, add).status, 204)
+        self.assertTrue(federated.request.get(media).ok)
+        self.assertFalse(update(uri, dict(op="Replace", path="active", value=False)).json()["active"])
+        self.assertEqual(federated.request.get(media).status, 401)
+        gone = start(federated)
+        gone.get_by_role("button", name="Continue as station crew").click()
+        expect(gone.get_by_role("heading", name="Forbidden")).to_be_visible()
+        activated = update(uri, dict(op="Replace", value=dict(active=True, userName=new_address,
+                                                              name=dict(givenName="Renamed", familyName="Editor")))).json()
+        self.assertTrue(activated["active"])
+        self.assertEqual((activated["id"], activated["displayName"]), (user["id"], "Renamed Editor"))
+        self.assertEqual(api.get(group_uri, headers=auth).json()["members"], [])
+        policy["email"] = new_address
+        renewed = start(federated)
+        renewed.get_by_role("button", name="Continue as station crew").click()
+        expect(renewed.get_by_text("Renamed Editor · Contributor Plus")).to_be_visible()
+        self.assertEqual(federated.request.get(media).status, 404)
+        self.assertEqual(api.delete(uri, headers=auth).status, 204)
+        self.assertEqual(api.get(uri, headers=auth).status, 404)
+        self.assertEqual(federated.request.get(media).status, 401)
+        self.assertEqual(api.delete(group_uri, headers=auth).status, 204)
+        self.assertEqual(api.get(group_uri, headers=auth).status, 404)
+        page.get_by_role("button", name="Rotate provisioning token").click()
+        expect(page.locator("#newProvisioningToken input")).not_to_have_value(token)
+        self.assertEqual(api.get(base + "/Users", headers=auth).status, 401)
+        rotated = page.locator("#newProvisioningToken input").input_value()
+        rotated_auth = auth | {"Authorization": "Bearer " + rotated}
+        self.assertTrue(api.get(base + "/Users", headers=rotated_auth).ok)
+        page.get_by_role("button", name="Revoke provisioning token").click()
+        expect(status).to_have_text("Provisioning is off.")
+        self.assertEqual(api.get(base + "/Users", headers=rotated_auth).status, 401)
 
 
 if __name__ == "__main__":
