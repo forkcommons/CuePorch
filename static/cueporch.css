@@ -116,6 +116,8 @@ main { max-width: 65rem; }
 .analytics-counts div { min-width: 8rem; padding: .6rem 1rem; border: 1px solid #becac7; }
 .analytics-counts dd { margin: 0; font-size: 1.45rem; font-weight: 650; }
 .analytics-table { overflow-x: auto; }
+.analytics-top { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 1rem; }
+.analytics-top ol { padding-inline-start: 1.5rem; overflow-wrap: anywhere; }
 #reportControls label[hidden] { display: none; }
 #engagementCurve { display: block; width: min(100%, 45rem); height: auto; }
 .retention-player { position: relative; max-width: 48rem; }

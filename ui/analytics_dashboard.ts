@@ -13,10 +13,12 @@ type Counts = Record<Metric, number | null>;
 interface Entry extends Counts { category: string; breakdown: string; video: string | null }
 interface Bucket extends Counts { period: string }
 interface Video { id: string; title: string; event?: boolean }
+interface TopEntry { label: string; video: string | null; views: number }
+type TopBreakdowns = Record<"video" | "region" | "device" | "source", TopEntry[]>;
 interface Report {
   filters: {group: string; breakdown: string};
   totals: Counts & {identified_impressions: number; identified_views: number};
-  overview: Bucket[]; rows: Entry[];
+  overview: Bucket[]; rows: Entry[]; top?: TopBreakdowns;
 }
 type ReportType = "video" | "engagement" | "rating" | "region" | "source" | "device" | "date" | "bandwidth";
 interface EngagementMetrics {
@@ -176,7 +178,7 @@ function formatted(name: Metric, value: number | null) {
   return (name === "view_rate" || name === "average_watched_fraction" ? percent : count).format(value);
 }
 
-function videoLink(cell: HTMLTableCellElement, title: string, uid: string | null) {
+function videoLink(cell: HTMLElement, title: string, uid: string | null) {
   if (!uid) {
     cell.textContent = title;
     return;
@@ -185,6 +187,21 @@ function videoLink(cell: HTMLTableCellElement, title: string, uid: string | null
   link.href = "/operator/videos/" + encodeURIComponent(uid) + "/analytics";
   link.textContent = title;
   cell.append(link);
+}
+
+function renderTop(top?: TopBreakdowns) {
+  document.querySelector<HTMLElement>("#reportTop")!.hidden = !top?.video.length;
+  const lists = {video: "#topVideos", region: "#topRegions", device: "#topDevices", source: "#topSources"} as const;
+  for (const dimension of Object.keys(lists) as (keyof TopBreakdowns)[]) {
+    const list = document.querySelector<HTMLOListElement>(lists[dimension])!;
+    list.replaceChildren();
+    for (const entry of top?.[dimension] ?? []) {
+      const row = document.createElement("li");
+      videoLink(row, entry.label, entry.video);
+      row.append(` — ${count.format(entry.views)}`);
+      list.append(row);
+    }
+  }
 }
 
 function renderVideo(report: Report) {
@@ -206,6 +223,7 @@ function renderVideo(report: Report) {
   coverage.textContent = `Browser identity available for ${count.format(identified_impressions)} of ${count.format(impressions ?? 0)} impressions and ${count.format(identified_views)} of ${count.format(views ?? 0)} views.`;
   overview = report.overview;
   renderTrend();
+  renderTop(report.top);
   const columns = document.querySelector<HTMLTableRowElement>("#reportColumns")!;
   columns.replaceChildren();
   const labels = [dimensionNames[group], ...(breakdown ? [dimensionNames[breakdown]] : []),

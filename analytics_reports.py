@@ -23,6 +23,7 @@ DIMENSIONS = {
     "surface": "s.surface",
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
+TOP_DIMENSIONS = ("video", "region", "device", "source")
 PERIODS = {
     "day": "date(s.created, 'unixepoch')",
     "week": "date(s.created,'unixepoch','-'||((CAST(strftime('%w',s.created,'unixepoch') AS INTEGER)+6)%7)||' days')",
@@ -85,7 +86,7 @@ def filter_settings(options):
     return filters, clause, tuple(params)
 
 
-def summarize(con, options, catalog, lengths):
+def summarize(con, options, catalog, lengths, *, include_top=False):
     filters, clause, params = filter_settings(options)
     scope = PLAYBACK_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id" + clause
 
@@ -113,7 +114,19 @@ def summarize(con, options, catalog, lengths):
             breakdown=catalog.get(value, value) if secondary == "video" else value,
             **row_metrics(row),
         ))
-    return dict(filters=filters, totals=row_metrics(totals), overview=overview, rows=items)
+    result = dict(filters=filters, totals=row_metrics(totals), overview=overview, rows=items)
+    if include_top:
+        result["top"] = {}
+        for dimension in TOP_DIMENSIONS:
+            leaders = con.execute(f"""SELECT {DIMENSIONS[dimension]} AS category,count(*) AS views
+                                      {PLAYBACK_TABLES} {clause} AND s.played=1
+                                      GROUP BY category ORDER BY views DESC,category LIMIT 5""", params)
+            result["top"][dimension] = [
+                dict(label=catalog.get(category, category) if dimension == "video" else category,
+                     video=category if dimension == "video" else None, views=views)
+                for category, views in leaders
+            ]
+    return result
 
 
 def durations(works):
@@ -241,7 +254,8 @@ def register(app, tx, staff, read_works):
             if kind in GROUP_REPORTS:
                 result = summarize(con, options | {"group": kind}, titles, durations(works))
             elif kind == "video":
-                result = summarize(con, options, titles, durations(works))
+                result = summarize(con, options, titles, durations(works),
+                                   include_top=request.args.get("format") != "csv")
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))
             elif kind == "bandwidth":

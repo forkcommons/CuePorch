@@ -90,8 +90,15 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         }
         url = urlsplit(venue)
         origin = url.scheme + "://" + url.netloc
+        assert {(row["video"], row["label"], row["views"]) for row in result["top"]["video"]} == {
+            (a, title_a, 1), (b, title_b, 1),
+        }
+        assert [row["label"] for row in result["top"]["device"]] == ["Desktop", "Phone"]
+        assert result["top"]["region"] == [dict(label="Unknown", video=None, views=2)]
+        assert {row["label"] for row in result["top"]["source"]} == {origin, "Unknown"}
         assert report(group="source", breakdown="surface", source=origin)["rows"][0]["category"] == origin
-        assert report(videos=[a], surface="embed")["totals"]["views"] == 0
+        empty = report(videos=[a], surface="embed")
+        assert empty["totals"]["views"] == 0 and not any(empty["top"].values())
         monthly = report(period="month")["overview"]
         assert len(monthly) == 1 and monthly[0]["period"] == date.fromisoformat(today).replace(day=1).isoformat()
 
@@ -114,6 +121,9 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         page.get_by_role("link", name="Advanced report").click()
         expect(page.locator("#reportRows")).to_contain_text(title_a)
         expect(page.locator("#reportRows")).not_to_contain_text(title_b)
+        expect(page.locator("#topVideos li")).to_have_count(1)
+        expect(page.locator("#topVideos").get_by_role("link", name=title_a)).to_have_attribute(
+            "href", f"/operator/videos/{a}/analytics")
         page.get_by_text("1 selected", exact=True).click()
         page.get_by_label("Search library videos").fill("Advanced report")
         page.get_by_role("listbox", name="Videos", exact=True).select_option([a, b])
@@ -125,6 +135,9 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         expect(page.locator("#reportRows")).to_contain_text("Phone")
         expect(page.locator("#reportRows")).to_contain_text(title_b)
         expect(page.locator("#reportTrend > tr")).to_have_count(1)
+        expect(page.locator("#topVideos li")).to_have_count(2)
+        expect(page.locator("#topDevices")).to_contain_text("Phone")
+        expect(page.locator("#topSources")).to_contain_text(origin)
         with page.expect_download() as downloaded:
             page.get_by_role("button", name="Download CSV").click()
         csv_rows = list(csv.DictReader(StringIO(downloaded.value.path().read_text(encoding="utf8"))))
@@ -184,12 +197,14 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         assert totals["views"] == 3 and totals["finishes"] == 2
         assert totals["completion"] == 2 / 3
         assert engagement["retention"][25] == 3 and engagement["retention"][50] == 2
+        assert [(row["video"], row["views"]) for row in report()["top"]["video"]] == [(b, 2), (a, 1)]
     finally:
         museum.embed = former_embed
         phone.close()
         desktop.close()
     results = dict(real_watched_views=2, aggregate_library_and_video_picker=True, device_and_referring_origin=True,
                    watch_and_embed_filters=True, daily_weekly_monthly_trends=True, second_dimension_and_csv=True,
+                   top_video_order_and_filtered_region_device_source=True,
                    engagement_curve_and_milestones=True, compared_two_durations=True,
                    partial_playback_seconds=round(stop, 3), retention_at_25_percent=3, retention_at_50_percent=2,
                    captured_two_browser_votes=True, reports_filter_and_export=True)

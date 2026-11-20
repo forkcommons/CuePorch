@@ -150,6 +150,20 @@ function videoLink(cell, title, uid) {
     link.textContent = title;
     cell.append(link);
 }
+function renderTop(top) {
+    document.querySelector("#reportTop").hidden = !top?.video.length;
+    const lists = { video: "#topVideos", region: "#topRegions", device: "#topDevices", source: "#topSources" };
+    for (const dimension of Object.keys(lists)) {
+        const list = document.querySelector(lists[dimension]);
+        list.replaceChildren();
+        for (const entry of top?.[dimension] ?? []) {
+            const row = document.createElement("li");
+            videoLink(row, entry.label, entry.video);
+            row.append(` — ${count.format(entry.views)}`);
+            list.append(row);
+        }
+    }
+}
 function renderVideo(report) {
     const { group, breakdown } = report.filters;
     const totals = document.querySelector("#reportTotals");
@@ -169,6 +183,7 @@ function renderVideo(report) {
     coverage.textContent = `Browser identity available for ${count.format(identified_impressions)} of ${count.format(impressions ?? 0)} impressions and ${count.format(identified_views)} of ${count.format(views ?? 0)} views.`;
     overview = report.overview;
     renderTrend();
+    renderTop(report.top);
     const columns = document.querySelector("#reportColumns");
     columns.replaceChildren();
     const labels = [dimensionNames[group], ...(breakdown ? [dimensionNames[breakdown]] : []),
