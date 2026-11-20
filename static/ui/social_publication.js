@@ -58,7 +58,7 @@ function render(data, fresh = false) {
             companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
         }
         if (pageSelector) {
-            pageSelector.replaceChildren(new Option("Choose a Page", ""), ...data.pages.map(page => new Option(page.name, page.id)));
+            pageSelector.replaceChildren(new Option(provider === "tiktok" ? "Choose an advertiser" : "Choose a Page", ""), ...data.pages.map(page => new Option(page.name, page.id)));
         }
         title.value = data.title;
         if (!data.allowed)
@@ -75,15 +75,18 @@ function render(data, fresh = false) {
         item.textContent = `${job.state} · ${job.privacy || job.requested_privacy} · ${job.sent.toLocaleString()} of ${job.bytes.toLocaleString()} bytes`;
         if (job.company) {
             const page = data.pages.find(candidate => candidate.id === job.company);
-            item.append(` · ${page?.name && page.name !== job.company ? page.name : "Page " + job.company}`);
+            const fallback = provider === "tiktok" ? "Advertiser " : "Page ";
+            item.append(` · ${page?.name && page.name !== job.company ? page.name : fallback + job.company}`);
         }
+        if (job.remote_id)
+            item.append(` · Video ${job.remote_id}`);
         if (job.error)
             item.append(`. ${job.error}`);
         if (job.link) {
             const link = document.createElement("a");
             link.href = job.link;
             link.rel = "noreferrer";
-            link.textContent = `Open on ${providerName}`;
+            link.textContent = provider === "tiktok" ? "Open TikTok Ads Manager" : `Open on ${providerName}`;
             item.append(" · ", link);
         }
         if (job.cancelable) {
@@ -146,7 +149,9 @@ form.onsubmit = async (event) => {
     try {
         const options = provider === "youtube"
             ? { visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids") }
-            : { company: pageSelector ? fields.get("company") : company, visibility: fields.has("publicPost") ? "public" : null };
+            : provider === "tiktok"
+                ? { company: fields.get("company"), visibility: "private" }
+                : { company: pageSelector ? fields.get("company") : company, visibility: fields.has("publicPost") ? "public" : null };
         render(await api({ id: draft, cut, title: fields.get("title"), description: fields.get("description"), connection_scope: scope, connection_revision: revision, ...options }));
         draft = crypto.randomUUID();
         notice.textContent = "Upload requested. Follow its progress below.";

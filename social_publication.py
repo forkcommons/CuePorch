@@ -16,6 +16,7 @@ from catalog import video_version_key
 import facebook_upload
 import library_privacy
 import linkedin_upload
+import tiktok_business
 import team_accounts
 from team_group_roles import EFFECTIVE_ROLE
 import vimeo_privacy
@@ -42,6 +43,13 @@ MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "mkv
 def metadata_for(body, provider, pages):
     title, description = body.get("title"), body.get("description", "")
     visibility, made_for_kids = body.get("visibility"), body.get("made_for_kids")
+    if provider == "tiktok":
+        company = body.get("company")
+        if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100
+                or any(c in title for c in "\n\r\0")
+                or visibility != "private" or not isinstance(company, str) or company not in pages):
+            abort(400, "Check the TikTok title, connected destination and private visibility.")
+        return dict(title=title.strip(), company=company, visibility="private")
     if provider in ("linkedin", "facebook", "x"):
         page = body.get("company")
         text_limit = 280 if provider == "x" else 3000
@@ -71,9 +79,13 @@ def transferable(con, work, visibility, provider):
         source, _ = vimeo_privacy.target_settings(work)
         if source["visibility"] != "public" and source["visibility"] != visibility:
             abort(403, "The Vimeo source privacy restricts this video to a narrower destination audience.")
-    formats = ("mp4",) if provider in ("linkedin", "x") else MIME
+    if provider == "tiktok":
+        formats = ("mp4", "mov")
+    else:
+        formats = ("mp4",) if provider in ("linkedin", "x") else MIME
     limits = {"linkedin": (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES),
-              "facebook": (1, facebook_upload.MAX_BYTES), "x": (1, x_upload.MAX_BYTES)}
+              "facebook": (1, facebook_upload.MAX_BYTES), "x": (1, x_upload.MAX_BYTES),
+              "tiktok": (1, tiktok_business.MAX_BYTES)}
     minimum, maximum = limits.get(provider, (1, 256 * 1000**3))
     for role in ("original", "playback"):
         for file in work["files"]:
@@ -86,6 +98,8 @@ def transferable(con, work, visibility, provider):
         abort(409, "Facebook needs a retained video under 4 GB.")
     if provider == "x":
         abort(409, "X needs a retained MP4 up to 512 MiB.")
+    if provider == "tiktok":
+        abort(409, f"TikTok needs a retained MP4 or MOV up to {tiktok_business.MAX_BYTES} bytes.")
     abort(409, "This version needs a retained video file before it can be published.")
 
 
@@ -198,7 +212,7 @@ class Publisher:
                         (f"The provider may have published the video. Check {destination} before sending another.",
                          job["id"]))
 
-    def finalize_public_post(self, job, send, destination):
+    def finalize_public_post(self, job, send, destination, visibility="public"):
         with self.tx() as con:
             self.authorize(con, job)
             con.execute("UPDATE social_publication SET final_sent=1 WHERE id=?", (job["id"],))
@@ -217,8 +231,8 @@ class Publisher:
             raise
         with self.tx() as con:
             con.execute("""UPDATE social_publication SET state='delivered',session=NULL,remote=?,
-                           remote_privacy='public',error=NULL WHERE id=? AND state IN ('queued','unconfirmed')""",
-                        (post_id, job["id"]))
+                           remote_privacy=?,error=NULL,offset=bytes WHERE id=? AND state IN ('queued','unconfirmed')""",
+                        (post_id, visibility, job["id"]))
 
     def tick(self):
         with self.tx() as con:
@@ -414,6 +428,20 @@ class XPublisher(Publisher):
         self.finalize_public_post(job, lambda: x_upload.post(*args, session, metadata["description"]), "the X account")
 
 
+class TikTokPublisher(Publisher):
+    def post_next(self, job):
+        destination = "the selected TikTok Ads Manager Asset Library"
+        if job["final_sent"]:
+            self.unconfirmed(job, destination)
+            return
+        with self.tx() as con:
+            metadata = self.authorize(con, job)
+        source = self.root / "objects" / job["sha256"]
+        send = lambda: tiktok_business.upload(
+            self.grant(job), job["connection"], metadata["company"], metadata["title"],
+            source, job["bytes"], job["sha256"], job["media_type"])
+        self.finalize_public_post(job, send, destination, visibility="private")
+
 def register(app, tx, database, root, origin, connections, read_works, title_for, operator_name,
              team_member, authorize_editor, can_edit, action, sharing_access, enforce_sharing):
     def find_work(uid):
@@ -421,7 +449,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
 
     workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access, can_edit)
                for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher),
-                                     ("facebook", FacebookPublisher), ("x", XPublisher))]
+                                     ("facebook", FacebookPublisher), ("x", XPublisher), ("tiktok", TikTokPublisher))]
 
     def close():
         for worker in workers:
@@ -436,7 +464,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         return connection
 
     def pages_for(con, connection):
-        if connection.config.key in ("facebook", "x"):
+        if connection.config.key in ("facebook", "tiktok", "x"):
             return {page: row["name"] for page, row in connection.pages(con).items()}
         if connection.config.key == "linkedin" and connection.company:
             return {connection.company: connection.company}
@@ -487,15 +515,23 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                     link = facebook_upload.link(metadata["company"], remote)
                 elif provider == "x":
                     link = x_upload.link(remote)
+                elif provider == "tiktok":
+                    link = "https://ads.tiktok.com/"
                 else:
                     link = f"https://www.youtube.com/watch?v={remote}"
             jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"], company=metadata.get("company"),
                              cancelable=job["state"] == "queued" and not job["final_sent"],
                              requested_privacy=visibility_for(metadata),
-                             privacy=job["remote_privacy"], error=job["error"], link=link))
+                             privacy=job["remote_privacy"], error=job["error"], link=link,
+                             remote_id=remote if provider == "tiktok" else None))
         policy = sharing_access(con)
         modes = [mode for mode in youtube_upload.PRIVACY if mode in policy["modes"]]
-        allowed = policy["outbound"] and bool(modes if provider == "youtube" else "public" in modes)
+        if provider == "youtube":
+            allowed = policy["outbound"] and bool(modes)
+        elif provider == "tiktok":
+            allowed = policy["outbound"] and "private" in modes
+        else:
+            allowed = policy["outbound"] and "public" in modes
         pages = pages_for(con, connection) if allowed else {}
         grant = connection.connection(con)
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],

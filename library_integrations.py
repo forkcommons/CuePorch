@@ -22,6 +22,7 @@ import linkedin_upload
 import mail_relay
 import social_publication
 from team_accounts import CONTRIBUTORS, MANAGERS, current as signed_in_member
+import tiktok_business
 import webex_recordings
 import x_upload
 import zoom_recordings
@@ -296,7 +297,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
-    publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account)}
+    tiktok = tiktok_business.AdvertiserConnection(tx, operator)
+    publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | publishing
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(

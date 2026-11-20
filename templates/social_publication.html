@@ -21,7 +21,13 @@
   <form id="socialForm" method="post" hidden>
     <p>Destination account <output id="socialConnectionScope"></output></p>
     <label>Title <input name="title" maxlength="100" required></label>
-    {% if provider != "youtube" %}
+    {% if provider == "tiktok" %}
+    <label for="socialPage">Advertiser ID</label>
+    <select name="company" id="socialPage" required></select>
+    <p>Find the video under Assets > Videos in the selected TikTok Ads Manager account.</p>
+    <label><input type="checkbox" name="confirmAsset" required> Send to this Asset Library</label>
+    <button>Send to TikTok Ads Manager</button>
+    {% elif provider != "youtube" %}
     <label>Post text <textarea name="description" maxlength="{{ 280 if provider == 'x' else 3000 }}" rows="4"></textarea></label>
     {% if provider == "linkedin" %}
     <p>Company Page <output id="socialCompany"></output></p>

@@ -189,6 +189,17 @@ class Connection:
                 abort(409, "Connect this provider to continue.")
             return row["revision"]
 
+    def authorization_query(self, redirect_uri, state, verifier):
+        params = self.config.authorization_parameters | dict(
+            client_id=self.client, response_type="code", redirect_uri=redirect_uri, state=state,
+        )
+        if self.config.scope and self.config.authorize_scope:
+            params["scope"] = self.config.scope
+        if verifier:
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+            params.update(code_challenge=challenge, code_challenge_method="S256")
+        return params
+
     def prepare(self, secure, current, context=None):
         self.require_configured()
         state = secrets.token_urlsafe(32)
@@ -203,14 +214,7 @@ class Connection:
                 self.key, token_hash(state), token_hash(browser), verifier,
                 redirect_uri, int(time.time()) + ATTEMPT_TTL, json.dumps(context) if context is not None else None,
             ))
-        params = self.config.authorization_parameters | dict(
-            client_id=self.client, response_type="code", redirect_uri=redirect_uri, state=state,
-        )
-        if self.config.scope and self.config.authorize_scope:
-            params["scope"] = self.config.scope
-        if verifier:
-            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-            params.update(code_challenge=challenge, code_challenge_method="S256")
+        params = self.authorization_query(redirect_uri, state, verifier)
         url = self.config.authorization_url + "?" + urlencode(params)
         return workspace_session_cookie(private(dict(authorization_url=url)), self.cookie, secure, ATTEMPT_TTL, browser)
 
@@ -222,6 +226,9 @@ class Connection:
     def return_path(self, result, context):
         path = "/team/integrations" if self.owner else DIRECTORY
         return path + "?" + urlencode({"connection": self.config.key, "result": result})
+
+    def callback_code(self):
+        return request.args.get("code", "")
 
     def complete(self, secure, current, allow=None):
         state = request.args.get("state", "")
@@ -241,7 +248,7 @@ class Connection:
         context = json.loads(attempt["context"]) if attempt["context"] else None
         selection = (self.key, attempt["state"])
         try:
-            code = request.args.get("code", "")
+            code = self.callback_code()
             if not request.args.get("error") and 1 <= len(code) <= 4096:
                 fields = dict(grant_type="authorization_code", code=code, redirect_uri=attempt["redirect_uri"])
                 if attempt["verifier"]:
