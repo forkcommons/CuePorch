@@ -164,6 +164,15 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 .archive-controls p { margin: 0; }
 .archive-controls p:empty { display: none; }
 .interactive-player { position: relative; }
+.panorama-stage { position: relative; }
+.panorama-stage[data-active="true"] video { opacity: 0; aspect-ratio: 16 / 9; }
+.panorama-stage canvas:not([hidden]) { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.panorama-stage canvas:active { cursor: grabbing; }
+.panorama-stage canvas:focus-visible { outline: 3px solid var(--viewer-accent); outline-offset: -3px; }
+.panorama-captions { position: absolute; bottom: .5rem; left: 50%; transform: translateX(-50%); width: max-content;
+  max-width: 90%; margin: 0; padding: .2rem .45rem; background: #000d; color: white; text-align: center;
+  white-space: pre-line; pointer-events: none; }
+.panorama-controls:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .65rem; padding: .4rem; }
 .video-timed-card {
   position: absolute;
   z-index: 2;

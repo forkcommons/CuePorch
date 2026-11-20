@@ -449,9 +449,15 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 form_error = library_registration.enroll(con, "video", uid, form, request.form, request.args)
             needs_registration = not locked and form and (not enrollment or form_error)
             can_watch = not locked and not needs_registration
-            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if can_watch else None
-            options = library_embed.options(request.args if embed else {}, appearance)
             surface = "embed" if embed else "watch"
+            details = details_for(con, work) if can_watch else None
+            panorama = details["panorama"] if details else "flat"
+            if panorama == "source":
+                panorama = "360-mono" if work.get("source_projection") == "equirectangular" else "flat"
+            appearance = library_appearance.read_settings(con, uid, surface) if can_watch else None
+            if panorama != "flat" and appearance is None:
+                appearance = library_appearance.surface_defaults(surface)
+            options = library_embed.options(request.args if embed else {}, appearance)
             context = library_analytics.request_context(analytics_proxies) if (
                 can_watch and not options["dnt"] and library_analytics.permitted()
             ) else None
@@ -467,7 +473,6 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 payload.append(grant)
             token = serializer.dumps(payload) if can_watch else None
             title = "Protected video" if locked else title_for(con, work)
-            details = details_for(con, work) if can_watch and not embed else None
             creator = creator_for_work(con, uid) if can_watch and mode == "public" and not embed else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
             chapters = library_interactivity.readable_chapters(work) if can_watch and (
@@ -504,7 +509,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             audio_tracks=library_audio.tracks_for(work) if can_watch else [],
                             audio_labels=library_audio.KINDS,
                             wrong_password=locked and request.method == "POST",
-                            unlock_token=unlock_token, details=details, start=start,
+                            unlock_token=unlock_token, details=None if embed else details, start=start,
+                            panorama=panorama if panorama != "flat" else None,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
                             presentation=presentation, poster=poster, rating=rating, analytics=analytics,
                             share=share_paths(uid, row)["watch"], registration=form if form_token else None,

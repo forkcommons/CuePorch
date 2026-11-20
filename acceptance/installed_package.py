@@ -17,6 +17,7 @@ from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
 from installed_migrated_privacy import TRANSFER_PASSWORD, check_migrated_privacy
 from installed_video_details import check_imported_video_details, check_video_details, check_workspace
+from installed_panorama import check_panorama
 from installed_embed_builder import check_embed_builder
 from installed_file_links import check_file_links
 from installed_appearance import check_appearance
@@ -71,6 +72,7 @@ focused.add_argument("--team-only", action="store_true", help="Test migration an
 focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo migration, team access and embed replacement")
 focused.add_argument("--creator-only", action="store_true", help="Test recording, timeline editing and render recovery")
 focused.add_argument("--library-batch-only", action="store_true", help="Test bulk Library operations and individual playback")
+focused.add_argument("--panorama-only", action="store_true", help="Test migration and browser panoramic video playback")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -361,7 +363,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
     if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only
-            or args.team_only or args.cutover_only or args.library_batch_only):
+            or args.team_only or args.cutover_only or args.library_batch_only or args.panorama_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -420,7 +422,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
             try:
                 desktop = wait_for_desktop(proc, home)
                 with sync_playwright() as pw:
-                    browser = chromium(pw)
+                    browser = chromium(pw, args=["--enable-unsafe-swiftshader"] if args.panorama_only else None)
                     page = browser.new_page()
                     page.goto(desktop)
                     setup_seconds = None
@@ -515,6 +517,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    if args.panorama_only:
+                        panorama = check_panorama(page, browser, base, auth, museum, venue, replacement)
+                        migration = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
+                        panorama.update(check_imported_video_details(base, auth))
+                        results.append(dict(panorama=panorama, migrated_playback_width=width, cutover=migration))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
                     if args.library_batch_only:
                         batches = check_bulk_library(page, base, auth, replacement)
                         results.append(dict(library=library_result, library_batches=batches, migrated_playback_width=width))

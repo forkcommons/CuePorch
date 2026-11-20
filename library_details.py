@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS library_embed_pages(work TEXT PRIMARY KEY, pages TEXT
 LICENSES = {"by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd", "cc0"}
 CONTENT = {"language", "drugs", "violence", "nudity"}
 RATINGS = {"unrated", "all", "mature"}
+PANORAMAS = {"flat", "source", "180-mono", "180-top-bottom", "180-side-by-side",
+             "360-mono", "360-top-bottom", "360-side-by-side"}
 
 
 def parse_embed_pages(pages):
@@ -79,7 +81,8 @@ def source_details(work):
 
 def details_for(con, work):
     row = con.execute("SELECT metadata FROM library_video_details WHERE work=?", (work["id"],)).fetchone()
-    return json.loads(row["metadata"]) if row else source_details(work)
+    state = json.loads(row["metadata"]) if row else source_details(work)
+    return {"panorama": "flat"} | state
 
 
 def labels(values, name):
@@ -155,6 +158,10 @@ def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
             if request.method == "PUT":
                 body = request.get_json()
                 state = parse_details(body)
+                panorama = body.get("panorama", details_for(con, work)["panorama"])
+                if not isinstance(panorama, str) or panorama not in PANORAMAS:
+                    abort(400, "Choose an available panoramic projection.")
+                state["panorama"] = panorama
                 if "embed_pages" in body:
                     embed_pages = parse_embed_pages(body["embed_pages"])
                     con.execute("""INSERT INTO library_embed_pages VALUES(?,?)

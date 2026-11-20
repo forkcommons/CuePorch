@@ -57,7 +57,7 @@ function contentVisibility() {
 rating.onchange = contentVisibility;
 function show(details) {
     heading.textContent = details.title;
-    for (const name of ["title", "description", "license", "rating"]) {
+    for (const name of ["title", "description", "license", "rating", "panorama"]) {
         input(name).value = details[name] || "";
     }
     for (const name of ["tags", "categories"])
@@ -77,7 +77,7 @@ function show(details) {
         "File size": media ? `${media.bytes.toLocaleString()} bytes` : "",
         "Frame rate": media?.fps ? `${media.fps} fps` : "",
         Audio: media?.audio,
-        Projection: details.projection,
+        "Imported projection": details.projection,
         Duration: details.duration_seconds === null ? "" : `${details.duration_seconds} seconds`,
         Added: details.added_at ? new Date(details.added_at).toLocaleDateString() : "",
     };
@@ -238,6 +238,7 @@ form.onsubmit = async (event) => {
             content: new FormData(form).getAll("content"),
             realistic_ai: input("realistic_ai").checked,
             advertisement: input("advertisement").checked,
+            panorama: input("panorama").value,
         };
         show(await call("/details", "PUT", body));
         status.textContent = "Video details saved.";

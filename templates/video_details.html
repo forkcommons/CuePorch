@@ -87,6 +87,18 @@
       </fieldset>
       <label><input type="checkbox" name="realistic_ai"> Includes realistic AI-generated content</label>
       <label><input type="checkbox" name="advertisement"> Contains advertisement</label>
+      <label>Playback projection
+        <select name="panorama">
+          <option value="flat">Flat</option>
+          <option value="source">Use imported projection</option>
+          <option value="180-mono">180° monoscopic</option>
+          <option value="180-top-bottom">180° stereoscopic, top and bottom</option>
+          <option value="180-side-by-side">180° stereoscopic, side by side</option>
+          <option value="360-mono">360° monoscopic</option>
+          <option value="360-top-bottom">360° stereoscopic, top and bottom</option>
+          <option value="360-side-by-side">360° stereoscopic, side by side</option>
+        </select>
+      </label>
       <button type="submit">Save video details</button>
     </form>
     <section aria-labelledby="factsTitle">

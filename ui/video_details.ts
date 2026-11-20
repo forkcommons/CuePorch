@@ -24,6 +24,7 @@ interface VideoDetails {
   } | null;
   duration_seconds: number | null;
   projection: string | null;
+  panorama: string;
   added_at: string | null;
 }
 
@@ -106,7 +107,7 @@ rating.onchange = contentVisibility;
 
 function show(details: VideoDetails) {
   heading.textContent = details.title;
-  for (const name of ["title", "description", "license", "rating"] as const) {
+  for (const name of ["title", "description", "license", "rating", "panorama"] as const) {
     input(name).value = details[name] || "";
   }
   for (const name of ["tags", "categories"] as const) input(name).value = details[name].join("\n");
@@ -125,7 +126,7 @@ function show(details: VideoDetails) {
     "File size": media ? `${media.bytes.toLocaleString()} bytes` : "",
     "Frame rate": media?.fps ? `${media.fps} fps` : "",
     Audio: media?.audio,
-    Projection: details.projection,
+    "Imported projection": details.projection,
     Duration: details.duration_seconds === null ? "" : `${details.duration_seconds} seconds`,
     Added: details.added_at ? new Date(details.added_at).toLocaleDateString() : "",
   };
@@ -285,6 +286,7 @@ form.onsubmit = async (event) => {
       content: new FormData(form).getAll("content"),
       realistic_ai: input("realistic_ai").checked,
       advertisement: input("advertisement").checked,
+      panorama: input("panorama").value,
     };
     show(await call<VideoDetails>("/details", "PUT", body));
     status.textContent = "Video details saved.";

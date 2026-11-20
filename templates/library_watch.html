@@ -30,6 +30,7 @@
     {% endif %}
     {% set interactive = rating or (presentation and (presentation.cards or presentation.ending.mode not in ('default', 'loop'))) %}
     {% if interactive %}<div class="interactive-player">{% endif %}
+    {% if panorama %}<div class="panorama-stage" data-panorama="{{ panorama }}">{% endif %}
     <video controls playsinline preload="metadata" aria-label="{{ title }}"
            {% if analytics %}data-analytics="{{ url_for('viewer_analytics', session=analytics) }}"{% endif %}
            {% if options.autoplay %}autoplay{% endif %}{% if options.muted %} muted{% endif %}{% if options.loop %} loop{% endif %}
@@ -43,6 +44,11 @@
              src="{{ url_for('shared_video', token=token, track=track.index, track_key=track.key) }}">
       {% endfor %}
     </video>
+    {% if panorama %}
+      <canvas tabindex="0" aria-label="Panoramic view" aria-describedby="panoramaHint" hidden></canvas>
+      <p class="panorama-captions" data-panorama-captions hidden></p>
+    </div>
+    {% endif %}
     {% if analytics %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}
     {% if interactive %}
       {% include "playback_interactivity.html" %}
@@ -54,6 +60,15 @@
       {% include "archive_player_controls.html" %}
     {% else %}
       {% include "archive_audio_controls.html" %}
+    {% endif %}
+    {% if panorama %}
+    <div class="panorama-controls" data-panorama-controls hidden>
+      <span id="panoramaHint">Drag or use arrow keys to look around.</span>
+      <button type="button" data-panorama-reset>Reset view</button>
+      <button type="button" data-panorama-toggle>Watch flat</button>
+      <span role="status"></span>
+    </div>
+    <script type="module" src="/static/ui/panorama_playback.js"></script>
     {% endif %}
     {% if chapters %}
       <label data-chapter-menu hidden>Chapters <select aria-label="Chapters">
