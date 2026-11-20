@@ -69,6 +69,7 @@ focused.add_argument("--audience-accounts-only", action="store_true", help="Test
 focused.add_argument("--audio-tracks-only", action="store_true", help="Test migration and alternate audio on the installed package")
 focused.add_argument("--team-only", action="store_true", help="Test migration and team access on the installed package")
 focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo migration, team access and embed replacement")
+focused.add_argument("--creator-only", action="store_true", help="Test recording, timeline editing and render recovery")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -586,6 +587,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         shut_down(proc, base, desktop, home)
                         save_report()
                         continue
+                    if args.creator_only:
+                        recording = check_recording(pw, base, auth, timeline_green)
+                        timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
+                                                  home / "institution.sqlite")
+                        results.append(dict(recording=recording, timeline=timeline, migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
@@ -623,7 +633,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                                                   verify_unique=args.analytics_unique,
                                                                   verify_captions=args.analytics_captions)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
-                    recording = check_recording(pw, base, auth)
+                    recording = check_recording(pw, base, auth, timeline_green)
                     timeline = check_timeline(
                         page, browser, base, auth, editor_master, timeline_green, timeline_music,
                         home / "institution.sqlite",

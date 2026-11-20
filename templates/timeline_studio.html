@@ -51,6 +51,11 @@
           <label for="timelineVideo">Add video</label>
           <select id="timelineVideo"></select>
           <button id="appendTimeline" type="button">Add to timeline</button>
+          <form id="timelineUpload">
+            <label>Upload a clip <input id="timelineFile" type="file" accept=".mp4,.mov,.webm,.mkv" required></label>
+            <button id="uploadTimeline" type="submit">Upload and add clip</button>
+          </form>
+          <button id="recordTimeline" type="button">Record a clip</button>
         </fieldset>
         <fieldset>
           <legend>Background audio</legend>
@@ -74,6 +79,11 @@
       <ul id="timelineCues" class="trim-cues"></ul>
     </section>
   </main>
+  <dialog id="timelineRecordDialog" aria-labelledby="timelineRecordHeading">
+    <h2 id="timelineRecordHeading">Record a clip</h2>
+    <button id="closeTimelineRecorder" type="button">Close recorder</button>
+    <iframe id="timelineRecorder" title="Record Studio" allow="camera 'self'; microphone 'self'; display-capture 'self'"></iframe>
+  </dialog>
   <script type="module" src="/static/ui/timeline_studio.js"></script>
 </body>
 </html>

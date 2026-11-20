@@ -20,7 +20,7 @@ DISPLAY_FIXTURE = """() => {
 }"""
 
 
-def check_recording(playwright, base, auth):
+def check_recording(playwright, base, auth, clip_file):
     title = "Studio accessibility rehearsal"
     created = requests.post(base + "/api/library/folders", headers=auth, timeout=12,
                             json=dict(name="Rehearsal recordings", color="#286266", parent=None))
@@ -108,10 +108,62 @@ def check_recording(playwright, base, auth):
           v.muted=true;await v.play();
           return v.videoWidth===720 && v.videoHeight===720 && v.duration>=1.8;
         }""")
+        timeline = page.get_by_role("link", name="Timeline editor").get_attribute("href")
+        context.close()
+        context = browser.new_context(permissions=["camera", "microphone"])
+        context.add_init_script("(" + DISPLAY_FIXTURE + ")()")
+        page = context.new_page()
+        page.goto(base + "/operator/library")
+        page.evaluate("(key) => sessionStorage.setItem('cueporchOperator',key)", auth["Authorization"][7:])
+        page.goto(base + timeline)
+        clips = page.locator("#timelineClips > li")
+        expect(clips).to_have_count(1)
+        page.get_by_label("Upload a clip").set_input_files({"name": "Green slate.mp4", "mimeType": "video/mp4",
+                                                           "buffer": clip_file.read_bytes()})
+        page.get_by_role("button", name="Upload and add clip").click()
+        expect(clips.nth(1)).to_contain_text("Green slate", timeout=30000)
+        page.get_by_role("button", name="Record a clip").click()
+        frame = page.frame_locator("#timelineRecorder")
+        frame.get_by_label("Recording title").fill("Recorded inside the editor")
+        expect(frame.get_by_label("Destination folder")).to_have_value(folder)
+        frame.get_by_role("button", name="Share screen", exact=True).click()
+        expect(frame.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
+        # The stand-alone path already uses the browser's fake devices. Exercise the same-origin
+        # capture policy here, then record a deterministic window with the shared display fixture.
+        assert frame.locator("body").evaluate("node => ['camera', 'microphone', 'display-capture']"
+                                              ".every(name => node.ownerDocument.featurePolicy.allowsFeature(name))")
+        frame.get_by_role("button", name="Start recording").click()
+        expect(frame.locator("#recordTime")).to_have_text("0:01", timeout=5000)
+        frame.get_by_role("button", name="Stop", exact=True).click()
+        frame.get_by_role("button", name="Add recording to timeline").click()
+        expect(clips.nth(2)).to_contain_text("Recorded inside the editor", timeout=30000)
+        expect(page.get_by_role("dialog", name="Record a clip")).to_be_hidden()
+        expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+        page.reload()
+        expect(clips).to_have_count(3)
+        project = requests.get(f"{base}/api/library/work/{uid}/timeline", headers=auth, timeout=12)
+        project.raise_for_status()
+        entries = project.json()["settings"]["clips"]
+        assert entries[0]["work"] == uid
+        for entry in entries[1:]:
+            assert requests.get(f"{base}/watch/work/{entry['work']}", timeout=10).status_code == 404
+        clips.nth(2).get_by_role("button", name="Recorded inside the editor").click()
+        source = page.get_by_label("Timeline source video")
+        expect(source).to_be_visible()
+        assert source.evaluate("""async v=>{
+          v.muted=true;await v.play();return v.videoWidth===1280 && v.videoHeight===720;
+        }""")
+        page.get_by_role("button", name="Render as a new version").click()
+        expect(page.locator("#timelineStatus")).to_have_text("New version saved.", timeout=90000)
+        versions = requests.get(f"{base}/api/library/work/{uid}/versions", headers=auth, timeout=12)
+        versions.raise_for_status()
+        assert len(versions.json()) == 2
         page.goto(base + "/operator/record")
         expect(page.get_by_role("button", name="Recover " + title, exact=True)).to_have_count(0)
     finally:
         browser.close()
     return dict(browser_mediarecorder=True, fake_camera_and_microphone=True, simulated_screen_capture_source=True,
                 side_by_side_canvas_720p=True, pause_and_resume=True, recovered_browser_draft=True,
-                saved_to_selected_folder=True, private_before_share=True, installed_library_playback_and_audio=True)
+                saved_to_selected_folder=True, private_before_share=True, installed_library_playback_and_audio=True,
+                editor_clip_upload_and_inline_capture=True, private_clip_sources=True, recovered_three_clip_editor_draft=True,
+                inline_recording_decoded_and_project_rendered=True)

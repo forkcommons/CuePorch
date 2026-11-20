@@ -509,6 +509,9 @@ element("recordDestination").onsubmit = event => {
             catch {
                 status.textContent = "Recording saved to the library. The browser still holds a local draft.";
             }
+            if (document.body.dataset.embedded === "timeline" && window.parent !== window) {
+                window.parent.postMessage({ type: "cueporch-recording-saved", work: receipt.id }, location.origin);
+            }
         }
         finally {
             busy = false;

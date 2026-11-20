@@ -8,8 +8,10 @@
 </head>
 <body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}"
       data-speaker-endpoint="{{ speaker_endpoint or '' }}" data-public-url="{{ speaker_public_url or '' }}"
-      data-engagement-endpoint="{{ engagement_endpoint or '' }}">
+      data-engagement-endpoint="{{ engagement_endpoint or '' }}" {% if embedded %}data-embedded="timeline"{% endif %}>
+  {% if not embedded %}
   <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
+  {% endif %}
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
     <label>Operator credential <input id="recordKey" type="password" autocomplete="current-password" required></label>
@@ -148,7 +150,7 @@
             <label for="recordFolder">Destination folder</label>
             <select id="recordFolder"><option value="">Library root</option></select>
             <p>Recordings follow this folder’s privacy settings or your upload defaults.</p>
-            <button type="submit" id="saveRecord" disabled>Save recording</button>
+            <button type="submit" id="saveRecord" disabled>{{ "Add recording to timeline" if embedded else "Save recording" }}</button>
             <button type="button" id="downloadRecord" disabled>Download recording</button>
           </fieldset>
         </form>

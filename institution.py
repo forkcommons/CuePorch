@@ -1420,7 +1420,10 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator/record")
     def record_studio():
-        return render_template("record_studio.html")
+        embedded = request.args.get("timeline") == "1"
+        response = Response(render_template("record_studio.html", embedded=embedded), mimetype="text/html")
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'self'" if embedded else "frame-ancestors 'none'"
+        return response
 
     @app.get("/operator/videos/<uuid:work>/editing")
     def operator_editing(work):

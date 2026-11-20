@@ -1,11 +1,12 @@
-export {};
+import {uploadLibraryFile} from "./library_upload.js";
+import {privateSettings} from "./library_privacy.js";
 
 interface Clip { work: string; cut: string; start: number; end: number }
 interface Music { work: string; cut?: string; start: number; gain: number }
 interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null }
 interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
 interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null }
-interface Media { id: string; title: string; asset_type?: string }
+interface Media { id: string; title: string; asset_type?: string; folder: string | null }
 interface Cue { start: number; end: number; text: string }
 
 const node = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -17,6 +18,9 @@ const key = input("timelineKey");
 const status = node("timelineStatus");
 const video = node<HTMLVideoElement>("timelinePreview");
 const trackList = node<HTMLOListElement>("timelineClips");
+const recorderDialog = node<HTMLDialogElement>("timelineRecordDialog");
+const recorder = node<HTMLIFrameElement>("timelineRecorder");
+const fileInput = input("timelineFile");
 const uid = document.body.dataset.work || "";
 const endpoint = (work = uid) => "/api/library/work/" + encodeURIComponent(work);
 
@@ -36,6 +40,8 @@ let previewVersion = 0;
 let cueVersion = 0;
 let stopTime: number | undefined;
 let cues: Cue[] = [];
+let uploading = false;
+let uploadId = "";
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
 function message(error: unknown) {
@@ -70,7 +76,11 @@ function controls() {
   button("splitTimeline").disabled = selected < 0 || video.hidden;
   button("playTimelineClip").disabled = button("splitTimeline").disabled;
   button("discardTimeline").disabled = Boolean(working());
-  button("appendTimeline").disabled = !select("timelineVideo").value || state.clips.length >= 128;
+  const full = state.clips.length >= 128;
+  button("appendTimeline").disabled = !select("timelineVideo").value || full;
+  button("recordTimeline").disabled = full;
+  button("uploadTimeline").disabled = uploading || full;
+  fileInput.disabled = uploading;
 }
 
 function listSources() {
@@ -330,10 +340,64 @@ button("discardTimeline").onclick = () => run(async () => {
   status.textContent = "Draft reset.";
   paint();
 });
-button("appendTimeline").onclick = () => run(async () => {
-  const work = select("timelineVideo").value;
+async function appendClip(work: string) {
   const info = await call<{version: string; duration: number}>(endpoint(work) + "/editing");
+  if (state.clips.length >= 128) throw new Error("The timeline has reached its 128-clip limit.");
   change({...state, clips: [...state.clips, {work, cut: info.version, start: 0, end: info.duration}]});
+}
+
+async function addNewClip(work: string) {
+  const items = await call<Media[]>("/api/library");
+  const saved = items.find(item => item.id === work && item.asset_type === "video");
+  if (!saved) throw new Error("The saved video is unavailable in this Library.");
+  media.set(work, saved);
+  listSources();
+  if (!state.clips.some(clip => clip.work === work)) await appendClip(work);
+  await save(true);
+}
+
+button("appendTimeline").onclick = () => run(() => appendClip(select("timelineVideo").value));
+fileInput.onchange = () => { uploadId = ""; };
+node<HTMLFormElement>("timelineUpload").onsubmit = event => {
+  event.preventDefault();
+  const file = fileInput.files?.[0];
+  if (!file || uploading || state.clips.length >= 128) return;
+  if (!/\.(mp4|mov|webm|mkv)$/i.test(file.name)) {
+    message("Choose an MP4, MOV, WebM or MKV video.");
+    return;
+  }
+  run(async () => {
+    uploadId ||= crypto.randomUUID();
+    uploading = true;
+    controls();
+    try {
+      const receipt = await uploadLibraryFile(file, uploadId, media.get(uid)?.folder || "", key.value,
+        privateSettings, percent => {
+          status.textContent = percent === null ? "Preparing the uploaded clip…" : `Uploading ${Math.floor(percent)}%…`;
+        });
+      await addNewClip(receipt.id);
+      fileInput.value = uploadId = "";
+    } finally {
+      uploading = false;
+      controls();
+    }
+  });
+};
+
+button("recordTimeline").onclick = () => {
+  const query = new URLSearchParams({timeline: "1", folder: media.get(uid)?.folder || ""});
+  recorder.src = "/operator/record?" + query;
+  recorderDialog.showModal();
+};
+button("closeTimelineRecorder").onclick = () => recorderDialog.close();
+recorderDialog.onclose = () => {
+  if (!recorderDialog.open) recorder.removeAttribute("src");
+};
+window.addEventListener("message", event => {
+  if (event.origin !== location.origin || event.source !== recorder.contentWindow || !recorderDialog.open ||
+      event.data?.type !== "cueporch-recording-saved" || typeof event.data.work !== "string") return;
+  recorderDialog.close();
+  run(() => addNewClip(event.data.work));
 });
 button("setTimelineMusic").onclick = () => {
   const work = select("timelineMusic").value;

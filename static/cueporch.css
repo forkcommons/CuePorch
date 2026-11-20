@@ -105,6 +105,9 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 .timeline-clip label { margin: 0; }
 .timeline-clip input { width: 7rem; }
 .timeline-clip [aria-pressed="true"] { background: #1f6965; color: white; }
+#timelineRecordDialog { width: min(70rem, 92vw); }
+#timelineRecordDialog::backdrop { background: #152e33a0; }
+#timelineRecorder { display: block; width: 100%; height: 70vh; border: 0; }
 #videoDetails [hidden], #identify[hidden] { display: none; }
 .video-work-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: .7rem 1rem; }
 .video-operator-actions:not([hidden]) { display: contents; }
