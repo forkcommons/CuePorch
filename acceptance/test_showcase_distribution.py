@@ -12,6 +12,7 @@ import unittest
 from urllib.parse import urlsplit
 import uuid
 
+from PIL import Image
 from playwright.sync_api import expect, sync_playwright
 import requests
 from werkzeug.serving import make_server
@@ -142,6 +143,52 @@ class ShowcaseDistribution(unittest.TestCase):
                 }"""))
                 cover = entries[1]["thumbnail"]
                 self.assertEqual("image/jpeg", requests.get(cover, timeout=10).headers["Content-Type"])
+                guest.goto(watch)
+                guest.get_by_role("button", name="Stage recording").click()
+                expect(guest.locator("#nowPlaying")).to_have_text("Stage recording")
+                self.assertEqual(320, guest.locator(".showcase-screen video").evaluate("""
+                    async node => {node.muted = true; await node.play(); node.pause(); return node.videoWidth}
+                """))
+
+                backdrop = root / "exhibition.png"
+                Image.new("RGB", (89, 54), "#03655d").save(backdrop)
+                editor.get_by_label("Featured background image").set_input_files(backdrop)
+                editor.get_by_label("Featured title").fill("Opening night")
+                editor.get_by_label("Featured text alignment").select_option("center")
+                editor.get_by_label("Show CuePorch brand").check()
+                editor.get_by_label("Show Watch navigation").check()
+                editor.get_by_label("Gallery grid contents").select_option("players")
+                editor.get_by_label("Playlist card size").select_option("extra-large")
+                editor.get_by_label("Play the next video").check()
+                editor.get_by_label("Loop the playlist").check()
+                editor.get_by_role("button", name="Save showcase").click()
+                expect(editor.get_by_label("Featured background image")).to_have_value("")
+                page.get_by_label("Preview width").select_option("mobile")
+                page.get_by_role("button", name="Preview saved showcase").click()
+                preview = page.frame_locator("#showcaseFrame")
+                featured = preview.get_by_role("region", name="Featured information")
+                expect(featured.get_by_role("heading", name="Opening night")).to_be_visible()
+                expect(featured).to_have_css("text-align", "center")
+                image = featured.locator("img")
+                self.assertEqual(89, image.evaluate("async image => {await image.decode(); return image.naturalWidth}"))
+                expect(preview.locator("body")).to_have_attribute("data-size", "extra-large")
+                expect(preview.get_by_text("Hosted on CuePorch")).to_be_visible()
+                expect(preview.get_by_role("link", name="Browse Watch")).to_have_attribute("href", "/watch")
+                guest.goto(watch)
+                guest.locator(".showcase-playlist video").first.wait_for()
+                expect(guest.locator(".showcase-playlist video")).to_have_count(3)
+                expect(guest.locator(".showcase-screen video")).to_have_count(0)
+                guest.get_by_label("Search videos").fill("stage")
+                expect(guest.locator(".showcase-playlist li:visible")).to_have_count(1)
+                guest.get_by_label("Search videos").fill("")
+                stage = guest.locator(".showcase-playlist video[aria-labelledby=showcaseCardTitle2]")
+                stage.evaluate("""async node => {node.muted = true; await node.play(); node.pause()}""")
+                expect(guest.locator("#nowPlaying")).to_have_text("Stage recording")
+                expect(guest.locator("#showcasePlayingDescription")).to_have_text("Stage performance")
+                self.assertEqual(320, stage.evaluate("node => node.videoWidth"))
+                stage.evaluate("async node => {node.currentTime = node.duration - .1; await node.play()}")
+                expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
+
                 send("PUT", f"/api/library/work/{first}/privacy", private)
                 self.assertEqual([second], [item["id"] for item in requests.get(feed_url, timeout=10).json()["shortFormVideos"]])
                 for url in (movie["url"], cover):
@@ -153,6 +200,9 @@ class ShowcaseDistribution(unittest.TestCase):
                 attendee.get_by_role("button", name="Save registration").click()
                 expect(feed).to_be_hidden()
                 self.assertEqual(404, requests.get(feed_url, timeout=10).status_code)
+                guest.goto(watch)
+                expect(guest.locator(".showcase-feature-image")).to_have_count(0)
+                expect(guest.locator(".showcase-playlist video")).to_have_count(0)
                 second_media = entries[0]["content"]["videos"][0]["url"]
                 self.assertEqual(404, requests.get(second_media, timeout=10).status_code)
                 attendee.get_by_label("Require registration before playback").uncheck()

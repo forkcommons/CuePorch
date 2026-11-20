@@ -270,6 +270,8 @@ For HTTPS installations, set `CUEPORCH_PUSH_CONTACT` to a `mailto:` address or H
 
 Open **Showcases** from the library. **New showcase** creates a private gallery. Give it a title and link name, add videos, and use **Move up** or **Move down** to set playback order. Choose a gallery grid or a player with a playlist, add a logo and featured information, and pick a card size. Preview the saved gallery at desktop or mobile width before sharing.
 
+Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
+
 Choose **Public**, **Password** or **Embed only** to create viewer links. The optional list of allowed sites restricts embeds. A public showcase lists publicly visible videos. A password-protected showcase can play other restricted videos when their embed settings permit it. Private videos stay in the operator preview. A video with its own registration form keeps that gate and is omitted from guest playlists. Use **Registration** to require a form for the whole showcase and export the answers as CSV. Use **Make a copy** to start a private gallery with the same presentation and video order.
 
 Under **Playback and discovery**, use **Search result preview** to see the draft title, address and description. Blank search fields use the gallery title and description. Save a public showcase with indexing enabled to publish its metadata and optional keywords.

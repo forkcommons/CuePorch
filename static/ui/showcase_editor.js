@@ -20,14 +20,18 @@ const searchStatus = document.querySelector("#showcaseSearchStatus");
 const searchTitle = document.querySelector("#showcaseSearchTitle");
 const searchAddress = document.querySelector("#showcaseSearchAddress");
 const searchDescription = document.querySelector("#showcaseSearchDescription");
-const logoInput = field("logo_file");
-const clear = document.querySelector("#showcaseClearLogo");
 const base = document.body.dataset.publicUrl || location.origin;
+const assets = [
+    { key: "logo", input: field("logo_file"),
+        clear: document.querySelector("#showcaseClearLogo") },
+    { key: "feature_image", input: field("feature_file"),
+        clear: document.querySelector("#showcaseClearFeature") },
+];
+const images = { logo: null, feature_image: null };
 let current;
 let showcases = [];
 let library = [];
 let selected = [];
-let logo = null;
 let busy = false;
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function fetchResult(path, method = "GET", body) {
@@ -127,9 +131,11 @@ function select(value) {
     field("slug").value = value.slug;
     field("password").value = "";
     field("password").placeholder = value.has_password ? "Keep current password" : "";
-    logoInput.value = "";
-    logo = value.settings.logo;
-    clear.hidden = !logo;
+    for (const { key, input, clear } of assets) {
+        input.value = "";
+        images[key] = value.settings[key];
+        clear.hidden = !images[key];
+    }
     selected = [...value.settings.videos];
     frame.hidden = true;
     frame.removeAttribute("src");
@@ -189,8 +195,10 @@ picker.onchange = () => updateList(picker.value);
 field("visibility").onchange = visibility;
 form.addEventListener("input", renderSearchPreview);
 add.onclick = () => { selected.push(video.value); membership(); };
-logoInput.onchange = () => { clear.hidden = !logo && !logoInput.files?.length; };
-clear.onclick = () => { logo = null; logoInput.value = ""; clear.hidden = true; };
+for (const { key, input, clear } of assets) {
+    input.onchange = () => { clear.hidden = !images[key] && !input.files?.length; };
+    clear.onclick = () => { images[key] = null; input.value = ""; clear.hidden = true; };
+}
 const on = (id, work, success = "") => {
     document.querySelector("#" + id).onclick = () => void action(work, success);
 };
@@ -217,14 +225,17 @@ viewport.onchange = () => { frame.dataset.width = viewport.value; };
 form.onsubmit = (event) => {
     event.preventDefault();
     void action(async () => {
-        if (logoInput.files?.length) {
+        for (const { key, input } of assets) {
+            if (!input.files?.length)
+                continue;
             const file = new FormData();
-            file.set("logo", logoInput.files[0]);
-            logo = (await request("/api/review-logos", "POST", file)).logo;
+            file.set("logo", input.files[0]);
+            images[key] = (await request("/api/review-logos", "POST", file)).logo;
         }
-        const settings = { ...current.settings, logo, videos: selected, domains: field("domains").value.split(/\s+/).filter(Boolean) };
+        const settings = { ...current.settings, ...images, videos: selected,
+            domains: field("domains").value.split(/\s+/).filter(Boolean) };
         for (const [name, old] of Object.entries(settings)) {
-            if (name === "domains" || name === "videos" || name === "logo")
+            if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image")
                 continue;
             const control = field(name);
             settings[name] = typeof old === "boolean" ? control.checked : control.value;

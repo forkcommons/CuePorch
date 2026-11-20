@@ -55,10 +55,15 @@
             <legend>Brand and layout</legend>
             <label>Logo image <input type="file" name="logo_file" accept="image/png,image/jpeg,image/webp"></label>
             <button type="button" id="showcaseClearLogo">Remove logo</button>
+            <label><input type="checkbox" name="product_brand"> Show CuePorch brand</label>
             <label>Accent color <input type="color" name="accent"></label>
             <label><input type="checkbox" name="dark"> Dark background</label>
             <label for="showcaseLayout">Layout</label><select id="showcaseLayout" name="layout"><option value="grid">Gallery grid</option><option value="featured">Player and playlist</option></select>
             <label>Playlist card size <select name="size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option><option value="extra-large">Extra large</option></select></label>
+            <label>Gallery grid contents <select name="grid_media"><option value="thumbnails">Thumbnails</option><option value="players">Video players</option></select></label>
+            <label>Featured background image <input type="file" name="feature_file" accept="image/png,image/jpeg,image/webp"></label>
+            <button type="button" id="showcaseClearFeature">Remove featured background</button>
+            <label>Featured text alignment <select name="feature_alignment"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option></select></label>
             <label>Featured title <input name="headline" maxlength="140"></label>
             <label>Featured description <textarea name="summary" maxlength="2000"></textarea></label>
             <label>Featured link text <input name="button_label" maxlength="100"></label>
@@ -66,6 +71,7 @@
           </fieldset>
           <fieldset>
             <legend>Playback and discovery</legend>
+            <label><input type="checkbox" name="navigation"> Show Watch navigation</label>
             <label><input type="checkbox" name="search"> Show search</label>
             <label><input type="checkbox" name="copy_link"> Show copy link</label>
             <label><input type="checkbox" name="next_video"> Play the next video</label>

@@ -38,6 +38,7 @@ DEFAULTS = dict(
     logo=None, accent="#2b7e7d", dark=False, layout="grid", size="medium", search=True,
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
+    feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
@@ -116,17 +117,21 @@ def validate_settings(con, raw, lookup):
     if bool(values["button_label"]) != bool(values["button_url"]):
         abort(422, "Enter both a featured button label and link.")
     values["logo"] = image_id(con, raw.get("logo"))
+    values["feature_image"] = image_id(con, raw.get("feature_image"))
     accent = raw.get("accent", DEFAULTS["accent"])
     if not isinstance(accent, str) or not re.fullmatch(r"#[A-Fa-f0-9]{6}", accent):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
-    for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled"):
+    for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled",
+                 "navigation", "product_brand"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
         values[name] = value
     for name, options in (("visibility", VISIBILITIES), ("layout", ("grid", "featured")),
-                          ("size", ("small", "medium", "large", "extra-large"))):
+                          ("size", ("small", "medium", "large", "extra-large")),
+                          ("feature_alignment", ("start", "center", "end")),
+                          ("grid_media", ("thumbnails", "players"))):
         value = raw.get(name, DEFAULTS[name])
         if value not in options:
             abort(422, f"Choose a valid {name}.")
@@ -348,6 +353,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         entries = []
         frame = access.dumps([row["id"], row["revision"], origin]) if embed else None
         logo = None
+        feature_image = None
         form = None
         form_token = None
         form_error = None
@@ -375,6 +381,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     registration_view = library_registration.presentation(con, form, sign_on)
                 logo = brand_image(con, values["logo"])
                 if not form_token:
+                    feature_image = brand_image(con, values["feature_image"])
                     works = library()
                     for uid in values["videos"]:
                         work = works.get(uid)
@@ -385,13 +392,17 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         policy = privacy.get_privacy(con, uid)
                         token = media.dumps([row["id"], row["revision"], uid, video_version_key(work),
                                              policy["revision"] if policy else None, internal, embed, origin, form_revision])
-                        entries.append(dict(id=uid, title=title_for(con, work), media=url_for("showcase_file", token=token),
+                        details = library_details.details_for(con, work)
+                        entries.append(dict(id=uid, title=title_for(con, work),
+                                            description=details.get("description", ""),
+                                            media=url_for("showcase_file", token=token),
                                             poster=url_for("showcase_file", token=token, poster=1)
                                             if selected_thumbnail(con, work) else None,
                                             captions=[dict(language=track.get("language") or "und",
                                                            url=url_for("showcase_file", token=token, track=index))
                                                       for index, track in enumerate(tracks_for(work))]))
         response = make_response(render_template("showcase_view.html", settings=values, entries=entries, logo=logo,
+                                                feature_image=feature_image,
                                                 locked=locked, wrong=locked and request.method == "POST",
                                                 unlock_token=frame, embed=embed, internal=internal,
                                                 registration=registration_view, enrollment=form_token,
