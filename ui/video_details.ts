@@ -1,5 +1,6 @@
 import { embedBuilder } from "./embed_builder.js";
 import {sessionMarker} from "./team_api.js";
+import {sharingFields, type Sharing} from "./library_privacy.js";
 
 interface VideoDetails {
   title: string;
@@ -180,6 +181,40 @@ function populateCustom() {
   renderLinks();
 }
 
+async function loadTeamSharing() {
+  const container = document.querySelector<HTMLElement>("#teamVideoPrivacy");
+  if (!container) return;
+  const fields = sharingFields(container);
+  const notice = document.querySelector<HTMLElement>("#teamVideoPrivacyStatus")!;
+  const watch = document.querySelector<HTMLInputElement>("#teamVideoWatch")!;
+  function render(settings: Sharing) {
+    fields.populate(settings);
+    watch.value = settings.watch ? address(settings.watch).href : "";
+    watch.parentElement!.hidden = !settings.watch;
+    notice.textContent = settings.pending ? "Waiting for the configured publication approval." : "";
+  }
+  try {
+    render(await call<Sharing>("/privacy"));
+  } catch (error) {
+    container.hidden = true;
+    notice.textContent = String(error);
+    return;
+  }
+  fields.form.onsubmit = async event => {
+    event.preventDefault();
+    fields.save.disabled = true;
+    try {
+      const updated = await call<Sharing>("/privacy", "PUT", fields.values());
+      render(updated);
+      if (!updated.pending) notice.textContent = "Video sharing saved.";
+    } catch (error) {
+      notice.textContent = String(error);
+    } finally {
+      fields.save.disabled = false;
+    }
+  };
+}
+
 async function loadWorkspace() {
   if (teamPreview) {
     editorialState = await call<EditorialStatus>("/editorial-status");
@@ -187,6 +222,7 @@ async function loadWorkspace() {
     editorial.disabled = false;
     preview.src = teamPreview;
     preview.hidden = false;
+    await loadTeamSharing();
     return;
   }
   const [work, viewerSharing, state, reviews] = await Promise.all([

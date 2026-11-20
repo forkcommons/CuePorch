@@ -14,9 +14,9 @@ export function folderChoices(select, folders, excluded) {
 }
 export async function readUploadPrivacy(folder, load) {
     if (folder) {
-        const { settings, has_password } = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
+        const { settings, has_password, allowed } = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
         if (settings)
-            return { ...privateSettings, ...settings, has_password, folder_override: true };
+            return { ...privateSettings, ...settings, has_password, allowed, folder_override: true };
     }
     return { ...privateSettings, ...await (await load("/api/library/upload-defaults")).json() };
 }

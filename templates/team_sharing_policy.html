@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Sharing restrictions · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team/settings">Team settings</a> · <a href="/team/members">Team members</a></nav>
+  <h1>Sharing restrictions</h1>
+  <form id="sharingPolicyAccess">
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open sharing restrictions</button>
+  </form>
+  <p id="sharingPolicyStatus" role="status"></p>
+  <form id="sharingPolicy" hidden>
+    <p>Removing an Administrator visibility option makes affected Library videos private and cancels pending shares in that mode. Designated public records retain their settings.</p>
+    {% for role, name in roles.items() %}
+      <fieldset data-role="{{ role }}">
+        <legend>{{ name }}</legend>
+        {% for key, label in modes.items() %}
+          <label><input type="checkbox" name="{{ key }}"{% if key == "private" %} checked disabled{% endif %}> {{ label }}</label>
+        {% endfor %}
+        {% for key, label in features.items() %}
+          <label><input type="checkbox" name="{{ key }}"> {{ label }}</label>
+        {% endfor %}
+      </fieldset>
+    {% endfor %}
+    <button>Save sharing restrictions</button>
+  </form>
+</main>
+<script type="module" src="/static/ui/team_sharing_policy.js"></script>
+</html>

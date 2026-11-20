@@ -24,7 +24,7 @@ import team_analytics
 import team_workspaces
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
                                       secure_site, token_hash, workspace_session, workspace_session_cookie)
-from library_privacy import blocked, playback
+from library_privacy import blocked, current_settings, editable, playback, protected_route
 
 
 SCHEMA = """
@@ -218,7 +218,7 @@ def group_selection(values, available, label):
 
 
 def register(app, tx, origin, key, workspace_brand, operator_name, read_works, title_for, root, public_listing,
-             entry_payload):
+             entry_payload, sharing_access):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
     invitation_mail = invitation_mail_config(origin)
@@ -693,10 +693,17 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         secure = secure_site(origin)
         uid = str(work)
         with tx() as con:
-            if not can_edit(con, member(con, secure), uid) or uid not in eligible_works(con, {uid}):
+            actor = member(con, secure)
+            available = eligible_works(con, {uid}).get(uid)
+            if not available or not can_edit(con, actor, uid):
                 abort(404)
+            allowed = sharing_access(con, actor)
+            mode = current_settings(con, uid)["visibility"]
+            privacy_editor = (editable(available) and not protected_route(con, uid) and len(allowed["modes"]) > 1
+                              and mode in allowed["modes"])
         return private(render_template("video_details.html", work=uid, public_url="", team_editor=True,
-                                       team_preview=url_for("team_video", work=work)))
+                                       team_preview=url_for("team_video", work=work), team_privacy=privacy_editor,
+                                       team_file_links=allowed["file_links"]))
 
     @app.get("/team/video/<uuid:work>/interactivity")
     def team_edit_interactivity(work):

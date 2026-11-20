@@ -226,7 +226,8 @@ def overlapping(entries):
     return sorted(conflicts)
 
 
-def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work):
+def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
+             sharing_access, enforce_sharing):
     media = Gateway()
     studio = Studio(database)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
@@ -463,7 +464,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return candidates
 
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
-    event_simulcast.register(app, tx, staff, destination_access, outputs)
+    event_simulcast.register(app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing)
 
     def released_previews(con):
         now = datetime.now(timezone.utc)

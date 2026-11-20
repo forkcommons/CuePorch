@@ -78,7 +78,7 @@ def state_for(work, row, privacy, settings):
     return state
 
 
-def register(app, tx, staff, root, get_work, permits):
+def register(app, tx, root, get_work, permits, operator_name, authorize_editor, enforce_sharing):
     destination = root / "renditions"
     wake, stopping = Event(), Event()
 
@@ -87,13 +87,15 @@ def register(app, tx, staff, root, get_work, permits):
 
     @app.get("/operator/videos/<uuid:work>/file-links")
     def video_file_link_page(work):
-        return private(render_template("video_file_links.html", work=str(work)))
+        return private(render_template("video_file_links.html", work=str(work), team=request.args.get("team") == "1"))
 
     @app.route("/api/library/work/<uuid:work>/file-links", methods=("GET", "POST", "DELETE"))
     def video_file_links(work):
-        staff()
         uid = str(work)
         with tx() as con:
+            if not operator_name(con) and not authorize_editor(con, uid):
+                abort(403)
+            enforce_sharing(con, feature="file_links")
             item = get_work(con, uid)
             if item.get("asset_type", "video") != "video":
                 abort(404)

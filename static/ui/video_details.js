@@ -1,5 +1,6 @@
 import { embedBuilder } from "./embed_builder.js";
 import { sessionMarker } from "./team_api.js";
+import { sharingFields } from "./library_privacy.js";
 const identify = document.querySelector("#identify");
 const key = document.querySelector("#operatorKey");
 const status = document.querySelector("#detailsStatus");
@@ -130,6 +131,44 @@ function populateCustom() {
     custom.elements.namedItem("days").value = String(sharing.alias?.days || 0);
     renderLinks();
 }
+async function loadTeamSharing() {
+    const container = document.querySelector("#teamVideoPrivacy");
+    if (!container)
+        return;
+    const fields = sharingFields(container);
+    const notice = document.querySelector("#teamVideoPrivacyStatus");
+    const watch = document.querySelector("#teamVideoWatch");
+    function render(settings) {
+        fields.populate(settings);
+        watch.value = settings.watch ? address(settings.watch).href : "";
+        watch.parentElement.hidden = !settings.watch;
+        notice.textContent = settings.pending ? "Waiting for the configured publication approval." : "";
+    }
+    try {
+        render(await call("/privacy"));
+    }
+    catch (error) {
+        container.hidden = true;
+        notice.textContent = String(error);
+        return;
+    }
+    fields.form.onsubmit = async (event) => {
+        event.preventDefault();
+        fields.save.disabled = true;
+        try {
+            const updated = await call("/privacy", "PUT", fields.values());
+            render(updated);
+            if (!updated.pending)
+                notice.textContent = "Video sharing saved.";
+        }
+        catch (error) {
+            notice.textContent = String(error);
+        }
+        finally {
+            fields.save.disabled = false;
+        }
+    };
+}
 async function loadWorkspace() {
     if (teamPreview) {
         editorialState = await call("/editorial-status");
@@ -137,6 +176,7 @@ async function loadWorkspace() {
         editorial.disabled = false;
         preview.src = teamPreview;
         preview.hidden = false;
+        await loadTeamSharing();
         return;
     }
     const [work, viewerSharing, state, reviews] = await Promise.all([

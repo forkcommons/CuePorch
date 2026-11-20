@@ -60,6 +60,8 @@ Use **Manage workspace links** in **Team members** to add a CuePorch workspace b
 
 Open **Team settings** in **Team members** to set the workspace's display name, accent and JPEG or PNG logo. The name takes up to 32 characters and the logo up to 5 MB. Changes appear on team screens, creator intake and the public catalog. The local data directory and institution identity stay bound to the original installation.
 
+The Owner or installation credential can open **Sharing restrictions** in **Team settings**. Choose which visibility modes, embed settings, third-party publishing actions and direct file link actions Administrators and Contributors can use. Private stays available. Contributors start with workspace-only access. Allow additional modes to let Contributors use **Video sharing** when they can edit the video. Removing a visibility mode for Administrators also removes it for Contributors. Saving the change makes affected Library videos private, updates defaults in that mode and cancels pending shares in that mode. Designated public records retain their settings. Existing delivery jobs and third-party copies have separate controls.
+
 Use the installation credential to assign an active member as **Owner**. The Owner can transfer ownership to another active member from **Team members**. The previous Owner becomes an Administrator. The installation credential can recover ownership if the Owner loses access. Team administrators can choose **Download team roster** for a CSV of members and invitations, including roles, dates and membership status.
 
 ### First migration

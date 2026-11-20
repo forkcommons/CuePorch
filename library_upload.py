@@ -49,7 +49,7 @@ def prepare_asset(source, scratch, kind, decoder):
     return name, None
 
 
-def register(app, tx, staff, team_contributor, action, root, database, institution, remember_work):
+def register(app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing):
     def check_folder(con, folder):
         if folder and (
             hidden(con, "folder", folder)
@@ -181,9 +181,13 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
     def upload_privacy(con, actor, folder, overrides):
         rule = folder_privacy(con, folder)
         if rule:
-            return json.loads(rule["settings"]), rule["password_hash"]
-        settings, password = actor_defaults(con, actor)
-        return requested_settings(overrides, password) if overrides is not None else (settings, password)
+            settings, password = json.loads(rule["settings"]), rule["password_hash"]
+        else:
+            settings, password = actor_defaults(con, actor)
+            if overrides is not None:
+                settings, password = requested_settings(overrides, password)
+        enforce_sharing(con, settings=settings)
+        return settings, password
 
     def prior_upload(con, uid, digest):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))

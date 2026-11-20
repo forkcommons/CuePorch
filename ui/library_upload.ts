@@ -44,8 +44,8 @@ export function folderChoices(select: HTMLSelectElement, folders: UploadFolder[]
 
 export async function readUploadPrivacy(folder: string, load: (path: string) => Promise<Response>): Promise<Sharing> {
   if (folder) {
-    const {settings, has_password} = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
-    if (settings) return {...privateSettings, ...settings, has_password, folder_override: true};
+    const {settings, has_password, allowed} = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
+    if (settings) return {...privateSettings, ...settings, has_password, allowed, folder_override: true};
   }
   return {...privateSettings, ...await (await load("/api/library/upload-defaults")).json()};
 }

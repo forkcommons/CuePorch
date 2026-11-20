@@ -436,13 +436,16 @@ class Simulcast:
             job.thread.join(timeout=15)
 
 
-def register(app, tx, staff, event_access, outputs):
+def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing):
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
     def event_destinations(uid, opens):
         staff()
         with tx() as con:
             available = event_access(con, uid, opens)
+            if not sharing_access(con)["outbound"] and request.method in ("GET", "HEAD"):
+                return dict(available=False, destinations=[])
             if request.method == "POST":
+                enforce_sharing(con, feature="outbound")
                 if not available:
                     abort(409, "Destinations require a public event without audience registration.")
                 body = request.get_json()
@@ -477,6 +480,8 @@ def register(app, tx, staff, event_access, outputs):
                 body = request.get_json()
                 if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
                     abort(422, "Set whether this destination is enabled.")
+                if body["enabled"]:
+                    enforce_sharing(con, feature="outbound")
                 if body["enabled"] and not available:
                     abort(409, "Destinations require a public event without audience registration.")
                 con.execute("UPDATE live_simulcast_destination SET enabled=? WHERE id=?", (body["enabled"], destination))

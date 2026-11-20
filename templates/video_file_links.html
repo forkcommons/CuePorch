@@ -3,9 +3,13 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/cueporch.css">
 <title>Video file links · CuePorch</title>
-<main data-work="{{ work }}">
+<main data-work="{{ work }}"{% if team %} data-team-access="yes"{% endif %}>
+  {% if team %}
+  <nav aria-label="Video"><a href="/team/video/{{ work }}/details">Video details</a></nav>
+  {% else %}
   {% include "operator_navigation.html" %}
   <nav aria-label="Video"><a href="/operator/videos/{{ work }}">Video details</a></nav>
+  {% endif %}
   <h1>Video file links</h1>
   <p>Anyone with a direct link can play or save a copy of the video. Use the watch page or iframe for password or registration access.</p>
   <form id="fileLinkAccess">

@@ -71,6 +71,7 @@ import review_links
 import review_push
 import team_accounts
 import team_branding
+import team_sharing_policy
 import team_workspaces
 import timeline_jobs
 import vimeo_privacy
@@ -140,6 +141,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + audience_accounts.SCHEMA
             + team_accounts.SCHEMA
             + team_branding.SCHEMA
+            + team_sharing_policy.SCHEMA
             + team_workspaces.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
@@ -232,6 +234,7 @@ def create_app(root, database, operator, institution, simulation=None):
         return actor
 
     workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
+    sharing_access, enforce_sharing = team_sharing_policy.register(app, tx, team_origin, team_member, operator_name)
 
     def action(con, uid, step, payload):
         if step not in STEPS:
@@ -1062,6 +1065,7 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(400)
         step = "replay" if kind == "meeting" else "publication"
         with tx() as con:
+            enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": "public"})
             if library_peer_handoff.get(con, slug):
                 abort(409, "This library video uses CuePorch-managed viewer links.")
             if (
@@ -1231,29 +1235,31 @@ def create_app(root, database, operator, institution, simulation=None):
     audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
     authorize_editor = team_accounts.register(app, tx, team_origin, operator, workspace_brand, operator_name,
                                                read_library_works, library_actions.title_for, root,
-                                               public_listing, library_discovery.entry_payload)
-    library_folders.register(app, tx, staff, action, read_library_works)
-    library_folder_privacy.register(app, tx, staff, action, read_library_works)
+                                               public_listing, library_discovery.entry_payload, sharing_access)
+    library_folders.register(app, tx, staff, action, read_library_works, enforce_sharing)
+    library_folder_privacy.register(app, tx, staff, action, read_library_works, sharing_access, enforce_sharing)
     library_trash.register(app, tx, staff, read_library_works)
     def remember_work(work):
         works[work["id"]] = work
 
     start_editor, start_file_links = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
-        authorize_editor,
+        authorize_editor, operator_name, enforce_sharing,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
-                            operator, root, read_library_works, institution, remember_work)
+                            operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing)
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
     )
-    library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work)
-    vimeo_privacy.register(app, tx, staff, action, read_library_works)
+    library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work,
+                            enforce_sharing)
+    vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
         vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
+        operator_name, authorize_editor, sharing_access, enforce_sharing,
     )
 
     @app.get("/api/library")
@@ -1476,10 +1482,11 @@ def create_app(root, database, operator, institution, simulation=None):
         work = works.get(work_id)
         if not work:
             abort(404)
-        if not os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
-            abort(503, "Configure the PeerTube destination")
         try:
             with tx() as con:
+                enforce_sharing(con, feature="outbound")
+                if not os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
+                    abort(503, "Configure the PeerTube destination")
                 if library_trash.hidden(con, "work", work_id):
                     abort(404)
                 public = request.json.get("public", False)
@@ -1492,6 +1499,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     or not math.isfinite(scheduled)
                 ):
                     abort(400)
+                if public:
+                    enforce_sharing(con, settings=library_privacy.DEFAULTS | {"visibility": "public"})
                 uid = library_worker.enqueue(con, work, public, scheduled, kind)
                 con.execute(
                     "UPDATE publication_job SET status='queued',error=NULL WHERE id=? AND status='failed'",
@@ -1507,6 +1516,7 @@ def create_app(root, database, operator, institution, simulation=None):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))
         queued = 0
         with tx() as con:
+            enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": "public"})
             for item in manifest["works"]:
                 if (
                     item["provider"] != "vimeo"

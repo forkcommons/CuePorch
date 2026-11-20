@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS library_star(
 """
 
 
-def register(app, tx, staff, action, read_works):
+def register(app, tx, staff, action, read_works, enforce_sharing):
     @app.put("/api/library/star/<kind>/<item>")
     def set_star(kind, item):
         actor = staff()
@@ -115,7 +115,8 @@ def register(app, tx, staff, action, read_works):
                 (uid, parent, name, color),
             )
             if previous and previous["parent"] != parent and library_folder_privacy.closest(con, uid):
-                library_folder_privacy.sync_branch(con, action, uid, {work["id"]: work for work in read_works()})
+                library_folder_privacy.sync_branch(con, action, uid, {work["id"]: work for work in read_works()},
+                                                   enforce_sharing)
                 library_privacy.apply_pending(con)
         return dict(
             id=uid, parent=parent, name=name, color=color
@@ -153,5 +154,6 @@ def register(app, tx, staff, action, read_works):
                    ON CONFLICT(work) DO UPDATE SET folder=excluded.folder""",
                 [(work, folder) for work in works],
             )
-            library_folder_privacy.place_under_rule(con, action, (available[uid] for uid in set(works)), folder)
+            library_folder_privacy.place_under_rule(con, action, (available[uid] for uid in set(works)), folder,
+                                                        enforce_sharing)
         return "", 204

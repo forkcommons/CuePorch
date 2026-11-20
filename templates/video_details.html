@@ -93,6 +93,18 @@
       <h2 id="factsTitle">Stored video</h2>
       <dl id="videoFacts"></dl>
     </section>
+    {% if team_privacy %}
+    <section aria-labelledby="teamShareHeading">
+      <h2 id="teamShareHeading">Video sharing</h2>
+      <div id="teamVideoPrivacy"></div>
+      <p id="teamVideoPrivacyStatus" role="status"></p>
+      <label hidden>Viewer link <input id="teamVideoWatch" readonly></label>
+      {% include "video_privacy_fields.html" %}
+    </section>
+    {% endif %}
+    {% if team_file_links %}
+      <p><a href="/operator/videos/{{ work }}/file-links?team=1">Video file links</a></p>
+    {% endif %}
       </div>
       <aside aria-labelledby="shareHeading"{% if team_editor %} hidden{% endif %}>
         <h2 id="shareHeading">Share</h2>

@@ -1,7 +1,8 @@
-import { checked } from "./team_api.js";
+import { checked, sessionMarker } from "./team_api.js";
 const root = document.querySelector("main");
 const access = document.querySelector("#fileLinkAccess");
 const key = access.querySelector("input");
+const team = root.dataset.teamAccess === "yes";
 const status = document.querySelector("#fileLinkStatus");
 const panel = document.querySelector("#fileLinkPanel");
 const prepare = document.querySelector("#prepareFileLinks");
@@ -12,7 +13,8 @@ let timer;
 let working = false;
 async function call(method = "GET", body) {
     return checked(await fetch(`/api/library/work/${root.dataset.work}/file-links`, {
-        method, headers: { Authorization: `Bearer ${key.value}`, "Content-Type": "application/json" },
+        method, headers: { Authorization: `Bearer ${key.value}`, "Content-Type": "application/json",
+            ...(team ? { "X-CuePorch-Team": "1" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
     }));
 }
@@ -80,7 +82,8 @@ access.onsubmit = event => {
     event.preventDefault();
     void task(async () => {
         await refresh();
-        sessionStorage.setItem("cueporchOperator", key.value);
+        if (!team)
+            sessionStorage.setItem("cueporchOperator", key.value);
     });
 };
 prepare.onclick = () => void task(async () => {
@@ -92,6 +95,8 @@ revoke.onclick = () => void task(async () => {
     await refresh();
     status.textContent = "Video file links revoked.";
 });
-key.value = sessionStorage.getItem("cueporchOperator") || "";
+key.value = team ? sessionMarker : sessionStorage.getItem("cueporchOperator") || "";
+if (team)
+    access.hidden = true;
 if (key.value)
     void task(refresh);

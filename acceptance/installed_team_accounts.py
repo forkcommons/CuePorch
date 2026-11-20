@@ -1,6 +1,7 @@
 """Exercise team invitations and private team media from the installed service."""
 
 import csv
+import json
 from io import StringIO
 from pathlib import Path
 import uuid
@@ -590,6 +591,9 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             independent_feed.reload()
             expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
         privacy(second_work, private_settings)
+        sharing_restrictions = check_sharing_restrictions(
+            base, auth, admin, contributor_page, successor, second_work, owned[0]["id"], uid, parent, replacement,
+        )
 
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
@@ -606,4 +610,99 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 named_playback_report_scope_opt_out_and_csv=True,
                 contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
-                private_feed_follows_publication_order_and_account_removal=True), email("contributor")
+                private_feed_follows_publication_order_and_account_removal=True,
+                sharing_restrictions=sharing_restrictions), email("contributor")
+
+
+def check_sharing_restrictions(base, auth, admin, contributor, owner, own, pending, foreign, folder, sample):
+    policy_path = base + "/api/team/sharing-policy"
+    owner_headers = auth | {"X-CuePorch-Team": "1"}
+    initial = requests.get(policy_path, headers=auth, timeout=10)
+    initial.raise_for_status()
+    assert admin.request.get(policy_path, headers=TEAM).status == 403
+    assert contributor.request.get(policy_path, headers=TEAM).status == 403
+    own_privacy = f"{base}/api/library/work/{own}/privacy"
+    foreign_privacy = f"{base}/api/library/work/{foreign}/privacy"
+    assert contributor.request.get(own_privacy, headers=TEAM).status == 403
+    assert contributor.request.get(foreign_privacy, headers=TEAM).status == 404
+    owner.goto(base + "/team/sharing-policy")
+    editor = owner.locator("#sharingPolicy")
+    expect(editor).to_be_visible()
+    admin_options = editor.locator("[data-role=admin]")
+    contributor_options = editor.locator("[data-role=contributor]")
+    admin_options.get_by_label("Update embed settings").uncheck()
+    admin_options.get_by_label("Publish to third-party destinations").uncheck()
+    admin_options.get_by_label("Manage direct video file links").uncheck()
+    contributor_options.get_by_label("Unlisted", exact=True).check()
+    owner.get_by_role("button", name="Save sharing restrictions").click()
+    expect(owner.locator("#sharingPolicyStatus")).to_have_text("Sharing restrictions saved.")
+    assert requests.put(policy_path, headers=owner_headers, json=initial.json(), timeout=10).status_code == 409
+    assert admin.request.put(policy_path, headers=TEAM, data=initial.json()).status == 403
+
+    public = dict(visibility="public", embed="anywhere", domains=[], download=False)
+    unlisted = dict(visibility="unlisted", embed="disabled", domains=[], download=False)
+    assert contributor.request.put(own_privacy, headers=TEAM, data=public).status == 403
+    assert contributor.request.put(foreign_privacy, headers=TEAM, data=unlisted).status == 404
+    assert admin.request.put(foreign_privacy, headers=TEAM, data=public).status == 403
+    assert admin.request.put(base + "/api/library/upload-defaults", headers=TEAM, data=public).status == 403
+    assert admin.request.put(f"{base}/api/library/folders/{folder}/privacy", headers=TEAM,
+                             data=public | {"enabled": True}).status == 403
+    assert admin.request.get(f"{base}/api/library/work/{foreign}/file-links", headers=TEAM).status == 403
+    assert admin.request.post(f"{base}/api/delivery/{foreign}", headers=TEAM, data={"public": True}).status == 403
+    assert admin.request.post(base + "/api/migration/publish-eligible", headers=TEAM, data={}).status == 403
+    assert admin.request.put(base + "/api/routes/channel/workspace-program", headers=TEAM, data={
+        "revision": "one", "destination": "https://program.example.test/videos/embed/clip",
+        "public_authorized": True,
+    }).status == 403
+
+    contributor.goto(f"{base}/team/video/{own}/details")
+    privacy = contributor.get_by_role("region", name="Video sharing")
+    select = privacy.get_by_label("Link privacy")
+    expect(select.locator("option[value=public]")).to_be_disabled()
+    select.select_option("unlisted")
+    expect(privacy.get_by_label("Embedding")).to_be_disabled()
+    privacy.get_by_role("button", name="Save privacy").click()
+    expect(privacy.get_by_role("status")).to_have_text("Video sharing saved.")
+    watch = privacy.get_by_label("Viewer link").input_value()
+    assert requests.get(watch, timeout=10).ok
+    assert requests.get(f"{base}/watch/work/{own}", timeout=10).status_code == 404
+    assert contributor.request.put(own_privacy, headers=TEAM | {"Origin": "https://outside.example.test"},
+                                   data=unlisted).status == 403
+
+    def put(path, settings):
+        response = requests.put(path, headers=auth, json=settings, timeout=10)
+        response.raise_for_status()
+        return response.json() if response.content else None
+
+    put(foreign_privacy, public)
+    assert requests.get(f"{base}/watch/work/{foreign}", timeout=10).ok
+    put(base + "/api/policy/publication", {"required": True})
+    pending_path = f"{base}/api/library/work/{pending}/privacy"
+    assert put(pending_path, public)["pending"]["visibility"] == "public"
+    admin_options.get_by_label("Public", exact=True).uncheck()
+    owner.get_by_role("button", name="Save sharing restrictions").click()
+    expect(owner.locator("#sharingPolicyStatus")).to_have_text("Sharing restrictions saved. Videos made private: 1.")
+    put(base + "/api/policy/publication", {"required": False})
+    for uid in (foreign, pending):
+        assert requests.get(f"{base}/watch/work/{uid}", timeout=10).status_code == 404
+    assert requests.get(pending_path, headers=auth, timeout=10).json()["pending"] is None
+    assert admin.request.put(foreign_privacy, headers=TEAM,
+                             data=public | {"embed": "disabled"}).status == 403
+    assert admin.request.put(base + "/api/library/privacy", headers=TEAM,
+                             data=public | {"works": [foreign], "embed": "disabled"}).status == 403
+    assert admin.request.post(base + "/api/library/uploads", headers=TEAM, multipart={
+        "file": {"name": "Policy blocked upload.mp4", "mimeType": "video/mp4", "buffer": sample.read_bytes()},
+        "upload_id": uuid.uuid4().hex,
+        "privacy": json.dumps(public),
+    }).status == 403
+    assert requests.get(watch, timeout=10).ok
+
+    # Reset only the fixture workspace's rule so the independent restore checks retain their setup.
+    current = requests.get(policy_path, headers=auth, timeout=10).json()
+    restored = requests.put(policy_path, headers=owner_headers,
+                            json={"revision": current["revision"], "rules": initial.json()["rules"]}, timeout=10)
+    restored.raise_for_status()
+    assert admin.request.get(f"{base}/api/library/work/{foreign}/file-links", headers=TEAM).ok
+    return dict(owner_policy_ui_and_stale_write=True, scoped_contributor_link_and_embed_rules=True,
+                single_bulk_folder_and_upload_denials=True, third_party_routes_denied=True,
+                restricted_current_and_pending_sharing_withdrawn=True, direct_file_management_restricted=True)

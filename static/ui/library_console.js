@@ -703,7 +703,8 @@ async function editFolderPrivacy(folder) {
         : "Apply these settings to videos in this folder and its subfolders. Subfolders with their own override keep it.";
     body.append(summary);
     const fields = sharingFields(body);
-    fields.populate({ ...privateSettings, ...existing.settings, has_password: existing.enabled && existing.has_password });
+    fields.populate({ ...privateSettings, ...existing.settings, has_password: existing.enabled && existing.has_password,
+        allowed: existing.allowed });
     fields.save.textContent = "Apply folder override";
     const remove = document.createElement("button");
     remove.type = "button";
@@ -717,7 +718,8 @@ async function editFolderPrivacy(folder) {
                 ...fields.values(), enabled,
             }));
             const policy = await response.json();
-            fields.populate({ ...privateSettings, ...policy.settings, has_password: policy.enabled && policy.has_password });
+            fields.populate({ ...privateSettings, ...policy.settings, has_password: policy.enabled && policy.has_password,
+                allowed: policy.allowed });
             remove.hidden = !policy.enabled;
             workDialogStatus.textContent = enabled ? `Folder override saved for ${policy.affected} video(s).`
                 : "Folder override removed. Existing video settings were kept.";

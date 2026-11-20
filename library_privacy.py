@@ -122,6 +122,11 @@ def get_privacy(con, uid):
     return con.execute("SELECT * FROM library_privacy WHERE work=?", (uid,)).fetchone()
 
 
+def current_settings(con, uid):
+    row = get_privacy(con, uid)
+    return json.loads(row["settings"]) if row else DEFAULTS
+
+
 def try_password(con, operator, uid, value, password_hash):
     if not value or len(value) > 256:
         return False
@@ -293,7 +298,8 @@ def apply_settings(con, action, work, settings, password_hash):
     )
 
 
-def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work):
+def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
+             operator_name, authorize_editor, sharing_access, enforce_sharing):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -311,13 +317,16 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         with tx() as con:
             settings, password = actor_defaults(con, actor)
             if request.method == "PUT":
-                settings, password = requested_settings(request.get_json(), password)
+                candidate, password = requested_settings(request.get_json(), password)
+                enforce_sharing(con, settings=candidate, prior=settings)
+                settings = candidate
                 con.execute(
                     """INSERT INTO library_upload_defaults VALUES(?,?,?) ON CONFLICT(actor) DO UPDATE SET
                        settings=excluded.settings,password_hash=excluded.password_hash""",
                     (actor, json.dumps(settings), password),
                 )
-        return dict(**settings, has_password=bool(password))
+            allowed = sharing_access(con)
+        return dict(**settings, has_password=bool(password), allowed=allowed)
 
     @app.put("/api/library/privacy")
     def bulk_privacy():
@@ -335,6 +344,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if any(not editable(work) for work in works) or any(protected_route(con, uid) for uid in members):
                 abort(409, "Select Library videos that can use these privacy settings.")
             for work in works:
+                enforce_sharing(con, settings=settings, prior=current_settings(con, work["id"]))
                 apply_settings(con, action, work, settings, password_hash)
             apply_pending(con)
             waiting = {row[0] for row in con.execute("SELECT work FROM library_privacy_change")}
@@ -342,9 +352,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
 
     @app.route("/api/library/work/<uid>/privacy", methods=["GET", "PUT"])
     def privacy(uid):
-        staff()
         body = request.get_json() if request.method == "PUT" else None
         with tx() as con:
+            team_editor = not operator_name(con)
+            if team_editor and not authorize_editor(con, uid):
+                abort(403)
             work = find_work(uid)
             if not work or hidden(con, "work", uid):
                 abort(404)
@@ -353,8 +365,13 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if protected_route(con, uid):
                 abort(409, "This institution has designated the video as a public record.")
             row = get_privacy(con, uid)
+            allowed = sharing_access(con)
+            previous = json.loads(row["settings"]) if row else DEFAULTS
+            if team_editor and (allowed["modes"] == ["private"] or previous["visibility"] not in allowed["modes"]):
+                abort(403, "This video’s sharing is managed by your workspace administrators.")
             if request.method == "PUT":
                 settings, password_hash = requested_settings(body, row["password_hash"] if row else None)
+                enforce_sharing(con, settings=settings, prior=previous)
                 apply_settings(con, action, work, settings, password_hash)
                 apply_pending(con)
                 row = get_privacy(con, uid)
@@ -365,6 +382,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             **paths,
             has_password=bool(row and row["password_hash"]),
             pending=json.loads(pending["settings"]) if pending else None,
+            allowed=allowed,
         )
 
     def watch(uid, embed, frame, alias_slug=None):
