@@ -125,8 +125,9 @@ function render() {
         state.textContent = item.connected ? "Connected" : item.configured ? "Available" : "Setup required";
         card.append(name, description, state);
         if (item.connected) {
-            if (item.configured)
-                card.append(button("Browse videos", () => openPicker(item)));
+            if (item.configured) {
+                card.append(button(item.id === "google-meet" ? "Browse recordings" : "Browse videos", () => openPicker(item)));
+            }
             card.append(button(`Disconnect ${item.name}`, async () => {
                 const result = await api(pathFor(item, "disconnect"), {});
                 if (active === item)
@@ -203,7 +204,7 @@ async function loadPage(append) {
     for (const folder of page.folders || []) {
         recentFolders.set(folder.id, folder.name);
         const row = document.createElement("li");
-        row.append(button(`Open folder ${folder.name}`, () => navigateSource([...source, folder])));
+        row.append(button(active.id === "google-meet" ? `Open ${folder.name}` : `Open folder ${folder.name}`, () => navigateSource([...source, folder])));
         videos.append(row);
     }
     for (const file of page.files) {
@@ -271,12 +272,19 @@ async function loadWatch() {
 }
 async function navigateSource(path) {
     const previous = source;
+    const previousQuery = query;
     source = path;
+    if (active.id === "google-meet") {
+        query = "";
+        videoName.value = "";
+    }
     try {
         await loadPage(false);
     }
     catch (error) {
         source = previous;
+        query = previousQuery;
+        videoName.value = previousQuery;
         throw error;
     }
 }

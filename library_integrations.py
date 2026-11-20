@@ -13,6 +13,7 @@ from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from dropbox_watch import CursorReset, Watch
+import google_meet_recordings
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -177,6 +178,31 @@ def import_dropbox(import_video, connection, revision, actor, row, folder, autho
                            folder, size, DropboxHash(), expected, download, authorize)
 
 
+def import_google_video(import_video, connection, revision, actor, item, folder, authorize):
+    url = FILES + "/" + item
+    with connection.api(revision, "GET", url, params=dict(fields=FIELDS, supportsAllDrives="true")) as response:
+        check_provider(response)
+        row = response_object(response)
+    if row.get("id") != item or not video_file(row):
+        abort(415, "Choose a supported video that its owner allows you to download.")
+    size, version = str(row.get("size", "")), str(row.get("version", ""))
+    sha, md5 = row.get("sha256Checksum"), row.get("md5Checksum")
+    if valid_hash(sha, 64):
+        checksum, expected = hashlib.sha256(), sha
+    elif valid_hash(md5, 32):
+        checksum, expected = hashlib.md5(usedforsecurity=False), md5
+    else:
+        abort(422, "Google Drive did not provide a checksum for this video.")
+    if not re.fullmatch(r"[1-9][0-9]{0,19}", size) or not re.fullmatch(r"[0-9]{1,20}", version):
+        abort(422, "Google Drive did not provide a verifiable video revision.")
+
+    def download():
+        return connection.api(revision, "GET", url, params=dict(alt="media", supportsAllDrives="true"), stream=True)
+
+    return import_verified(import_video, "google-drive", actor, f"{item}/{version}", row["name"],
+                           folder, int(size), checksum, expected, download, authorize)
+
+
 def register(app, tx, staff, operator, origin, import_video, database):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
@@ -186,7 +212,9 @@ def register(app, tx, staff, operator, origin, import_video, database):
     ), tx, operator)
     box = Connection(Config("box", "Box", BOX_AUTH, BOX_ORIGIN + "/oauth2/token", BOX_ORIGIN + "/oauth2/revoke",
                             BOX_SCOPE, pkce=False), tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox, box)}
+    meet = Connection(Config("google-meet", "Google Meet", AUTH, TOKEN_URL, REVOKE,
+                             google_meet_recordings.SCOPES, dict(access_type="offline", prompt="consent")), tx, operator)
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet)}
     watch = Watch(
         app, tx, database, dropbox, lambda revision, source, cursor: dropbox_entries(
             dropbox, revision, source, cursor, watch=True,
@@ -237,8 +265,10 @@ def register(app, tx, staff, operator, origin, import_video, database):
         read_api()
         with tx() as con:
             return private(dict(integrations=[dict(
-                id=item.config.key, name=item.config.name, category="Cloud storage",
-                description="Browse and copy videos into your private Library.",
+                id=item.config.key, name=item.config.name,
+                category="Communications" if item is meet else "Cloud storage",
+                description=("Copy recordings from ended Google Meet conferences into your private Library."
+                             if item is meet else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
                 browse_folders=item is not drive,
             ) for item in connections.values()]))
@@ -295,29 +325,31 @@ def register(app, tx, staff, operator, origin, import_video, database):
         if not isinstance(item, str) or not FILE_ID.fullmatch(item):
             abort(400, "Choose a Google Drive video.")
         revision = drive.revision()
-        url = FILES + "/" + item
-        with drive.api(revision, "GET", url, params=dict(fields=FIELDS, supportsAllDrives="true")) as response:
-            check_provider(response)
-            row = response_object(response)
-        if row.get("id") != item or not video_file(row):
-            abort(415, "Choose a supported video that its owner allows you to download.")
-        size, version = str(row.get("size", "")), str(row.get("version", ""))
-        sha, md5 = row.get("sha256Checksum"), row.get("md5Checksum")
-        if valid_hash(sha, 64):
-            checksum, expected = hashlib.sha256(), sha
-        elif valid_hash(md5, 32):
-            checksum, expected = hashlib.md5(usedforsecurity=False), md5
-        else:
-            abort(422, "Google Drive did not provide a checksum for this video.")
-        if not re.fullmatch(r"[1-9][0-9]{0,19}", size) or not re.fullmatch(r"[0-9]{1,20}", version):
-            abort(422, "Google Drive did not provide a verifiable video revision.")
+        receipt, status = import_google_video(import_video, drive, revision, actor, item, folder,
+                                              lambda con: drive.authorize(con, revision))
+        return private(receipt, status)
 
-        def download():
-            return drive.api(revision, "GET", url, params=dict(alt="media", supportsAllDrives="true"), stream=True)
+    @app.get("/api/integrations/google-meet/files")
+    def google_meet_files():
+        read_api()
+        revision = meet.revision()
+        source, cursor = request.args.get("folder", ""), request.args.get("cursor", "")
+        if len(source) > 256 or len(cursor) > 2048:
+            abort(400, "Choose a Google Meet conference and page from the picker.")
+        search = request.args.get("q", "")[:160].casefold().strip()
+        result = google_meet_recordings.browse(meet, revision, source, cursor, search)
+        with tx() as con:
+            meet.authorize(con, revision)
+        return private(result)
 
-        receipt, status = import_verified(import_video, "google-drive", actor, f"{item}/{version}", row["name"],
-                                          folder, int(size), checksum, expected, download,
-                                          lambda con: drive.authorize(con, revision))
+    @app.post("/api/integrations/google-meet/import")
+    def google_meet_import():
+        actor, body, _, _ = mutate()
+        folder = destination_folder(body.get("folder"))
+        revision = meet.revision()
+        item = google_meet_recordings.recording_file(meet, revision, body.get("file"))
+        receipt, status = import_google_video(import_video, meet, revision, actor, item, folder,
+                                              lambda con: meet.authorize(con, revision))
         return private(receipt, status)
 
     @app.get("/api/integrations/dropbox/files")

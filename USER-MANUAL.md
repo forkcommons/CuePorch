@@ -133,6 +133,8 @@ To copy several videos from the same provider, select them and choose **Import s
 
 To import new Dropbox videos automatically, open the folder in the Dropbox picker, select a Library destination and choose **Watch this folder**. CuePorch checks for new revisions in that folder while the service is running. Videos already present when you start the watch and videos inside its subfolders can be imported manually. Choose **Refresh watch status** to see copies and errors. A failed copy has a **Retry** button. **Stop watching** clears the watch and keeps completed Library copies.
 
+To copy a Google Meet recording, connect Google Meet and choose **Browse recordings**. Open the meeting by date and time, select a Library destination, and choose a recording. A recording appears after Google has generated its MP4 file and grants you access. Each occurrence of a recurring meeting has its own recording list. This version supports operator selection of recordings.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.
@@ -473,6 +475,8 @@ To enable Drive import, enable the Drive API in your Google Cloud project and re
 For Dropbox, create a scoped Dropbox app with `files.metadata.read` and `files.content.read`. Choose access to the app folder or to the full Dropbox as appropriate for your deployment. Register the CuePorch URL ending in `/integration/oauth/dropbox/callback` and set `CUEPORCH_DROPBOX_CLIENT_ID` and `CUEPORCH_DROPBOX_CLIENT_SECRET` before restarting. [Dropbox OAuth setup](https://docs.dropboxapi.com/dropbox-api/docs/oauth)
 
 For Box, create a Platform App with user OAuth 2.0, register the CuePorch URL ending in `/integration/oauth/box/callback`, and set `CUEPORCH_BOX_CLIENT_ID` and `CUEPORCH_BOX_CLIENT_SECRET` before restarting. Box requires its `root_readwrite` scope to download a file. CuePorch uses the connection to list folders, read file metadata and download the selected version. The original Box files stay in Box. [Box OAuth setup](https://developer.box.com/guides/authentication/oauth2/without-sdk) · [Box application scopes](https://developer.box.com/guides/api-calls/permissions-and-errors/scopes)
+
+For Google Meet, enable the Meet and Drive APIs in a Google Cloud project and register a web OAuth client with the CuePorch callback URL ending in `/integration/oauth/google-meet/callback`. Set `CUEPORCH_GOOGLE_MEET_CLIENT_ID` and `CUEPORCH_GOOGLE_MEET_CLIENT_SECRET`. The connector asks for `meetings.space.readonly` and `drive.meet.readonly`. Use a separate OAuth client from the general Drive connector so each app can be disconnected independently. [Google Meet scopes](https://developers.google.com/workspace/meet/api/guides/authenticate-authorize)
 
 Use `Authorization: Bearer <credential>` with the credential for the operation. Send mutation bodies as JSON except for file uploads. The institution origin and the video-host origin serve different APIs.
 
