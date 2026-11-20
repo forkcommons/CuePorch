@@ -78,6 +78,8 @@ The Owner or installation credential can open **Single sign-on** from **Team mem
 
 To let your identity provider create accounts on first sign-in, enable **Create accounts for new members** and select a default team role. A current invitation takes precedence over the default role. Removing a member blocks automatic recreation of their account. You can also require SAML for workspace members on the authorized domains. This ends their current sessions and requires SAML for future sign-ins, including after accepting an invitation. The Owner keeps access through their local credentials and the installation credential remains available for recovery.
 
+Enable **Allow members to start sign-in from the identity provider** if your organization starts CuePorch from an app dashboard. The provider must post its signed response from the same HTTPS origin as the configured sign-in URL. CuePorch opens the team workspace after a successful sign-in.
+
 To connect a provisioning service, use **Create provisioning token** in **Single sign-on** after saving the SAML connection. Copy the base URL and the one-time token into the identity provider's SCIM 2.0 settings. The provider can create members on authorized domains, update their names and email addresses, deactivate or reactivate them, and manage groups. CuePorch applies the configured default role to a new SCIM member. Assign Library folders to those groups in **Team members → Groups**. Removing a group assignment withdraws the related playback access. Deactivating a member ends their sessions and removes their group and direct shares. Use **Rotate provisioning token** to replace the current token or **Revoke provisioning token** to disconnect the provider.
 
 ### First migration

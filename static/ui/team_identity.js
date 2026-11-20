@@ -19,7 +19,7 @@ function field(name) {
 function render(result) {
     revision = result.revision;
     if (field("enabled")) {
-        for (const key of ["enabled", "jit", "force"]) {
+        for (const key of ["enabled", "jit", "force", "idp_initiated"]) {
             field(key).checked = result.settings[key];
         }
         for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "default_role"]) {
@@ -95,6 +95,7 @@ settings.onsubmit = event => {
         email_attribute: field("email_attribute").value,
         jit: field("jit").checked,
         force: field("force").checked,
+        idp_initiated: field("idp_initiated").checked,
         default_role: field("default_role").value,
         domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
     });

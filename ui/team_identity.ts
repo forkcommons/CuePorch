@@ -9,6 +9,7 @@ type Settings = {
   domains: string[];
   jit: boolean;
   force: boolean;
+  idp_initiated: boolean;
   default_role: string;
 };
 
@@ -34,7 +35,7 @@ function field(name: keyof Settings) {
 function render(result: {revision: string; settings: Settings}) {
   revision = result.revision;
   if (field("enabled")) {
-    for (const key of ["enabled", "jit", "force"] as const) {
+    for (const key of ["enabled", "jit", "force", "idp_initiated"] as const) {
       (field(key) as HTMLInputElement).checked = result.settings[key];
     }
     for (const key of ["entity_id", "login_url", "signing_certificate", "email_attribute", "default_role"] as const) {
@@ -109,6 +110,7 @@ settings.onsubmit = event => {
     email_attribute: field("email_attribute").value,
     jit: (field("jit") as HTMLInputElement).checked,
     force: (field("force") as HTMLInputElement).checked,
+    idp_initiated: (field("idp_initiated") as HTMLInputElement).checked,
     default_role: field("default_role").value,
     domains: field("domains").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean),
   });

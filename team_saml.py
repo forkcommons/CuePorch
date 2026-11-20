@@ -21,6 +21,7 @@ from onelogin.saml2.settings import OneLogin_Saml2_Settings
 from onelogin.saml2.utils import OneLogin_Saml2_Error, OneLogin_Saml2_Utils
 
 from browser_account_security import TOKEN, email_key, private, same_origin, secure_site, token_hash
+from library_analytics import source_origin
 
 
 SCHEMA = """
@@ -40,7 +41,7 @@ METADATA = "/team/sso/metadata"
 STATE_SECONDS = 300
 MAX_ASSERTION_AGE = 300
 DEFAULT = dict(enabled=False, entity_id="", login_url="", signing_certificate="", domains=[], email_attribute="email",
-               jit=False, force=False, default_role="viewer")
+               jit=False, force=False, idp_initiated=False, default_role="viewer")
 PROVISIONED_ROLES = ("viewer", "contributor", "contributor_plus", "admin")
 DOMAIN = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -120,7 +121,7 @@ def validated_settings(body, origin):
     if any(not isinstance(value, str) or not DOMAIN.fullmatch(value.strip().lower()) for value in domains):
         abort(400, "Enter exact email domains such as example.org.")
     settings["domains"] = sorted({value.strip().lower() for value in domains})
-    for key in ("jit", "force"):
+    for key in ("jit", "force", "idp_initiated"):
         value = body.get(key, DEFAULT[key])
         if not isinstance(value, bool):
             abort(400, "Choose which single sign-on policies to enable.")
@@ -320,17 +321,20 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
         state = request.form.get("RelayState", "")
         encoded = request.form.get("SAMLResponse", "")
         browser_state = request.cookies.get(state_cookie(), "")
-        if not TOKEN.fullmatch(state) or not hmac.compare_digest(state, browser_state) or not encoded:
+        if not encoded:
             abort(403, "Start single sign-on from this workspace again.")
-        digest = token_hash(state)
+        digest = (token_hash(state) if TOKEN.fullmatch(state) and TOKEN.fullmatch(browser_state)
+                  and hmac.compare_digest(state, browser_state) else None)
         with tx() as con:
             limit(con, "saml-response")
             revision, settings = configured(con)
             pending = con.execute("SELECT request FROM team_saml_request WHERE state=? AND revision=? AND expires>?",
-                                  (digest, revision, time())).fetchone()
-        if not settings["enabled"] or not pending:
+                                  (digest, revision, time())).fetchone() if digest else None
+        provider_launch = (not digest and settings["idp_initiated"]
+                           and request.headers.get("Origin") == source_origin(settings["login_url"]))
+        if not settings["enabled"] or (not pending and not provider_launch):
             abort(403, "Start single sign-on from this workspace again.")
-        verified = assertion_for(settings, origin, encoded, pending["request"])
+        verified = assertion_for(settings, origin, encoded, pending["request"] if pending else None)
         if not verified:
             abort(403, "The identity provider's sign-in could not be verified.")
         subject, address, name, assertion, expires, session_expiry = verified
@@ -338,8 +342,10 @@ def register(app, tx, origin, operator, ownership, mutation, issue, cookie, note
             abort(403, "This single sign-on session has expired.")
         address = email_key(address)
         with tx() as con:
-            if (configured(con)[0] != revision or not con.execute(
-                    "DELETE FROM team_saml_request WHERE state=? AND expires>?", (digest, time())).rowcount):
+            if configured(con)[0] != revision:
+                abort(403, "Start single sign-on from this workspace again.")
+            if pending and not con.execute("DELETE FROM team_saml_request WHERE state=? AND expires>?",
+                                           (digest, time())).rowcount:
                 abort(403, "Start single sign-on from this workspace again.")
             con.execute("DELETE FROM team_saml_assertion WHERE expires<=?", (time(),))
             if not con.execute("INSERT OR IGNORE INTO team_saml_assertion VALUES(?,?,?)",

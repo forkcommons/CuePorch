@@ -31,6 +31,7 @@
     </label>
     <label><input type="checkbox" name="force"> Require SAML for team members on authorized email domains</label>
     <p>Requiring SAML signs out those members and disables their local password and email password reset.</p>
+    <label><input type="checkbox" name="idp_initiated"> Allow members to start sign-in from the identity provider</label>
     <p>Saving a changed connection signs out members who used it. The workspace Owner signs in with their local account.</p>
     <button>Save single sign-on settings</button>
     {% else %}

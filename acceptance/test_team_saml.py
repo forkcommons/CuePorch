@@ -57,8 +57,9 @@ def saml_document(origin, request_id, email, subject, private_key, certificate, 
     acs = origin + "/team/sso/acs"
     metadata = audience or origin + "/team/sso/metadata"
     response_id, assertion_id = "_" + secrets.token_hex(16), "_" + secrets.token_hex(16)
+    response_to = f' InResponseTo="{request_id}"' if request_id else ""
     xml = etree.fromstring(f"""<samlp:Response xmlns:samlp="{SAML.NS_SAMLP}" xmlns:saml="{SAML.NS_SAML}"
-        ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}" InResponseTo="{request_id}">
+        ID="{response_id}" Version="2.0" IssueInstant="{issued}" Destination="{acs}"{response_to}>
       <saml:Issuer>{ISSUER}</saml:Issuer>
       <samlp:Status><samlp:StatusCode Value="{SAML.STATUS_SUCCESS}"/></samlp:Status>
       <saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{issued}">
@@ -66,7 +67,7 @@ def saml_document(origin, request_id, email, subject, private_key, certificate, 
         <saml:Subject>
           <saml:NameID>{subject}</saml:NameID>
           <saml:SubjectConfirmation Method="{SAML.CM_BEARER}">
-            <saml:SubjectConfirmationData Recipient="{acs}" InResponseTo="{request_id}" NotOnOrAfter="{expires}"/>
+            <saml:SubjectConfirmationData Recipient="{acs}" NotOnOrAfter="{expires}"{response_to}/>
           </saml:SubjectConfirmation>
         </saml:Subject>
         <saml:Conditions NotBefore="{start}" NotOnOrAfter="{expires}">
@@ -122,7 +123,15 @@ class TeamSAML(unittest.TestCase):
             self.server(cleanup, app, port, tls)
             idp = Flask("fixture-identity-provider")
             policy = dict(subject="fixture-user", email=EMAIL, expired=False, audience=None, foreign=False)
-            pending = {}
+            pending, provider_assertion = {}, {}
+
+            def show_assertion(response, state):
+                return render_template_string("""
+                  <form method="post" action="{{ callback }}">
+                    <input type="hidden" name="SAMLResponse" value="{{ response }}">
+                    <input type="hidden" name="RelayState" value="{{ state }}">
+                    <button>Continue as station crew</button>
+                  </form>""", callback=origin + "/team/sso/acs", response=response, state=state)
 
             @idp.get("/authorize")
             def authorize():
@@ -136,12 +145,15 @@ class TeamSAML(unittest.TestCase):
                                          audience=policy["audience"], expired=policy["expired"])
                 pending.clear()
                 pending.update(RelayState=state, SAMLResponse=response)
-                return render_template_string("""
-                  <form method="post" action="{{ callback }}">
-                    <input type="hidden" name="SAMLResponse" value="{{ response }}">
-                    <input type="hidden" name="RelayState" value="{{ state }}">
-                    <button>Continue as station crew</button>
-                  </form>""", callback=origin + "/team/sso/acs", response=response, state=state)
+                return show_assertion(response, state)
+
+            @idp.get("/portal")
+            def portal():
+                if not provider_assertion:
+                    provider_assertion.update(RelayState="https://unrelated.example/ignored", SAMLResponse=saml_document(
+                        origin, None, EMAIL, "fixture-user", private_key, certificate,
+                    ))
+                return show_assertion(provider_assertion["SAMLResponse"], provider_assertion["RelayState"])
 
             self.server(cleanup, idp, idp_port, tls)
             with sync_playwright() as playwright:
@@ -254,6 +266,30 @@ class TeamSAML(unittest.TestCase):
                             second_attempt.get_by_role("button", name="Continue as station crew").click()
                             expect(second_attempt.get_by_role("heading", name="Forbidden")).to_be_visible()
                             self.verify_scim(page, admin, federated, start, origin, policy, operator_headers, work)
+
+                            with browser.new_context(ignore_https_errors=True) as from_portal:
+                                portal_page = from_portal.new_page()
+
+                                def show_portal():
+                                    portal_page.goto(idp_origin + "/portal")
+                                    return portal_page.get_by_role("button", name="Continue as station crew")
+
+                                show_portal().click()
+                                expect(portal_page.get_by_role("heading", name="Forbidden")).to_be_visible()
+                                page.get_by_label("Allow members to start sign-in from the identity provider").check()
+                                with page.expect_response(lambda result: result.url == origin + "/api/team/identity"
+                                                          and result.request.method == "PUT") as saved:
+                                    save.click()
+                                self.assertTrue(saved.value.ok)
+                                continue_sso = show_portal()
+                                foreign = from_portal.request.post(origin + "/team/sso/acs", form=provider_assertion,
+                                                                   headers={"Origin": "https://unrelated.example"})
+                                self.assertEqual(foreign.status, 403)
+                                continue_sso.click()
+                                expect(portal_page.get_by_text("Station crew · Contributor")).to_be_visible()
+                                expect(portal_page).to_have_url(origin + "/team")
+                                show_portal().click()
+                                expect(portal_page.get_by_text("This sign-in has already been used.")).to_be_visible()
 
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
                     self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
