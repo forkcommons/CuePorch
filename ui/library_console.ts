@@ -1014,14 +1014,14 @@ async function editFolderPrivacy(folder: Folder) {
 async function editFolderSlack(folder: Folder) {
   const path = `/api/library/folders/${folder.id}/slack`;
   const settings: {
-    configured: boolean; revision: string | null; topics: string[];
+    configured: boolean; oauth_available: boolean; channel: string | null; revision: string | null; topics: string[];
     deliveries: {topic: string; state: string; attempts: number}[];
   } = await (await completed(await request(path))).json();
   const body = openWorkDialog(`Slack notifications for ${folder.name}`);
   const note = document.createElement("p");
-  note.textContent = settings.configured
-    ? "Add an incoming webhook for the Slack channel. Posts link to the team video and follow CuePorch access rules."
-    : "Set the workspace HTTPS address to connect a Slack channel.";
+  note.textContent = settings.channel ? `Connected channel ${settings.channel}. Posts follow CuePorch access rules.`
+    : settings.configured ? "Posts link to the team video and follow CuePorch access rules."
+      : "Set the workspace HTTPS address to connect a Slack channel.";
   body.append(note);
   if (!settings.configured) return;
   const fields = document.createElement("form");
@@ -1052,7 +1052,11 @@ async function editFolderSlack(folder: Folder) {
   disconnect.type = "button";
   disconnect.textContent = "Disconnect Slack";
   disconnect.hidden = !settings.revision;
-  fields.append(save, disconnect);
+  const connect = document.createElement("button");
+  connect.type = "button";
+  connect.textContent = settings.channel ? "Change Slack channel" : "Choose channel in Slack";
+  connect.hidden = !settings.oauth_available;
+  fields.append(save, connect, disconnect);
   body.append(fields);
   const receipts = document.createElement("ul");
   receipts.setAttribute("aria-label", "Recent Slack deliveries");
@@ -1063,7 +1067,7 @@ async function editFolderSlack(folder: Folder) {
   }
   body.append(receipts);
   async function store(method: "PUT" | "DELETE") {
-    save.disabled = disconnect.disabled = true;
+    save.disabled = connect.disabled = disconnect.disabled = true;
     try {
       const selected = new FormData(fields).getAll("topics");
       await completed(await request(path, method, {
@@ -1074,11 +1078,24 @@ async function editFolderSlack(folder: Folder) {
     } catch (error) {
       workDialogStatus.textContent = String(error);
     } finally {
-      save.disabled = disconnect.disabled = false;
+      save.disabled = connect.disabled = disconnect.disabled = false;
     }
   }
   fields.onsubmit = (event) => { event.preventDefault(); void store("PUT"); };
   disconnect.onclick = () => { void store("DELETE"); };
+  connect.onclick = async () => {
+    save.disabled = connect.disabled = disconnect.disabled = true;
+    try {
+      const response = await completed(await request(`${path}/connect`, "POST", {
+        revision: settings.revision, topics: new FormData(fields).getAll("topics"),
+      }, {"X-CuePorch-Slack": "1"}));
+      const receipt: {authorization_url: string} = await response.json();
+      location.assign(receipt.authorization_url);
+    } catch (error) {
+      workDialogStatus.textContent = String(error);
+      save.disabled = connect.disabled = disconnect.disabled = false;
+    }
+  };
 }
 
 const editUploadDefaults = () => openPrivacy({
@@ -1943,10 +1960,22 @@ const workspaceSearch = linked.has("q");
 if (workspaceSearch) search.value = (linked.get("q") ?? "").slice(0, 120);
 if (linked.get("view") === "deleted") section = "Recently deleted";
 let workspaceAction = linked.get("action");
+let slackResult = linked.get("slack");
 action(loadButton, async () => {
   await load();
   sessionStorage.setItem("cueporchOperator", key.value);
   result.textContent = "Library loaded.";
+  if (slackResult) {
+    const folder = folders.find(item => item.id === linked.get("folder"));
+    const connected = slackResult === "connected";
+    slackResult = null;
+    history.replaceState(null, "", "/operator/library");
+    if (folder) {
+      await navigate("Library", folder.id);
+      await editFolderSlack(folder);
+      workDialogStatus.textContent = connected ? "Slack channel connected." : "Slack channel selection was canceled.";
+    }
+  }
   const uid = linked.get("work");
   if (uid && workspaceAction) {
     const work = works.find((item) => item.id === uid);
@@ -1956,7 +1985,7 @@ action(loadButton, async () => {
     await fromWorkspace(work, next);
   }
 });
-if (key.value && (workspaceSearch || section === "Recently deleted" || linked.has("work") && workspaceAction)) {
+if (key.value && (workspaceSearch || section === "Recently deleted" || slackResult || linked.has("work") && workspaceAction)) {
   loadButton.click();
 }
 

@@ -222,6 +222,7 @@ def create_app(root, database, operator, institution, simulation=None):
         workspace_updates.initialize(db)
         workspace_oauth.migrate_drive_connection(db)
         intake_watch.migrate(db)
+        folder_slack.migrate(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536

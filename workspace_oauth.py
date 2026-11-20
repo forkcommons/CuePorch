@@ -29,13 +29,16 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_integration_attempt(
  provider TEXT PRIMARY KEY, state TEXT NOT NULL, binding TEXT NOT NULL,
  verifier TEXT NOT NULL, redirect_uri TEXT NOT NULL, expires INTEGER NOT NULL,
- claimed INTEGER NOT NULL DEFAULT 0);
+ claimed INTEGER NOT NULL DEFAULT 0, context TEXT);
 CREATE TABLE IF NOT EXISTS workspace_integration_connection(
  provider TEXT PRIMARY KEY, revision TEXT NOT NULL, token BLOB NOT NULL);
 """
 
 
 def migrate_drive_connection(con):
+    columns = {row[1] for row in con.execute("PRAGMA table_info(workspace_integration_attempt)")}
+    if "context" not in columns:
+        con.execute("ALTER TABLE workspace_integration_attempt ADD COLUMN context TEXT")
     # Existing workspaces retain the encrypted Drive connection across the source update.
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_drive_connection'").fetchone():
         con.execute("""INSERT OR IGNORE INTO workspace_integration_connection
@@ -161,7 +164,7 @@ class Connection:
                 abort(409, "Connect the storage provider to continue.")
             return row["revision"]
 
-    def prepare(self, secure, current):
+    def prepare(self, secure, current, context=None):
         self.require_configured()
         state = secrets.token_urlsafe(32)
         browser = secrets.token_urlsafe(32)
@@ -170,9 +173,10 @@ class Connection:
         with self.tx() as con:
             if self.connection(con):
                 abort(409, "Disconnect this provider before connecting another account.")
-            con.execute("INSERT OR REPLACE INTO workspace_integration_attempt VALUES(?,?,?,?,?,?,0)", (
+            con.execute("""INSERT OR REPLACE INTO workspace_integration_attempt
+                           (provider,state,binding,verifier,redirect_uri,expires,context) VALUES(?,?,?,?,?,?,?)""", (
                 self.config.key, token_hash(state), token_hash(browser), verifier,
-                redirect_uri, int(time.time()) + ATTEMPT_TTL,
+                redirect_uri, int(time.time()) + ATTEMPT_TTL, json.dumps(context) if context is not None else None,
             ))
         params = self.config.authorization_parameters | dict(
             client_id=self.client, response_type="code", redirect_uri=redirect_uri, state=state,
@@ -184,6 +188,14 @@ class Connection:
             params.update(code_challenge=challenge, code_challenge_method="S256")
         url = self.config.authorization_url + "?" + urlencode(params)
         return workspace_session_cookie(private(dict(authorization_url=url)), self.cookie, secure, ATTEMPT_TTL, browser)
+
+    def save_authorization(self, con, tokens, context):
+        con.execute("INSERT INTO workspace_integration_connection VALUES(?,?,?)", (
+            self.config.key, uuid.uuid4().hex, self.cipher.encrypt(json.dumps(tokens).encode()),
+        ))
+
+    def return_path(self, result, context):
+        return DIRECTORY + "?" + urlencode({"connection": self.config.key, "result": result})
 
     def complete(self, secure, current):
         state = request.args.get("state", "")
@@ -200,6 +212,7 @@ class Connection:
                 abort(403, "This connection request expired or was already used.")
             con.execute("UPDATE workspace_integration_attempt SET claimed=1 WHERE provider=?", (self.config.key,))
         result = "cancelled"
+        context = json.loads(attempt["context"]) if attempt["context"] else None
         selection = (self.config.key, attempt["state"])
         try:
             code = request.args.get("code", "")
@@ -213,16 +226,12 @@ class Connection:
                         if not con.execute("""SELECT 1 FROM workspace_integration_attempt
                                              WHERE provider=? AND state=? AND claimed=1""", selection).fetchone():
                             abort(409, "This connection request was replaced or cancelled.")
-                        con.execute("INSERT INTO workspace_integration_connection VALUES(?,?,?)", (
-                            self.config.key, uuid.uuid4().hex, self.cipher.encrypt(json.dumps(tokens).encode()),
-                        ))
+                        self.save_authorization(con, tokens, context)
                 result = "connected"
         finally:
             with self.tx() as con:
                 con.execute("DELETE FROM workspace_integration_attempt WHERE provider=? AND state=?", selection)
-        response = private(redirect(DIRECTORY + "?" + urlencode({
-            "connection": self.config.key, "result": result,
-        }), code=303))
+        response = private(redirect(self.return_path(result, context), code=303))
         return workspace_session_cookie(response, self.cookie, secure, ATTEMPT_TTL, None)
 
     def refresh(self, saved):

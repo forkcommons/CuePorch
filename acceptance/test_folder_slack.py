@@ -1,6 +1,7 @@
 """Exercise folder settings and delivery through a controlled Slack HTTPS endpoint."""
 
 from contextlib import ExitStack, closing
+from dataclasses import replace
 import json
 from pathlib import Path
 import secrets
@@ -11,9 +12,10 @@ from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
 
-from flask import Flask, request
+from flask import Flask, redirect, request
 from playwright.sync_api import expect, sync_playwright
 import requests
 from werkzeug.serving import make_server
@@ -44,8 +46,11 @@ class FolderSlack(unittest.TestCase):
             service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True,
                                   ssl_context=(str(cert), str(key)))
             base = f"https://127.0.0.1:{service.server_port}"
+            slack = f"https://127.0.0.1:{delivery_server.server_port}"
+            callback = base + "/integration/oauth/slack/callback"
             hook = "https://hooks.slack.com/services/T123/B456/FixtureCredential012345"
             delivered, attempts = [], []
+            exchanges = []
 
             @remote.post("/slack")
             def notice():
@@ -56,6 +61,20 @@ class FolderSlack(unittest.TestCase):
                     return "rate_limited", 429, {"Retry-After": "1"}
                 delivered.append(data)
                 return "ok"
+
+            @remote.get("/oauth/authorize")
+            def authorize():
+                assert request.args["client_id"] == "cueporch" and request.args["scope"] == "incoming-webhook"
+                assert request.args["redirect_uri"] == callback
+                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code="fixture-code")))
+
+            @remote.post("/oauth/access")
+            def access():
+                assert request.form["client_id"] == "cueporch" and request.form["client_secret"] == "fixture-secret"
+                assert request.form["redirect_uri"] == callback and request.form["code"] == "fixture-code"
+                exchanges.append(request.form["code"])
+                return dict(ok=True, scope="incoming-webhook", token_type="bot", access_token="discarded-token",
+                            incoming_webhook={"channel": "#festival", "url": hook})
 
             original_post = requests.Session.post
 
@@ -68,7 +87,13 @@ class FolderSlack(unittest.TestCase):
 
             cleanup.enter_context(patch.object(folder_slack.requests.Session, "post", route_slack))
             cleanup.enter_context(patch.object(folder_slack, "RETRY_SECONDS", (1, 1)))
-            cleanup.enter_context(patch.dict("os.environ", {"CUEPORCH_PUBLIC_URL": base}))
+            cleanup.enter_context(patch.object(folder_slack, "OAUTH", replace(
+                folder_slack.OAUTH, authorization_url=slack + "/oauth/authorize", token_url=slack + "/oauth/access",
+            )))
+            cleanup.enter_context(patch.dict("os.environ", {
+                "CUEPORCH_PUBLIC_URL": base, "CUEPORCH_SLACK_CLIENT_ID": "cueporch",
+                "CUEPORCH_SLACK_CLIENT_SECRET": "fixture-secret", "REQUESTS_CA_BUNDLE": str(cert),
+            }))
             operator = secrets.token_urlsafe(32)
             database = root / "workspace.sqlite"
             with patch("institution.library_worker.start", return_value=lambda: None):
@@ -118,6 +143,24 @@ class FolderSlack(unittest.TestCase):
                     encrypted = connection.execute("SELECT address FROM folder_slack WHERE folder=?", (watched,)).fetchone()[0]
                 self.assertNotIn(hook.encode(), encrypted)
 
+                current = api.get(path, headers=auth).json()
+                started = api.post(path + "/connect", headers=auth | {"X-CuePorch-Slack": "1"},
+                                   data={"revision": current["revision"], "topics": current["topics"]})
+                self.assertTrue(started.ok, started.text())
+                state = parse_qs(urlsplit(started.json()["authorization_url"]).query)["state"][0]
+                isolated = browser.new_page(ignore_https_errors=True)
+                self.assertEqual(403, isolated.request.get(callback, params={"state": state, "code": "fixture-code"}).status)
+                self.assertEqual([], exchanges)
+                with page.expect_request(lambda item: urlsplit(item.url).path == "/integration/oauth/slack/callback") as completed:
+                    dialog.get_by_role("button", name="Choose channel in Slack").click()
+                expect(dialog.get_by_role("status")).to_have_text("Slack channel connected.", timeout=15000)
+                expect(dialog.get_by_text("Connected channel #festival.", exact=False)).to_be_visible()
+                self.assertEqual(["fixture-code"], exchanges)
+                self.assertEqual(403, page.request.get(completed.value.url).status)
+                other = api.get(base + f"/api/library/folders/{others}/slack", headers=auth).json()
+                self.assertIsNone(other["channel"])
+                self.assertNotIn("discarded-token", api.get(path, headers=auth).text())
+
                 upload(others)
                 work = upload(watched)
                 review = api.post(base + f"/api/library/work/{work}/review-links", headers=auth,
@@ -152,7 +195,8 @@ class FolderSlack(unittest.TestCase):
                 with closing(sqlite3.connect(database)) as connection:
                     self.assertEqual(0, connection.execute("SELECT count(*) FROM folder_slack_notice").fetchone()[0])
                 self.assertEqual(3, len(delivered))
-        print("Slack folder settings, encrypted secret, three scoped notices, 429 retry, private link and disconnect passed.")
+        print("Slack manual webhook, browser-bound OAuth and replay rejection, selected channel, scoped notices,"
+              " 429 retry, private link and disconnect passed.")
 
 
 if __name__ == "__main__":
