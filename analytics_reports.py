@@ -9,7 +9,7 @@ import re
 from flask import Response, abort, request
 
 from catalog import video_version_key
-from library_analytics import COUNTS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
+from library_analytics import DEVICES, PLAY_COUNTS, REGION_CODE, SURFACES, bounds, metrics
 from library_registration import csv_cell
 import media_bandwidth
 
@@ -17,9 +17,9 @@ import media_bandwidth
 DIMENSIONS = {
     "video": "s.work",
     "date": None,
-    "device": "coalesce(c.device, 'Unknown')",
-    "source": "coalesce(c.source, 'Unknown')",
-    "region": "coalesce(g.region, 'Unknown')",
+    "device": "coalesce(s.device, 'Unknown')",
+    "source": "coalesce(s.source, 'Unknown')",
+    "region": "coalesce(s.region, 'Unknown')",
     "surface": "s.surface",
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
@@ -31,25 +31,32 @@ PERIODS = {
     "year": "strftime('%Y-01-01',s.created,'unixepoch')",
 }
 METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "average_watched_seconds",
-           "unique_impressions", "unique_viewers", "average_watched_fraction")
-VIDEO_COUNTS = COUNTS + """,
+           "unique_impressions", "unique_viewers", "average_watched_fraction", "downloads")
+VIDEO_COUNTS = "coalesce(sum(s.impression),0) AS impressions, " + PLAY_COUNTS + """,
     count(DISTINCT identity.viewer) AS unique_impressions,
     count(DISTINCT identity.viewer) FILTER (WHERE s.played=1) AS unique_viewers,
     count(identity.viewer) AS identified_impressions,
     count(identity.viewer) FILTER (WHERE s.played=1) AS identified_views,
-    avg(cueporch_watched_fraction(s.work,s.version,s.watched)) FILTER (WHERE s.played=1) AS average_watched_fraction"""
+    avg(cueporch_watched_fraction(s.work,s.version,s.watched)) FILTER (WHERE s.played=1) AS average_watched_fraction,
+    coalesce(sum(s.download),0) AS downloads"""
 MILESTONES = (1, 25, 50, 75, 100)
-PLAYBACK_TABLES = """ FROM video_analytics_session s
+PLAYBACK_ROWS = """SELECT s.id,s.work,s.version,s.surface,s.created,s.played,s.completed,s.watched,s.intervals,
+    c.source,c.device,g.region,1 AS impression,0 AS download
+    FROM video_analytics_session s
     LEFT JOIN video_analytics_context c ON c.session=s.id
-    LEFT JOIN video_analytics_region g ON g.session=s.id
-    LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"""
+    LEFT JOIN video_analytics_region g ON g.session=s.id"""
+DOWNLOAD_ROWS = """SELECT NULL,work,NULL,surface,created,0,0,0,NULL,source,device,region,0,1
+    FROM video_analytics_download"""
+ACTIVE_WORKS = " LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"
+PLAYBACK_TABLES = f" FROM ({PLAYBACK_ROWS}) s{ACTIVE_WORKS}"
+VIDEO_TABLES = f" FROM ({PLAYBACK_ROWS} UNION ALL {DOWNLOAD_ROWS}) s{ACTIVE_WORKS}"
 
 
 def row_metrics(row):
     values = metrics(row)
     return dict(values, average_watched_seconds=values["watched_seconds"] / values["views"] if values["views"] else 0,
                 **{name: row[name] for name in ("unique_impressions", "unique_viewers", "identified_impressions",
-                                                "identified_views", "average_watched_fraction")})
+                                                "identified_views", "average_watched_fraction", "downloads")})
 
 
 def content_selection(options, include_events=False):
@@ -88,7 +95,7 @@ def filter_settings(options):
 
 def summarize(con, options, catalog, lengths, *, include_top=False):
     filters, clause, params = filter_settings(options)
-    scope = PLAYBACK_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id" + clause
+    scope = VIDEO_TABLES + " LEFT JOIN video_analytics_viewer identity ON identity.session=s.id" + clause
 
     def watched_fraction(uid, version, watched):
         duration = lengths.get((uid, version))
@@ -104,7 +111,8 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
                          GROUP BY period ORDER BY period""", params)
     overview = [dict(period=row["period"], **row_metrics(row)) for row in trend]
     rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{VIDEO_COUNTS} {scope}
-                        GROUP BY category,breakdown ORDER BY views DESC,impressions DESC,category,breakdown""", params)
+                        GROUP BY category,breakdown
+                        ORDER BY views DESC,impressions DESC,downloads DESC,category,breakdown""", params)
     items = []
     for row in rows:
         category, value = row["category"], row["breakdown"]

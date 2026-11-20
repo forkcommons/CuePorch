@@ -428,17 +428,26 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 form_error = library_registration.enroll(con, "video", uid, form, request.form, request.args)
             needs_registration = not locked and form and (not enrollment or form_error)
             can_watch = not locked and not needs_registration
+            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if can_watch else None
+            options = library_embed.options(request.args if embed else {}, appearance)
+            surface = "embed" if embed else "watch"
+            context = library_analytics.request_context(analytics_proxies) if (
+                can_watch and not options["dnt"] and library_analytics.permitted()
+            ) else None
+            grant = {}
+            if form and can_watch:
+                grant["registration"] = form["revision"]
+            if context and settings["download"]:
+                grant["download"] = [surface, *context]
             payload = [uid, row["revision"], video["sha256"]]
             if alias is not None:
                 payload.append(alias["revision"])
-            if form and can_watch:
-                payload.append({"registration": form["revision"]})
+            if grant:
+                payload.append(grant)
             token = serializer.dumps(payload) if can_watch else None
             title = "Protected video" if locked else title_for(con, work)
             details = details_for(con, work) if can_watch and not embed else None
-            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if can_watch else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
-            options = library_embed.options(request.args if embed else {}, appearance)
             chapters = library_interactivity.readable_chapters(work) if can_watch and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
             ) else []
@@ -455,12 +464,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
             analytics = None
-            if can_watch and not options["dnt"] and library_analytics.permitted():
+            if context:
                 analytics = analytics_serializer.dumps(
-                    [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18),
-                     [library_analytics.source_origin(request.referrer),
-                      library_analytics.device_type(request.headers.get("User-Agent")),
-                      library_analytics.observed_region(analytics_proxies)]]
+                    [token, video_version_key(work), surface, secrets.token_urlsafe(18), context]
                 )
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
@@ -510,13 +516,13 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         settings = json.loads(row["settings"])
         if video is None or video["sha256"] != digest or not permits(work, settings):
             abort(404)
-        return work, video, settings
+        return work, video, settings, extra
 
     @app.get("/shared-video/<token>")
     @app.get("/shared-video/<token>/caption/<int:track>")
     def shared_video(token, track=None, poster=False, artwork=None):
         with tx() as con:
-            work, video, settings = authorized_playback(con, token)
+            work, video, settings, grant = authorized_playback(con, token)
             download = request.args.get("download") == "1"
             if download and (poster or artwork or track is not None or not settings["download"]):
                 abort(403)
@@ -555,6 +561,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             abort(404)
         response = send_file(path, mimetype=media_type, conditional=True,
                              as_attachment=download, download_name="video.mp4" if download else None)
+        if download and (origin := grant.get("download")):
+            library_analytics.record_download(tx, work["id"], response, origin)
         return media_bandwidth.measure(response, tx, work["id"]) if track is None else response
 
     @app.get("/shared-video/<token>/poster")
@@ -575,7 +583,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if not isinstance(body, dict):
             abort(400, "Choose a rating.")
         with tx() as con:
-            work, _, _ = authorized_playback(con, token)
+            work, _, _, _ = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
             return library_ratings.rate(con, work, nonce, mode, body.get("score"))
@@ -587,7 +595,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         except (BadSignature, ValueError):
             abort(404)
         with tx() as con:
-            work, _, _ = authorized_playback(con, token)
+            work, _, _, _ = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
             if library_analytics.permitted():

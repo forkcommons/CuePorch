@@ -6,8 +6,10 @@ import hmac
 from io import StringIO
 from ipaddress import ip_address
 import json
+import logging
 import math
 import re
+import sqlite3
 from urllib.parse import urlsplit
 
 from flask import Response, abort, request
@@ -28,12 +30,18 @@ CREATE TABLE IF NOT EXISTS video_analytics_region(
  session TEXT PRIMARY KEY, region TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS video_analytics_viewer(
  session TEXT PRIMARY KEY, viewer TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS video_analytics_download(
+ work TEXT NOT NULL, created REAL NOT NULL, surface TEXT NOT NULL,
+ source TEXT NOT NULL, device TEXT NOT NULL, region TEXT);
+CREATE INDEX IF NOT EXISTS video_analytics_download_date ON video_analytics_download(created);
 """
 SURFACES = ("watch", "embed")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
 REGION_CODE = re.compile(r"[A-Z]{2}(?:-[A-Z0-9]{1,3})?")
-COUNTS = """count(*) AS impressions, coalesce(sum(played),0) AS views,
-            coalesce(sum(completed),0) AS finishes, coalesce(sum(watched),0) AS watched"""
+PLAY_COUNTS = """coalesce(sum(played),0) AS views, coalesce(sum(completed),0) AS finishes,
+                 coalesce(sum(watched),0) AS watched"""
+COUNTS = "count(*) AS impressions, " + PLAY_COUNTS
+LOGGER = logging.getLogger(__name__)
 
 
 def source_origin(referrer):
@@ -83,6 +91,25 @@ def observed_region(trusted_proxies):
         return None
     code = request.headers.get("X-CuePorch-Region", "").strip().upper()
     return code if REGION_CODE.fullmatch(code) else None
+
+
+def request_context(trusted_proxies):
+    return [source_origin(request.referrer), device_type(request.headers.get("User-Agent")),
+            observed_region(trusted_proxies)]
+
+
+def record_download(tx, work, response, origin):
+    if request.method != "GET" or not permitted():
+        return
+    initial_range = response.status_code == 206 and response.headers.get("Content-Range", "").startswith("bytes 0-")
+    if response.status_code != 200 and not initial_range:
+        return
+    try:
+        with tx() as con:
+            con.execute("INSERT INTO video_analytics_download VALUES(?,?,?,?,?,?)",
+                        (work, datetime.now(timezone.utc).timestamp(), *origin))
+    except sqlite3.Error:
+        LOGGER.exception("Could not record a download observation")
 
 
 def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):

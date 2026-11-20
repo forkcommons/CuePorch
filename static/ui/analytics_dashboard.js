@@ -5,6 +5,7 @@ const metricNames = {
     impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
     watched_seconds: "Seconds watched", average_watched_seconds: "Average seconds watched",
     unique_impressions: "Unique impressions", unique_viewers: "Unique viewers", average_watched_fraction: "Average percent watched",
+    downloads: "Downloads",
 };
 const parts = Object.keys(metricNames);
 const count = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });

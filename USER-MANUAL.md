@@ -90,6 +90,8 @@ Open **Analytics** from the library to compare videos. Pick specific works or re
 
 In the **Video** report, **Top by views** ranks up to five videos, regions, device types and referring sites under your current filters. Select a video title to open its analytics. The rankings appear when the selection has playback views.
 
+**Downloads** counts authorized viewer download requests that begin at the start of the file on CuePorch's watch pages and embeds. It includes a full-file request or a range beginning at byte zero. The report records requests, including retries from the start, and cannot confirm how much a visitor saved. Ordinary playback, later ranges, file checks and operator downloads do not count. Viewer analytics opt-outs also apply to downloads.
+
 Choose **Engagement** to compare retention across the selected videos. CuePorch aligns each cut by percentage of its duration and counts each playback session once at a point it played. Completion includes sessions that reached the last two seconds or ended. The table lists average watched, completion rate and views at five milestones. Choose **Video ratings** for thumbs up and down or star votes, with totals, score breakdowns and averages. Date and video filters apply to both reports and their CSV downloads.
 
 Choose **Region**, **Source URL**, **Device**, or **Date** for a dedicated breakdown with the same viewing metrics. You can add a second dimension and download the filtered table. Source URL shows the referring origin when the viewer's browser makes it available. Region shows the geographic code supplied by your configured proxy, or **Unknown**. The region filter accepts codes such as `US` and `US-CO`, or `Unknown`.

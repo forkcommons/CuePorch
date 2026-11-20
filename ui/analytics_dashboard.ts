@@ -7,6 +7,7 @@ const metricNames = {
   impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
   watched_seconds: "Seconds watched", average_watched_seconds: "Average seconds watched",
   unique_impressions: "Unique impressions", unique_viewers: "Unique viewers", average_watched_fraction: "Average percent watched",
+  downloads: "Downloads",
 };
 type Metric = keyof typeof metricNames;
 type Counts = Record<Metric, number | null>;
