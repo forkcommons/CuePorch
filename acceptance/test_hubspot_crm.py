@@ -25,6 +25,12 @@ class Provider:
         self.revoked = False
         self.corrupt = False
         self.rejected = False
+        from threading import Event
+
+        self.pause_batch = False
+        self.throttle_once = False
+        self.batch_waiting = Event()
+        self.batch_release = Event()
 
     @staticmethod
     def response(data=None, status=200):
@@ -119,6 +125,11 @@ class Provider:
             )
 
         if path == "/crm/lists/2026-09/20":
+            if self.throttle_once:
+                self.throttle_once = False
+                response = self.response(status=429)
+                response.headers["Retry-After"] = "27"
+                return response
             return self.response(
                 {
                     "list": {
@@ -208,6 +219,20 @@ class Provider:
             set(item["properties"]) == {"email", "firstname", "lastname"}
             for item in results
         )
+        if self.pause_batch:
+            self.batch_waiting.set()
+            assert self.batch_release.wait(8)
+            results.append(
+                {
+                    "id": "4",
+                    "archived": False,
+                    "properties": {
+                        "email": "canceled@example.invalid",
+                        "firstname": "Canceled",
+                        "lastname": "",
+                    },
+                }
+            )
         return self.response({"results": results}, status=200)
 
 
@@ -254,21 +279,51 @@ class HubSpotCRM(unittest.TestCase):
                     ),
                 )
             )
+            import event_hubspot_sync
+            from time import time
+
+            actual_start = event_hubspot_sync.start
+            clock_offset = 0
+
             cleanup.enter_context(patch("mail_relay.deliver"))
-            with patch("institution.library_worker.start", return_value=lambda: None):
-                app = create_app(root, database, operator, "station")
-            stops = [
-                stop
-                for name, stop in app.extensions.items()
-                if name.startswith("stop_")
-            ]
+            cleanup.enter_context(
+                patch.object(
+                    event_hubspot_sync,
+                    "start",
+                    lambda *args: actual_start(
+                        *args, clock=lambda: time() + clock_offset
+                    ),
+                )
+            )
+
+            stops = []
+
+            def start_app():
+                with patch(
+                    "institution.library_worker.start", return_value=lambda: None
+                ):
+                    app = create_app(root, database, operator, "station")
+                stops.extend(
+                    stop
+                    for name, stop in app.extensions.items()
+                    if name.startswith("stop_")
+                )
+                service.app = app
 
             def stop_app():
                 while stops:
                     stops.pop()()
 
+            def restart(at):
+                nonlocal clock_offset
+                stop_app()
+                clock_offset = at - time()
+                start_app()
+
+            self.restart = restart
+
             cleanup.callback(stop_app)
-            service.app = app
+            start_app()
             cleanup.enter_context(service_worker(service))
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 self.exercise(browser, base, operator, database, fixture)
@@ -410,6 +465,8 @@ class HubSpotCRM(unittest.TestCase):
             assert b"fixture-access" not in token
             assert b"fixture-refresh" not in token
 
+        self.verify_automatic(page, base, auth, created, database, fixture)
+
         page.goto(f"{base}/operator/integrations")
         page.click("text=Disconnect HubSpot")
         expect(
@@ -421,3 +478,119 @@ class HubSpotCRM(unittest.TestCase):
             url, data={"segment": "20"}, headers=headers
         )
         assert response.status == 409
+
+    def verify_automatic(self, page, base, auth, created, database, fixture):
+        from time import monotonic, sleep
+
+        fixture.corrupt = False
+
+        page.goto(f"{base}/operator/live-events")
+
+        assert len(created["occurrences"]) == 2
+
+        page.get_by_role(
+            "button", name="Open production for CRM rehearsal", exact=False
+        ).first.click()
+        page.get_by_text("Attendees for this occurrence", exact=True).click()
+
+        page.get_by_role("button", name="Load contact segments").click()
+        page.get_by_role("button", name="More segments").click()
+        page.locator("#eventHubSpotSegment").select_option(label="Arts audience")
+
+        page.get_by_role("button", name="Enable automatic refresh").click()
+        expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text(
+            "Automatic refresh scheduled"
+        )
+
+        occurrence_id = created["occurrences"][0]["id"]
+        sync_url = (
+            f"{base}/api/live-events/{created['id']}/{occurrence_id}"
+            "/registration/hubspot/sync"
+        )
+
+        def wait_for_receipt(ready):
+            deadline = monotonic() + 6.0
+            receipt = {}
+            while monotonic() < deadline:
+                resp = page.context.request.get(sync_url, headers=auth)
+                if resp.ok:
+                    receipt = resp.json()
+                    if ready(receipt):
+                        return receipt
+                sleep(0.2)
+            raise AssertionError("HubSpot sync did not reach the expected state.")
+
+        receipt = wait_for_receipt(lambda value: value.get("last_result"))
+        last_result = receipt["last_result"]
+
+        assert last_result["added"] == 2
+        assert last_result["occurrence"] == occurrence_id
+        assert receipt["next_at"] > receipt["last_at"]
+
+        page.get_by_role("button", name="Refresh sync status").click()
+        expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text("2 added")
+        expect(page.locator("#eventRoster")).to_contain_text("First")
+
+        due = receipt["next_at"]
+        fixture.throttle_once = True
+        self.restart(due)
+        retry = wait_for_receipt(lambda value: value.get("state") == "retry")
+        assert retry["next_at"] >= due + 27
+        assert retry["last_at"] == receipt["last_at"]
+        self.restart(retry["next_at"])
+        refreshed = wait_for_receipt(
+            lambda value: (
+                value.get("last_result") and value["last_at"] >= retry["next_at"]
+            )
+        )
+        assert refreshed["last_result"]["added"] == 0
+        assert refreshed["last_result"]["existing"] == 2
+        assert refreshed["last_result"]["occurrence"] == occurrence_id
+
+        page.get_by_role("button", name="Stop automatic refresh").click()
+        expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text(
+            "Automatic refresh is off"
+        )
+
+        disabled = page.context.request.get(sync_url, headers=auth).json()
+        assert disabled["enabled"] is False
+        assert disabled["state"] == "off"
+
+        self.verify_canceled(page, auth, sync_url, database, fixture)
+
+    def verify_canceled(self, page, auth, sync_url, database, fixture):
+        from filelock import FileLock
+
+        # Current browser remains on the first occurrence and the selected
+        # segment even after automatic refresh is stopped.
+        fixture.pause_batch = True
+        try:
+            page.get_by_role("button", name="Enable automatic refresh").click()
+            assert fixture.batch_waiting.wait(5)
+            page.get_by_role("button", name="Stop automatic refresh").click()
+            expect(page.locator("#eventHubSpotSyncStatus")).to_have_text(
+                "Automatic refresh is off"
+            )
+        finally:
+            fixture.batch_release.set()
+
+        with FileLock(str(database) + ".hubspot-sync.lock", timeout=5):
+            sync_response = page.request.get(sync_url, headers=auth)
+            sync_state = sync_response.json()
+            assert sync_state["enabled"] is False
+            assert sync_state["state"] == "off"
+
+            roster_url = (
+                sync_url.removesuffix("/registration/hubspot/sync") + "/registrants"
+            )
+            roster_response = page.request.get(roster_url, headers=auth)
+            roster = roster_response.json()
+            assert roster["total"] == 2
+            attendees = roster["attendees"]
+            assert all(
+                attendee.get("email") != "canceled@example.invalid"
+                for attendee in attendees
+            )
+
+        # Proves a pending provider response cannot mutate the canceled
+        # occurrence.

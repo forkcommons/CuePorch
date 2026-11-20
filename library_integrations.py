@@ -17,6 +17,7 @@ from werkzeug.exceptions import TooManyRequests
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
 import editor_exports
+import event_hubspot_sync
 import facebook_upload
 import google_meet_recordings
 import hubspot_crm
@@ -276,7 +277,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -302,8 +303,6 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
     shopify = shopify_product_media.StoreConnection(tx, operator)
-    hubspot = Connection(hubspot_crm.OAUTH, tx, operator)
-    app.extensions["hubspot_connection"] = hubspot
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot)} | outbound
@@ -515,6 +514,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         cleanup = active_watch.clear if active_watch else None
         if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
+        elif provider == "hubspot":
+            cleanup = event_hubspot_sync.disconnect
         return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
 
     @app.get("/api/integrations/hubspot/segments")

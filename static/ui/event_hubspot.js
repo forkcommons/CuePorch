@@ -4,6 +4,10 @@ export function setupHubSpot(request, refreshRoster) {
     const segmentSel = document.querySelector("#eventHubSpotSegment");
     const importBtn = document.querySelector("#eventHubSpotImport");
     const status = document.querySelector("#eventHubSpotStatus");
+    const startSyncBtn = document.querySelector("#eventHubSpotStartSync");
+    const stopSyncBtn = document.querySelector("#eventHubSpotStopSync");
+    const readSyncBtn = document.querySelector("#eventHubSpotReadSync");
+    const syncStatus = document.querySelector("#eventHubSpotSyncStatus");
     let base = "";
     let scope = 0;
     let cursor = null;
@@ -14,9 +18,13 @@ export function setupHubSpot(request, refreshRoster) {
         moreBtn.disabled = v;
         segmentSel.disabled = v;
         importBtn.disabled = v || !segmentSel.value;
+        startSyncBtn.disabled = v || !segmentSel.value;
+        stopSyncBtn.disabled = v;
+        readSyncBtn.disabled = v;
     };
     segmentSel.onchange = () => {
         importBtn.disabled = busy || !segmentSel.value;
+        startSyncBtn.disabled = busy || !segmentSel.value;
     };
     const setStatus = (msg) => {
         status.textContent = msg;
@@ -99,6 +107,54 @@ export function setupHubSpot(request, refreshRoster) {
                 setBusy(false);
         }
     });
+    const syncRequest = async (method) => {
+        if (!base || busy)
+            return;
+        const gen = scope;
+        const segment = segmentSel.value;
+        setBusy(true);
+        syncStatus.textContent =
+            method === "GET" ? "Loading sync…" : method === "PUT" ? "Scheduling sync…" : "Stopping sync…";
+        try {
+            const receipt = await request(`${base}/registration/hubspot/sync`, method, method === "GET" ? undefined : method === "PUT" ? { segment } : {}, method !== "GET");
+            if (gen !== scope)
+                return;
+            const stateLabels = {
+                off: "Automatic refresh is off",
+                scheduled: "Automatic refresh scheduled",
+                complete: "Automatic refresh complete",
+                retry: "Waiting to retry",
+                problem: "Automatic refresh needs attention",
+            };
+            const parts = [stateLabels[receipt.state] ?? receipt.state];
+            if (receipt.last_at)
+                parts.push(`last ${new Date(receipt.last_at * 1000).toLocaleString()}`);
+            if (receipt.next_at)
+                parts.push(`next ${new Date(receipt.next_at * 1000).toLocaleString()}`);
+            if (receipt.last_result) {
+                const result = receipt.last_result;
+                parts.push(`${result.added} added, ${result.existing} already registered, ${result.duplicates} duplicates, ${result.skipped} skipped`);
+            }
+            if (receipt.problem)
+                parts.push(receipt.problem);
+            syncStatus.textContent = parts.join(" · ");
+            stopSyncBtn.hidden = receipt.state === "off";
+            if (method === "GET" && receipt.last_result)
+                refreshRoster();
+        }
+        catch (error) {
+            if (gen !== scope)
+                return;
+            syncStatus.textContent = error.message;
+        }
+        finally {
+            if (gen === scope)
+                setBusy(false);
+        }
+    };
+    startSyncBtn.addEventListener("click", () => { void syncRequest("PUT"); });
+    stopSyncBtn.addEventListener("click", () => { void syncRequest("DELETE"); });
+    readSyncBtn.addEventListener("click", () => { void syncRequest("GET"); });
     updateMore();
     return (newBase) => {
         scope++;
@@ -107,6 +163,9 @@ export function setupHubSpot(request, refreshRoster) {
         resetOptions();
         updateMore();
         setStatus("");
+        syncStatus.textContent = "";
+        stopSyncBtn.hidden = true;
         setBusy(false);
+        void syncRequest("GET");
     };
 }

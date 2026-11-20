@@ -81,6 +81,7 @@ import library_thumbnail
 import library_timeline
 import library_trash
 import library_upload
+import hubspot_crm
 import library_integrations
 import intake_watch
 import social_publication
@@ -1363,9 +1364,10 @@ def create_app(root, database, operator, institution, simulation=None):
         authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
+    hubspot = workspace_oauth.Connection(hubspot_crm.OAUTH, tx, operator)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
-                            ai_actor)
+                            ai_actor, hubspot)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 
@@ -1380,7 +1382,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
-                                               sharing_access)
+                                               sharing_access, hubspot)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)

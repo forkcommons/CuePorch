@@ -12,6 +12,15 @@ interface ImportResponse {
   skipped: number;
 }
 
+type SyncReceipt = {
+  enabled: boolean;
+  state: "off" | "scheduled" | "complete" | "retry" | "problem";
+  next_at?: number | null;
+  last_at?: number | null;
+  problem?: string | null;
+  last_result?: ImportResponse | null;
+};
+
 export function setupHubSpot(
   request: Request,
   refreshRoster: () => void,
@@ -21,6 +30,10 @@ export function setupHubSpot(
   const segmentSel = document.querySelector<HTMLSelectElement>("#eventHubSpotSegment")!;
   const importBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotImport")!;
   const status = document.querySelector<HTMLElement>("#eventHubSpotStatus")!;
+  const startSyncBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotStartSync")!;
+  const stopSyncBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotStopSync")!;
+  const readSyncBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotReadSync")!;
+  const syncStatus = document.querySelector<HTMLElement>("#eventHubSpotSyncStatus")!;
 
   let base = "";
   let scope = 0;
@@ -33,10 +46,14 @@ export function setupHubSpot(
     moreBtn.disabled = v;
     segmentSel.disabled = v;
     importBtn.disabled = v || !segmentSel.value;
+    startSyncBtn.disabled = v || !segmentSel.value;
+    stopSyncBtn.disabled = v;
+    readSyncBtn.disabled = v;
   };
 
   segmentSel.onchange = () => {
     importBtn.disabled = busy || !segmentSel.value;
+    startSyncBtn.disabled = busy || !segmentSel.value;
   };
 
   const setStatus = (msg: string) => {
@@ -117,6 +134,53 @@ export function setupHubSpot(
     }
   });
 
+  const syncRequest = async (method: "GET" | "PUT" | "DELETE") => {
+    if (!base || busy) return;
+    const gen = scope;
+    const segment = segmentSel.value;
+    setBusy(true);
+    syncStatus.textContent =
+      method === "GET" ? "Loading sync…" : method === "PUT" ? "Scheduling sync…" : "Stopping sync…";
+    try {
+      const receipt = await request<SyncReceipt>(
+        `${base}/registration/hubspot/sync`,
+        method,
+        method === "GET" ? undefined : method === "PUT" ? { segment } : {},
+        method !== "GET",
+      );
+      if (gen !== scope) return;
+      const stateLabels: Record<string, string> = {
+  off: "Automatic refresh is off",
+  scheduled: "Automatic refresh scheduled",
+  complete: "Automatic refresh complete",
+  retry: "Waiting to retry",
+  problem: "Automatic refresh needs attention",
+};
+const parts: string[] = [stateLabels[receipt.state] ?? receipt.state];
+      if (receipt.last_at) parts.push(`last ${new Date(receipt.last_at * 1000).toLocaleString()}`);
+      if (receipt.next_at) parts.push(`next ${new Date(receipt.next_at * 1000).toLocaleString()}`);
+      if (receipt.last_result) {
+        const result = receipt.last_result;
+        parts.push(
+          `${result.added} added, ${result.existing} already registered, ${result.duplicates} duplicates, ${result.skipped} skipped`,
+        );
+      }
+      if (receipt.problem) parts.push(receipt.problem);
+      syncStatus.textContent = parts.join(" · ");
+      stopSyncBtn.hidden = receipt.state === "off";
+      if (method === "GET" && receipt.last_result) refreshRoster();
+    } catch (error) {
+      if (gen !== scope) return;
+      syncStatus.textContent = (error as Error).message;
+    } finally {
+      if (gen === scope) setBusy(false);
+    }
+  };
+
+  startSyncBtn.addEventListener("click", () => { void syncRequest("PUT"); });
+  stopSyncBtn.addEventListener("click", () => { void syncRequest("DELETE"); });
+  readSyncBtn.addEventListener("click", () => { void syncRequest("GET"); });
+
   updateMore();
 
   return (newBase: string) => {
@@ -126,6 +190,9 @@ export function setupHubSpot(
     resetOptions();
     updateMore();
     setStatus("");
+    syncStatus.textContent = "";
+    stopSyncBtn.hidden = true;
     setBusy(false);
+    void syncRequest("GET");
   };
 }

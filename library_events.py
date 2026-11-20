@@ -29,6 +29,7 @@ import event_attendance
 import event_chat
 import event_captions
 import event_engagement
+import event_hubspot_sync
 import event_library_recordings
 import event_mail
 import event_player
@@ -75,7 +76,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
-       + event_mail.SCHEMA + event_registrants.SCHEMA)
+       + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -422,7 +423,7 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor):
+             sharing_access, enforce_sharing, ai_actor, hubspot):
     media = Gateway()
     studio = Studio(database)
     rtmp_config = event_rtmp.configured()
@@ -435,6 +436,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         app.extensions["account_reset_delivery"].stop()
         if stop_webhooks := app.extensions.get("stop_event_webhooks"):
             stop_webhooks()
+        stop_hubspot()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -789,7 +791,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         from browser_account_security import json_mutation
         actor = staff()
         body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
-        connection = app.extensions["hubspot_connection"]
+        connection = hubspot
         revision = connection.revision()
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
@@ -803,6 +805,67 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             result = enroll_hubspot_contacts(con, row, slot, form, contacts)
             note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} HubSpot contacts")
         return private(dict(result, skipped=skipped, occurrence=opens))
+
+    def validate_hubspot_plan(con, job):
+        row, slot, form = registration_intake(con, job["event"], job["opens"])
+        if (
+            row["revision"] != job["event_revision"]
+            or form["revision"] != job["form_revision"]
+        ):
+            abort(409, "The event or registration form changed.")
+        return row, slot, form
+
+
+    def apply_hubspot_plan(con, job, contacts, skipped):
+        row, slot, form = validate_hubspot_plan(con, job)
+        result = enroll_hubspot_contacts(con, row, slot, form, contacts)
+        if result.get("added"):
+            note(
+                con,
+                job["actor"],
+                "live_event_attendees_imported",
+                job["event"],
+                f"{job['opens']}, {len(contacts)} HubSpot contacts",
+            )
+        return dict(result, skipped=skipped, occurrence=job["opens"])
+
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/sync", methods=["GET", "PUT", "DELETE"])
+    def schedule_hubspot_registration(uid, opens):
+        actor = staff()
+        secure = secure_site(mail_origin)
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(event_hubspot_sync.receipt(event_hubspot_sync.get(con, uid, opens)))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_sync.remove(con, uid, opens)
+            return private(dict(enabled=False, state="off"))
+        import hubspot_crm
+        segment = body.get("segment")
+        if not hubspot_crm.segment_id(segment):
+            abort(400)
+        revision = hubspot.revision()
+        with tx() as con:
+            hubspot.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            now = int(datetime.now(timezone.utc).timestamp())
+            closes = event_attendance.expires_at(slot)
+            if now >= min(closes, opens + 7200):
+                abort(409)
+            zone = json.loads(row["settings"])["schedule"]["timezone"]
+            event_hubspot_sync.set_sync(con, uid, opens, segment=segment, connection=revision, actor=actor, event_revision=row["revision"], form_revision=form["revision"], closes=closes, zone=zone, now=now)
+            return private(event_hubspot_sync.receipt(event_hubspot_sync.get(con, uid, opens)))
+
+    stop_hubspot = event_hubspot_sync.start(
+        app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
+    )
 
     @app.get("/api/live-events/<uid>/registrants/<registrant>")
     def event_registrant_details(uid, registrant):
