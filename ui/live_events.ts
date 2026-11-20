@@ -64,7 +64,7 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   logo: string | null; logo_image: string | null; byline: string;
   show_live_badge: boolean; show_viewers: boolean;
 }
-interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
+interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface SrtListener {
   server: string; passphrase: string; key_bytes: number; preview: boolean;
@@ -887,7 +887,7 @@ async function refreshDestinations(result?: Destinations) {
   };
   destinationList.replaceChildren(...result.destinations.map(item => {
     const row = document.createElement("li");
-    row.textContent = `${item.name} · ${item.server} · ${labels[item.state] || item.state}`;
+    row.textContent = `${item.name}${item.opens !== null ? " · Patreon Live for this date" : ""} · ${item.server} · ${labels[item.state] || item.state}`;
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -917,12 +917,18 @@ destinationForm.onsubmit = event => {
   const values = new FormData(destinationForm);
   void action(async () => {
     const data = {name: values.get("name"), server: values.get("server"),
-      key: values.get("key"), enabled: values.has("enabled")};
+      key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset")};
     const result = await request<Destinations>(mediaPath("destinations"), "POST", data);
     destinationForm.reset();
     await refreshDestinations(result);
   });
 };
+const presetSelect = destinationForm.elements.namedItem("preset") as HTMLSelectElement;
+const patreonDestinationHelp = element<HTMLParagraphElement>("patreonDestinationHelp");
+function syncPresetHelp() { patreonDestinationHelp.hidden = presetSelect.value !== "patreon"; }
+presetSelect.addEventListener("change", syncPresetHelp);
+destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+syncPresetHelp();
 window.setInterval(() => {
   if (destinations.open && !document.hidden && !pending) {
     void refreshDestinations().catch(() => {});

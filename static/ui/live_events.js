@@ -825,7 +825,7 @@ async function refreshDestinations(result) {
     };
     destinationList.replaceChildren(...result.destinations.map(item => {
         const row = document.createElement("li");
-        row.textContent = `${item.name} · ${item.server} · ${labels[item.state] || item.state}`;
+        row.textContent = `${item.name}${item.opens !== null ? " · Patreon Live for this date" : ""} · ${item.server} · ${labels[item.state] || item.state}`;
         const control = document.createElement("button");
         control.type = "button";
         control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -855,12 +855,18 @@ destinationForm.onsubmit = event => {
     const values = new FormData(destinationForm);
     void action(async () => {
         const data = { name: values.get("name"), server: values.get("server"),
-            key: values.get("key"), enabled: values.has("enabled") };
+            key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset") };
         const result = await request(mediaPath("destinations"), "POST", data);
         destinationForm.reset();
         await refreshDestinations(result);
     });
 };
+const presetSelect = destinationForm.elements.namedItem("preset");
+const patreonDestinationHelp = element("patreonDestinationHelp");
+function syncPresetHelp() { patreonDestinationHelp.hidden = presetSelect.value !== "patreon"; }
+presetSelect.addEventListener("change", syncPresetHelp);
+destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+syncPresetHelp();
 window.setInterval(() => {
     if (destinations.open && !document.hidden && !pending) {
         void refreshDestinations().catch(() => { });

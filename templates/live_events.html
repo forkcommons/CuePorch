@@ -342,6 +342,8 @@
         <p id="destinationStatus" role="status"></p>
         <ul id="destinationList"></ul>
         <form id="addDestination">
+          <label>Destination type <select name="preset"><option value="custom">Custom RTMP or RTMPS</option><option value="patreon">Patreon Live</option></select></label>
+          <p id="patreonDestinationHelp" hidden>Create a Live in Patreon, choose Other streaming source, copy the RTMPS server and key for this occurrence, select the audience, and start it in Patreon.</p>
           <label>Destination name <input name="name" maxlength="80" required></label>
           <label>RTMP or RTMPS server <input name="server" maxlength="500" required></label>
           <label>Destination stream key <input name="key" maxlength="512" type="password" autocomplete="off" required></label>
