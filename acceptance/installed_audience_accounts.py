@@ -6,6 +6,7 @@ from contextlib import ExitStack
 
 from playwright.sync_api import expect
 import requests
+from installed_authenticator import check_authenticator
 
 
 MUTATION = {"X-CuePorch-Viewer": "1", "Content-Type": "application/json"}
@@ -101,6 +102,7 @@ def check_audience_accounts(browser, base, staff, sample):
         details.get_by_role("button", name="Save account details").click()
         expect(first.locator("#viewerAccountStatus")).to_have_text("Account details saved.")
         assert a.request.get(base + account_path).json() == dict(name="Maya Gallery", email=new_email, pronouns="she/her")
+        authentication = check_authenticator(first, browser, base, "viewer", new_email, original)
 
         other_session.goto(base + "/account")
         sign_in(other_session, email, original)
@@ -201,4 +203,5 @@ def check_audience_accounts(browser, base, staff, sample):
                     saved_private_video_hidden_and_denied=True, account_details_updated=True, login_cookie_rotated=True,
                     revoke_other_sessions_on_password_change=True, remove_and_sign_out=True, deletion_discards_list=True,
                     mature_and_custom_account_filters=True, independent_anonymous_catalog=True,
-                    direct_link_warning_then_playback_width=256, deletion_resets_viewing_preferences=True)
+                    direct_link_warning_then_playback_width=256, deletion_resets_viewing_preferences=True,
+                    authenticator=authentication)

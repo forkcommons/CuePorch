@@ -1,4 +1,5 @@
 import {viewerRequest} from "./audience_api.js";
+import {requestSignInCode, resetSignInCode} from "./sign_in_factor.js";
 
 interface Account {name: string; email: string; pronouns: string;}
 interface ViewingPreferences {mode: "all" | "hide_mature" | "custom"; excluded: string[];}
@@ -25,6 +26,7 @@ function show(account?: Account) {
   if (!account) {
     preferenceSection.hidden = true;
     preferenceForm.reset();
+    resetSignInCode(signIn);
     for (const form of [signIn, signUp, details, change, remove]) form.reset();
     return;
   }
@@ -92,10 +94,13 @@ function connect(form: HTMLFormElement, method: "sign in" | "sign up") {
     event.preventDefault();
     void perform(async () => {
       const response = await viewerRequest(method === "sign in" ? "session" : "signup", "POST", values(form));
+      if (response.status === 428 && method === "sign in") return requestSignInCode(form, status);
       if (!response.ok) return failure(response, {
         ...messages, 401: "The email or password did not match.", 409: "That email address is already in use.",
+        422: "That code did not match or has already been used.",
       });
       form.reset();
+      if (method === "sign in") resetSignInCode(form);
       if (top.dataset.destination) location.assign(top.dataset.destination);
       else await showSignedIn(await response.json());
     });
@@ -104,6 +109,7 @@ function connect(form: HTMLFormElement, method: "sign in" | "sign up") {
 
 connect(signIn, "sign in");
 connect(signUp, "sign up");
+signIn.querySelector<HTMLInputElement>("input[type=email]")!.oninput = () => resetSignInCode(signIn);
 
 details.onsubmit = event => {
   event.preventDefault();

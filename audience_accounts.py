@@ -11,6 +11,7 @@ import uuid
 from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import account_totp
 import audience_comments
 import audience_library
 from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
@@ -129,6 +130,15 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         if previous_hash is not None and not hmac.compare_digest(row["password_hash"], previous_hash):
             abort(409, "Your account changed. Try again.")
 
+    def rotate_security_session(con, uid, secure):
+        con.execute("DELETE FROM audience_session WHERE account=?", (uid,))
+        return issue(con, uid, None)
+
+    authenticator = account_totp.register(
+        app, tx, "viewer", operator, scheme, mutation, lambda con, secure: current(con, browser_session(secure)),
+        limit, rotate_security_session, cookie,
+    )
+
     @app.get("/account")
     def viewer_account_page():
         scheme()
@@ -167,6 +177,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
+                authenticator.forget(con, row["id"])
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
             return cookie(private("", 204), secure)
@@ -222,6 +233,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
             row = con.execute("SELECT * FROM audience_account WHERE id=? AND email=?", (row["id"], email)).fetchone()
             if row is None or row["password_hash"] != expected:
                 abort(401, "The email or password did not match.")
+            authenticator.check(con, row["id"], body.get("code"))
             token = issue(con, row["id"], old)
         return cookie(private(account_view(row)), secure, token)
 

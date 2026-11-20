@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Account security · CuePorch</title>
+  <link rel="stylesheet" href="/static/cueporch.css">
+</head>
+<body>
+  <nav><a href="{{ account_page }}">{{ "Back to team" if scope == "team" else "Back to viewer account" }}</a></nav>
+  <main id="accountSecurity" class="viewer-account" data-scope="{{ scope }}">
+    <h1>Account security</h1>
+    <h2>Authenticator app</h2>
+    <p id="authenticatorStatus" role="status"></p>
+    <form id="authenticatorStart" method="post" hidden>
+      <label>Current password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <button type="submit">Set up authenticator</button>
+    </form>
+    <form id="authenticatorConfirm" method="post" hidden>
+      <p>Add CuePorch to your authenticator app with this setup key.</p>
+      <label>Setup key <input id="authenticatorSeed" readonly></label>
+      <a id="authenticatorOpen">Open in authenticator app</a>
+      <label>Six-digit code <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                                  autocomplete="one-time-code" required></label>
+      <button type="submit">Enable authenticator</button>
+      <button type="button" id="authenticatorCancel">Cancel setup</button>
+    </form>
+    <form id="authenticatorDisable" method="post" hidden>
+      <label>Current password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <label>Authenticator or recovery code <input name="code" maxlength="32" autocomplete="one-time-code" required></label>
+      <button type="submit">Turn off authenticator</button>
+    </form>
+    <section id="authenticatorRecovery" hidden>
+      <h2>One-time recovery codes</h2>
+      <p>Save these codes somewhere safe. This is the only time CuePorch displays them. Each works once.</p>
+      <ul></ul>
+    </section>
+  </main>
+  <script type="module" src="/static/ui/account_security.js"></script>
+</body>
+</html>

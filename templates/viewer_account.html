@@ -17,6 +17,7 @@
         <form id="viewerSignIn" method="post">
           <label>Email <input type="email" name="email" autocomplete="username" maxlength="254" required></label>
           <label>Password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
+          {% include "sign_in_factor.html" %}
           <button type="submit">Sign in</button>
         </form>
       </section>
@@ -31,6 +32,7 @@
       </section>
     </div>
     <div id="viewerManagement" hidden>
+      <p><a href="{{ url_for('viewer_security_page') }}">Account security</a></p>
       {% if destination %}<p><a href="{{ destination }}">{% if destination.startswith('/creators/') %}Return to creator profile{% elif destination == '/watch/feed' %}Return to feed{% else %}Return to video{% endif %}</a></p>{% endif %}
       <section aria-labelledby="viewerDetailsHeading">
         <h2 id="viewerDetailsHeading">Account details</h2>

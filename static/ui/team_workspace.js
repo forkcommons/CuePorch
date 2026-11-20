@@ -1,5 +1,6 @@
 import { uploadLibraryFile } from "./library_upload.js";
 import { checked, roleLabels, sessionMarker, teamRequest } from "./team_api.js";
+import { requestSignInCode, resetSignInCode } from "./sign_in_factor.js";
 const workspace = document.querySelector("#teamWorkspace");
 const status = document.querySelector("#teamStatus");
 const join = document.querySelector("#teamJoin");
@@ -43,6 +44,7 @@ function reveal(member) {
     }
     else
         clearOperatorMarker();
+    resetSignInCode(signIn);
 }
 function clearOperatorMarker() {
     if (sessionStorage.getItem("cueporchOperator") === sessionMarker)
@@ -92,10 +94,14 @@ if (join) {
     };
 }
 else if (signIn && upload) {
+    signIn.querySelector("input[type=email]").oninput = () => resetSignInCode(signIn);
     signIn.onsubmit = event => {
         event.preventDefault();
         void task(async () => {
-            const response = await checked(await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn))));
+            const response = await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn)));
+            if (response.status === 428)
+                return requestSignInCode(signIn, status);
+            await checked(response);
             signIn.reset();
             reveal(await response.json());
             await showVideos();

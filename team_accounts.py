@@ -22,6 +22,7 @@ import creator_profiles
 import library_analytics
 import team_analytics
 import team_workspaces
+import account_totp
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
                                       secure_site, token_hash, workspace_session, workspace_session_cookie)
 from library_privacy import blocked, current_settings, editable, playback, protected_route
@@ -254,6 +255,23 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     def session_response(body, secure, token=None, status=200):
         return workspace_session_cookie(private(body, status), "team", secure, SESSION_SECONDS, token)
 
+    def security_account(con, secure):
+        uid = member(con, secure)["id"]
+        return con.execute("SELECT id,email,password_hash FROM team_member WHERE id=?", (uid,)).fetchone()
+
+    def rotate_security_session(con, uid, secure):
+        con.execute("DELETE FROM team_session WHERE member=?", (uid,))
+        return issue_session(con, uid, secure)
+
+    def note_authenticator(con, actor, enabled):
+        note(con, actor_id(actor), "authenticator_enabled" if enabled else "authenticator_disabled", actor["id"])
+
+    authenticator = account_totp.register(
+        app, tx, "team", key, lambda: secure_site(origin), mutation, security_account, limit, rotate_security_session,
+        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
+        note_authenticator,
+    )
+
     def eligible_works(con, ids=None):
         return {work["id"]: work for work in read_works() if (ids is None or work["id"] in ids)
                 and playback(work) and grant_available(con, work["id"])}
@@ -330,6 +348,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 WHERE id=? AND password_hash=? AND removed IS NULL""", (row["id"], row["password_hash"])).fetchone()
             if logged_in is None:
                 abort(401, "The email or password did not match an active team member.")
+            authenticator.check(con, row["id"], body.get("code"))
             token = issue_session(con, row["id"], secure)
         return session_response(dict(logged_in), secure, token)
 
@@ -466,6 +485,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             if request.method == "DELETE":
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
+                authenticator.forget(con, uid)
                 con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
                 con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))

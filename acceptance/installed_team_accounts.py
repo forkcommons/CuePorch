@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import requests
 from playwright.sync_api import expect
+from installed_authenticator import check_authenticator
 
 
 TEAM = {"X-CuePorch-Team": "1", "Authorization": "Bearer team-session"}
@@ -107,6 +108,11 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         viewer_page = join(viewer, viewer_link, "Val", "Viewer")
         contributor_page = join(contributor, contributor_link, "Cameron", "Contributor")
         viewer_id = signed_in(viewer)["id"]
+        authentication = check_authenticator(viewer_page, browser, base, "team", email("viewer"), PASSWORD)
+        changes = requests.get(base + "/api/team/audit", headers=auth, timeout=10).json()["events"]
+        assert {"authenticator_enabled", "authenticator_disabled"} <= {
+            row["action"] for row in changes if row["subject"] == viewer_id
+        }
         assert signed_in(contributor)["email"] == email("contributor")
         assert viewer.request.get(base + "/api/viewer/account").json()["name"] == "Public account"
         assert viewer.request.get(media).status == contributor.request.get(media).status == 404
@@ -627,7 +633,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 contributor_plus_scoped_interactivity_and_demotion=True,
                 public_creator_profile_ordering_playback_and_withdrawal=True,
                 private_feed_follows_publication_order_and_account_removal=True,
-                feed_observes_viewer_rating_preference=True,
+                feed_observes_viewer_rating_preference=True, authenticator=authentication,
                 sharing_restrictions=sharing_restrictions, support_requests=support, workspace_updates=updates), email("contributor")
 
 

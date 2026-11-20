@@ -1,5 +1,6 @@
 import {uploadLibraryFile} from "./library_upload.js";
 import {checked, type Member, roleLabels, sessionMarker, teamRequest} from "./team_api.js";
+import {requestSignInCode, resetSignInCode} from "./sign_in_factor.js";
 
 const workspace = document.querySelector<HTMLElement>("#teamWorkspace")!;
 const status = document.querySelector<HTMLElement>("#teamStatus")!;
@@ -37,6 +38,7 @@ function reveal(member?: Member) {
     else clearOperatorMarker();
     library.querySelector("#teamIdentity")!.textContent = `${member.name} · ${roleLabels[member.role]}`;
   } else clearOperatorMarker();
+  resetSignInCode(signIn);
 }
 
 function clearOperatorMarker() {
@@ -88,10 +90,13 @@ if (join) {
     }, join);
   };
 } else if (signIn && upload) {
+  signIn.querySelector<HTMLInputElement>("input[type=email]")!.oninput = () => resetSignInCode(signIn);
   signIn.onsubmit = event => {
     event.preventDefault();
     void task(async () => {
-      const response = await checked(await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn))));
+      const response = await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn)));
+      if (response.status === 428) return requestSignInCode(signIn, status);
+      await checked(response);
       signIn.reset();
       reveal(await response.json());
       await showVideos();
