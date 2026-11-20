@@ -35,7 +35,11 @@ MESSAGE_ID = re.compile("[0-9a-f]{32}")
 
 def settings(con, uid, opens):
     row = con.execute("SELECT * FROM live_chat_settings WHERE event=? AND opens=?", (uid, opens)).fetchone()
-    return (bool(row["enabled"]), row["interval"]) if row else (False, 0)
+    if row:
+        return bool(row["enabled"]), row["interval"]
+    saved = con.execute("SELECT json_extract(settings,'$.setup.chat.enabled'),json_extract(settings,'$.setup.chat.interval') "
+                        "FROM live_event WHERE id=?", (uid,)).fetchone()
+    return (bool(saved[0]), saved[1] or 0) if saved else (False, 0)
 
 
 def list_chat(con, uid, opens, viewer=None, operator=False):

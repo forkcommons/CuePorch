@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS live_caption_cue(
 """
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 BAD_TIMES = (ValueError, TypeError, KeyError, OverflowError)
+DEFAULTS = dict(enabled=False, language="en")
 
 
 def live_runtime(language):
@@ -50,7 +51,11 @@ def live_runtime(language):
 
 
 def settings(con, event, opens):
-    return con.execute("SELECT * FROM live_caption_setting WHERE event=? AND opens=?", (event, opens)).fetchone()
+    row = con.execute("SELECT enabled,language FROM live_caption_setting WHERE event=? AND opens=?", (event, opens)).fetchone()
+    if row:
+        return dict(enabled=bool(row["enabled"]), language=row["language"])
+    saved = con.execute("SELECT json_extract(settings,'$.setup.captions') FROM live_event WHERE id=?", (event,)).fetchone()
+    return json.loads(saved[0]) if saved and saved[0] else DEFAULTS.copy()
 
 
 def active_track(con, event, opens):
@@ -80,10 +85,12 @@ class LiveCaptionJobs:
     def scan(self):
         while not self.stopping.wait(2):
             with self.tx() as con:
-                rows = con.execute("""SELECT o.event,o.opens,o.origin,o.remote,s.language,e.settings
-                    FROM live_occurrence o JOIN live_caption_setting s ON s.event=o.event AND s.opens=o.opens
-                    JOIN live_event e ON o.event=e.id
-                    WHERE s.enabled=1 AND o.delivery='ready' AND o.opens<=?""", (int(time()),)).fetchall()
+                rows = con.execute("""SELECT o.event,o.opens,o.origin,o.remote,e.settings,
+                    COALESCE(s.language,json_extract(e.settings,'$.setup.captions.language')) AS language
+                    FROM live_occurrence o JOIN live_event e ON o.event=e.id
+                    LEFT JOIN live_caption_setting s ON s.event=o.event AND s.opens=o.opens
+                    WHERE COALESCE(s.enabled,json_extract(e.settings,'$.setup.captions.enabled'),0)=1
+                      AND o.delivery='ready' AND o.opens<=?""", (int(time()),)).fetchall()
             self.jobs = {scope: job for scope, job in self.jobs.items() if job.is_alive()}
             for row in rows:
                 scope = (row["event"], row["opens"])

@@ -23,6 +23,7 @@ import event_library_recordings
 import event_player
 import event_playlist
 import event_program
+import event_questions
 import event_replay_captions
 import event_schedule
 import event_scenes
@@ -118,9 +119,9 @@ def publish_replays(tx, database, origin, connect, action):
             """SELECT o.event,o.opens,o.remote FROM live_occurrence o JOIN live_event e ON e.id=o.event
                JOIN action a ON a.id=e.publication WHERE o.origin=? AND a.status='eligible'
                AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=? AND
-               (o.delivery='ready' OR (o.delivery='replay' AND EXISTS (
-                   SELECT 1 FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens AND s.enabled=1
-               ) AND NOT EXISTS (
+               (o.delivery='ready' OR (o.delivery='replay' AND COALESCE((
+                   SELECT enabled FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens
+               ),json_extract(e.settings,'$.setup.captions.enabled'),0)=1 AND NOT EXISTS (
                    SELECT 1 FROM live_replay_captions c WHERE c.event=o.event AND c.opens=o.opens
                )))""",
             (origin, datetime.now(timezone.utc).timestamp()),
@@ -183,6 +184,57 @@ def edit(raw):
     if "archive_replay" in raw:
         value["archive_replay"] = raw["archive_replay"]
     return value
+
+
+def validate_setup(raw):
+    if not isinstance(raw, dict) or raw.get("method") not in ("browser", "encoder"):
+        abort(422, "Choose a preferred method for the event.")
+    for key in ("registration", "preview_encoder"):
+        if type(raw.get(key)) is not bool:
+            abort(422, "Choose the event setup options.")
+    chat, captions, qa = (raw.get(key) for key in ("chat", "captions", "qa"))
+    if any(not isinstance(value, dict) or type(value.get("enabled")) is not bool for value in (chat, captions, qa)):
+        abort(422, "Choose the audience options.")
+    interval, language = chat.get("interval"), captions.get("language")
+    if type(interval) is not int or not 0 <= interval <= 120 or language not in event_captions.LANGUAGES:
+        abort(422, "Choose a valid chat delay and caption language.")
+    if any(type(qa.get(key)) is not bool for key in ("anonymous", "review")):
+        abort(422, "Choose the Q&A options.")
+    return dict(method=raw["method"], registration=raw["registration"], preview_encoder=raw["preview_encoder"],
+                chat=dict(enabled=chat["enabled"], interval=interval),
+                captions=dict(enabled=captions["enabled"], language=language),
+                qa={key: qa[key] for key in ("enabled", "anonymous", "review")})
+
+
+def reuse_setup(con, uid, event):
+    # Occurrence-specific overrides take precedence over defaults at the source.
+    chat, interval = event_chat.settings(con, uid, latest_setting(con, "live_chat_settings", uid))
+    captions = event_captions.settings(con, uid, latest_setting(con, "live_caption_setting", uid))
+    qa = event_questions.settings(con, uid, latest_setting(con, "live_qa_settings", uid))
+    qa.pop("highlighted")
+    return dict(method=event.get("setup", {}).get("method", "browser"),
+                registration=library_registration.active(con, "event", uid) is not None,
+                preview_encoder=encoder_preview_enabled(con, uid), chat=dict(enabled=chat, interval=interval),
+                captions=captions, qa=qa)
+
+
+def latest_setting(con, table, uid):
+    return con.execute(f"SELECT MAX(opens) FROM {table} WHERE event=?", (uid,)).fetchone()[0]
+
+
+def apply_setup(con, uid, event, setup, reference):
+    if setup["preview_encoder"]:
+        con.execute("INSERT INTO live_encoder_preference VALUES(?,1)", (uid,))
+    if reference:
+        player = event_player.settings(con, reference)
+        con.execute("INSERT INTO live_player_settings VALUES(?,?)", (uid, json.dumps(player)))
+        if event["schedule"]["repeat"] != "none":
+            playlist = event_playlist.settings(con, reference)
+            con.execute("INSERT INTO live_playlist VALUES(?,?,?,?)", (uid, *playlist.values()))
+    if reference or setup["registration"]:
+        _, form = library_registration.read_form(con, "event", reference)
+        form["enabled"] = setup["registration"]
+        con.execute("INSERT INTO viewer_form VALUES('event',?,?,?)", (uid, uuid.uuid4().hex, json.dumps(form)))
 
 
 def summary(con, row, event, first, last):
@@ -294,8 +346,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available())
             body = request.get_json()
             event = edit(body)
+            setup = validate_setup(body["starting_options"]) if "starting_options" in body else None
+            reference = body.get("reuse_event")
+            if reference is not None:
+                if not isinstance(reference, str) or not re.fullmatch(r"[a-f0-9]{32}", reference):
+                    abort(422, "Choose a stored event to reuse.")
+                _, previous = read(con, reference)
+                if setup is None:
+                    setup = reuse_setup(con, reference, previous)
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
+            if setup:
+                event["setup"] = {key: setup[key] for key in ("method", "captions", "chat", "qa")}
             uid = uuid.uuid4().hex
             slug = body.get("slug") or uid
             if not isinstance(slug, str) or not SLUG.fullmatch(slug):
@@ -305,8 +367,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             approval = publishing_action(con, action, uid, event)
             con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, uuid.uuid4().hex,
                         json.dumps(event), approval, datetime.now(timezone.utc).isoformat()))
+            if setup:
+                apply_setup(con, uid, event, setup, reference)
             row, _ = read(con, uid)
             return summary(con, row, event, first, last), 201
+
+    @app.get("/api/live-events/<uid>/setup")
+    def event_setup(uid):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            return reuse_setup(con, uid, event)
 
     @app.put("/api/live-events/<uid>")
     def revise_event(uid):
@@ -323,6 +394,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     changed["cueporch_delivery"] = True
                 if "archive_replay" in prior:
                     changed.setdefault("archive_replay", prior["archive_replay"])
+                if "setup" in prior:
+                    changed["setup"] = prior["setup"]
+                if "preferred_method" in body:
+                    if body["preferred_method"] not in ("browser", "encoder"):
+                        abort(422, "Choose a preferred method for the event.")
+                    changed["setup"] = prior.get("setup", {}) | {"method": body["preferred_method"]}
                 if changed == prior:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):

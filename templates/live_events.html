@@ -31,7 +31,11 @@
     </section>
     <form id="newEventForm" hidden>
       <h2 id="eventEditorHeading">New event</h2>
-      <label id="eventReuse">Reuse event settings <select id="eventPreset"><option value="">Start from scratch</option></select></label>
+      <fieldset id="eventSetupMode">
+        <legend>Starting settings</legend>
+        <label>Setup <select id="eventMode"><option value="scratch">Set up from scratch</option><option value="type">Choose event type</option><option value="reuse">Reuse settings</option></select></label>
+        <label id="eventReuse" hidden>Reuse event settings <select id="eventPreset"><option value="">Choose an earlier event</option></select></label>
+      </fieldset>
       <label>Event type <select name="type"><option value="live">Live broadcast</option><option value="webinar">Webinar</option><option value="team">Team event</option><option value="learning">Online learning</option><option value="custom">Custom event</option></select></label>
       <label>Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000"></textarea></label>
@@ -56,6 +60,7 @@
       </fieldset>
       <fieldset>
         <legend>Production and viewers</legend>
+        <label>Preferred streaming method <select name="method"><option value="browser">Browser studio</option><option value="encoder">External encoder</option></select></label>
         <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
         <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
         <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
@@ -63,12 +68,25 @@
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
         <label><input name="archive_replay" type="checkbox" checked> Keep a private copy in the Library</label>
       </fieldset>
+      <fieldset id="eventStartingOptions">
+        <legend>Starting audience settings</legend>
+        <label><input name="registration" type="checkbox"> Require event registration</label>
+        <label><input name="chat" type="checkbox"> Enable audience chat</label>
+        <label>Chat delay in seconds <input name="chat_interval" type="number" min="0" max="120" value="0" required></label>
+        <label><input name="captions" type="checkbox"> Enable automatic captions</label>
+        <label>Caption language <select name="caption_language"><option value="en">English</option><option value="de">German</option><option value="fr">French</option><option value="es">Spanish</option><option value="it">Italian</option><option value="nl">Dutch</option><option value="pl">Polish</option></select></label>
+        <label><input name="qa" type="checkbox"> Enable audience Q&amp;A</label>
+        <label><input name="qa_anonymous" type="checkbox"> Allow anonymous questions</label>
+        <label><input name="qa_review" type="checkbox"> Review questions before publishing</label>
+        <label><input name="preview_encoder" type="checkbox"> Hold external signal for private preview</label>
+      </fieldset>
       <button type="submit">Save event</button>
       <button type="button" id="closeEventEditor">Close editor</button>
     </form>
     <section id="eventProduction" aria-labelledby="productionHeading" hidden>
       <h2 id="productionHeading">Event production</h2>
       <p id="productionTitle"></p>
+      <p id="productionPreference"></p>
       <button type="button" id="editEvent">Edit event</button>
       <button type="button" id="configureEventRegistration">Registration</button>
       <a id="eventStudio">Open browser studio</a>

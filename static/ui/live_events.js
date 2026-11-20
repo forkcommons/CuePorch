@@ -13,7 +13,18 @@ const status = element("eventsStatus");
 const workspace = element("eventsWorkspace");
 const form = element("newEventForm");
 const field = (name) => form.elements.namedItem(name);
+const mode = element("eventMode");
 const preset = element("eventPreset");
+const startingOptions = { method: "browser", registration: false, preview_encoder: false,
+    chat: { enabled: false, interval: 0 }, captions: { enabled: false, language: "en" },
+    qa: { enabled: false, anonymous: false, review: false } };
+const typeDefaults = {
+    live: { latency: "standard", chat: true, captions: true, method: "encoder" },
+    webinar: { latency: "standard", chat: true, captions: true, registration: true, qa: true },
+    team: { latency: "low", chat: true, captions: true },
+    learning: { latency: "standard", captions: true, registration: true, qa: true },
+    custom: { latency: "standard" },
+};
 const output = element("eventProduction");
 const health = element("eventHealth");
 const measurements = element("eventHealthDetails");
@@ -261,6 +272,9 @@ function choose(event, instance) {
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
         (instance.delivery !== "scheduled" && !calendar.host_ready);
     element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
+    const preference = event.event.setup?.method;
+    element("productionPreference").textContent = preference ?
+        `Preferred streaming method: ${preference === "encoder" ? "External encoder" : "Browser studio"}` : "";
     const watch = element("eventWatch");
     const studio = element("eventStudio");
     studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
@@ -391,7 +405,9 @@ eventPlayerForm.onsubmit = (event) => {
 function readCalendar(value) {
     calendar = value;
     element("eventsHost").hidden = value.host_ready;
-    preset.replaceChildren(new Option("Start from scratch", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+    const priorPreset = preset.value;
+    preset.replaceChildren(new Option("Choose an earlier event", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+    preset.value = value.events.some((entry) => entry.id === priorPreset) ? priorPreset : "";
     const rows = element("eventCalendarRows");
     rows.replaceChildren();
     const sorted = value.events.flatMap((event) => event.occurrences.map((instance) => ({ event, instance })))
@@ -440,7 +456,11 @@ function openEditor(current) {
     editing = current;
     form.reset();
     element("eventEditorHeading").textContent = current ? "Edit event" : "New event";
-    element("eventReuse").hidden = Boolean(current);
+    element("eventSetupMode").hidden = Boolean(current);
+    element("eventReuse").hidden = true;
+    element("eventStartingOptions").hidden = Boolean(current);
+    preset.value = "";
+    preset.required = false;
     field("slug").readOnly = Boolean(current);
     const values = current?.event;
     if (values) {
@@ -459,6 +479,7 @@ function openEditor(current) {
             weekday.checked = schedule.weekdays.includes(Number(weekday.value));
         }
         field("slug").value = current.slug;
+        field("method").value = values.setup?.method ?? "browser";
     }
     else {
         field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -486,18 +507,56 @@ button("configureEventRegistration").onclick = () => void action(async () => {
 button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
-preset.onchange = () => {
-    const value = calendar.events.find((entry) => entry.id === preset.value)?.event;
-    if (!value)
+function showStartingOptions(options) {
+    field("method").value = options.method;
+    field("registration").checked = options.registration;
+    field("preview_encoder").checked = options.preview_encoder;
+    field("chat").checked = options.chat.enabled;
+    field("chat_interval").value = String(options.chat.interval);
+    field("captions").checked = options.captions.enabled;
+    field("caption_language").value = options.captions.language;
+    field("qa").checked = options.qa.enabled;
+    field("qa_anonymous").checked = options.qa.anonymous;
+    field("qa_review").checked = options.qa.review;
+}
+function showTypeDefaults() {
+    const definition = typeDefaults[field("type").value];
+    field("latency").value = definition.latency;
+    showStartingOptions({ ...startingOptions, method: definition.method ?? "browser",
+        registration: !!definition.registration, chat: { ...startingOptions.chat, enabled: !!definition.chat },
+        captions: { ...startingOptions.captions, enabled: !!definition.captions },
+        qa: { ...startingOptions.qa, enabled: !!definition.qa } });
+}
+mode.onchange = () => {
+    const reuse = mode.value === "reuse";
+    element("eventReuse").hidden = !reuse;
+    preset.required = reuse;
+    preset.value = "";
+    if (mode.value === "type")
+        showTypeDefaults();
+    else {
+        field("latency").value = "standard";
+        showStartingOptions(startingOptions);
+    }
+};
+field("type").onchange = () => { if (!editing && mode.value === "type")
+    showTypeDefaults(); };
+preset.onchange = () => void action(async () => {
+    const prior = calendar.events.find((entry) => entry.id === preset.value);
+    if (!prior || mode.value !== "reuse")
         return;
-    for (const name of ["type", "description", "latency"])
+    const options = await request(`${root}/${prior.id}/setup`);
+    const value = prior.event;
+    for (const name of ["title", "type", "description", "latency"])
         field(name).value = value[name];
+    field("visibility").value = "private";
     field("save_replay").checked = value.save_replay;
     field("archive_replay").checked = value.archive_replay ?? true;
     syncArchiveOption();
     field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
     field("timezone").value = value.schedule.timezone;
-};
+    showStartingOptions(options);
+}, "Event settings loaded.");
 form.onsubmit = (event) => {
     event.preventDefault();
     void action(async () => {
@@ -508,8 +567,17 @@ form.onsubmit = (event) => {
             until: repeat !== "none" && field("until").value || null, count: repeat !== "none" && Number(field("count").value) || null };
         const target = editing ? root + "/" + editing.id : root;
         const method = editing ? "PUT" : "POST";
+        const setup = editing ? undefined : {
+            method: field("method").value, registration: field("registration").checked,
+            preview_encoder: field("preview_encoder").checked,
+            chat: { enabled: field("chat").checked, interval: Number(field("chat_interval").value) },
+            captions: { enabled: field("captions").checked, language: field("caption_language").value },
+            qa: { enabled: field("qa").checked, anonymous: field("qa_anonymous").checked, review: field("qa_review").checked },
+        };
         const created = await request(target, method, {
             revision: editing?.revision,
+            preferred_method: editing && field("method").value !== (editing.event.setup?.method ?? "browser") ? field("method").value : undefined,
+            starting_options: setup, reuse_event: !editing && mode.value === "reuse" ? preset.value : undefined,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
             save_replay: field("save_replay").checked,

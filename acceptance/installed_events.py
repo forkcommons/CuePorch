@@ -139,6 +139,135 @@ def check_event_calendar(page, base, auth):
                 event_registration_preset_editor=True, authorized_csv_and_utm=True)
 
 
+def check_event_setup(page, base, auth):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    editor = page.locator("#newEventForm")
+
+    def combo(name):
+        return editor.get_by_role("combobox", name=name, exact=True)
+
+    def schedule(title, slug, hour):
+        if title is not None:
+            editor.get_by_label("Title", exact=True).fill(title)
+        editor.get_by_label("Link name").fill(slug)
+        editor.get_by_label("Time zone").fill("America/Denver")
+        editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T{hour}:00")
+        editor.get_by_label("End", exact=True).fill(f"{tomorrow}T{hour}:30")
+
+    def save(slug):
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        response = requests.get(portal, headers=auth, timeout=10)
+        response.raise_for_status()
+        return next(item for item in response.json()["events"] if item["slug"] == slug)
+
+    def read(path):
+        response = requests.get(path, headers=auth, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    created = {}
+    defaults = {
+        "live": ("encoder", "standard", True, True, False, False),
+        "webinar": ("browser", "standard", True, True, True, True),
+        "team": ("browser", "low", True, True, False, False),
+        "learning": ("browser", "standard", False, True, True, True),
+        "custom": ("browser", "standard", False, False, False, False),
+    }
+    for kind, expected in defaults.items():
+        page.get_by_role("button", name="New event").click()
+        combo("Setup").select_option("type")
+        combo("Event type").select_option(kind)
+        slug = "setup-" + kind
+        schedule("Setup " + kind, slug, "09")
+        if kind == "webinar":
+            editor.get_by_label("Description").fill("Live demonstrations and audience questions")
+            combo("Visibility").select_option("public")
+            combo("Caption language").select_option("fr")
+            editor.get_by_label("Live DVR window in seconds").fill("180")
+        item = save(slug)
+        created[kind] = item
+        target = f"{portal}/{item['id']}"
+        config = read(target + "/setup")
+        assert (config["method"], item["event"]["latency"], config["chat"]["enabled"],
+                config["captions"]["enabled"], config["registration"], config["qa"]["enabled"]) == expected
+        assert not config["preview_encoder"] and not config["qa"]["review"]
+        assert item["publication"] == ("eligible" if kind == "webinar" else "private")
+
+    source = created["webinar"]
+    webinar = f"{portal}/{source['id']}"
+    opens = source["occurrences"][0]["id"]
+    production = f"{webinar}/{opens}"
+    form = page.context.browser.new_page()
+    try:
+        form.goto(base + source["watch"] + f"?occurrence={opens}")
+        expect(form.locator("#eventStatus")).to_have_text("Registration required")
+        form.get_by_label("Email").fill("prior-attendee@example.invalid")
+        form.get_by_role("button", name="Register and watch").click()
+        expect(form.locator("#eventStatus")).to_have_text("Scheduled")
+    finally:
+        form.context.close()
+    requests.put(webinar + "/player", json={"show_schedule": True, "customize": True, "accent": "#18a2ad"},
+                 headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/chat", json={"enabled": True, "interval": 12}, headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/captions", json={"enabled": True, "language": "es"}, headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/engagement", json={"feature": "qa", "enabled": True, "anonymous": True, "review": False},
+                 headers=auth, timeout=10).raise_for_status()
+    assert requests.get(webinar + "/setup", timeout=10).status_code == 403
+    assert "prior-attendee@example.invalid" in read(webinar + "/registration")["registrants"][0]["email"]
+
+    page.get_by_role("button", name="New event").click()
+    combo("Setup").select_option("reuse")
+    combo("Reuse event settings").select_option(source["id"])
+    expect(page.locator("#eventsStatus")).to_have_text("Event settings loaded.")
+    expect(editor.get_by_label("Title", exact=True)).to_have_value("Setup webinar")
+    expect(editor.get_by_label("Start", exact=True)).to_have_value("")
+    expect(editor.get_by_label("Link name")).to_have_value("")
+    expect(combo("Visibility")).to_have_value("private")
+    expect(editor.get_by_label("Live DVR window in seconds")).to_have_value("180")
+    expect(editor.get_by_label("Allow anonymous questions")).to_be_checked()
+    expect(combo("Caption language")).to_have_value("es")
+    expect(editor.get_by_label("Chat delay in seconds")).to_have_value("12")
+    schedule(None, "setup-reused", "10")
+    combo("Repeat").select_option("days")
+    editor.get_by_label("Number of occurrences").fill("2")
+    combo("Latency").select_option("fail-safe")
+    copied = save("setup-reused")
+    assert copied["id"] != source["id"] and copied["publication"] == "private"
+    assert copied["event"]["latency"] == "fail-safe"
+    assert copied["event"]["description"] == source["event"]["description"]
+    assert all(item["id"] != opens and item["delivery"] == "scheduled" for item in copied["occurrences"])
+    assert len(copied["occurrences"]) == 2
+    copy = f"{portal}/{copied['id']}"
+    assert read(copy + "/player")["accent"] == "#18a2ad"
+    for item in copied["occurrences"]:
+        occurrence = f"{copy}/{item['id']}"
+        assert read(occurrence + "/chat")["interval"] == 12
+        assert read(occurrence + "/captions")["language"] == "es"
+        assert read(occurrence + "/engagement")["qa"]["policy"]["anonymous"]
+    first = f"{copy}/{copied['occurrences'][0]['id']}"
+    second = f"{copy}/{copied['occurrences'][1]['id']}"
+    requests.put(first + "/captions", json={"enabled": False, "language": "en"}, headers=auth, timeout=10).raise_for_status()
+    assert not read(first + "/captions")["enabled"] and read(second + "/captions")["enabled"]
+    exports = requests.get(copy + "/registration/export", headers=auth, timeout=10)
+    exports.raise_for_status()
+    assert "prior-attendee@example.invalid" not in exports.text
+    assert read(copy + "/registration")["settings"]["enabled"]
+
+    page.get_by_role("button", name="New event").click()
+    combo("Event type").select_option("webinar")
+    schedule("A scratch webinar", "setup-scratch", "11")
+    scratch = save("setup-scratch")
+    draft = read(f"{portal}/{scratch['id']}/setup")
+    assert not draft["registration"] and not draft["chat"]["enabled"] and not draft["captions"]["enabled"]
+    return dict(types=list(defaults), scratch_without_preset=True, editable_latency=True,
+                preferred_method=True, viewer_registration_enforced=True, private_copy_new_schedule=True,
+                reused_player_and_audience_settings=True, occurrence_override_isolated=True,
+                new_event_has_no_transferred_attendees=True, setup_staff_only=True)
+
+
 def check_live_delivery(base, origin, keys, home, ffmpeg, port):
     assert urlsplit(origin).hostname in ("localhost", "127.0.0.1")
     assert ffmpeg.is_file(), "Bundled encoder is missing"

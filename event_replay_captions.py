@@ -13,6 +13,7 @@ from flask import Response, abort, request
 import requests
 
 import caption_adapter
+import event_captions
 import event_peer
 from event_media import root_path
 import subtitles
@@ -37,8 +38,7 @@ def store_approval(con, action, uid, opens, revision):
 
 
 def queue(con, action, uid, opens):
-    setting = con.execute("SELECT enabled,language FROM live_caption_setting WHERE event=? AND opens=?",
-                          (uid, opens)).fetchone()
+    setting = event_captions.settings(con, uid, opens)
     if setting and setting["enabled"] and read(con, uid, opens) is None:
         revision = uuid.uuid4().hex
         approval = store_approval(con, action, uid, opens, revision)

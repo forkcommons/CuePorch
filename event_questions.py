@@ -26,10 +26,14 @@ CREATE TABLE IF NOT EXISTS live_question_vote(
 def settings(con, uid, opens):
     row = con.execute("""SELECT enabled,anonymous,review,highlighted FROM live_qa_settings
                          WHERE event=? AND opens=?""", (uid, opens)).fetchone()
-    if row is None:
-        return dict(enabled=False, anonymous=False, review=False, highlighted=None)
-    return dict(enabled=bool(row["enabled"]), anonymous=bool(row["anonymous"]),
-                review=bool(row["review"]), highlighted=row["highlighted"])
+    if row:
+        return dict(enabled=bool(row["enabled"]), anonymous=bool(row["anonymous"]),
+                    review=bool(row["review"]), highlighted=row["highlighted"])
+    saved = con.execute("""SELECT json_extract(settings,'$.setup.qa.enabled'),
+                         json_extract(settings,'$.setup.qa.anonymous'),json_extract(settings,'$.setup.qa.review')
+                         FROM live_event WHERE id=?""", (uid,)).fetchone()
+    return dict(enabled=bool(saved and saved[0]), anonymous=bool(saved and saved[1]),
+                review=bool(saved and saved[2]), highlighted=None)
 
 
 def save(con, uid, opens, body):

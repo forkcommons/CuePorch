@@ -39,7 +39,7 @@ from installed_team_accounts import PASSWORD as TEAM_PASSWORD, TEAM, check_team_
 from installed_workspaces import check_workspaces
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
-from installed_events import check_event_calendar, check_event_chat, check_event_engagement
+from installed_events import check_event_calendar, check_event_chat, check_event_engagement, check_event_setup
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
@@ -75,6 +75,7 @@ focused.add_argument("--creator-only", action="store_true", help="Test recording
 focused.add_argument("--library-batch-only", action="store_true", help="Test bulk Library operations and individual playback")
 focused.add_argument("--panorama-only", action="store_true", help="Test migration and browser panoramic video playback")
 focused.add_argument("--brand-kits-only", action="store_true", help="Test branding in the player and the timeline")
+focused.add_argument("--event-setup-only", action="store_true", help="Test event presets, reuse, calendar and audience settings")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -365,7 +366,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
     if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only
-            or args.team_only or args.cutover_only or args.library_batch_only or args.panorama_only):
+            or args.team_only or args.cutover_only or args.library_batch_only or args.panorama_only or args.event_setup_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -628,6 +629,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         shut_down(proc, base, desktop, home)
                         save_report()
                         continue
+                    if args.event_setup_only:
+                        results.append(dict(event_calendar=check_event_calendar(page, base, auth),
+                                            event_chat=check_event_chat(page, browser, base, auth),
+                                            event_engagement=check_event_engagement(page, browser, base, auth),
+                                            event_setup=check_event_setup(page, base, auth), migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
                     )
@@ -674,6 +684,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     event_calendar = check_event_calendar(page, base, auth)
                     event_chat = check_event_chat(page, browser, base, auth)
                     event_engagement = check_event_engagement(page, browser, base, auth)
+                    event_setup = check_event_setup(page, base, auth)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -714,6 +725,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             event_calendar=event_calendar,
                             event_chat=event_chat,
                             event_engagement=event_engagement,
+                            event_setup=event_setup,
                         )
                     )
                 shut_down(proc, base, desktop, home)
