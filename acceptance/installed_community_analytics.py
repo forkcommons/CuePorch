@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 
@@ -76,7 +76,7 @@ def check_community_analytics(operator, browser, base, staff, sample, database):
             post(a, message, "waiting")
 
         # A prior-day submission must be reported on the day the operator releases it.
-        with sqlite3.connect(database, timeout=30) as connection:
+        with closing(sqlite3.connect(database, timeout=30)) as connection, connection:
             updated = connection.execute("UPDATE audience_comment SET created=? WHERE body=?",
                                          ((now - timedelta(days=1)).timestamp(), "Approved on publication day"))
             assert updated.rowcount == 1
