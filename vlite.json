@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "base": "origin/main",
+  "parts": [
+    {
+      "name": "python",
+      "paths": [
+        "*.py",
+        "acceptance/**",
+        "templates/**",
+        "requirements*.txt"
+      ],
+      "cwd": ".",
+      "checks": [
+        {
+          "name": "compile",
+          "run": ".venv\\Scripts\\python.exe -m compileall -q -l . acceptance",
+          "timeoutSec": 120
+        },
+        {
+          "name": "tests",
+          "run": ".venv\\Scripts\\python.exe -m pytest -q -p no:cacheprovider acceptance/test_policy.py acceptance/test_migration.py",
+          "timeoutSec": 600
+        }
+      ]
+    },
+    {
+      "name": "ui",
+      "paths": [
+        "ui/**"
+      ],
+      "cwd": "ui",
+      "checks": [
+        {
+          "name": "types",
+          "run": "npx tsc -p tsconfig.json --noEmit",
+          "timeoutSec": 300
+        }
+      ]
+    }
+  ]
+}
