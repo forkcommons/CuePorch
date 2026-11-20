@@ -34,6 +34,7 @@ from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
 from installed_audience_comments import check_audience_comments
 from installed_team_accounts import PASSWORD as TEAM_PASSWORD, TEAM, check_team_accounts
+from installed_workspaces import check_workspaces
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
@@ -183,6 +184,27 @@ def prepare_recovery(base, auth, email):
     public = owner("PUT", f"/api/library/work/{works['Station meeting']}/source-privacy", {})
     restricted = owner("GET", f"/api/library/work/{works['Migrated password']}")
     return group["id"], public["paths"]["watch"], restricted["embed"], {work["id"] for work in inventory}
+
+
+def rehearse_workspace_switch(page, browser, base, home, env, auth, email, private_work, group):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    second = f"http://127.0.0.1:{port}"
+    directory = home.with_name(home.name + "-arts")
+    proc = start_candidate(directory, env | {"CUEPORCH_DESKTOP_PORT": str(port)})
+    try:
+        desktop = wait_for_desktop(proc, directory)
+        shell = {"Authorization": "Bearer " + desktop.split("#", 1)[1]}
+        requests.post(second + "/desktop/api/setup", headers=shell, timeout=15,
+                      json={"institution": "Independent arts workspace"}).raise_for_status()
+        keys = json.loads((directory / "operator.json").read_text(encoding="utf8"))
+        other_auth = {"Authorization": "Bearer " + keys["operator"]}
+        receipt = check_workspaces(page, browser, base, auth, second, other_auth, email, private_work, group)
+        shut_down(proc, second, desktop, directory)
+        return receipt
+    finally:
+        stop_candidate(proc)
 
 
 def rehearse_account_restore(browser, base, home, env, auth, email, private_work, recovery, museum, venue):
@@ -489,6 +511,9 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         if args.cutover_only:
                             results[-1]["cutover"] = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                             recovery = prepare_recovery(base, auth, contributor_email)
+                            results[-1]["workspaces"] = rehearse_workspace_switch(
+                                page, browser, base, home, candidate_env, auth, contributor_email, copy["work"], recovery[0],
+                            )
                         shut_down(proc, base, desktop, home)
                         if args.cutover_only:
                             results[-1]["recovery"] = rehearse_account_restore(

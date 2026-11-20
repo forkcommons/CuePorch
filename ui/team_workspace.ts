@@ -42,7 +42,19 @@ function clearOperatorMarker() {
 
 async function showVideos() {
   const response = await checked(await teamRequest("library"));
-  const {works}: {works: {title: string; watch: string}[]} = await response.json();
+  const {works, workspaces}: {works: {title: string; watch: string}[];
+    workspaces: {name: string; origin: string}[]} = await response.json();
+  const linked = document.querySelector<HTMLElement>("#linkedWorkspaces")!;
+  linked.querySelector("ul")!.replaceChildren(...workspaces.map(workspace => {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = new URL("/team", workspace.origin).href;
+    link.rel = "noreferrer";
+    link.textContent = workspace.name;
+    item.append(link);
+    return item;
+  }));
+  linked.hidden = workspaces.length === 0;
   const list = document.querySelector("#teamVideos")!;
   const empty = document.querySelector<HTMLElement>("#teamLibraryEmpty")!;
   list.replaceChildren();

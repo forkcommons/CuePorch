@@ -63,7 +63,7 @@ def check_audience_accounts(browser, base, staff, sample):
         first.get_by_role("button", name="Save to Watch Later").click()
         expect(first.get_by_role("button", name="Remove from Watch Later")).to_be_visible()
         cookies = a.cookies()
-        session = next(cookie for cookie in cookies if cookie["name"] == "cueporch-viewer")
+        session = next(cookie for cookie in cookies if cookie["name"].startswith("cueporch-viewer-"))
         assert session["httpOnly"] and session["sameSite"] == "Lax" and session["path"] == "/"
         assert "cueporch-viewer" not in first.evaluate("document.cookie")
         assert a.request.get(base + "/api/watch/staff-picks").status == 403

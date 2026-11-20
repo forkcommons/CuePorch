@@ -67,6 +67,7 @@ import media_bandwidth
 import review_links
 import review_push
 import team_accounts
+import team_workspaces
 import timeline_jobs
 import vimeo_privacy
 from review_settings import new_upload as create_upload_review
@@ -133,6 +134,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA
             + team_accounts.SCHEMA
+            + team_workspaces.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -153,6 +155,9 @@ def create_app(root, database, operator, institution, simulation=None):
         team_accounts.initialize_permissions(db)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 65536
+    app.config["WORKSPACE_COOKIE_SCOPE"] = hmac.digest(
+        operator.encode(), b"CuePorch workspace cookie", "sha256",
+    ).hex()[:32]
 
     @contextmanager
     def tx():

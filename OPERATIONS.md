@@ -12,6 +12,8 @@ Run the launcher as a service under the institution's process manager with an ab
 
 For viewer accounts, preserve the public `Host` header at the reverse proxy and set `CUEPORCH_PUBLIC_URL` to the exact HTTPS origin. Local desktop accounts can also use the loopback HTTP address. Take the institution database along when restoring accounts and Watch Later lists. Viewer identities and sessions are separate from operator credentials. The email address is a local sign-in identifier. Email delivery and recovery require future account integration.
 
+Run each workspace with a dedicated data directory, operator credential, listener and HTTPS origin. A shared reverse proxy can route each hostname to its own listener. Use **Manage workspace links** to show approved destinations to groups. Invite members into the destination and assign their role there. For local development, run two desktop services with distinct `CUEPORCH_DESKTOP_PORT` values and use their loopback origins.
+
 For a managed installation with separate public and local addresses use a service account against the actual canonical HTTPS PeerTube origin through --existing-peer. The default local listener configuration is for a workstation or staging host. Set support contact, coverage hours and on-call routing with the institution before offering staffed support.
 
 For same-link replacement on an existing PeerTube server, verify that `video_file.update.enabled` is true and that the connected publishing account can edit the hosted video. CuePorch's provisioned host enables the setting. When an existing host declines replacement, the library retains both cuts and shows the host error in the delivery status. After the host configuration is corrected, retry the delivery for that work.

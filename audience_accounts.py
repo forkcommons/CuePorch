@@ -12,8 +12,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import audience_comments
 import audience_library
-from browser_account_security import (cookie_session, email_key, json_mutation, password, private, secure_site,
-                                      set_session_cookie, token_hash)
+from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
+                                      workspace_session, workspace_session_cookie)
 import community_analytics
 from library_analytics import source_origin
 from library_discovery import entry_payload
@@ -34,8 +34,6 @@ CREATE TABLE IF NOT EXISTS audience_watch_later(
  PRIMARY KEY(account,kind,slug));
 """ + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
-LOCAL_COOKIE = "cueporch-viewer"
-HTTPS_COOKIE = "__Host-cueporch-viewer"
 VIDEO_PATH = re.compile(r"/watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -61,11 +59,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     def scheme():
         return secure_site(public_origin)
 
-    def cookie_name(secure):
-        return HTTPS_COOKIE if secure else LOCAL_COOKIE
-
     def browser_session(secure):
-        return cookie_session(cookie_name(secure))
+        return workspace_session("viewer", secure)
 
     def mutation(secure):
         return json_mutation(secure, "X-CuePorch-Viewer")
@@ -104,7 +99,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         return token
 
     def cookie(response, secure, token=None):
-        return set_session_cookie(response, cookie_name(secure), secure, SESSION_SECONDS, token)
+        return workspace_session_cookie(response, "viewer", secure, SESSION_SECONDS, token)
 
     def reauthenticate(session, entered):
         with tx() as con:

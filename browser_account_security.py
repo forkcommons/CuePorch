@@ -5,7 +5,7 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
-from flask import abort, make_response, request
+from flask import abort, current_app, make_response, request
 
 from library_analytics import source_origin
 from library_registration import EMAIL
@@ -96,3 +96,21 @@ def set_session_cookie(response, name, secure, lifetime, token):
     else:
         response.delete_cookie(name, **flags)
     return response
+
+
+def account_cookie(kind, secure):
+    return ("__Host-" if secure else "") + "cueporch-" + kind
+
+
+def workspace_session(kind, secure):
+    legacy = account_cookie(kind, secure)
+    scoped = f"{legacy}-{current_app.config['WORKSPACE_COOKIE_SCOPE']}"
+    return cookie_session(scoped) or cookie_session(legacy)
+
+
+def workspace_session_cookie(response, kind, secure, lifetime, token):
+    legacy = account_cookie(kind, secure)
+    scoped = f"{legacy}-{current_app.config['WORKSPACE_COOKIE_SCOPE']}"
+    if legacy in request.cookies:
+        set_session_cookie(response, legacy, secure, lifetime, None)
+    return set_session_cookie(response, scoped, secure, lifetime, token)

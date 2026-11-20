@@ -9,8 +9,9 @@ import uuid
 from flask import abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from browser_account_security import (TOKEN, cookie_session, email_key, json_mutation, password, private,
-                                      same_origin, secure_site, set_session_cookie, token_hash)
+import team_workspaces
+from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
+                                      secure_site, token_hash, workspace_session, workspace_session_cookie)
 from library_privacy import blocked, playback
 
 
@@ -68,14 +69,10 @@ def permission_from(body):
     return permission
 
 
-def cookie_name(secure):
-    return "__Host-cueporch-team" if secure else "cueporch-team"
-
-
 def current(con, secure):
     return con.execute("""SELECT m.id,m.name,m.email,m.role FROM team_session s JOIN team_member m ON m.id=s.member
         WHERE s.token_hash=? AND s.expires>? AND m.removed IS NULL""",
-        (cookie_session(cookie_name(secure)), time.time())).fetchone()
+        (workspace_session("team", secure), time.time())).fetchone()
 
 
 def actor_id(member):
@@ -105,7 +102,7 @@ def issue_session(con, uid, secure):
     token = secrets.token_urlsafe(32)
     now = time.time()
     con.execute("DELETE FROM team_session WHERE expires<=? OR token_hash=?",
-                (now, cookie_session(cookie_name(secure))))
+                (now, workspace_session("team", secure)))
     con.execute("INSERT INTO team_session VALUES(?,?,?)", (token_hash(token), uid, now + SESSION_SECONDS))
     return token
 
@@ -185,7 +182,7 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
         return row
 
     def session_response(body, secure, token=None, status=200):
-        return set_session_cookie(private(body, status), cookie_name(secure), secure, SESSION_SECONDS, token)
+        return workspace_session_cookie(private(body, status), "team", secure, SESSION_SECONDS, token)
 
     def eligible_works(con, ids=None):
         return {work["id"]: work for work in read_works() if (ids is None or work["id"] in ids)
@@ -246,7 +243,7 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
         body = mutation(secure)
         if request.method == "DELETE":
             with tx() as con:
-                con.execute("DELETE FROM team_session WHERE token_hash=?", (cookie_session(cookie_name(secure)),))
+                con.execute("DELETE FROM team_session WHERE token_hash=?", (workspace_session("team", secure),))
             return session_response("", secure, status=204)
         email, entered = email_key(body.get("email")), password(body)
         with tx() as con:
@@ -401,6 +398,9 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             if request.method == "DELETE":
                 con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
                 con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
+                con.execute("""UPDATE team_workspace_link SET revision=lower(hex(randomblob(16)))
+                    WHERE id IN (SELECT workspace FROM team_workspace_link_group WHERE team_group=?)""", (uid,))
+                con.execute("DELETE FROM team_workspace_link_group WHERE team_group=?", (uid,))
                 con.execute("DELETE FROM team_group WHERE id=?", (uid,))
                 note(con, actor, "group_removed", uid, current["name"])
                 return private("", 204)
@@ -505,7 +505,8 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             row = member(con, secure)
             works = [dict(id=uid, title=title_for(con, work), watch=url_for("team_watch", work=uid))
                      for uid, work in access(con, row).items()]
-        return private(dict(works=sorted(works, key=lambda item: item["title"].casefold())))
+            workspaces = team_workspaces.linked_workspaces(con, row)
+        return private(dict(works=sorted(works, key=lambda item: item["title"].casefold()), workspaces=workspaces))
 
     @app.get("/team/video/<uuid:work>")
     def team_watch(work):
@@ -544,4 +545,5 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
                 abort(404)
         return private(send_file(path, mimetype="video/mp4", conditional=True))
 
+    team_workspaces.register(app, tx, origin, manager, note)
     return authorize_editor

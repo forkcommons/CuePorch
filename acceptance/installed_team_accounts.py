@@ -84,7 +84,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert accept_status(contributor, replacement_link) == 404
         admin_id = signed_in(admin)["id"]
         cookies = {cookie["name"]: cookie for cookie in admin.cookies()}
-        assert cookies["cueporch-team"]["httpOnly"] and cookies["cueporch-team"]["sameSite"] == "Lax"
+        session = next(cookie for name, cookie in cookies.items() if name.startswith("cueporch-team-"))
+        assert session["httpOnly"] and session["sameSite"] == "Lax"
         assert admin.request.get(base + "/api/library", headers=TEAM).ok
         assert admin.request.get(base + "/api/library").status == 403
         admin_page.get_by_role("link", name="Manage team members").click()

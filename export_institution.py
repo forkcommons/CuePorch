@@ -71,6 +71,8 @@ def export(collection, database, target):
                 "team_group_folder",
                 "team_owned_work",
                 "team_membership_event",
+                "team_workspace_link",
+                "team_workspace_link_group",
             ):
                 if has_table(db, table):
                     tables[table] = "SELECT * FROM " + table
