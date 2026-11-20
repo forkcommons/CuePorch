@@ -19,6 +19,39 @@ DISPLAY_FIXTURE = """() => {
   };
 }"""
 
+PROMPTER_SCRIPT = "\n".join(
+    f"Library access and independent arts. Segment {number}." for number in range(1, 22)
+)
+
+
+def check_prompter_controls(page):
+    page.get_by_text("Teleprompter", exact=True).click()
+    page.get_by_label("Script", exact=True).fill(PROMPTER_SCRIPT)
+    view = page.get_by_role("region", name="Teleprompter script")
+    expect(view).to_contain_text("Library access")
+    speed = page.get_by_role("combobox", name="Scroll speed")
+    assert speed.locator("option").all_text_contents() == ["Off", "0.5×", "1×", "1.5×", "2×"]
+    play = page.get_by_role("button", name="Play script")
+    pause = page.get_by_role("button", name="Pause script")
+    speed.select_option("0")
+    expect(play).to_be_disabled()
+    speed.select_option("2")
+    font = page.get_by_role("slider", name="Font size")
+    font.focus()
+    font.press("End")
+    expect(view).to_have_css("font-size", "56px")
+    play.click()
+    offset = page.wait_for_function("() => document.querySelector('#recordPrompter').scrollTop > 12")
+    assert offset.json_value()
+    pause.click()
+    stationary = view.evaluate("v => v.scrollTop")
+    assert view.evaluate("""async v => {
+      for (let i = 0; i < 12; i++) await new Promise(requestAnimationFrame);
+      return v.scrollTop;
+    }""") == stationary
+    page.get_by_role("button", name="Reset script").click()
+    assert view.evaluate("v => v.scrollTop") == 0
+
 
 def check_recording(playwright, base, auth, clip_file):
     title = "Studio accessibility rehearsal"
@@ -39,13 +72,13 @@ def check_recording(playwright, base, auth, clip_file):
         page.get_by_label("Destination folder").select_option(folder)
         page.get_by_role("combobox", name="Aspect ratio").select_option("1:1")
         page.get_by_role("combobox", name="Layout").select_option("side")
-        page.get_by_text("Teleprompter", exact=True).click()
-        page.get_by_label("Script", exact=True).fill("Library access works at the speed of trust.")
-        expect(page.locator("#recordPrompter")).to_contain_text("Library access")
+        check_prompter_controls(page)
         page.get_by_role("button", name="Connect camera and microphone").click()
         expect(page.locator("#recordStatus")).to_have_text("Recording devices connected.")
         page.get_by_role("button", name="Share screen", exact=True).click()
         expect(page.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
+        expect(page.locator("#recordPrompter")).to_be_hidden()
+        expect(page.get_by_text("Script preview is off during screen sharing.")).to_be_visible()
         page.wait_for_function("""() => {
           const canvas=document.querySelector('#recordCanvas');
           return canvas.getContext('2d').getImageData(180,360,1,1).data[2]>235;
@@ -207,4 +240,5 @@ def check_recording(playwright, base, auth, clip_file):
                 side_by_side_canvas_720p=True, pause_and_resume=True, recovered_browser_draft=True,
                 saved_to_selected_folder=True, private_before_share=True, installed_library_playback_and_audio=True,
                 editor_clip_upload_and_inline_capture=True, private_clip_sources=True, recovered_three_clip_editor_draft=True,
-                inline_recording_decoded_and_project_rendered=True, decoded_recording_canvas_sizes=recorded_sizes)
+                inline_recording_decoded_and_project_rendered=True, decoded_recording_canvas_sizes=recorded_sizes,
+                teleprompter_manual_speed_size_pause_reset_and_screen_suppression=True)

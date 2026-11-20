@@ -186,7 +186,9 @@ Open **Timeline editor** to combine clips from the library. Use **Upload and add
 
 ### Record Studio
 
-Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background. Set teleprompter text, scroll speed and font size before recording.
+Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background.
+
+In Record Studio or Live Studio, enter a script in **Teleprompter**. Set the font size and scroll speed, or choose **Off** to scroll by hand. Use **Play script**, **Pause script** and **Reset script** to rehearse. Starting a take opens the script and starts scrolling if enabled. CuePorch hides the script preview while sharing your screen.
 
 Start, pause, resume and stop the take from the preview. Play or download the result, or choose a library folder and save. CuePorch uses the same folder privacy and upload defaults as an ordinary upload. A browser draft can be recovered when you return to Studio on that browser and app address. Browser storage and device access depend on your browser and its permissions. Desktop loopback and HTTPS installations support media capture.
 

@@ -7,6 +7,7 @@ import { relaySummary } from "./event_health.js";
 import { StudioAudio } from "./studio_audio.js";
 import { setupStudioEngagement } from "./studio_engagement.js";
 import { setupSpeakers } from "./studio_speakers.js";
+import { StudioPrompter } from "./studio_prompter.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const select = (id) => element(id);
@@ -20,8 +21,7 @@ const audioPanel = element("studioAudio");
 const film = element("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
-const script = element("recordScript");
-const prompter = element("recordPrompter");
+const prompter = new StudioPrompter();
 const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
@@ -46,7 +46,6 @@ let studioClip;
 let busy = false;
 let pictureStream = null;
 let lastPaint = performance.now();
-let scrollTop = 0;
 let recordingLogo = null;
 let kitLoading = false;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
@@ -84,7 +83,7 @@ function updateControls() {
     button("releaseScreen").hidden = !screen;
     button("saveRecord").disabled = !take || running || busy;
     button("downloadRecord").disabled = !take || running || busy;
-    prompter.hidden = Boolean(screen) || !script.value.trim();
+    prompter.screenSharing(Boolean(screen));
     button("pipRecord").hidden = !document.pictureInPictureEnabled || !canvas.captureStream;
 }
 function sceneChanged() {
@@ -189,11 +188,8 @@ function draw(now) {
     if (active) {
         const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
         liveText.textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
-        if (!active.paused && !prompter.hidden) {
-            scrollTop += Math.min(100, now - lastPaint) * .023 * Number(select("recordScroll").value);
-            prompter.scrollTop = scrollTop;
-        }
     }
+    prompter.scroll(now - lastPaint, Boolean(active?.paused));
     lastPaint = now;
 }
 function resize() {
@@ -275,8 +271,6 @@ if (mode)
     mode.onchange = updateControls;
 updateControls();
 select("recordQuality").onchange = select("recordRatio").onchange = resize;
-script.oninput = () => { prompter.textContent = script.value; updateControls(); };
-input("recordFont").oninput = () => { prompter.style.fontSize = input("recordFont").value + "px"; };
 function draftTitle(draft) {
     return draft.title || "Recording";
 }
@@ -390,11 +384,11 @@ async function start() {
         film.hidden = true;
         film.removeAttribute("src");
         film.load();
-        scrollTop = prompter.scrollTop = 0;
         recorder.start(broadcast ? 500 : 1000);
         session.started = performance.now();
         liveText.textContent = "0:00";
         active = session;
+        prompter.start();
         status.textContent = broadcast ? "Sending the live broadcast and keeping a local recording."
             : persisted ? "Recording." : "Recording. Save this take before leaving Studio.";
     }
@@ -418,6 +412,7 @@ function stop() {
 }
 async function finish(session) {
     busy = true;
+    prompter.stop();
     session.output.getTracks().forEach(track => track.stop());
     active = null;
     closeSource(camera);

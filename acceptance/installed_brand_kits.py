@@ -12,7 +12,7 @@ import uuid
 from PIL import Image
 from playwright.sync_api import expect
 import requests
-from installed_recording import DISPLAY_FIXTURE
+from installed_recording import DISPLAY_FIXTURE, PROMPTER_SCRIPT
 
 
 def check_brand_kits(page, browser, base, auth, directory, fixture):
@@ -167,9 +167,12 @@ def check_studio_brand_kits(page, base, auth):
           return expected.every((value, index) => Math.abs(actual[index] - value) < 10);
         }""", arg=badge)
 
-    def record_pixel():
+    def record_pixel(prompt_running=False):
         page.get_by_role("button", name="Start recording", exact=True).click()
         expect(page.locator("#recordStatus")).to_have_text("Recording.")
+        if prompt_running:
+            expect(page.get_by_role("region", name="Teleprompter script")).to_be_visible()
+            page.wait_for_function("() => document.querySelector('#recordPrompter').scrollTop > 12")
         expect(page.locator("#recordTime")).to_have_text("0:02", timeout=6500)
         page.get_by_role("button", name="Stop", exact=True).click()
         expect(page.locator("#recordStatus")).to_contain_text("Recording ready.")
@@ -254,7 +257,10 @@ def check_studio_brand_kits(page, base, auth):
     scenes.get_by_role("button", name="Take scene").click()
     expect_logo_on_canvas()
     page.get_by_label("Production mode").select_option("record")
-    event_recording = record_pixel()
+    page.get_by_text("Teleprompter", exact=True).click()
+    page.get_by_label("Script", exact=True).fill(PROMPTER_SCRIPT)
+    page.get_by_text("Teleprompter", exact=True).click()
+    event_recording = record_pixel(prompt_running=True)
     return dict(record_studio_logo_rgb=recording, live_scene_recording_logo_rgb=event_recording,
                 live_scene_font_and_colors_persisted=True, retained_event_logo_after_kit_removal=True,
-                event_artwork_requires_staff=True)
+                event_artwork_requires_staff=True, teleprompter_reopens_and_scrolls_for_live_studio_recording=True)

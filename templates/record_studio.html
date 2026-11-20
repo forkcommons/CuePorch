@@ -146,13 +146,19 @@
         </fieldset>
         <details id="recordPrompterSettings">
           <summary>Teleprompter</summary>
-          <label>Script <textarea id="recordScript" rows="5"></textarea></label>
+          <label>Script <textarea id="recordScript" rows="5" maxlength="30000"></textarea></label>
           <label>Scroll speed <select id="recordScroll">
             <option value="0">Off</option><option value=".5">0.5×</option><option value="1" selected>1×</option>
             <option value="1.5">1.5×</option><option value="2">2×</option>
           </select></label>
           <label>Font size <input id="recordFont" type="range" min="16" max="56" value="24"></label>
-          <div id="recordPrompter" tabindex="0" aria-label="Teleprompter script"></div>
+          <div class="video-work-actions">
+            <button type="button" id="recordPrompterPlay" disabled>Play script</button>
+            <button type="button" id="recordPrompterPause" disabled>Pause script</button>
+            <button type="button" id="recordPrompterReset" disabled>Reset script</button>
+          </div>
+          <p id="recordPrompterScreen" hidden>Script preview is off during screen sharing.</p>
+          <div id="recordPrompter" tabindex="0" role="region" aria-label="Teleprompter script" hidden></div>
         </details>
         <form id="recordDestination">
           <fieldset>
