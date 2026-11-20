@@ -14,7 +14,7 @@ from playwright.sync_api import expect
 from installed_versions import generate_replacement
 
 
-def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
+def check_advanced_analytics(page, browser, base, auth, museum, venue, clip, verify_region=False):
     endpoint = base + "/api/analytics/video-report"
     today = datetime.now(timezone.utc).date().isoformat()
     title_a, title_b = "Advanced report station", "Advanced report festival"
@@ -187,8 +187,13 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip):
         museum.embed = former_embed
         phone.close()
         desktop.close()
-    return dict(real_watched_views=2, aggregate_library_and_video_picker=True, device_and_referring_origin=True,
-                watch_and_embed_filters=True, daily_weekly_monthly_trends=True, second_dimension_and_csv=True,
-                engagement_curve_and_milestones=True, compared_two_durations=True,
-                partial_playback_seconds=round(stop, 3), retention_at_25_percent=3, retention_at_50_percent=2,
-                captured_two_browser_votes=True, reports_filter_and_export=True)
+    results = dict(real_watched_views=2, aggregate_library_and_video_picker=True, device_and_referring_origin=True,
+                   watch_and_embed_filters=True, daily_weekly_monthly_trends=True, second_dimension_and_csv=True,
+                   engagement_curve_and_milestones=True, compared_two_durations=True,
+                   partial_playback_seconds=round(stop, 3), retention_at_25_percent=3, retention_at_50_percent=2,
+                   captured_two_browser_votes=True, reports_filter_and_export=True)
+    if verify_region:
+        from installed_regions import check_regions
+
+        results["regions_and_privacy"] = check_regions(page, browser, base, auth, museum, venue, a, b)
+    return results

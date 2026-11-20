@@ -8,6 +8,7 @@ export function embedBuilder() {
     const label = document.querySelector("#workspaceEmbedLabel");
     const copy = document.querySelector("#copyEmbed");
     const scriptLabel = document.querySelector("#embedApiOption");
+    const privacyLabel = document.querySelector("#embedPrivacyOption");
     const input = (name) => controls.querySelector(`[name=${name}]`);
     let path;
     let title;
@@ -23,6 +24,8 @@ export function embedBuilder() {
         const useApi = native && input("api").checked;
         if (useApi)
             url.searchParams.set("api", "1");
+        if (native && input("dnt").checked)
+            url.searchParams.set("dnt", "1");
         const width = input("width");
         const height = input("height");
         if (!width.validity.valid || !height.validity.valid) {
@@ -46,7 +49,7 @@ export function embedBuilder() {
             title = playerTitle;
             native = ownPlayer;
             controls.hidden = label.hidden = copy.hidden = !path;
-            scriptLabel.hidden = !native;
+            scriptLabel.hidden = privacyLabel.hidden = !native;
             update();
         },
     };

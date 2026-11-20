@@ -1,5 +1,5 @@
 const dimensionNames = {
-    video: "Video", date: "Date", device: "Device", source: "Referring site", surface: "Playback surface",
+    video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
 };
 const metricNames = {
     impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
@@ -87,15 +87,20 @@ select("dates").onchange = datePreset;
 input("from").oninput = input("to").oninput = () => { select("dates").value = ""; };
 for (const [name, label] of Object.entries(dimensionNames))
     select("group").add(new Option(label, name));
+function usesVideoMetrics(kind) {
+    return kind !== "engagement" && kind !== "rating";
+}
 function breakdownOptions() {
+    const kind = reportType.value;
+    const group = usesVideoMetrics(kind) && kind !== "video" ? kind : select("group").value;
     const breakdown = select("breakdown");
     const current = breakdown.value;
     breakdown.replaceChildren(new Option("None", ""));
     for (const [name, label] of Object.entries(dimensionNames)) {
-        if (name !== select("group").value)
+        if (name !== group)
             breakdown.add(new Option(label, name));
     }
-    breakdown.value = current === select("group").value ? "" : current;
+    breakdown.value = current === group ? "" : current;
 }
 select("group").onchange = breakdownOptions;
 breakdownOptions();
@@ -237,15 +242,21 @@ function renderRatings(report) {
 function syncReportFilters(kind) {
     for (const label of controls.querySelectorAll("[data-video-filter], [data-playback-filter]")) {
         const field = label.querySelector("input,select");
-        field.disabled = label.hasAttribute("data-video-filter") ? kind !== "video" : kind === "rating";
+        field.disabled = label.hasAttribute("data-video-filter")
+            ? !usesVideoMetrics(kind) || (field.name === "group" && kind !== "video")
+            : kind === "rating";
         label.hidden = field.disabled;
     }
+    if (usesVideoMetrics(kind))
+        breakdownOptions();
 }
 function filters() {
     const data = Object.fromEntries(new FormData(controls));
     delete data.dates;
     if (data.source)
         data.source = String(data.source).trim();
+    if (data.region)
+        data.region = String(data.region).trim();
     return { ...data, videos: [...chosen] };
 }
 async function apply() {
@@ -258,14 +269,15 @@ async function apply() {
     const report = await (await call(`${kind}-report`, filters())).json();
     if (request !== requestNumber)
         return;
-    if (kind === "video")
+    if (usesVideoMetrics(kind))
         renderVideo(report);
     else if (kind === "engagement")
         renderEngagement(report);
     else
         renderRatings(report);
+    const activePanel = usesVideoMetrics(kind) ? "video" : kind;
     for (const [name, section] of Object.entries(reportPanels))
-        section.hidden = name !== kind;
+        section.hidden = name !== activePanel;
 }
 function showError(error) {
     message.textContent = error instanceof Error ? error.message : String(error);

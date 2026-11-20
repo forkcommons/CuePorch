@@ -27,6 +27,7 @@ from installed_ratings import check_ratings
 from installed_registration import check_registration
 from installed_analytics import check_analytics
 from installed_advanced_analytics import check_advanced_analytics
+from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
 from installed_recording import check_recording
@@ -52,6 +53,8 @@ p.add_argument(
 p.add_argument("--only", choices=("fresh", "0.1.0", "0.2.0"),
                help="Run just one available installation case")
 p.add_argument("--analytics-only", action="store_true", help="Test migration and the analytics reports on the installed package")
+p.add_argument("--analytics-region-proxy", action="store_true",
+               help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 args = p.parse_args()
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
@@ -249,6 +252,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             base = f"http://127.0.0.1:{port}"
+            analytics_env = {"CUEPORCH_ANALYTICS_PROXIES": PROXY_ADDRESS} if args.analytics_region_proxy else {}
             proc = subprocess.Popen(
                 [str(args.launcher.resolve()), "--data", str(home), "--headless"],
                 env=dict(
@@ -256,7 +260,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     CUEPORCH_DESKTOP_PORT=str(port),
                     CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
                     CUEPORCH_SIMULATOR=source,
-                ) | (push_fixture["env"] if push_fixture else {}),
+                ) | (push_fixture["env"] if push_fixture else {}) | analytics_env,
             )
             try:
                 desktop = wait_for_desktop(proc, home)
@@ -357,7 +361,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     )
                     assert width > 0
                     if args.analytics_only:
-                        advanced = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
+                        advanced = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
+                                                            verify_region=args.analytics_region_proxy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3,
                                             missing_media=1, repeat_ids_unique=True, anonymous_denied=True,
                                             playback_width=width, setup_seconds=setup_seconds,
@@ -397,7 +402,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     ratings = check_ratings(page, browser, base, auth, replacement)
                     registration = check_registration(page, browser, base, auth, museum, venue, replacement)
                     analytics = check_analytics(page, browser, base, auth, museum, venue, replacement)
-                    advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement)
+                    advanced_analytics = check_advanced_analytics(page, browser, base, auth, museum, venue, replacement,
+                                                                  verify_region=args.analytics_region_proxy)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
                     recording = check_recording(pw, base, auth)
                     timeline = check_timeline(

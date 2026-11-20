@@ -2,7 +2,9 @@
 
 import time
 
-from flask import abort, request
+from flask import abort
+
+from library_analytics import permitted
 
 
 WINDOW = 30
@@ -16,10 +18,6 @@ CREATE TABLE IF NOT EXISTS live_playback_peak(
  event TEXT NOT NULL, opens INTEGER NOT NULL, phase TEXT NOT NULL, peak INTEGER NOT NULL,
  PRIMARY KEY(event,opens,phase));
 """
-
-
-def permitted():
-    return request.headers.get("DNT") != "1" and request.headers.get("Sec-GPC") != "1"
 
 
 def current(con, uid, opens, phase, now=None):

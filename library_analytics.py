@@ -3,8 +3,10 @@
 import csv
 from datetime import date, datetime, time, timedelta, timezone
 from io import StringIO
+from ipaddress import ip_address
 import json
 import math
+import re
 from urllib.parse import urlsplit
 
 from flask import Response, abort, request
@@ -21,9 +23,12 @@ CREATE INDEX IF NOT EXISTS video_analytics_work_date ON video_analytics_session(
 CREATE INDEX IF NOT EXISTS video_analytics_date ON video_analytics_session(created);
 CREATE TABLE IF NOT EXISTS video_analytics_context(
  session TEXT PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS video_analytics_region(
+ session TEXT PRIMARY KEY, region TEXT NOT NULL);
 """
 SURFACES = ("watch", "embed")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
+REGION_CODE = re.compile(r"[A-Z]{2}(?:-[A-Z0-9]{1,3})?")
 COUNTS = """count(*) AS impressions, coalesce(sum(played),0) AS views,
             coalesce(sum(completed),0) AS finishes, coalesce(sum(watched),0) AS watched"""
 
@@ -60,6 +65,23 @@ def device_type(agent):
     return "Unknown"
 
 
+def permitted():
+    return request.headers.get("DNT") != "1" and request.headers.get("Sec-GPC") != "1"
+
+
+def observed_region(trusted_proxies):
+    if not trusted_proxies:
+        return None
+    try:
+        peer = ip_address(request.remote_addr)
+    except ValueError:
+        return None
+    if peer not in trusted_proxies:
+        return None
+    code = request.headers.get("X-CuePorch-Region", "").strip().upper()
+    return code if REGION_CODE.fullmatch(code) else None
+
+
 def record(con, work, nonce, surface, body, context=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
@@ -91,7 +113,10 @@ def record(con, work, nonce, surface, body, context=None):
         (nonce, work["id"], video_version_key(work), surface, now, seq, played, finished, watched, json.dumps(edges)),
     )
     if context:
-        con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, *context))
+        source, device, *region = context
+        con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, source, device))
+        if region and region[0]:
+            con.execute("INSERT OR IGNORE INTO video_analytics_region VALUES(?,?)", (nonce, region[0]))
 
 
 def bounds(filters=None):

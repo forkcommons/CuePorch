@@ -5,6 +5,7 @@ from io import BytesIO
 import hmac
 import ipaddress
 import json
+import os
 import re
 import secrets
 import time
@@ -291,6 +292,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
     registration_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-registration")
     analytics_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-analytics")
+    analytics_proxies = {
+        ipaddress.ip_address(address.strip())
+        for address in os.getenv("CUEPORCH_ANALYTICS_PROXIES", "").split(",") if address.strip()
+    }
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
@@ -447,11 +452,14 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 rating["session"] = rating_serializer.dumps(
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
-            analytics = analytics_serializer.dumps(
-                [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18),
-                 [library_analytics.source_origin(request.referrer),
-                  library_analytics.device_type(request.headers.get("User-Agent"))]]
-            ) if can_watch else None
+            analytics = None
+            if can_watch and not options["dnt"] and library_analytics.permitted():
+                analytics = analytics_serializer.dumps(
+                    [token, video_version_key(work), "embed" if embed else "watch", secrets.token_urlsafe(18),
+                     [library_analytics.source_origin(request.referrer),
+                      library_analytics.device_type(request.headers.get("User-Agent")),
+                      library_analytics.observed_region(analytics_proxies)]]
+                )
             start = request.args.get("start", "")
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
             duration = work.get("duration_seconds")
@@ -575,12 +583,12 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             token, version, surface, nonce, *context = analytics_serializer.loads(session, max_age=4 * 3600)
         except (BadSignature, ValueError):
             abort(404)
-        body = request.get_json()
         with tx() as con:
             work, _, _ = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
-            library_analytics.record(con, work, nonce, surface, body, context[0] if context else None)
+            if library_analytics.permitted():
+                library_analytics.record(con, work, nonce, surface, request.get_json(), context[0] if context else None)
         return "", 204
 
     return watch

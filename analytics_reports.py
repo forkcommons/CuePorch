@@ -9,7 +9,7 @@ import re
 from flask import Response, abort, request
 
 from catalog import video_version_key
-from library_analytics import COUNTS, DEVICES, SURFACES, bounds, metrics
+from library_analytics import COUNTS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
 from library_registration import csv_cell
 
 
@@ -18,8 +18,10 @@ DIMENSIONS = {
     "date": None,
     "device": "coalesce(c.device, 'Unknown')",
     "source": "coalesce(c.source, 'Unknown')",
+    "region": "coalesce(g.region, 'Unknown')",
     "surface": "s.surface",
 }
+GROUP_REPORTS = ("date", "device", "source", "region")
 PERIODS = {
     "day": "date(s.created, 'unixepoch')",
     "week": "date(s.created,'unixepoch','-'||((CAST(strftime('%w',s.created,'unixepoch') AS INTEGER)+6)%7)||' days')",
@@ -30,6 +32,7 @@ METRICS = ("impressions", "views", "view_rate", "finishes", "watched_seconds", "
 MILESTONES = (1, 25, 50, 75, 100)
 PLAYBACK_TABLES = """ FROM video_analytics_session s
     LEFT JOIN video_analytics_context c ON c.session=s.id
+    LEFT JOIN video_analytics_region g ON g.session=s.id
     LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"""
 
 
@@ -42,11 +45,11 @@ def filter_settings(options):
     first, last, start, end = bounds(options)
     primary, secondary = options.get("group", "video"), options.get("breakdown", "")
     period = options.get("period", "day")
-    surface, device, source = (options.get(name, "") for name in ("surface", "device", "source"))
-    if (not all(isinstance(value, str) for value in (primary, secondary, period, surface, device, source))
+    surface, device, source, region = (options.get(name, "") for name in ("surface", "device", "source", "region"))
+    if (not all(isinstance(value, str) for value in (primary, secondary, period, surface, device, source, region))
             or primary not in DIMENSIONS or secondary not in ("", *DIMENSIONS) or primary == secondary
             or period not in PERIODS or surface not in ("", *SURFACES) or device not in ("", *DEVICES)
-            or len(source) > 270):
+            or len(source) > 270 or (region not in ("", "Unknown") and not REGION_CODE.fullmatch(region))):
         abort(422, "Choose valid report filters and distinct breakdowns.")
     selected = options.get("videos", [])
     if (not isinstance(selected, list) or len(selected) > 10000 or any(
@@ -55,7 +58,7 @@ def filter_settings(options):
     selected = list(dict.fromkeys(selected))
     clause = " WHERE s.created>=? AND s.created<? AND d.item IS NULL"
     params = [start, end]
-    for dimension, value in (("surface", surface), ("device", device), ("source", source)):
+    for dimension, value in (("surface", surface), ("device", device), ("source", source), ("region", region)):
         if value:
             clause += f" AND {DIMENSIONS[dimension]}=?"
             params.append(value)
@@ -63,7 +66,7 @@ def filter_settings(options):
         clause += " AND s.work IN (SELECT value FROM json_each(?))"
         params.append(json.dumps(selected))
     filters = dict(date_from=first.isoformat(), date_to=last.isoformat(), group=primary, breakdown=secondary,
-                   period=period, surface=surface, device=device, source=source, videos=selected)
+                   period=period, surface=surface, device=device, source=source, region=region, videos=selected)
     return filters, clause, tuple(params)
 
 
@@ -148,7 +151,7 @@ def engagement(con, options, catalog, lengths):
 
 
 def rating_summary(con, options, catalog):
-    if any(options.get(name) for name in ("surface", "source", "device")):
+    if any(options.get(name) for name in ("surface", "source", "device", "region")):
         abort(422, "Rating reports filter by video and date.")
     _, clause, params = filter_settings(options)
     rows = con.execute("""SELECT s.work,s.mode,s.score,count(*) AS votes FROM video_rating s
@@ -199,7 +202,7 @@ def register(app, tx, staff, read_works):
         return [dict(id=uid, title=title) for uid, title in
                 sorted(works.items(), key=lambda item: (item[1].casefold(), item[0]))]
 
-    @app.post("/api/analytics/<any(video,engagement,rating):kind>-report")
+    @app.post("/api/analytics/<any(video,date,device,source,region,engagement,rating):kind>-report")
     def report_view(kind):
         staff()
         request.max_content_length = 512 * 1024
@@ -209,7 +212,9 @@ def register(app, tx, staff, read_works):
         with tx() as con:
             works = read_works()
             titles = catalog(con, works)
-            if kind == "video":
+            if kind in GROUP_REPORTS:
+                result = summarize(con, options | {"group": kind}, titles)
+            elif kind == "video":
                 result = summarize(con, options, titles)
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))

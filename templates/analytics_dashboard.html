@@ -17,7 +17,9 @@
   <main id="analyticsDashboard" hidden>
     <form id="reportControls">
       <label>Report type <select id="reportType">
-        <option value="video">Video</option><option value="engagement">Engagement</option><option value="rating">Video ratings</option>
+        <option value="video">Video</option><option value="engagement">Engagement</option>
+        <option value="region">Region</option><option value="source">Source URL</option>
+        <option value="device">Device</option><option value="date">Date</option><option value="rating">Video ratings</option>
       </select></label>
       <fieldset>
         <legend>Filters</legend>
@@ -36,6 +38,8 @@
             <option>TV</option><option>Unknown</option>
           </select></label>
           <label data-playback-filter>Referring site <input name="source" maxlength="270" placeholder="https://example.org"></label>
+          <label data-playback-filter>Region code <input name="region" maxlength="7" placeholder="US or US-CO"
+            pattern="[A-Z]{2}(-[A-Z0-9]{1,3})?|Unknown" title="A code like US or US-CO, or Unknown"></label>
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
