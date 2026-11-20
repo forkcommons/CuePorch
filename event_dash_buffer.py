@@ -36,7 +36,7 @@ class Buffer:
         self.origin = None
         self.starts_at = None
         self.stopped = False
-        self.finalized = False
+        self.final_manifest = None
 
     def close(self):
         with self.lock:
@@ -50,13 +50,24 @@ class Buffer:
         edge = min(track.segments[-1].ends for track in incoming.values())
         with self.lock:
             self.require_active()
+            if self.final_manifest is not None:
+                if payload == self.final_manifest:
+                    return
+                raise ConflictingFragment("The contribution has already finalized.")
+            earliest = self.media_time() - TARGET_DELAY - self.window - PLAYLIST_GRACE
+            if finalized and any(
+                track.init_file not in self.objects or any(
+                    segment.ends >= earliest and track.filename(segment.sequence) not in self.objects
+                    for segment in track.segments)
+                for track in incoming.values()
+            ):
+                raise ConflictingFragment("Upload the final media fragments before finalizing the contribution.")
             if not self.tracks:
                 self.origin = self.clock() - edge
                 self.starts_at = time() + TARGET_DELAY - edge
             elif incoming.keys() != self.tracks.keys():
                 raise ConflictingFragment("The active contribution cannot change representation IDs.")
             tracks = {}
-            earliest = self.media_time() - TARGET_DELAY - self.window - PLAYLIST_GRACE
             for identity, track in incoming.items():
                 prior = self.tracks.get(identity)
                 timeline = {segment.sequence: segment for segment in prior.segments if segment.ends >= earliest} if prior else {}
@@ -73,7 +84,8 @@ class Buffer:
                     raise ConflictingFragment("DASH fragments must follow their track's presentation order.")
                 tracks[identity] = replace(track, segments=tuple(latest))
             self.tracks = tracks
-            self.finalized |= finalized
+            if finalized:
+                self.final_manifest = payload
             self.expire_media(earliest)
 
     def put(self, filename, payload):
@@ -98,6 +110,8 @@ class Buffer:
                 if (self.path / filename).read_bytes() == payload:
                     return False
                 raise ConflictingFragment("The committed fragment has different bytes.")
+            if self.final_manifest is not None:
+                raise ConflictingFragment("The contribution has already finalized.")
             if self.bytes + len(payload) > MAX_SPOOL_BYTES or len(self.objects) >= 4000:
                 raise FullBuffer("The occurrence's contribution spool is full.")
             (self.path / filename).write_bytes(payload)
@@ -153,8 +167,13 @@ class Buffer:
             return not self.stopped and self.playable(self.ready_tracks())
 
     def drained(self):
-        return self.finalized and all(not track.segments or track.segments[-1].ends <= self.media_time() - TARGET_DELAY
-                                      for track in self.tracks.values())
+        available = self.media_time() - TARGET_DELAY
+        return self.final_manifest is not None and all(
+            not track.segments or track.segments[-1].ends <= available for track in self.tracks.values())
+
+    def audience_finished(self):
+        with self.lock:
+            return not self.stopped and self.drained()
 
     def relay_playlists(self):
         with self.lock:

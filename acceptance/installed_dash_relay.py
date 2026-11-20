@@ -1,4 +1,4 @@
-"""Browser, upload interruption, and withdrawal acceptance for an actual DASH feed."""
+"""Browser, interruption, withdrawal, and replay acceptance for an actual DASH feed."""
 
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -18,7 +18,7 @@ from installed_rtmp_relay import DECODE_STAMPS
 
 
 @contextmanager
-def encoder(directory, ffmpeg):
+def encoder(directory, ffmpeg, duration=None):
     stop = Event()
     command = [str(ffmpeg), "-nostdin", "-loglevel", "error",
                "-f", "rawvideo", "-pixel_format", "gray", "-video_size", "320x180", "-framerate", "12", "-i", "pipe:0",
@@ -35,7 +35,7 @@ def encoder(directory, ffmpeg):
         frame = 0
         gray = bytes([115]) * 320 * 132
         with suppress(OSError), process.stdin:
-            while not stop.is_set():
+            while not stop.is_set() and (duration is None or frame < duration * 12):
                 stamp = int(time() * 10) % 65536
                 bits = [1, 0, 1, 0] + [(stamp >> index) & 1 for index in range(16)]
                 row = b"".join(bytes([230 if bit else 20]) * 16 for bit in bits)
@@ -66,6 +66,8 @@ class Sender:
         self.uploaded = set()
         self.pause_observed = Event()
         self.resumed = Event()
+        self.finalized = Event()
+        self.final_manifest = None
         self.error = None
         self.thread = Thread(target=self.run, daemon=True)
 
@@ -93,6 +95,9 @@ class Sender:
                         result = client.put(self.manifest, headers=self.headers, data=manifest, timeout=6)
                         assert result.status_code == 204, f"Manifest upload rejected with HTTP {result.status_code}: {result.text}"
                         saved = manifest
+                        if b'type="static"' in manifest:
+                            self.final_manifest = manifest
+                            self.finalized.set()
                     self.stopping.wait(.16)
         except (OSError, AssertionError, requests.RequestException) as error:
             self.error = error
@@ -112,15 +117,13 @@ class Sender:
         assert not self.thread.is_alive()
 
 
-def verify_delivery(browser, base, operator, path, ffmpeg, certificate):
+def create_event(base, operator, client, title, replay=False):
     now = datetime.now(timezone.utc)
     password = secrets.token_urlsafe(16)
     auth = {"Authorization": "Bearer " + operator}
-    client = requests.Session()
-    client.verify = str(certificate) if certificate else True
     response = client.post(base + "/api/live-events", headers=auth, timeout=15, json={
-        "title": "Fault injection in MPEG-DASH", "type": "live", "latency": "fail-safe", "visibility": "password",
-        "view_password": password, "save_replay": False, "dvr_seconds": 120,
+        "title": title, "type": "live", "latency": "fail-safe", "visibility": "password",
+        "view_password": password, "save_replay": replay, "dvr_seconds": 120,
         "schedule": {"timezone": "UTC", "repeat": "none",
                      "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
                      "end": (now + timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M")},
@@ -130,6 +133,13 @@ def verify_delivery(browser, base, operator, path, ffmpeg, certificate):
     (slot,) = event["occurrences"]
     operation = f"{base}/api/live-events/{event['id']}/{slot['id']}"
     watch = urljoin(base, event["watch"]) + f"?occurrence={slot['id']}"
+    return auth, operation, watch, password
+
+
+def verify_delivery(browser, base, operator, path, ffmpeg, certificate):
+    client = requests.Session()
+    client.verify = str(certificate) if certificate else True
+    auth, operation, watch, password = create_event(base, operator, client, "Fault injection in MPEG-DASH")
     assert client.post(operation + "/dash", timeout=8).status_code == 403
     with browser.new_context(ignore_https_errors=bool(certificate)) as staff:
         page = staff.new_page()
@@ -204,6 +214,68 @@ def verify_delivery(browser, base, operator, path, ffmpeg, certificate):
                 withdrawal_revoked_view_and_ingest=True)
 
 
+def verify_replay(browser, base, operator, path, ffmpeg, certificate):
+    client = requests.Session()
+    client.verify = str(certificate) if certificate else True
+    auth, operation, watch, password = create_event(base, operator, client, "Delayed program with replay", replay=True)
+    prepared = client.post(operation + "/dash", headers=auth, timeout=30)
+    prepared.raise_for_status()
+    connection = prepared.json()
+    outgoing = path / "encoded-replay"
+    outgoing.mkdir()
+    duration = 22
+    with browser.new_context(ignore_https_errors=bool(certificate)) as audience:
+        page = audience.new_page()
+        page.goto(watch)
+        page.get_by_label("Event password").fill(password)
+        page.get_by_role("button", name="Unlock event").click()
+        status = page.locator("#eventStatus")
+        expect(status).to_have_text("Buffering the Fail-safe signal")
+        with encoder(outgoing, ffmpeg, duration) as process, Sender(outgoing, connection, certificate) as sender:
+            assert sender.finalized.wait(40), f"The short DASH feed did not finalize: {sender.error}"
+            assert process.wait(8) == 0
+            manifest = connection["manifest"]
+            final = sender.final_manifest
+            assert client.put(manifest, headers=sender.headers, data=final, timeout=8).status_code == 204
+            segment = outgoing / "chunk-stream0-00001.m4s"
+            assert client.put(urljoin(manifest, segment.name), headers=sender.headers,
+                              data=segment.read_bytes(), timeout=8).status_code == 204
+            assert client.put(urljoin(manifest, "chunk-stream0-00015.m4s"), headers=sender.headers,
+                              data=segment.read_bytes(), timeout=8).status_code == 409
+            assert client.put(manifest, headers=sender.headers, data=final.replace(b'"static"', b'"dynamic"'),
+                              timeout=8).status_code == 409
+        expect(status).to_have_text("Live", timeout=85000)
+        player = page.locator("#eventPlayer video")
+        player.evaluate("v => { v.muted = true; void v.play(); }")
+        page.wait_for_function("document.querySelector('#eventPlayer video')?.videoWidth === 320", timeout=25000)
+        old_hls = urljoin(base, page.locator("#eventPlayer").get_attribute("data-address"))
+        expect(status).to_have_text("Preparing the replay", timeout=35000)
+        variant = client.get(urljoin(old_hls, "0.m3u8"), timeout=10)
+        variant.raise_for_status()
+        assert "#EXT-X-ENDLIST" in variant.text and "chunk-stream0-00011.m4s" in variant.text
+        page.wait_for_function(
+            "document.querySelector('#eventPlayer video')?.currentTime >= 20", timeout=15000)
+        expect(status).to_have_text("Replay", timeout=390000)
+        assert page.url == watch
+        player.evaluate("v => { v.muted = true; void v.play(); }")
+        page.wait_for_function("document.querySelector('#eventPlayer video')?.currentTime >= 1", timeout=30000)
+        observed = player.evaluate("v => ({width: v.videoWidth, seconds: v.duration})")
+        assert observed["width"] >= 240 and duration - 2 <= observed["seconds"] <= duration + 3, observed
+        assert client.get(old_hls, timeout=8).status_code == 404
+        unadmitted = client.get(watch, timeout=8)
+        assert "Event password" in unadmitted.text and 'id="eventPlayer"' not in unadmitted.text
+        assert client.get(watch, headers={"Accept": "application/json"}, timeout=8).status_code == 404
+        replay_hls = urljoin(base, page.locator("#eventPlayer").get_attribute("data-address"))
+        client.delete(operation + "/delivery", headers=auth, timeout=30).raise_for_status()
+        assert client.get(replay_hls, timeout=8).status_code == 404
+    return dict(encoder_seconds=duration, replay=observed, final_retries_idempotent=True,
+                finalized_feed_immutable=True, delayed_tail_played=True, same_protected_watch_url=True,
+                old_live_grant_revoked=True, unadmitted_replay_denied=True, replay_withdrawal_revokes_grant=True)
+
+
 def check_failsafe_dash(base, keys, ffmpeg, path, certificate=None):
     with sync_playwright() as playwright, chromium(playwright) as browser:
-        return verify_delivery(browser, base, keys["operator"], path, ffmpeg, certificate)
+        return {
+            "interruption": verify_delivery(browser, base, keys["operator"], path, ffmpeg, certificate),
+            "replay": verify_replay(browser, base, keys["operator"], path, ffmpeg, certificate),
+        }

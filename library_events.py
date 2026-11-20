@@ -1626,8 +1626,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
             dash = event["latency"] == "fail-safe" and studio.dash_contribution(row["id"], shown["id"])
+            finished = dash and dash.playback.audience_finished()
             source = studio.playback(row["id"], shown["id"]) if (
-                delivery["delivery"] == "ready" and (dash or (event["latency"] == "low" and not captioned))) else None
+                delivery["delivery"] == "ready" and not finished and
+                (dash or (event["latency"] == "low" and not captioned))) else None
             if source:
                 transport = f"local:{source.identity}"
                 attendance = [joined] if joined else []
@@ -1636,6 +1638,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 native_video, status = True, "Live"
                 if reporting_scope is not None:
                     analytics_token = playback_token(scope, delivery, False, reporting_scope, None, joined, sharing)
+            elif finished and delivery["delivery"] == "ready":
+                status = "This event has ended"
+                if event["save_replay"]:
+                    _, _, remote_status = viewer_playback(event, delivery, scope, native_video, host_private, None)
+                    status = (remote_status if remote_status == "The replay is awaiting release" else
+                              "Preparing the replay")
             elif dash and delivery["delivery"] == "ready":
                 status = "Buffering the Fail-safe signal"
             else:

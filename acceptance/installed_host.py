@@ -53,7 +53,7 @@ live_modes.add_argument("--scenes-event", action="store_true", help="Verify live
 live_modes.add_argument("--event-diagnostics", action="store_true", help="Verify live DVR and actual browser relay diagnostics")
 live_modes.add_argument("--event-direct-low", action="store_true", help="Verify Low-mode browser delivery with captioned host fallback")
 live_modes.add_argument("--event-rtmp-relay", type=Path, metavar="MEDIAMTX", help="Verify Low-mode RTMPS with an isolated MediaMTX executable")
-live_modes.add_argument("--event-failsafe-dash", action="store_true", help="Verify delayed DASH delivery through an upload interruption")
+live_modes.add_argument("--event-failsafe-dash", action="store_true", help="Verify delayed DASH delivery, upload interruption and protected replay")
 live_modes.add_argument("--event-api", action="store_true", help="Verify scoped event API and closed registered delivery")
 live_modes.add_argument("--event-attendance", action="store_true", help="Verify API enrollment and protected personal links")
 live_modes.add_argument("--event-webhooks", action="store_true", help="Verify signed lifecycle notifications and recorded replay")

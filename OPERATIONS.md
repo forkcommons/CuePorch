@@ -58,7 +58,7 @@ Direct the encoder to `rtmp://127.0.0.1:11938/live` with stream key `cueporch`. 
 
 The native launcher also accepts `--dash-transmitter` followed by the same options. It uses the service's bundled FFmpeg.
 
-CuePorch accepts completed fragmented MP4 objects and an MPEG-DASH manifest with relative numbered templates. Each occurrence has its own credentials, delayed playback window and temporary spool. The delayed feed is also sent to the connected PeerTube host. Verify the station's complete sender, receiver and playback path before an event.
+CuePorch accepts completed fragmented MP4 objects and an MPEG-DASH manifest with relative numbered templates. Each occurrence has its own credentials, delayed playback window and temporary spool. The delayed feed is also sent to the connected PeerTube host. To finish a contribution, send its remaining fragments before the final static manifest. CuePorch accepts exact transmission retries and seals the contribution against changes. Once the delayed audience has received the last fragments, the same watch link shows the event's end or waits for the saved replay. Verify the station's complete sender, receiver and playback path before an event.
 
 For a permanent station signal, create a PeerTube live destination with live_destination.py. Supply PEERTUBE_USERNAME and PEERTUBE_PASSWORD privately. The command writes encoder settings to the specified private file and prints the embed. Send CivicCast's RTMP output to the corresponding address and stream key. Keep the local recording running independently.
 
