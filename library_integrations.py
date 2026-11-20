@@ -16,6 +16,7 @@ from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
+import editor_exports
 import facebook_upload
 import google_meet_recordings
 import linkedin_upload
@@ -334,10 +335,24 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             import_video, webex, revision, actor, row["id"], folder, authorize,
         ), interval=webex_recordings.POLL_SECONDS, notify=notify,
     )
+    editor_source = editor_exports.FileSource(os.environ.get("CUEPORCH_EDITOR_EXPORT_FOLDER", ""))
+    editor_watch = Watch(
+        app,
+        tx,
+        database,
+        editor_source,
+        lambda state: editor_exports.changes(editor_source, state),
+        lambda entry, state: entry,
+        lambda revision, actor, row, folder, authorize: editor_exports.import_export(
+            editor_source, import_video, revision, actor, row, folder, authorize
+        ),
+        interval=editor_exports.POLL_SECONDS,
+    )
     meetings = {meet.config.key: meet, zoom.config.key: zoom, webex.config.key: webex}
     watches = {
         dropbox.config.key: watch, meet.config.key: meet_watch, zoom.config.key: zoom_watch,
         webex.config.key: webex_watch,
+        "editor-exports": editor_watch,
     }
 
     def stop_watches():
@@ -428,6 +443,16 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             ) for item in connections.values()]
             slack = con.execute("""SELECT 1 FROM folder_slack s WHERE NOT EXISTS(
                 SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=s.folder) LIMIT 1""").fetchone()
+        items.append(dict(
+            id="editor-exports",
+            name="Editor exports",
+            category="Editing",
+            description="Copy new exports from Premiere Pro, Media Encoder or another editor into the private Library.",
+            configured=editor_source.configured,
+            connected=editor_watch.receipt()["enabled"],
+            browse_folders=False,
+            meeting=False,
+        ))
         items.append(dict(id="slack", name="Slack", category="Collaboration",
                           description="Send upload, review and approval notices from a Library folder.",
                           configured=origin.startswith("https://"), connected=bool(slack),
@@ -670,6 +695,28 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             abort(502, "Dropbox returned an invalid folder cursor.")
         watch.enable(revision, source, destination, actor, cursor)
         return private(watch.receipt())
+
+    @app.post("/api/integrations/editor-exports/watch")
+    def watch_editor_exports():
+        actor, body, _, _ = mutate()
+        enabled = body.get("enabled")
+        if type(enabled) is not bool:
+            abort(400, "Choose whether to watch for editor exports.")
+
+        if enabled:
+            destination = destination_folder(body.get("destination"))
+            editor_watch.enable(
+                editor_source.revision,
+                "",
+                destination,
+                actor,
+                editor_exports.baseline(editor_source),
+                keep_queue=True,
+            )
+        else:
+            editor_watch.disable()
+
+        return private(editor_watch.receipt())
 
     @app.post("/api/integrations/<provider>/watch/<int:job>/retry")
     def retry_watch_job(provider, job):

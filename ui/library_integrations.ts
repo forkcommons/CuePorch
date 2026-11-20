@@ -169,7 +169,15 @@ function render() {
     const state = document.createElement("p");
     state.textContent = item.connected ? "Connected" : item.configured ? "Available" : "Setup required";
     card.append(name, description, state);
-    if (item.manage_path) {
+    if (item.id === "editor-exports") {
+      if (item.configured || item.connected) {
+        card.append(button("Manage editor exports", () => openPicker(item)));
+      } else {
+        const setup = document.createElement("span");
+        setup.textContent = "Configure CUEPORCH_EDITOR_EXPORT_FOLDER on the CuePorch service.";
+        card.append(setup);
+      }
+    } else if (item.manage_path) {
       const manage = document.createElement("a");
       manage.href = item.manage_path;
       manage.textContent = "Open Library to manage Slack";
@@ -245,7 +253,10 @@ async function openPicker(item: Integration) {
   pickerHeading.textContent = `Import from ${active.name}`;
   remoteFolder.hidden = !active.browse_folders;
   const meeting = active.meeting;
-  watch.hidden = !meeting && active.id !== "dropbox";
+  const editor = active.id === "editor-exports";
+  driveSearch.hidden = editor;
+  videos.hidden = editor;
+  watch.hidden = !meeting && !editor && active.id !== "dropbox";
   watchHeading.textContent = meeting ? `Automatic ${active.name} archive` : "Dropbox auto-import";
   watchDescription.textContent = meeting
     ? "Copy generated recordings from meetings that end after you enable archiving."
@@ -255,6 +266,19 @@ async function openPicker(item: Integration) {
   receipt.hidden = true;
   query = "";
   videoName.value = "";
+  if (editor) {
+    pickerHeading.textContent = "Editor exports";
+    watchHeading.textContent = "Automatic export intake";
+    watchDescription.textContent = "Copy new completed exports into the selected private Library destination.";
+    noVideos.hidden = true;
+    more.hidden = true;
+    importSelected.hidden = true;
+    const state = await api<WatchReceipt>(pathFor(active, "watch"));
+    destination.value = state.destination || "";
+    renderWatch(state);
+    destination.focus();
+    return;
+  }
   await loadPage(false);
   if (!watch.hidden) await loadWatch();
   videoName.focus();
@@ -310,21 +334,29 @@ async function loadPage(append: boolean) {
 function renderWatch(data: WatchReceipt) {
   currentWatch = data;
   const meeting = active.meeting;
+  const editor = active.id === "editor-exports";
   disableWatch.hidden = !data.enabled;
   refreshWatch.hidden = !data.enabled;
-  const selected = meeting ? "" : source.at(-1)?.id || "";
-  enableWatch.hidden = data.enabled && data.source === selected && (data.destination || "") === destination.value;
+  const selected = meeting || editor ? "" : source.at(-1)?.id || "";
+  enableWatch.hidden = (editor && !active.configured) || (data.enabled && data.source === selected && (data.destination || "") === destination.value);
   enableWatch.textContent = meeting
     ? (data.enabled ? "Change archive destination" : "Enable automatic archive")
     : (data.enabled ? "Change watched folder or destination" : "Watch this folder");
   disableWatch.textContent = meeting ? "Stop automatic archive" : "Stop watching";
+  if (editor) {
+    enableWatch.textContent = data.enabled ? "Change export destination" : "Watch for exports";
+    if (active.connected !== data.enabled) {
+      active.connected = data.enabled;
+      render();
+    }
+  }
   const folder = data.source
     ? recentFolders.get(data.source) || "Previously selected Dropbox folder"
     : "Dropbox root";
   const target = Array.from(destination.options).find(option => option.value === data.destination)?.text
     || (data.destination ? "Previously selected Library folder" : "Library root");
   const checked = data.checked ? ` Last checked ${new Date(data.checked * 1000).toLocaleString()}.` : "";
-  const mode = meeting ? `Archiving new ${active.name} recordings.` : `Watching ${folder}.`;
+  const mode = editor ? "Watching the configured export folder." : meeting ? `Archiving new ${active.name} recordings.` : `Watching ${folder}.`;
   watchState.textContent = data.enabled ? `${mode} Destination: ${target}.${checked}${data.error ? " " + data.error : ""}`
     : meeting ? "Automatic archive is off." : "Folder watching is off.";
   watchJobs.replaceChildren(...data.jobs.map(job => {
