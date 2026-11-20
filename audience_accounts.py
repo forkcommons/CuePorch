@@ -2,22 +2,21 @@
 
 import hashlib
 import hmac
-import ipaddress
 import re
 import secrets
 import time
 import uuid
-from urllib.parse import urlsplit
 
-from flask import abort, make_response, render_template, request
+from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import audience_comments
 import audience_library
+from browser_account_security import (cookie_session, email_key, json_mutation, password, private, secure_site,
+                                      set_session_cookie, token_hash)
 import community_analytics
 from library_analytics import source_origin
 from library_discovery import entry_payload
-from library_registration import EMAIL
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audience_account(
@@ -37,18 +36,8 @@ CREATE TABLE IF NOT EXISTS audience_watch_later(
 SESSION_SECONDS = 30 * 24 * 3600
 LOCAL_COOKIE = "cueporch-viewer"
 HTTPS_COOKIE = "__Host-cueporch-viewer"
-TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 VIDEO_PATH = re.compile(r"/watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
-
-
-def private(body, status=200):
-    response = make_response(body, status)
-    response.cache_control.no_store = True
-    response.cache_control.private = True
-    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
-    response.headers["X-Robots-Tag"] = "noindex, nofollow"
-    return response
 
 
 def fields(body):
@@ -58,35 +47,6 @@ def fields(body):
     if not isinstance(pronouns, str) or len(pronouns.strip()) > 60:
         abort(400, "Use up to 60 characters for pronouns.")
     return name.strip(), email_key(email), pronouns.strip()
-
-
-def email_key(value):
-    if not isinstance(value, str):
-        abort(400, "Enter a valid email address.")
-    value = value.strip().casefold()
-    if len(value) > 254 or not EMAIL.fullmatch(value) or any(ord(char) < 32 for char in value):
-        abort(400, "Enter a valid email address.")
-    return value
-
-
-def password(body, key="password", new=False):
-    value = body.get(key)
-    if not isinstance(value, str) or not (12 if new else 1) <= len(value) <= 256:
-        abort(400, "Use a password of 12 to 256 characters." if new else "Enter your password.")
-    return value
-
-
-def token_hash(token):
-    return hashlib.sha256(token.encode("ascii")).hexdigest()
-
-
-def is_loopback(value):
-    if value == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(value or "").is_loopback
-    except ValueError:
-        return False
 
 
 def account_view(row):
@@ -99,37 +59,16 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     limit_key = hmac.digest(operator.encode(), b"CuePorch viewer attempts", "sha256")
 
     def scheme():
-        site = source_origin(request.host_url)
-        if site == "Unknown":
-            abort(400)
-        host = urlsplit(site).hostname
-        if request.is_secure or (public_origin.startswith("https://") and
-                                 source_origin("https://" + request.host) == public_origin):
-            return True
-        if not is_loopback(host) or not is_loopback(request.remote_addr):
-            abort(403, "Open CuePorch using its HTTPS address.")
-        return False
+        return secure_site(public_origin)
 
     def cookie_name(secure):
         return HTTPS_COOKIE if secure else LOCAL_COOKIE
 
     def browser_session(secure):
-        token = request.cookies.get(cookie_name(secure), "")
-        return token_hash(token) if TOKEN.fullmatch(token) else None
+        return cookie_session(cookie_name(secure))
 
     def mutation(secure):
-        if not request.is_json or request.headers.get("X-CuePorch-Viewer") != "1":
-            abort(403)
-        if request.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
-            abort(403)
-        origin = request.headers.get("Origin")
-        expected = source_origin(("https://" if secure else "http://") + request.host)
-        if origin is not None and source_origin(origin) != expected:
-            abort(403)
-        body = request.get_json()
-        if not isinstance(body, dict):
-            abort(400)
-        return body
+        return json_mutation(secure, "X-CuePorch-Viewer")
 
     def current(con, session, required=True):
         row = con.execute(
@@ -165,12 +104,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         return token
 
     def cookie(response, secure, token=None):
-        flags = dict(path="/", secure=secure, httponly=True, samesite="Lax")
-        if token:
-            response.set_cookie(cookie_name(secure), token, max_age=SESSION_SECONDS, **flags)
-        else:
-            response.delete_cookie(cookie_name(secure), **flags)
-        return response
+        return set_session_cookie(response, cookie_name(secure), secure, SESSION_SECONDS, token)
 
     def reauthenticate(session, entered):
         with tx() as con:

@@ -1,5 +1,5 @@
 import { privateSettings, sharingFields } from "./library_privacy.js";
-export function uploadLibraryFile(file, id, folder, credential, options, progress) {
+export function uploadLibraryFile(file, id, folder, credential, options, progress, endpoint = "/api/library/uploads") {
     const data = new FormData();
     data.set("file", file);
     data.set("upload_id", id);
@@ -28,7 +28,7 @@ export function uploadLibraryFile(file, id, folder, credential, options, progres
             reject(new Error(message || `Upload failed (${request.status}).`));
         };
         request.onerror = () => reject(new Error("Connection lost. Retry this file."));
-        request.open("POST", "/api/library/uploads");
+        request.open("POST", endpoint);
         request.setRequestHeader("Authorization", "Bearer " + credential);
         request.send(data);
     });

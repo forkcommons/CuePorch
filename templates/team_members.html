@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team members · CuePorch</title>
+<main>
+  <nav aria-label="Operator"><a href="/operator">Operator console</a> · <a href="/team">Team workspace</a></nav>
+  <h1>{{ institution }} team members</h1>
+  <form id="teamManagementAccess">
+    <label>Operator credential <input id="teamManagementKey" type="password" required autocomplete="current-password"></label>
+    <button>Open team members</button>
+  </form>
+  <p id="teamMembersStatus" role="status" aria-live="polite"></p>
+  <section id="teamManagement" hidden>
+    <form id="teamInvite">
+      <label>Invite email <input name="email" type="email" required maxlength="254"></label>
+      <label>Invite role <select name="role">
+        <option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Administrator</option>
+      </select></label>
+      <button>Create invitation</button>
+    </form>
+    <div id="teamInvitationLink" hidden>
+      <label>Private invitation link <input readonly></label><button type="button">Copy link</button>
+      <p>Send this link privately to the person you invited. It can be used once within seven days.</p>
+    </div>
+    <h2>Pending invitations</h2>
+    <ul id="teamInvitations"></ul>
+    <h2>Members</h2>
+    <ul id="teamMemberList"></ul>
+    <section id="teamShares" hidden>
+      <h3 id="teamSharesTitle"></h3>
+      <label>Video <select id="teamShareWork"></select></label>
+      <button id="shareTeamVideo" type="button">Share video</button>
+      <ul id="teamSharedVideos"></ul>
+    </section>
+    <details id="teamMembershipActivity">
+      <summary>Membership activity</summary>
+      <ul></ul>
+    </details>
+  </section>
+</main>
+<script type="module" src="/static/ui/team_members.js"></script>
+</html>

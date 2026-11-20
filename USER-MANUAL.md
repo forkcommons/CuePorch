@@ -32,6 +32,12 @@ On a public watch page, read the discussion under **Comments**. Search by text o
 
 New public comments publish automatically by default. In the operator console, select **Load settings and review queue**, then turn on **Require approval for public comments** to review new posts. Read each comment in the queue and choose **approve** or **reject**. Turning the setting off releases comments that are still waiting. Use **Public comments** on the same screen to find and remove published comments.
 
+### Invite people to your team
+
+Open **Team members** from the Operator console. Enter the person’s email and role, select **Create invitation**, and send the private link yourself. The link expires after seven days and can be used once. Use **Replace link** to issue a new one or **Cancel invitation** to withdraw it. The recipient opens the link and chooses a password. They can sign in again from **Team sign-in** using the invited email address and that password.
+
+Administrators can open the Library and manage invitations, roles, and video access. Contributors can upload private videos to **My Library** and view videos shared with them. Viewers can play the videos you share with them. To share one, choose **Manage video access** next to a member, select the video, and choose **Share video**. A revoked share stops new playback and media requests. **Remove access** ends the member’s team sessions. Their retained uploads remain available to administrators. The installation’s operator credential remains available for owner access. Viewer accounts for public Watch are independent of team membership.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

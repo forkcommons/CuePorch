@@ -13,10 +13,11 @@ from flask import abort, request
 from catalog import build_intake, merge_collection
 from cueporch import checksum, work_id
 from library_folder_privacy import closest as folder_privacy
-from library_privacy import actor_defaults, apply_pending, apply_settings, get_privacy, requested_settings
+from library_privacy import DEFAULTS, actor_defaults, apply_pending, apply_settings, get_privacy, requested_settings
 from library_trash import hidden
 from media_tools import prepare_screening
 from review_settings import new_upload
+from team_accounts import actor_id
 
 IMAGE_INPUT = {"png": "png_pipe", "jpg": "jpeg_pipe", "jpeg": "jpeg_pipe", "webp": "webp_pipe"}
 AUDIO_INPUT = {"mp3": "mp3", "wav": "wav", "flac": "flac", "ogg": "ogg", "m4a": "mov"}
@@ -48,7 +49,7 @@ def prepare_asset(source, scratch, kind, decoder):
     return name, None
 
 
-def register(app, tx, staff, action, root, database, institution, remember_work):
+def register(app, tx, staff, team_contributor, action, root, database, institution, remember_work):
     def check_folder(con, folder):
         if folder and (
             hidden(con, "folder", folder)
@@ -66,7 +67,14 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
 
     @app.post("/api/library/uploads")
     def upload():
-        actor = staff()
+        return ingest(staff())
+
+    @app.post("/api/team/uploads")
+    def contributor_upload():
+        member = team_contributor()
+        return ingest(actor_id(member), member["id"])
+
+    def ingest(actor, member=None):
         request.max_content_length = int(os.environ.get("CUEPORCH_MAX_UPLOAD_BYTES", str(8 * 1024**3)))
         incoming = request.files.get("file")
         if not incoming or not incoming.filename:
@@ -75,6 +83,8 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
             identity = str(uuid.UUID(request.form.get("upload_id", "")))
         except ValueError:
             abort(400, "The upload identifier is invalid.")
+        if member:
+            identity = str(uuid.uuid5(uuid.UUID(member), identity))
         name = PureWindowsPath(incoming.filename).name
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", name).strip(" .")
         name_path = Path(name)
@@ -94,6 +104,8 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
             abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
         folder = request.form.get("folder") or None
         overrides = request.form.get("privacy") if kind == "video" else None
+        if member and (folder or overrides is not None or kind != "video"):
+            abort(403, "Team workspace uploads are private videos in My Library.")
         if overrides is not None:
             try:
                 overrides = json.loads(overrides)
@@ -109,11 +121,16 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                 abort(422, "The selected file is empty.")
             digest = checksum(source)
             with tx() as con:
+                if member:
+                    ensure_member(con, member)
                 prior, placed = prior_upload(con, uid, digest)
                 if placed:
+                    if member and not con.execute("SELECT 1 FROM team_owned_work WHERE work=? AND member=?",
+                                                  (uid, member)).fetchone():
+                        abort(409, "The upload identifier is already in use.")
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
-                if kind == "video":
+                if kind == "video" and not member:
                     upload_privacy(con, actor, folder, overrides)
 
             files = [dict(role="original", path=source.name, format=fmt, name=name[:255])]
@@ -132,14 +149,23 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                 provider=provider,
             )
             with tx() as con:
+                if member:
+                    ensure_member(con, member)
                 prior, placed = prior_upload(con, uid, digest)
                 if placed:
+                    if member and not con.execute("SELECT 1 FROM team_owned_work WHERE work=? AND member=?",
+                                                  (uid, member)).fetchone():
+                        abort(409, "The upload identifier is already in use.")
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
                 if kind == "video":
-                    choices, password = upload_privacy(con, actor, folder, overrides)
+                    choices, password = (DEFAULTS, None) if member else upload_privacy(con, actor, folder, overrides)
                 work = prior or merge_collection(staged, root)[uid]
+                if member and work.get("source_creator") != actor:
+                    abort(409, "The upload identifier is already in use.")
                 con.execute("INSERT INTO library_placement(work,folder) VALUES(?,?)", (uid, folder))
+                if member:
+                    con.execute("INSERT INTO team_owned_work VALUES(?,?)", (uid, member))
                 if kind == "video":
                     new_upload(con, work)
                     apply_settings(con, action, work, choices, password)
@@ -147,6 +173,10 @@ def register(app, tx, staff, action, root, database, institution, remember_work)
                 receipt = upload_receipt(con, uid, kind)
             remember_work(work)
         return receipt, 201
+
+    def ensure_member(con, uid):
+        if team_contributor(con)["id"] != uid:
+            abort(403)
 
     def upload_privacy(con, actor, folder, overrides):
         rule = folder_privacy(con, folder)

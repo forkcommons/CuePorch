@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team · CuePorch</title>
+<main id="teamWorkspace" hidden>
+  <h1>{{ institution }} team</h1>
+  {% if joining %}
+  <form id="teamJoin">
+    <h2>Accept team invitation</h2>
+    <label>Display name <input name="name" required maxlength="120" autocomplete="name"></label>
+    <label>Choose a password <input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+    <button>Join team</button>
+  </form>
+  <p><a href="/team">Sign in to an existing membership</a></p>
+  {% else %}
+  <form id="teamSignIn">
+    <label>Team email <input name="email" type="email" required maxlength="254" autocomplete="username"></label>
+    <label>Password <input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
+    <button>Sign in to team</button>
+  </form>
+  <section id="teamLibrary" hidden>
+    <h2 id="teamIdentity"></h2>
+    <nav id="teamAdminLinks" aria-label="Administration" hidden>
+      <a href="/operator/library">Manage Library</a> · <a href="/team/members">Manage team members</a>
+    </nav>
+    <button type="button" id="teamSignOut">Sign out</button>
+    <form id="teamUpload" hidden>
+      <label>Private video <input name="video" type="file" required accept=".mp4,.mov,.webm,.mkv"></label>
+      <button>Upload to My Library</button> <progress max="100" hidden></progress>
+    </form>
+    <h3>Available videos</h3>
+    <p id="teamLibraryEmpty" hidden>There are no videos available to you yet.</p>
+    <ul id="teamVideos"></ul>
+  </section>
+  {% endif %}
+  <p id="teamStatus" role="status" aria-live="polite"></p>
+</main>
+<script type="module" src="/static/ui/team_workspace.js"></script>
+</html>

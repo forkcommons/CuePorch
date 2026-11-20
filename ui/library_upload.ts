@@ -26,6 +26,7 @@ interface UploadReceipt {
 export function uploadLibraryFile(
   file: File, id: string, folder: string, credential: string, options: object | null,
   progress: (value: number | null) => void,
+  endpoint = "/api/library/uploads",
 ) {
   const data = new FormData();
   data.set("file", file);
@@ -52,7 +53,7 @@ export function uploadLibraryFile(
       reject(new Error(message || `Upload failed (${request.status}).`));
     };
     request.onerror = () => reject(new Error("Connection lost. Retry this file."));
-    request.open("POST", "/api/library/uploads");
+    request.open("POST", endpoint);
     request.setRequestHeader("Authorization", "Bearer " + credential);
     request.send(data);
   });

@@ -37,6 +37,7 @@ from cueporch import verify
 import analytics_reports
 import audience_accounts
 import audience_comments
+from browser_account_security import same_origin, secure_site
 import community_analytics
 import library_actions
 import library_appearance
@@ -64,6 +65,7 @@ import library_worker
 import media_bandwidth
 import review_links
 import review_push
+import team_accounts
 import timeline_jobs
 import vimeo_privacy
 from review_settings import new_upload as create_upload_review
@@ -129,6 +131,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_details.SCHEMA
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA
+            + team_accounts.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -176,8 +179,27 @@ def create_app(root, database, operator, institution, simulation=None):
     ):
         raise ValueError("Each operator credential must contain at least 24 characters")
 
-    def operator_name():
-        return next(
+    team_origin = library_analytics.source_origin(os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+
+    def team_member(con=None):
+        if request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:
+            return None
+        secure = secure_site(team_origin)
+        same_origin(secure)
+        if con is not None:
+            return team_accounts.current(con, secure)
+        with closing(sqlite3.connect(database, timeout=30)) as lookup:
+            lookup.row_factory = sqlite3.Row
+            return team_accounts.current(lookup, secure)
+
+    def team_contributor(con=None):
+        member = team_member(con)
+        if not member or member["role"] not in ("contributor", "admin"):
+            abort(403)
+        return member
+
+    def operator_name(con=None):
+        actor = next(
             (
                 name
                 for name, key in operator_keys.items()
@@ -185,6 +207,10 @@ def create_app(root, database, operator, institution, simulation=None):
             ),
             None,
         )
+        if actor is not None:
+            return actor
+        member = team_member(con)
+        return team_accounts.actor_id(member) if member and member["role"] == "admin" else None
 
     def staff():
         actor = operator_name()
@@ -631,7 +657,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.post("/api/actions/<uid>/decision")
     def decide(uid):
-        staff()
+        actor = staff()
         decision = request.json.get("decision")
         if decision not in ("approve", "reject"):
             abort(400)
@@ -641,7 +667,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 (
                     "eligible" if decision == "approve" else "rejected",
                     decision,
-                    operator_name(),
+                    actor,
                     uid,
                 ),
             ).rowcount
@@ -1046,7 +1072,7 @@ def create_app(root, database, operator, institution, simulation=None):
             row = con.execute("SELECT * FROM complaint WHERE id=?", (uid,)).fetchone()
             if not row:
                 abort(404)
-            operator_access = operator_name()
+            operator_access = operator_name(con)
             if not operator_access and not hmac.compare_digest(
                 row["secret_hash"], digest(bearer())
             ):
@@ -1106,6 +1132,8 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_discovery.register(app, tx, staff, public_listing, root, institution)
     audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
+    team_accounts.register(app, tx, team_origin, operator, institution, operator_name, read_library_works,
+                           library_actions.title_for, root)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
@@ -1122,7 +1150,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
     )
-    library_upload.register(app, tx, staff, action, root, database, institution, remember_work)
+    library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work)
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,

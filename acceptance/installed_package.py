@@ -33,6 +33,7 @@ from installed_discovery import check_discovery
 from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
 from installed_audience_comments import check_audience_comments
+from installed_team_accounts import check_team_accounts
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_engagement
@@ -63,6 +64,7 @@ focused.add_argument("--analytics-only", action="store_true", help="Test migrati
 focused.add_argument("--discovery-only", action="store_true", help="Test migration and public discovery on the installed package")
 focused.add_argument("--audience-accounts-only", action="store_true", help="Test migration, discovery and viewer accounts on the installed package")
 focused.add_argument("--audio-tracks-only", action="store_true", help="Test migration and alternate audio on the installed package")
+focused.add_argument("--team-only", action="store_true", help="Test migration and team access on the installed package")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -374,6 +376,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
+                    if args.team_only:
+                        team = check_team_accounts(page, browser, base, auth, replacement)
+                        results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
+                                            repeat_ids_unique=True, anonymous_denied=True, playback_width=width,
+                                            setup_seconds=setup_seconds, team=team))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        continue
                     if args.discovery_only or args.audience_accounts_only:
                         discovery = check_discovery(page, browser, base, auth, replacement)
                         audience = check_audience_accounts(browser, base, auth, replacement) if args.audience_accounts_only else None
