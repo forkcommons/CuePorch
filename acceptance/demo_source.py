@@ -101,7 +101,7 @@ def build_server(directory, port=0):
                             privacy=dict(view="nobody", embed="whitelist"),
                             duration=4,
                             user=dict(name="Independent artist"),
-                            modified_time="2026-11-01",
+                            modified_time=getattr(self.server, "second_video_revision", "2026-11-01"),
                             download=[
                                 dict(
                                     quality="hd",

@@ -148,10 +148,13 @@ def merge_collection(source, destination):
                 finally:
                     temporary.unlink(missing_ok=True)
             prior = works.get(work["id"])
-            if prior and "library_version_changed" in prior:
-                # A repeat source import updates source metadata without replacing
-                # the operator's selected cut or its timed attachments.
-                for key in ("files", "versions_history", "version_saved_at",
+            source_incomplete = work.get("transfer_issues") or work.get("disposition") == "owner file needed"
+            retained_source = prior and source_incomplete and any(
+                f["role"] in ("original", "playback") for f in prior["files"]
+            )
+            if prior and ("library_version_changed" in prior or retained_source):
+                # Keep the selected local cut, or the last complete media while a new transfer needs repair.
+                for key in ("files", "versions_history", "version_saved_at", "caption_status",
                             "library_version_changed", *VERSION_FIELDS):
                     work.pop(key, None)
                     if key in prior:

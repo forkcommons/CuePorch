@@ -17,6 +17,12 @@ const pageNumber = document.querySelector("#migrationPageNumber");
 const previousPage = document.querySelector("#migrationPreviousPage");
 const nextPage = document.querySelector("#migrationNextPage");
 let currentPage = 1;
+const mediaIssueLabels = {
+    incomplete_media: "Incomplete download",
+    invalid_source_checksum: "Invalid Vimeo checksum",
+    source_checksum_mismatch: "Download did not match the Vimeo checksum",
+    media_connection_interrupted: "Media connection interrupted",
+};
 const headers = () => ({
     Authorization: "Bearer " + key.value,
     "Content-Type": "application/json",
@@ -60,7 +66,9 @@ async function poll(page = currentPage) {
     if (data.counts) {
         const dispositions = Object.entries(data.counts).map(([name, count]) => `${count} ${name}`);
         summary.textContent = [`${data.total} videos`, ...dispositions,
-            `${data.metadata_incomplete} with unavailable source metadata`].join(" · ");
+            `${data.metadata_incomplete} with unavailable source metadata`,
+            ...(data.transfer_incomplete ? [`${data.transfer_incomplete} with media errors`] : []),
+        ].join(" · ");
     }
     else {
         summary.textContent = typeof data.processed === "number"
@@ -78,7 +86,7 @@ async function poll(page = currentPage) {
             row.insertCell().textContent = v;
         const exceptions = [
             ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
-            ...(w.transfer_issues || []).map((issue) => `${issue.role} (${issue.http_status})`),
+            ...(w.transfer_issues || []).map((issue) => `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
         ];
         row.insertCell().textContent = exceptions.join(", ") || "None reported";
     }

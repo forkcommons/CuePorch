@@ -360,7 +360,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 entries = data["works"]
                 counts = Counter(work["disposition"] for work in entries)
                 status.update(total=len(entries), counts=dict(counts),
-                              metadata_incomplete=sum(bool(work.get("unavailable_metadata")) for work in entries))
+                              metadata_incomplete=sum(bool(work.get("unavailable_metadata")) for work in entries),
+                              transfer_incomplete=sum(bool(work.get("transfer_issues")) for work in entries))
                 if page:
                     size = 100
                     pages = max(1, (len(entries) + size - 1) // size)

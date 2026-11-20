@@ -41,6 +41,9 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
     total = 121
     limited = threading.Event()
     limited.set()
+    unauthorized = threading.Event()
+    unauthorized.set()
+    interrupted_media = threading.Event()
 
     with ExitStack() as cleanup:
         source = cleanup.enter_context(build_server(tmp_path / "source"))
@@ -49,6 +52,8 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
 
         def pause_first_second_video(handler):
             requests_by_path[handler.path] += 1
+            if handler.path.startswith("/me/videos?") and unauthorized.is_set():
+                return handler.send_error(401)
             if handler.path.startswith("/me/videos?") and limited.is_set():
                 handler.send_response(429)
                 handler.send_header("Retry-After", "120")
@@ -59,6 +64,14 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
             if handler.path == "/media/72.mp4" and requests_by_path[handler.path] == 1:
                 reached.set()
                 release.wait(45)
+                return
+            if handler.path == "/media/72.mp4" and requests_by_path[handler.path] == 2:
+                return handler.send_error(410)
+            if handler.path == "/media/72.mp4" and interrupted_media.is_set():
+                handler.send_response(200)
+                handler.send_header("Content-Length", "100")
+                handler.end_headers()
+                handler.wfile.write(b"partial")
                 return
             original(handler)
 
@@ -121,6 +134,10 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
         credentials = json.loads((home / "operator.json").read_text(encoding="utf8"))
         auth = {"Authorization": "Bearer " + credentials["operator"]}
         transfer(base, dry_run=True)
+        wait_for(lambda: status(base)["state"] == "failed", "expired source credential")
+        assert status(base)["detail"].startswith("Source HTTP 401.")
+        unauthorized.clear()
+        transfer(base, dry_run=True)
         wait_for(lambda: status(base)["state"] == "failed", "source rate limit")
         assert status(base)["detail"].startswith("Source HTTP 429.")
         limited.clear()
@@ -163,7 +180,7 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
         transfer(base, dry_run=False)
         wait_for(lambda: status(base)["state"] == "transferred", "resumed transfer")
         assert requests_by_path["/media/71.mp4"] == 1
-        assert requests_by_path["/media/72.mp4"] == 2
+        assert requests_by_path["/media/72.mp4"] == 3
         assert fixture_token not in progress_file.read_text(encoding="utf8")
         close(process, base, shell_auth)
 
@@ -173,6 +190,34 @@ def test_restart_reuses_verified_vimeo_files(tmp_path):
         assert completed["showcases"][0]["target"]
         library = requests.get(base + "/api/library", headers=auth, timeout=10).json()
         assert {work["id"] for work in completed["works"]} == {work["id"] for work in library}
+        second = next(work for work in completed["works"] if work["source_id"] == "72")
+        source.second_video_revision = "2026-11-19"
+        interrupted_media.set()
+        transfer(base, dry_run=False)
+        wait_for(lambda: status(base)["state"] == "transferred", "account transfer with one partial download")
+        partial = status(base)
+        assert partial["transfer_incomplete"] == 1 and len(partial["works"]) == total
+        item = next(work for work in partial["works"] if work["id"] == second["id"])
+        assert item["disposition"] == "owner file needed"
+        assert item["transfer_issues"] == [{"role": "playback", "reason": "incomplete_media"}]
+        library = requests.get(base + "/api/library", headers=auth, timeout=10).json()
+        retained = next(work for work in library if work["id"] == second["id"])
+        assert retained["quality"] == "playback copy only"
+        with sync_playwright() as playwright:
+            browser = chromium(playwright)
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(credentials['operator'])})")
+            page.goto(base + "/operator/migration")
+            expect(page.locator("#migrationSummary")).to_contain_text("1 with media errors")
+            expect(page.locator("#rows tr").filter(has_text="Incomplete download")).to_have_count(1)
+            browser.close()
+        interrupted_media.clear()
+        transfer(base, dry_run=False)
+        wait_for(lambda: status(base)["state"] == "transferred", "retry of only the failed video")
+        assert status(base)["transfer_incomplete"] == 0
+        assert requests_by_path["/media/71.mp4"] == 1
+        assert requests_by_path["/media/72.mp4"] == 5
+
         work_id = completed["works"][0]["id"]
         details_url = base + f"/api/library/work/{work_id}/details"
         details = requests.get(details_url, headers=auth, timeout=10).json()

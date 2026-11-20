@@ -13,6 +13,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from catalog import merge_collection, video_version_key
 CAPTION = b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCuePorch\n"
 
 
@@ -39,6 +41,9 @@ class Migration(unittest.TestCase):
                 check=True,
             )
             media = clip.read_bytes()
+            source_checksum = hashlib.md5(media, usedforsecurity=False).hexdigest()
+            damaged = media[:-1] + bytes([media[-1] ^ 1])
+            corrupt = True
             requests = []
             expired = True
             limited = True
@@ -63,11 +68,24 @@ class Migration(unittest.TestCase):
                         if path == "/asset/2" and expired:
                             expired = False
                             return self.send_error(403)
+                        if path == "/asset/7":
+                            return self.send_error(404)
                         self.send_response(302)
                         self.send_header("Location", path.replace("/asset/", "/cdn/"))
                         self.end_headers()
                         return
                     if path.startswith("/cdn/"):
+                        if path == "/cdn/4" and corrupt:
+                            return self.respond(damaged)
+                        if path == "/cdn/5":
+                            self.send_response(200)
+                            self.send_header("Content-Length", str(len(media)))
+                            self.end_headers()
+                            self.wfile.write(media[:128])
+                            return
+                        if path == "/cdn/6":
+                            self.close_connection = True
+                            return
                         return self.respond(CAPTION if path.endswith("vtt") else media)
                     if self.headers.get("Authorization") != "Bearer cueporch-fixture":
                         return self.send_error(401)
@@ -83,8 +101,13 @@ class Migration(unittest.TestCase):
                     following = None
                     if path == "/me/videos":
                         second = "page=2" in self.path
-                        numbers = [3] if second else [1, 2]
+                        numbers = [3, 4, 5, 6, 7] if second else [1, 2]
                         for i in numbers:
+                            media_entry = dict(type="video/mp4", size=len(media) + 10,
+                                               quality="source" if i == 1 else "hd",
+                                               link=f"{origin}/asset/{i}")
+                            if i in (1, 4):
+                                media_entry["md5"] = source_checksum.upper()
                             rows.append(
                                 dict(
                                     uri=f"/videos/{i}",
@@ -92,19 +115,11 @@ class Migration(unittest.TestCase):
                                     modified_time="2026-01-01",
                                     duration=1,
                                     privacy=dict(view="nobody", embed="whitelist"),
-                                    download=[]
-                                    if i == 3
-                                    else [
-                                        dict(
-                                            type="video/mp4",
-                                            size=len(media),
-                                            quality="source" if i == 1 else "hd",
-                                            link=f"{origin}/asset/{i}",
-                                        )
-                                    ],
+                                    download=[] if i in (3, 4) else [media_entry],
+                                    play={"progressive": [media_entry]} if i == 4 else None,
                                 )
                             )
-                        total = 3
+                        total = 7
                         following = None if second else "/me/videos?page=2"
                     elif path.endswith("/privacy/domains"):
                         rows = [{"domain": "museum.example"}]
@@ -159,15 +174,26 @@ class Migration(unittest.TestCase):
                         any(path.startswith("/asset/") for path, _ in requests)
                     )
                     subprocess.run(cmd, check=True)
+                    incomplete = workspace / "incomplete"
+                    shutil.copytree(root, incomplete)
+                    failed = json.loads((incomplete / "manifest.json").read_text())["works"]
+                    self.assertEqual([row["transfer_issues"][0] for row in failed[3:]], [
+                        {"role": "playback", "reason": "source_checksum_mismatch"},
+                        {"role": "playback", "reason": "incomplete_media"},
+                        {"role": "playback", "reason": "media_connection_interrupted"},
+                        {"role": "playback", "http_status": 404},
+                    ])
+                    self.assertFalse((root / "objects" / hashlib.sha256(damaged).hexdigest()).exists())
+                    corrupt = False
                     subprocess.run(cmd, check=True)
                 finally:
                     server.shutdown()
                     thread.join()
             works = json.loads((root / "manifest.json").read_text())["works"]
-            self.assertEqual(len({w["id"] for w in works}), 3)
-            self.assertEqual([w["source_id"] for w in works], ["1", "2", "3"])
+            self.assertEqual(len({w["id"] for w in works}), 7)
+            self.assertEqual([w["source_id"] for w in works], list("1234567"))
             self.assertEqual(
-                [w["disposition"] for w in works],
+                [w["disposition"] for w in works[:3]],
                 ["original recovered", "playback copy only", "owner file needed"],
             )
             self.assertTrue(
@@ -195,11 +221,18 @@ class Migration(unittest.TestCase):
             self.assertEqual(sum(path == "/asset/2" for path, _ in requests), 2)
             self.assertEqual(works[0]["files"][1]["text_kind"], "subtitles")
             self.assertEqual(sum(path == "/asset/1" for path, _ in requests), 1)
+            self.assertEqual(sum(path == "/asset/4" for path, _ in requests), 2)
+            self.assertEqual(works[3]["files"][0]["sha256"], hashlib.sha256(media).hexdigest())
+            self.assertNotIn("transfer_issues", works[3])
             self.assertFalse(
                 any(token for path, token in requests if path.startswith("/cdn/"))
             )
             restored = workspace / "restore"
             shutil.copytree(root, restored)
+            reconciled = merge_collection(incomplete, restored)[works[3]["id"]]
+            self.assertEqual(video_version_key(reconciled), video_version_key(works[3]))
+            self.assertEqual(reconciled["disposition"], "playback copy only")
+            self.assertEqual(reconciled["transfer_issues"], failed[3]["transfer_issues"])
             subprocess.run(
                 [sys.executable, str(ROOT / "cueporch.py"), "verify", str(restored)],
                 check=True,

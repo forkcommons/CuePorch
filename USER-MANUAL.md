@@ -63,7 +63,7 @@ For an actual account, start a separate installation without `--simulate`. Use t
 
 When CuePorch restarts, **Move from Vimeo** shows the saved inventory or result to an authorized operator. If the service stopped during a transfer, re-enter the same Vimeo account token and choose **Transfer privately**. CuePorch reuses verified files from that job. The token stays in process memory.
 
-The transfer shows how many videos have been processed. After a preview or transfer, use the inventory pages and **Source issues** column to find missing media and identify metadata Vimeo did not return. The summary counts cover the entire inventory.
+The transfer shows how many videos have been processed. After a preview or transfer, use the inventory pages and **Source issues** column to find missing media, incomplete downloads, checksum mismatches and metadata Vimeo did not return. The summary counts cover the entire inventory. CuePorch checks the source checksum when Vimeo provides one, and stores a SHA-256 checksum for each recovered file. Retry **Transfer privately** after correcting source access or a network problem. When a transfer returns incomplete media for a previously imported video, CuePorch keeps the earlier playable cut in the Library.
 
 To record where a video is already embedded, open **Edit video details** and enter each page URL under **Pages that embed this video**. Save the details before downloading the embed map. Each recorded page gets its own row, and the entries stay with the work when you transfer the Vimeo account again.
 
