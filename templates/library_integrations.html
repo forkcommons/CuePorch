@@ -27,10 +27,14 @@
     <p id="integrationEmpty" hidden>No integrations match.</p>
   </section>
   <section id="drivePicker" hidden aria-labelledby="drivePickerHeading">
-    <h2 id="drivePickerHeading">Import from Google Drive</h2>
+    <h2 id="drivePickerHeading">Import videos</h2>
+    <p id="cloudFolder" hidden>
+      <button type="button" id="cloudFolderUp">Parent folder</button>
+      <span id="cloudFolderPath"></span>
+    </p>
     <form id="driveSearch" method="post">
       <label>Video name <input type="search" name="videoName" maxlength="160"></label>
-      <button>Search Drive</button>
+      <button>Find videos</button>
     </form>
     <label>Library destination
       <select id="driveDestination"></select>

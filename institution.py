@@ -99,6 +99,7 @@ import vimeo_privacy
 import workspace_activity
 import workspace_help
 import workspace_updates
+import workspace_oauth
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
@@ -187,7 +188,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + workspace_help.SCHEMA
             + workspace_activity.SCHEMA
             + workspace_updates.SCHEMA
-            + library_integrations.SCHEMA
+            + workspace_oauth.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
@@ -214,6 +215,7 @@ def create_app(root, database, operator, institution, simulation=None):
         library_caption_jobs.initialize(db)
         library_ai_drafts.initialize(db)
         workspace_updates.initialize(db)
+        workspace_oauth.migrate_drive_connection(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536

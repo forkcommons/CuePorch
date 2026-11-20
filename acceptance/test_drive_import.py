@@ -25,6 +25,7 @@ from test_webinar_email import service_worker
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
 import library_integrations as drive
+from workspace_oauth import SCHEMA, migrate_drive_connection
 
 
 class QuietHandler(WSGIRequestHandler):
@@ -33,6 +34,19 @@ class QuietHandler(WSGIRequestHandler):
 
 
 class DriveImport(unittest.TestCase):
+    def test_preserve_existing_encrypted_connection(self):
+        with closing(sqlite3.connect(":memory:")) as database:
+            database.executescript(SCHEMA + """
+                CREATE TABLE workspace_drive_connection(id INTEGER PRIMARY KEY, revision TEXT, token BLOB);
+                INSERT INTO workspace_drive_connection VALUES(1,'prior',X'123456');
+            """)
+            migrate_drive_connection(database)
+            migrate_drive_connection(database)
+            self.assertEqual(
+                [("google-drive", "prior", bytes.fromhex("123456"))],
+                database.execute("SELECT * FROM workspace_integration_connection").fetchall(),
+            )
+
     def test_private_import_from_directory(self):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory()))
@@ -143,7 +157,7 @@ class DriveImport(unittest.TestCase):
             self.assertEqual(403, wrong_browser.status_code)
             cancelled = session.get(callback, params=dict(state=state, error="access_denied"),
                                     allow_redirects=False, timeout=5)
-            self.assertEqual("/operator/integrations?drive=cancelled", cancelled.headers["Location"])
+            self.assertEqual("/operator/integrations?connection=google-drive&result=cancelled", cancelled.headers["Location"])
             folder = session.post(base + "/api/library/folders",
                                   json=dict(name="Festival", color="#75198a", parent=None), timeout=5)
             folder.raise_for_status()
@@ -201,7 +215,9 @@ class DriveImport(unittest.TestCase):
                     self.assertEqual((folder_id,), con.execute(
                         "SELECT folder FROM library_placement WHERE work=?", (work,),
                     ).fetchone())
-                    encrypted, = con.execute("SELECT token FROM workspace_drive_connection").fetchone()
+                    encrypted, = con.execute(
+                        "SELECT token FROM workspace_integration_connection WHERE provider='google-drive'",
+                    ).fetchone()
                     self.assertNotIn(b"rotated-refresh", encrypted)
                 self.assertEqual(404, requests.get(base + f"/watch/local/{work}", timeout=5).status_code)
                 detail.click()

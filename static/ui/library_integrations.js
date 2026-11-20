@@ -10,6 +10,10 @@ const category = document.querySelector("#integrationCategory");
 const list = document.querySelector("#integrationList");
 const empty = document.querySelector("#integrationEmpty");
 const picker = document.querySelector("#drivePicker");
+const pickerHeading = document.querySelector("#drivePickerHeading");
+const remoteFolder = document.querySelector("#cloudFolder");
+const remoteUp = document.querySelector("#cloudFolderUp");
+const remotePath = document.querySelector("#cloudFolderPath");
 const driveSearch = document.querySelector("#driveSearch");
 const videoName = driveSearch.querySelector("input");
 const destination = document.querySelector("#driveDestination");
@@ -19,15 +23,20 @@ const more = document.querySelector("#driveMore");
 const receipt = document.querySelector("#driveReceipt");
 const params = new URLSearchParams(location.search);
 let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
-if (params.get("team") === "1" || (params.has("drive") && sessionStorage.getItem("cueporchDriveTeam"))) {
+if (params.get("team") === "1" || (params.has("connection") && sessionStorage.getItem("cueporchCloudTeam"))) {
     credential = sessionMarker;
 }
-sessionStorage.removeItem("cueporchDriveTeam");
+sessionStorage.removeItem("cueporchCloudTeam");
 let integrations = [];
 let onlyConnected = false;
 let cursor = null;
 let query = "";
 let busy = false;
+let active;
+let source = [];
+function pathFor(item, action) {
+    return `/api/integrations/${encodeURIComponent(item.id)}/${action}`;
+}
 function message(error) {
     status.textContent = error instanceof Error ? error.message : String(error);
 }
@@ -88,28 +97,29 @@ function render() {
         card.append(name, description, state);
         if (item.connected) {
             if (item.configured)
-                card.append(button("Browse videos", openPicker));
-            card.append(button("Disconnect Google Drive", async () => {
-                const result = await api("/api/integrations/google-drive/disconnect", {});
-                picker.hidden = true;
+                card.append(button("Browse videos", () => openPicker(item)));
+            card.append(button(`Disconnect ${item.name}`, async () => {
+                const result = await api(pathFor(item, "disconnect"), {});
+                if (active === item)
+                    picker.hidden = true;
                 item.connected = false;
                 render();
                 status.textContent = result.provider_revoked
-                    ? "Google Drive disconnected."
-                    : "Disconnected here. You can remove CuePorch access in your Google Account.";
+                    ? `${item.name} disconnected.`
+                    : `Disconnected here. You can remove CuePorch access in your ${item.name} account.`;
             }));
         }
         else if (item.configured) {
-            card.append(button("Connect Google Drive", async () => {
-                const result = await api("/api/integrations/google-drive/connect", {});
+            card.append(button(`Connect ${item.name}`, async () => {
+                const result = await api(pathFor(item, "connect"), {});
                 if (credential === sessionMarker)
-                    sessionStorage.setItem("cueporchDriveTeam", "1");
+                    sessionStorage.setItem("cueporchCloudTeam", "1");
                 location.assign(result.authorization_url);
             }));
         }
         else {
             const tip = document.createElement("p");
-            tip.textContent = "Configure the workspace’s Google Drive OAuth app to connect.";
+            tip.textContent = `Configure the workspace’s ${item.name} OAuth app to connect.`;
             card.append(tip);
         }
         return card;
@@ -129,31 +139,43 @@ function folderName(folder, lookup) {
     }
     return names.join(" / ");
 }
-async function openPicker() {
+async function openPicker(item) {
     const folders = await api("/api/library/folders");
     const lookup = new Map(folders.map(folder => [folder.id, folder]));
     destination.replaceChildren(new Option("Library root", ""), ...folders.map(folder => new Option(folderName(folder, lookup), folder.id)));
+    active = item;
+    source = [];
+    pickerHeading.textContent = `Import from ${active.name}`;
+    remoteFolder.hidden = !active.browse_folders;
     picker.hidden = false;
     receipt.hidden = true;
-    query = videoName.value;
+    query = "";
+    videoName.value = "";
     await loadPage(false);
     videoName.focus();
 }
 async function loadPage(append) {
-    const args = new URLSearchParams({ q: query });
+    const args = new URLSearchParams({ q: query, folder: source.at(-1)?.id || "" });
     if (append && cursor)
         args.set("cursor", cursor);
-    const page = await api(`/api/integrations/google-drive/files?${args}`);
+    const page = await api(`${pathFor(active, "files")}?${args}`);
     cursor = page.cursor;
     more.hidden = !cursor;
     if (!append)
         videos.replaceChildren();
+    remoteUp.hidden = source.length === 0;
+    remotePath.textContent = [active.name, ...source.map(folder => folder.name)].join(" / ");
+    for (const folder of page.folders || []) {
+        const row = document.createElement("li");
+        row.append(button(`Open folder ${folder.name}`, () => navigateSource([...source, folder])));
+        videos.append(row);
+    }
     for (const file of page.files) {
         const row = document.createElement("li");
         row.append(button(`Import ${file.name}`, async () => {
             receipt.hidden = true;
             status.textContent = `Importing ${file.name}…`;
-            const saved = await api("/api/integrations/google-drive/import", { file: file.id, folder: destination.value || null });
+            const saved = await api(pathFor(active, "import"), { file: file.id, folder: destination.value || null });
             const link = document.createElement("a");
             const slug = encodeURIComponent(saved.id);
             link.href = credential === sessionMarker ? `/team/video/${slug}/details` : `/operator/videos/${slug}`;
@@ -166,6 +188,17 @@ async function loadPage(append) {
     }
     noVideos.hidden = videos.childElementCount > 0;
 }
+async function navigateSource(path) {
+    const previous = source;
+    source = path;
+    try {
+        await loadPage(false);
+    }
+    catch (error) {
+        source = previous;
+        throw error;
+    }
+}
 async function loadDirectory() {
     try {
         const result = await api("/api/integrations");
@@ -176,11 +209,14 @@ async function loadDirectory() {
         if (credential !== sessionMarker)
             sessionStorage.setItem("cueporchOperator", credential);
         render();
-        if (params.get("drive") === "connected")
-            status.textContent = "Google Drive is connected.";
-        if (params.get("drive") === "cancelled")
-            status.textContent = "Google Drive connection was cancelled.";
-        if (params.has("drive"))
+        const completed = integrations.find(item => item.id === params.get("connection"));
+        if (completed?.connected && params.get("result") === "connected") {
+            status.textContent = `${completed.name} is connected.`;
+        }
+        if (completed && params.get("result") === "cancelled") {
+            status.textContent = `${completed.name} connection was cancelled.`;
+        }
+        if (params.has("connection"))
             history.replaceState(null, "", location.pathname);
     }
     catch (error) {
@@ -208,4 +244,5 @@ driveSearch.onsubmit = event => {
     void run(() => loadPage(false));
 };
 more.onclick = () => void run(() => loadPage(true));
+remoteUp.onclick = () => void run(() => navigateSource(source.slice(0, -1)));
 void loadDirectory();
