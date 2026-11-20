@@ -12,6 +12,7 @@ from flask import Response, abort, current_app, make_response, render_template, 
 
 from library_appearance import brand_image
 from library_interactivity import image_id, text_field, web_link
+import registration_locale
 
 
 SCHEMA = """
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS viewer_form_preset(
 UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medium")
 DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
                first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single",
-               attendance_analytics=False)
+               attendance_analytics=False, translations={})
 DEFAULT_APPEARANCE = dict(alignment="center", logo=None, background_image=None,
                           background="#e7eee5", overlay="#ffffff", opacity=25)
 FORM_TYPES = ("text", "select", "checkbox", "description", "hidden")
@@ -107,6 +108,8 @@ def validation(body, kind="video"):
             if len(set(choices)) != len(choices):
                 abort(422, "Use distinct dropdown choices.")
         field = dict(id=key, type=kind, label=label, required=required, options=choices)
+        if kind == "checkbox":
+            field["link"] = web_link(entry.get("link", ""))
         if kind == "hidden":
             parameter = entry.get("parameter")
             if (not isinstance(parameter, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", parameter)
@@ -116,7 +119,7 @@ def validation(body, kind="video"):
             field["parameter"] = parameter
             field["default_value"] = text_field(entry.get("default_value", ""), "a hidden field default", 250)
         fields.append(field)
-    return dict(result, fields=fields)
+    return dict(result, fields=fields, translations=registration_locale.validate(body.get("translations", {}), fields))
 
 
 def check_images(con, settings):
@@ -125,10 +128,12 @@ def check_images(con, settings):
         appearance[name] = image_id(con, appearance[name])
 
 
-def presentation(con, form, sign_on=None):
+def presentation(con, form, sign_on=None, language=None):
     appearance = form["appearance"]
+    selected, catalogue = registration_locale.choices(form, language)
     return dict(form, logo_src=brand_image(con, appearance["logo"]),
                 background_src=brand_image(con, appearance["background_image"]),
+                language=selected, text=catalogue[selected], catalogue=catalogue,
                 can_sign_on=bool(current_app.extensions["registration_sign_on"].relay), sign_on=sign_on)
 
 
@@ -268,20 +273,27 @@ def export(con, kind, uid):
 
 
 def register(app, tx, staff, get_work, protected_public):
+    @app.context_processor
+    def registration_language_names():
+        return dict(registration_languages=registration_locale.LANGUAGES)
+
     @app.post("/api/registration/preview")
     def registration_preview():
         staff()
-        request.max_content_length = 256 * 1024
+        request.max_content_length = 4 * 1024 * 1024
         body = request.get_json()
         if not isinstance(body, dict):
             abort(422, "Choose a registration preview.")
         screen = body.get("screen", "form")
         if screen not in ("form", "sign-on"):
             abort(422, "Choose a registration preview screen.")
+        language = body.get("language", "en")
+        if not isinstance(language, str) or language not in registration_locale.LANGUAGES:
+            abort(422, "Choose a registration preview language.")
         settings = validation(body.get("settings"), "event" if body.get("event") is True else "video")
         with tx() as con:
             check_images(con, settings)
-            form = presentation(con, settings, {"step": "email"} if screen == "sign-on" else None)
+            form = presentation(con, settings, {"step": "email"} if screen == "sign-on" else None, language)
         response = make_response(dict(html=render_template(
             "registration_preview.html", registration=form, enrollment="",
             registration_preview=True, offer_attendee_sharing=form["attendance_analytics"],

@@ -108,6 +108,7 @@ class RegistrationAppearance(unittest.TestCase):
                     end=(now + timedelta(minutes=55)).strftime("%Y-%m-%dT%H:%M"))))
 
             def check_design(view, heading="Register for screenings"):
+                expect(view.get_by_role("heading", name=heading)).to_be_visible()
                 gate = view.locator(".registration-gate")
                 expect(gate).to_have_attribute("data-alignment", "end")
                 self.assertEqual(["flex-end", "rgb(15, 49, 50)", "rgb(97, 37, 92)", "0.62"], gate.evaluate("""
@@ -121,7 +122,6 @@ class RegistrationAppearance(unittest.TestCase):
                     "async node => {await node.decode();return node.naturalWidth}"))
                 self.assertEqual(80, gate.locator(".registration-background").evaluate(
                     "async node => {await node.decode();return node.naturalWidth}"))
-                expect(view.get_by_role("heading", name=heading)).to_be_visible()
 
             with sync_playwright() as playwright, chromium(playwright) as browser:
                 page = browser.new_page()
@@ -144,6 +144,22 @@ class RegistrationAppearance(unittest.TestCase):
                 editor.get_by_label("Field label").fill("Campaign reference")
                 editor.get_by_label("URL parameter after reg_").fill("campaign")
                 editor.get_by_label("Default answer").fill("direct audience")
+                editor.get_by_role("button", name="Add field").click()
+                choice = editor.locator("#registrationFields > li").nth(1)
+                choice.get_by_label("Field type").select_option("select")
+                choice.get_by_label("Field label").fill("Attendance plan")
+                choice.get_by_label("Choices, one per line").fill("Gallery\nOnline")
+                editor.get_by_role("button", name="Add field").click()
+                terms = editor.locator("#registrationFields > li").nth(2)
+                terms.get_by_label("Field type").select_option("checkbox")
+                terms.get_by_label("Field label").fill("I have read the screening terms")
+                terms.get_by_label("Terms link").fill("https://gallery.example.test/screening-terms")
+                editor.get_by_label("Language to edit").select_option("es")
+                editor.get_by_label("Show this language to viewers").check()
+                editor.get_by_label("Translated heading").fill("Inscripción para proyecciones")
+                editor.get_by_label("Translation for Attendance plan").fill("Modalidad")
+                editor.get_by_label("Translation for choice Gallery").fill("En sala")
+                editor.get_by_label("Translation for choice Online").fill("En línea")
                 editor.get_by_label("Save as registration preset").fill("Arts screenings")
                 editor.get_by_role("button", name="Preview registration").click()
                 frame = page.locator("#registrationPreview")
@@ -154,6 +170,13 @@ class RegistrationAppearance(unittest.TestCase):
                 editor.get_by_label("Form preview device").select_option("mobile")
                 self.assertEqual(390, frame.evaluate("node => node.getBoundingClientRect().width"))
                 check_design(preview)
+                editor.get_by_label("Preview language").select_option("es")
+                editor.get_by_role("button", name="Preview registration").click()
+                expect(preview.get_by_role("heading", name="Inscripción para proyecciones")).to_be_visible()
+                expect(preview.get_by_label("Modalidad").get_by_role("option", name="En sala")).to_have_attribute("value", "Gallery")
+                expect(preview.get_by_role("link", name="Leer las condiciones")).to_have_attribute(
+                    "href", "https://gallery.example.test/screening-terms")
+                editor.get_by_label("Preview language").select_option("en")
                 editor.get_by_label("Preview screen").select_option("sign-on")
                 editor.get_by_role("button", name="Preview registration").click()
                 check_design(preview, "Already registered")
@@ -179,8 +202,27 @@ class RegistrationAppearance(unittest.TestCase):
                 page.goto(base + "/operator/showcases?select=" + gallery["id"])
                 page.get_by_role("button", name="Registration", exact=True).click()
                 editor.get_by_label("Saved registration preset").select_option("Arts screenings")
+                editor.get_by_label("Form layout").select_option("steps")
                 editor.get_by_role("button", name="Save registration").click()
                 expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+
+                with browser.new_context(locale="es-MX") as local:
+                    translated = local.new_page()
+                    translated.goto(base + gallery["watch"])
+                    expect(translated.locator(".registration-gate")).to_have_attribute("lang", "es")
+                    expect(translated.get_by_role("heading", name="Inscripción para proyecciones")).to_be_visible()
+                    expect(translated.get_by_text("Paso 1 de 2")).to_be_visible()
+                    translated.get_by_label("Correo electrónico").fill("appearance@example.test")
+                    translated.get_by_role("button", name="Continuar").click()
+                    expect(translated.get_by_text("Paso 2 de 2")).to_be_visible()
+                    translated.get_by_label("Modalidad").select_option(label="En sala")
+                    translated.get_by_label("Idioma", exact=True).select_option("en")
+                    expect(translated.get_by_label("Attendance plan")).to_have_value("Gallery")
+                    expect(translated.get_by_text("Step 2 of 2")).to_be_visible()
+                    translated.get_by_label("Language", exact=True).select_option("es")
+                    translated.get_by_role("button", name="¿Ya te registraste?").click()
+                    expect(translated.get_by_role("heading", name="Ya registrado")).to_be_visible()
+                    expect(translated.get_by_role("button", name="Enviar código")).to_be_visible()
 
                 page.goto(base + "/operator/live-events")
                 page.get_by_role("button", name="Open production for Station appearance test", exact=False).click()
@@ -205,6 +247,8 @@ class RegistrationAppearance(unittest.TestCase):
                             expect(visitor.locator("video")).to_have_count(0)
                             email = f"visitor-{viewport['width']}-{index}@example.test"
                             visitor.get_by_label("Email", exact=True).fill(email)
+                            if index == 1:
+                                visitor.get_by_role("button", name="Continue").click()
                             visitor.get_by_role("button", name="Register and watch").click()
                             expect(visitor.locator(".registration-gate")).to_have_count(0)
                             if playable:
@@ -271,9 +315,10 @@ class RegistrationAppearance(unittest.TestCase):
                     visitor.get_by_role("button", name="Register and watch").click()
                     expect(visitor.locator("video")).to_be_visible()
                     current = send("GET", endpoint)
-                    requirement = dict(id="field_new_consent", type="checkbox", label="I agree to the new terms", required=True)
+                    requirement = dict(id="field_new_consent", type="checkbox", label="I agree to the new terms", required=True,
+                                       link="https://gallery.example.test/new-terms")
                     send("PUT", endpoint, {"revision": current["revision"],
-                        "settings": current["settings"] | {"fields": [requirement]}})
+                        "settings": current["settings"] | {"fields": [requirement], "translations": {}}})
                     visitor.goto(video_path)
                     visitor.get_by_label("Video password").fill(pw)
                     visitor.get_by_role("button", name="Watch video").click()
@@ -285,6 +330,8 @@ class RegistrationAppearance(unittest.TestCase):
                     self.assertFalse(relay.delivered.wait(1))
                     visitor.get_by_role("button", name="Back to registration").click()
                     expect(visitor.get_by_label("I agree to the new terms")).to_be_visible()
+                    expect(visitor.get_by_role("link", name="Read the terms")).to_have_attribute(
+                        "href", "https://gallery.example.test/new-terms")
                     expect(visitor.locator("video")).to_have_count(0)
                     visitor.get_by_label("Email", exact=True).fill("old-consent@example.test")
                     visitor.get_by_label("I agree to the new terms").check()

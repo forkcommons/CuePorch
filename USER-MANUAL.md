@@ -200,6 +200,10 @@ Under **Registration appearance**, choose the form alignment, organizer logo, ba
 
 Use a **Hidden** field to record a value such as a campaign code alongside a registration. For example, set the URL parameter to `campaign` and share a link with `?reg_campaign=fall-screenings`. Direct visitors produce the configured default answer.
 
+Under **Form translations**, enable each audience language and enter translations for the heading, description, questions and choices. **Preview language** shows the selected version before you save. The form matches enabled languages against the viewer’s browser preferences. Viewers can choose a language and keep their answers while switching.
+
+Add a checkbox with a **Terms link** to present screening terms. Use **Required field** when viewers need to agree before playback, and **Privacy policy URL** for the form’s separate privacy link.
+
 Preview **Already registered** to see the returning visitor screen. A workspace with a public HTTPS address and a configured mail relay can send a one-time code to the address used for registration. That code opens the original video, showcase or event occurrence. Existing password, embed and visibility rules still apply. If the organizer added required questions after you registered, use the current form.
 
 Open **Analytics** from the workspace to see impressions, views, view rate, finishes and time watched on CuePorch watch pages and embeds. One loaded player counts as an impression. Its first play counts as a view, and time watched includes repeat playback. Filter by dates in UTC and by playback surface. The retention graph and its accessible table show which portions of the current cut were played. Select a position to seek in the operator preview. The daily CSV follows your date and surface filters.

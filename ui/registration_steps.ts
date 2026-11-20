@@ -4,7 +4,8 @@ const form = document.querySelector<HTMLFormElement>("[data-registration-steps]"
 const identity = form.querySelector<HTMLElement>("[data-identity]")!;
 const questions = form.querySelector<HTMLElement>("[data-questions]")!;
 const controls = form.querySelector<HTMLElement>("[data-step-controls]")!;
-const message = controls.querySelector<HTMLElement>("[data-step-message]")!;
+const stepOne = controls.querySelector<HTMLElement>("[data-step-one]")!;
+const stepTwo = controls.querySelector<HTMLElement>("[data-step-two]")!;
 const back = controls.querySelector<HTMLButtonElement>("[data-previous]")!;
 const next = controls.querySelector<HTMLButtonElement>("[data-next]")!;
 const submit = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
@@ -14,7 +15,8 @@ function show(first: boolean) {
   questions.hidden = first;
   back.hidden = submit.hidden = first;
   next.hidden = !first;
-  message.textContent = first ? "Step 1 of 2" : "Step 2 of 2";
+  stepOne.hidden = !first;
+  stepTwo.hidden = first;
 }
 
 function advance() {

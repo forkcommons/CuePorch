@@ -23,6 +23,20 @@
         <button type="button" id="addRegistrationField">Add field</button>
       </fieldset>
       <fieldset>
+        <legend>Form translations</legend>
+        <label>Language to edit <select name="translation_language">
+          {% for code, name in registration_languages.items() if code != 'en' %}
+          <option value="{{ code }}" lang="{{ code }}">{{ name }}</option>
+          {% endfor %}
+        </select></label>
+        <label><input type="checkbox" name="translation_enabled"> Show this language to viewers</label>
+        <div id="registrationTranslation" hidden>
+          <label>Translated heading <input name="translated_heading" maxlength="80"></label>
+          <label>Translated description <textarea name="translated_description" rows="3" maxlength="1000"></textarea></label>
+          <div id="registrationTranslatedFields"></div>
+        </div>
+      </fieldset>
+      <fieldset>
         <legend>Registration appearance</legend>
         <label>Form alignment <select name="alignment"><option value="start">Left</option><option value="center">Center</option><option value="end">Right</option></select></label>
         <label>Registration logo <input type="file" name="logo" accept="image/png,image/jpeg,image/webp"></label>
@@ -33,6 +47,7 @@
         <label>Overlay color <input type="color" name="overlay"></label>
         <label>Overlay opacity (%) <input type="number" name="opacity" min="0" max="100" step="1" required></label>
         <label>Preview screen <select name="preview_screen"><option value="form">Registration form</option><option value="sign-on">Already registered</option></select></label>
+        <label>Preview language <select name="preview_language"><option value="en">English</option></select></label>
         <label>Form preview device <select name="preview_size"><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label>
         <button type="button" id="showRegistrationPreview">Preview registration</button>
         <div class="registration-preview-container">
@@ -63,6 +78,7 @@
         <label>Default answer <input name="default_value" maxlength="250"></label>
       </div>
       <label data-field-required><input type="checkbox" name="required"> Required field</label>
+      <label data-field-link hidden>Terms link <input type="url" name="link" maxlength="2048"></label>
       <button type="button" data-remove-field>Remove field</button>
     </li>
   </template>

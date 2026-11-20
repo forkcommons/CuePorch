@@ -14,9 +14,17 @@ export function setupRegistration(call, download, credential, saved) {
     const presets = form.querySelector("[name=preset]");
     const attendeeAnalytics = form.querySelector("[name=attendance_analytics]");
     const field = (node, name) => node.querySelector(`[name="${name}"]`);
+    const language = field(form, "translation_language");
+    const translate = field(form, "translation_enabled");
+    const translated = form.querySelector("#registrationTranslation");
+    const localizedHeading = field(form, "translated_heading");
+    const localizedDescription = field(form, "translated_description");
+    const localizedFields = form.querySelector("#registrationTranslatedFields");
+    const previewLanguage = field(form, "preview_language");
     let current;
     let counter = 0;
     let images = { logo: null, background_image: null };
+    let translations = {};
     let busy = false;
     const clearImage = (name) => form.querySelector(`[data-clear-image="${name}"]`);
     async function request(path, body) {
@@ -35,29 +43,90 @@ export function setupRegistration(call, download, credential, saved) {
         const required = field(row, "required");
         const parameter = field(row, "parameter");
         const defaultValue = field(row, "default_value");
+        const terms = field(row, "link");
         kind.value = value.type;
         label.value = value.label;
         options.value = value.options.join("\n");
         required.checked = value.required;
         parameter.value = value.parameter ?? "";
         defaultValue.value = value.default_value ?? "";
+        terms.value = value.link ?? "";
         function controls() {
             row.querySelector("[data-field-options]").hidden = kind.value !== "select";
             row.querySelector("[data-field-required]").hidden = ["description", "hidden"].includes(kind.value);
             row.querySelector("[data-field-hidden]").hidden = kind.value !== "hidden";
             parameter.disabled = kind.value !== "hidden";
             parameter.required = kind.value === "hidden";
+            row.querySelector("[data-field-link]").hidden = kind.value !== "checkbox";
+            terms.disabled = kind.value !== "checkbox";
         }
         kind.onchange = controls;
         controls();
         row.querySelector("[data-remove-field]").onclick = () => {
             row.remove();
             add.disabled = false;
+            renderTranslation();
         };
         fields.append(row);
         add.disabled = fields.children.length >= 20;
         return label;
     }
+    function readFields() {
+        return [...fields.querySelectorAll(":scope > li")].map(row => ({
+            id: row.dataset.fieldId, type: field(row, "kind").value, label: field(row, "label").value,
+            required: field(row, "required").checked,
+            options: field(row, "options").value.split("\n").map(value => value.trim()).filter(Boolean),
+            parameter: field(row, "parameter").value, default_value: field(row, "default_value").value,
+            link: field(row, "link").value,
+        }));
+    }
+    function renderTranslation() {
+        const draft = translations[language.value];
+        translate.checked = Boolean(draft);
+        translated.hidden = !draft;
+        const previous = previewLanguage.value;
+        const active = Array.from(language.options).filter(option => option.value in translations);
+        previewLanguage.replaceChildren(new Option("English", "en"), ...active.map(option => new Option(option.textContent, option.value)));
+        previewLanguage.value = previous in translations ? previous : "en";
+        if (!draft)
+            return;
+        localizedHeading.value = draft.heading;
+        localizedDescription.value = draft.description;
+        localizedHeading.oninput = () => { draft.heading = localizedHeading.value; };
+        localizedDescription.oninput = () => { draft.description = localizedDescription.value; };
+        const controls = [];
+        function input(title, value, limit, update) {
+            const label = document.createElement("label");
+            const element = document.createElement("input");
+            element.maxLength = limit;
+            element.value = value;
+            element.oninput = () => update(element.value);
+            label.append(title, " ", element);
+            controls.push(label);
+        }
+        for (const base of readFields()) {
+            if (base.type === "hidden" || !base.label.trim())
+                continue;
+            const entry = draft.fields[base.id] ??= { label: "", options: {} };
+            input("Translation for " + base.label, entry.label, 240, value => { entry.label = value; });
+            if (base.type === "select") {
+                for (const option of base.options) {
+                    const label = Object.hasOwn(entry.options, option) ? entry.options[option] : "";
+                    input("Translation for choice " + option, label, 80, value => { entry.options = { ...entry.options, [option]: value }; });
+                }
+            }
+        }
+        localizedFields.replaceChildren(...controls);
+    }
+    language.onchange = renderTranslation;
+    translate.onchange = () => {
+        if (translate.checked)
+            translations[language.value] = { heading: "", description: "", fields: {} };
+        else
+            delete translations[language.value];
+        renderTranslation();
+    };
+    fields.addEventListener("input", renderTranslation);
     function renderFields(settings) {
         const enabled = field(form, "enabled");
         enabled.checked = settings.enabled && !current.protected_public;
@@ -82,6 +151,8 @@ export function setupRegistration(call, download, credential, saved) {
         fields.replaceChildren();
         add.disabled = false;
         settings.fields.forEach(append);
+        translations = structuredClone(settings.translations ?? {});
+        renderTranslation();
     }
     function render(state) {
         current = state;
@@ -139,12 +210,18 @@ export function setupRegistration(call, download, credential, saved) {
                 clearImage(name).hidden = false;
             }
         }
-        const questions = [...fields.querySelectorAll(":scope > li")].map(row => ({
-            id: row.dataset.fieldId, type: field(row, "kind").value, label: field(row, "label").value,
-            required: field(row, "required").checked,
-            options: field(row, "options").value.split("\n").map(value => value.trim()).filter(Boolean),
-            parameter: field(row, "parameter").value,
-            default_value: field(row, "default_value").value,
+        const questions = readFields();
+        const localized = Object.fromEntries(Object.entries(translations).map(([code, draft]) => {
+            const labels = {};
+            for (const question of questions) {
+                const entry = draft.fields[question.id];
+                if (!entry || question.type === "hidden")
+                    continue;
+                const choices = question.type === "select" ? question.options : [];
+                const options = choices.filter(value => Object.hasOwn(entry.options, value)).map(value => [value, entry.options[value]]);
+                labels[question.id] = { label: entry.label, options: Object.fromEntries(options) };
+            }
+            return [code, { ...draft, fields: labels }];
         }));
         return {
             enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
@@ -152,6 +229,7 @@ export function setupRegistration(call, download, credential, saved) {
             heading: field(form, "heading").value, description: field(form, "description").value,
             privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
             last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: questions,
+            translations: localized,
             appearance: { ...images, alignment: field(form, "alignment").value, background: field(form, "background").value,
                 overlay: field(form, "overlay").value, opacity: field(form, "opacity").valueAsNumber },
         };
@@ -175,7 +253,7 @@ export function setupRegistration(call, download, credential, saved) {
         if (!form.reportValidity())
             return;
         void useDraft(async (settings, context) => {
-            const response = await request("/api/registration/preview", { settings, screen: screen.value, event: !!attendeeAnalytics });
+            const response = await request("/api/registration/preview", { settings, screen: screen.value, language: previewLanguage.value, event: !!attendeeAnalytics });
             if (context !== current || form.hidden)
                 return;
             preview.dataset.size = size.value;
