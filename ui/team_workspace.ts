@@ -8,7 +8,11 @@ const join = document.querySelector<HTMLFormElement>("#teamJoin");
 const signIn = document.querySelector<HTMLFormElement>("#teamSignIn");
 const library = document.querySelector<HTMLElement>("#teamLibrary");
 const upload = document.querySelector<HTMLFormElement>("#teamUpload");
+const search = document.querySelector<HTMLFormElement>("#teamSearch");
+const clearSearch = document.querySelector<HTMLButtonElement>("#clearTeamSearch");
 let uploadId = "";
+let libraryQuery = "";
+let libraryRequest = 0;
 
 async function task(action: () => Promise<void>, form?: HTMLFormElement) {
   const submit = form?.querySelector<HTMLButtonElement>("button");
@@ -50,9 +54,17 @@ function clearOperatorMarker() {
 }
 
 async function showVideos() {
-  const response = await checked(await teamRequest("library"));
+  const requestId = ++libraryRequest;
+  const query = libraryQuery;
+  const response = await teamRequest(query ? "library?" + new URLSearchParams({q: query}) : "library");
+  if (requestId !== libraryRequest) return;
+  if (response.status === 401) {
+    document.querySelector("#teamVideos")!.replaceChildren();
+    reveal();
+  }
   const {works, workspaces}: {works: {title: string; watch: string}[];
-    workspaces: {name: string; origin: string}[]} = await response.json();
+    workspaces: {name: string; origin: string}[]} = await (await checked(response)).json();
+  if (requestId !== libraryRequest) return;
   const linked = document.querySelector<HTMLElement>("#linkedWorkspaces")!;
   linked.querySelector("ul")!.replaceChildren(...workspaces.map(workspace => {
     const item = document.createElement("li");
@@ -68,6 +80,8 @@ async function showVideos() {
   const empty = document.querySelector<HTMLElement>("#teamLibraryEmpty")!;
   list.replaceChildren();
   empty.hidden = works.length > 0;
+  empty.textContent = query ? "No videos in your Team Library match your search." : "There are no videos available to you yet.";
+  if (clearSearch) clearSearch.hidden = !query;
   for (const work of works) {
     const item = document.createElement("li");
     const link = document.createElement("a");
@@ -93,7 +107,23 @@ if (join) {
       location.assign("/team");
     }, join);
   };
-} else if (signIn && upload) {
+} else if (signIn && upload && search && clearSearch) {
+  const searchInput = search.querySelector<HTMLInputElement>("[name=q]")!;
+  search.onsubmit = event => {
+    event.preventDefault();
+    const query = searchInput.value.trim();
+    if (new FormData(search).get("scope") === "watch") {
+      location.assign("/watch?" + new URLSearchParams({q: query}));
+      return;
+    }
+    libraryQuery = query;
+    void task(showVideos, search);
+  };
+  clearSearch.onclick = () => {
+    searchInput.value = libraryQuery = "";
+    searchInput.focus();
+    void task(showVideos);
+  };
   signIn.querySelector<HTMLInputElement>("input[type=email]")!.oninput = () => resetSignInCode(signIn);
   signIn.onsubmit = event => {
     event.preventDefault();
@@ -108,6 +138,10 @@ if (join) {
   };
   document.querySelector<HTMLButtonElement>("#teamSignOut")!.onclick = () => void task(async () => {
     await checked(await teamRequest("session", "DELETE"));
+    libraryRequest += 1;
+    libraryQuery = "";
+    search.reset();
+    clearSearch.hidden = true;
     document.querySelector("#teamVideos")!.replaceChildren();
     reveal();
   });

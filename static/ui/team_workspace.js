@@ -7,7 +7,11 @@ const join = document.querySelector("#teamJoin");
 const signIn = document.querySelector("#teamSignIn");
 const library = document.querySelector("#teamLibrary");
 const upload = document.querySelector("#teamUpload");
+const search = document.querySelector("#teamSearch");
+const clearSearch = document.querySelector("#clearTeamSearch");
 let uploadId = "";
+let libraryQuery = "";
+let libraryRequest = 0;
 async function task(action, form) {
     const submit = form?.querySelector("button");
     if (submit)
@@ -56,8 +60,18 @@ function clearOperatorMarker() {
         sessionStorage.removeItem("cueporchOperator");
 }
 async function showVideos() {
-    const response = await checked(await teamRequest("library"));
-    const { works, workspaces } = await response.json();
+    const requestId = ++libraryRequest;
+    const query = libraryQuery;
+    const response = await teamRequest(query ? "library?" + new URLSearchParams({ q: query }) : "library");
+    if (requestId !== libraryRequest)
+        return;
+    if (response.status === 401) {
+        document.querySelector("#teamVideos").replaceChildren();
+        reveal();
+    }
+    const { works, workspaces } = await (await checked(response)).json();
+    if (requestId !== libraryRequest)
+        return;
     const linked = document.querySelector("#linkedWorkspaces");
     linked.querySelector("ul").replaceChildren(...workspaces.map(workspace => {
         const item = document.createElement("li");
@@ -73,6 +87,9 @@ async function showVideos() {
     const empty = document.querySelector("#teamLibraryEmpty");
     list.replaceChildren();
     empty.hidden = works.length > 0;
+    empty.textContent = query ? "No videos in your Team Library match your search." : "There are no videos available to you yet.";
+    if (clearSearch)
+        clearSearch.hidden = !query;
     for (const work of works) {
         const item = document.createElement("li");
         const link = document.createElement("a");
@@ -98,7 +115,23 @@ if (join) {
         }, join);
     };
 }
-else if (signIn && upload) {
+else if (signIn && upload && search && clearSearch) {
+    const searchInput = search.querySelector("[name=q]");
+    search.onsubmit = event => {
+        event.preventDefault();
+        const query = searchInput.value.trim();
+        if (new FormData(search).get("scope") === "watch") {
+            location.assign("/watch?" + new URLSearchParams({ q: query }));
+            return;
+        }
+        libraryQuery = query;
+        void task(showVideos, search);
+    };
+    clearSearch.onclick = () => {
+        searchInput.value = libraryQuery = "";
+        searchInput.focus();
+        void task(showVideos);
+    };
     signIn.querySelector("input[type=email]").oninput = () => resetSignInCode(signIn);
     signIn.onsubmit = event => {
         event.preventDefault();
@@ -114,6 +147,10 @@ else if (signIn && upload) {
     };
     document.querySelector("#teamSignOut").onclick = () => void task(async () => {
         await checked(await teamRequest("session", "DELETE"));
+        libraryRequest += 1;
+        libraryQuery = "";
+        search.reset();
+        clearSearch.hidden = true;
         document.querySelector("#teamVideos").replaceChildren();
         reveal();
     });

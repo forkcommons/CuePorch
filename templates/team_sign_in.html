@@ -43,8 +43,14 @@
       <label>Private video <input name="video" type="file" required accept=".mp4,.mov,.webm,.mkv"></label>
       <button>Upload to My Library</button> <progress max="100" hidden></progress>
     </form>
+    <form id="teamSearch" class="workspace-search" role="search" aria-label="Find videos">
+      <label>Search videos <input type="search" name="q" maxlength="120"></label>
+      <label>Search in <select name="scope"><option value="library">Team Library</option><option value="watch">Public Watch</option></select></label>
+      <button type="submit">Search</button>
+      <button type="button" id="clearTeamSearch" hidden>Clear search</button>
+    </form>
     <h3>Available videos</h3>
-    <p id="teamLibraryEmpty" hidden>There are no videos available to you yet.</p>
+    <p id="teamLibraryEmpty" role="status" hidden>There are no videos available to you yet.</p>
     <ul id="teamVideos"></ul>
   </section>
   {% endif %}

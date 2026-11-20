@@ -759,10 +759,14 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     def team_library():
         secure = secure_site(origin)
         same_origin(secure)
+        query = request.args.get("q", "").strip()[:120].casefold()
         with tx() as con:
             row = member(con, secure)
-            works = [dict(id=uid, title=title_for(con, work), watch=url_for("team_watch", work=uid))
-                     for uid, work in access(con, row).items()]
+            works = []
+            for uid, work in access(con, row).items():
+                title = title_for(con, work)
+                if query in title.casefold():
+                    works.append(dict(id=uid, title=title, watch=url_for("team_watch", work=uid)))
             workspaces = team_workspaces.linked_workspaces(con, row)
         return private(dict(works=sorted(works, key=lambda item: item["title"].casefold()), workspaces=workspaces))
 

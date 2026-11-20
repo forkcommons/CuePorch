@@ -127,13 +127,32 @@ class WorkspaceActivity(unittest.TestCase):
                     return page
 
                 page = join(viewer, "viewer", "viewer")
-                join(other, "other", "viewer")
+                other_page = join(other, "other", "viewer")
                 manager = join(admin, "manager", "admin")
                 manager_items = admin.request.get(base + activity, headers=TEAM).json()["items"]
                 self.assertFalse(next(item for item in manager_items if item["id"] == private_item["id"])["read"])
                 member = viewer.request.get(base + "/api/team/account").json()["id"]
                 grant = f"/api/team/members/{member}/works/{work}"
                 self.assertEqual(204, operator_client.put(grant, headers=auth, json=dict(permission="view")).status_code)
+                search = page.get_by_role("search", name="Find videos")
+                search.get_by_label("Search videos").fill("GALLERY REHEARSAL")
+                search.get_by_role("button", name="Search", exact=True).click()
+                expect(page.locator("#teamVideos").get_by_role("link", name=title)).to_be_visible()
+                search.get_by_label("Search videos").fill("Nothing with this title")
+                search.get_by_role("button", name="Search", exact=True).click()
+                expect(page.get_by_text("No videos in your Team Library match your search.")).to_be_visible()
+                search.get_by_role("button", name="Clear search").click()
+                expect(page.locator("#teamVideos").get_by_role("link", name=title)).to_be_visible()
+
+                other_search = other_page.get_by_role("search", name="Find videos")
+                other_search.get_by_label("Search videos").fill(title)
+                other_search.get_by_role("button", name="Search", exact=True).click()
+                expect(other_page.get_by_text("No videos in your Team Library match your search.")).to_be_visible()
+                other_search.get_by_label("Search in").select_option("watch")
+                other_search.get_by_role("button", name="Search", exact=True).click()
+                expect(other_page.get_by_label("Search public videos")).to_have_value(title)
+                expect(other_page.get_by_role("link", name=title)).to_have_count(0)
+
                 first = viewer.request.post(base + topic, headers=TEAM, data=dict(
                     subject="Caption support", message="A message for workspace support."))
                 self.assertEqual(201, first.status)
@@ -175,6 +194,9 @@ class WorkspaceActivity(unittest.TestCase):
                 self.assertEqual(204, operator_client.delete(grant, headers=auth, json={}).status_code)
                 self.assertEqual(404, viewer.request.get(base + shared["url"] + "/media").status)
                 self.assertEqual(404, viewer.request.put(base + activity, headers=TEAM, data={"id": shared["id"]}).status)
+                after_revocation = viewer.request.get(base + "/api/team/library?q=gallery")
+                self.assertEqual([], after_revocation.json()["works"])
+                self.assertIn("no-store", after_revocation.headers["cache-control"])
 
                 manager.locator(".workspace-activity summary").click()
                 manager_panel = manager.get_by_role("region", name="Workspace activity")
