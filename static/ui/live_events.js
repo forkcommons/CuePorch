@@ -5,6 +5,7 @@ import { relaySummary } from "./event_health.js";
 import { waitingPlayer } from "./event_waiting.js";
 import { playerColors, playerSwitches } from "./event_controls.js";
 import { setupLiveApi } from "./live_api.js";
+import { setupEventMail } from "./event_mail.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -111,6 +112,7 @@ async function request(path, method = "GET", body) {
     return result.status === 204 ? undefined : result.json();
 }
 setupLiveApi(request);
+const chooseEmailEvent = setupEventMail(request);
 async function action(work, message = "") {
     if (pending)
         return;
@@ -227,6 +229,7 @@ function choose(event, instance) {
         registrationEvent = undefined;
     }
     active = { event, instance };
+    chooseEmailEvent(event.id);
     closeEngagement();
     chatPanel.open = false;
     chatMessages.replaceChildren();

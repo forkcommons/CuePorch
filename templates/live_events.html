@@ -142,6 +142,25 @@
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
       <p id="eventHealthDetails"></p>
+      <details id="eventMailSettings">
+        <summary>Webinar emails</summary>
+        <p id="eventMailRelay"></p>
+        <form id="eventMailForm">
+          <fieldset disabled>
+            <legend>Automatic mail for this event</legend>
+            <label><input type="checkbox" name="confirmation"> Send registration confirmations</label>
+            <label>Minutes before start for each reminder (comma-separated)
+              <input name="reminders" placeholder="1440, 60" maxlength="100">
+            </label>
+            <label>Hours after the end to send a follow-up (blank to turn off)
+              <input type="number" name="followUp" min="0" max="168" step="1">
+            </label>
+            <button type="submit">Save webinar emails</button>
+          </fieldset>
+        </form>
+        <p id="eventMailDeliveries"></p>
+        <p id="eventMailStatus" role="status"></p>
+      </details>
       <details id="eventAnalytics">
         <summary>Audience analytics</summary>
         <table>

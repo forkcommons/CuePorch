@@ -26,6 +26,7 @@ import event_chat
 import event_captions
 import event_engagement
 import event_library_recordings
+import event_mail
 import event_player
 import event_playlist
 import event_program
@@ -44,6 +45,7 @@ import library_analytics
 from library_interactivity import text_field
 from library_privacy import allowed_ancestor, frame_policy, normalize_domain, try_password
 import library_registration
+import mail_relay
 import media_bandwidth
 import regional_availability
 import studio_voice
@@ -65,7 +67,8 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
-       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA)
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
+       + event_mail.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -423,6 +426,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         app.extensions["account_reset_delivery"].stop()
         if stop_webhooks := app.extensions.get("stop_event_webhooks"):
             stop_webhooks()
+        stop_mail()
         outputs.close()
         preview_outputs.close()
         programs.close()
@@ -436,6 +440,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     attendance_links = URLSafeSerializer(signing_key, salt="cueporch-event-attendance")
+    mail_origin = library_analytics.source_origin(public_url)
+    stop_mail = event_mail.register(app, tx, database, mail_origin, staff, read, attendance_links)
+    mail_configured = bool(mail_relay.configured(mail_origin))
     frames = URLSafeTimedSerializer(signing_key, salt="cueporch-event-frame")
     audiences = URLSafeTimedSerializer(signing_key, salt="cueporch-event-audience")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
@@ -687,6 +694,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             registrant, created = event_attendance.enroll(
                 con, uid, row["revision"], slot, form, body,
                 on_create=lambda email_key: event_webhooks.registration_created(con, uid, opens, email_key))
+            if mail_configured:
+                _, rules = event_mail.settings(con, uid)
+                event_mail.schedule(con, registrant["id"], opens, registrant["expires_at"], rules,
+                                    int(datetime.now(timezone.utc).timestamp()), confirmation=created)
         address = url_for("event_attendance_join", slug=row["slug"])
         return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
 
@@ -1362,6 +1373,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         on_create=lambda email_key: event_webhooks.registration_created(con, row["id"], shown["id"], email_key))
                     if not form_error:
                         grant = guests.dumps(scope)
+                        if mail_configured and event["visibility"] in event_mail.WATCHABLE:
+                            _, rules = event_mail.settings(con, row["id"])
+                            if event_mail.enabled(rules):
+                                attendee, created = event_attendance.issue(
+                                    con, row["id"], row["revision"], shown, form, request.form["email"].strip())
+                                if attendee:
+                                    event_mail.schedule(con, attendee["id"], shown["id"], attendee["expires_at"], rules,
+                                                        int(now.timestamp()), confirmation=created)
                 else:
                     on_playlist = playlist_enabled and (withdrawn or (delivery and delivery["delivery"] == "replay"))
                     token = request.headers.get("X-CuePorch-Event-Viewer", "")

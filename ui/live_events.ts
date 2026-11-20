@@ -5,6 +5,7 @@ import {relaySummary, type RelayHealth} from "./event_health.js";
 import {waitingPlayer} from "./event_waiting.js";
 import {playerColors, playerSwitches, type EventAppearance} from "./event_controls.js";
 import {setupLiveApi} from "./live_api.js";
+import {setupEventMail} from "./event_mail.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -177,6 +178,7 @@ async function request<T>(path: string, method = "GET", body?: object): Promise<
 }
 
 setupLiveApi(request);
+const chooseEmailEvent = setupEventMail(request);
 
 async function action(work: () => Promise<void>, message = "") {
   if (pending) return;
@@ -294,6 +296,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
     registrationEvent = undefined;
   }
   active = {event, instance};
+  chooseEmailEvent(event.id);
   closeEngagement();
   chatPanel.open = false;
   chatMessages.replaceChildren();

@@ -59,15 +59,23 @@ def enroll(con, event, revision, slot, form, body, on_create=None):
     failure = library_registration.enroll(con, "event", event, form, values, {}, replace=True, on_create=on_create)
     if failure:
         abort(422, failure)
-    now, expires = int(time()), expires_at(slot)
-    if expires <= now:
-        abort(409, "This occurrence has ended.")
-    address = values["email"].strip()
+    registrant, created = issue(con, event, revision, slot, form, values["email"].strip())
+    if registrant is None:
+        reason = ("This occurrence has ended." if expires_at(slot) <= int(time()) else
+                  "This attendee's join link was revoked for the current occurrence.")
+        abort(409, reason)
+    return registrant, created
+
+
+def issue(con, event, revision, slot, form, address):
+    expires = expires_at(slot)
+    if expires <= int(time()):
+        return None, False
     scope = (event, slot["id"], revision, form["revision"], address.casefold())
     entry = con.execute("""SELECT id,revoked FROM live_attendance_link WHERE event=? AND opens=?
                            AND event_revision=? AND form_revision=? AND email_key=?""", scope).fetchone()
     if entry and entry["revoked"]:
-        abort(409, "This attendee's join link was revoked for the current occurrence.")
+        return None, False
     uid = entry["id"] if entry else uuid.uuid4().hex
     if not entry:
         con.execute("""INSERT INTO live_attendance_link(id,event,opens,event_revision,form_revision,email_key,expires)

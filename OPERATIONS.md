@@ -105,6 +105,12 @@ As workspace Owner, `POST /api/operator/live-api/webhooks` with `endpoint` and a
 
 Each JSON delivery contains `id`, `type`, `event`, `occurrence`, `occurred_at` and `data`. The occurrence is null for event-wide changes. Verify the `X-CuePorch-Signature` header against `v1=` followed by the hexadecimal HMAC-SHA256 of the `X-CuePorch-Timestamp` value, a literal period and the raw request body, using the subscription secret. Compare in constant time and reject stale timestamps. Store the `X-CuePorch-Delivery` ID to make processing idempotent, then return HTTP 2xx. CuePorch retries other statuses and connection failures with the same ID and payload, using a fresh timestamp and signature. The five retry delays are 10, 30, 120, 300 and 900 seconds.
 
+### Webinar email relay
+
+Use the public HTTPS origin and the same SMTP-over-TLS settings as team invitations. The relay accepts or rejects each recipient address. The production panel reports `accepted` when the relay accepts a message. Delivery to the recipient's inbox depends on the relay. If the connection fails or the relay rejects a message, CuePorch retries after 15 seconds, one minute and five minutes as long as the message remains applicable. A lost acknowledgment can result in another attempt. Include the event mail queue in private instance backups by preserving `institution.sqlite`.
+
+An operator can read or update `/api/live-events/{event}/registration/email`. Submit the current `revision` and `settings` with `confirmation`, `reminder_minutes` and `follow_up_hours`. Pass an empty reminder list and null follow-up delay to turn those messages off. Turning off a message type cancels its pending jobs. A private, withdrawn or superseded occurrence and revoked personal links prevent sending. Configured publication approval holds the mail until the event is eligible. Use the live event's own settings to control whether a follow-up can link to a released replay.
+
 ## Source-only validation
 
 Use the versions in requirements.txt for the product. Browser cases additionally need Playwright and a headless Chromium browser. The Windows rehearsal used Edge. The station integration tests use CivicCast's Python package and, for captions, its built portal-public bundle at revision 0b8ab5accac4fc6ebbc6886d5d3d9006bdc0c65f. Run the exact commands in the acceptance record. Run separate copies for different institutions and migrations. A customer Vimeo account is optional.
