@@ -1,6 +1,7 @@
 """Play revocable progressive and adaptive file links apart from CuePorch's player."""
 
 import json
+import os
 import subprocess
 import uuid
 from urllib.parse import urljoin
@@ -88,13 +89,14 @@ def check_file_links(page, browser, base, auth, venue, root, public_link, privat
         player.wait_for_function("document.querySelector('video').videoHeight === 360")
         player.evaluate("window.directHls.destroy()")
 
+    decoder = os.environ.get("CUEPORCH_DASH_DECODER") or "ffmpeg"
     pixels = subprocess.check_output([
-        "ffmpeg", "-v", "error", "-i", dash, "-map", "0:v:0", "-frames:v", "1",
+        decoder, "-v", "error", "-i", dash, "-map", "0:v:0", "-frames:v", "1",
         "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
     ], timeout=35)
     assert len(pixels) == 640 * 360 * 3 and len(set(pixels)) > 20
     samples = subprocess.check_output([
-        "ffmpeg", "-v", "error", "-i", dash, "-ss", "0.25", "-map", "0:a:0", "-t", "0.12",
+        decoder, "-v", "error", "-i", dash, "-ss", "0.25", "-map", "0:a:0", "-t", "0.12",
         "-ac", "1", "-ar", "8000", "-f", "s16le", "-",
     ], timeout=35)
     pcm = memoryview(samples).cast("h")

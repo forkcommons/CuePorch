@@ -7,6 +7,11 @@ on:
         type: choice
         options: [cutover, full]
         default: cutover
+      platform:
+        description: Native runner selection
+        type: choice
+        options: [all, windows-2025, macos-15, ubuntu-24.04]
+        default: all
 permissions:
   contents: read
 jobs:
@@ -14,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15, ubuntu-24.04]
+        os: ${{ fromJSON(inputs.platform == 'all' && '["windows-2025","macos-15","ubuntu-24.04"]' || format('["{0}"]', inputs.platform)) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 50
     steps:
@@ -68,6 +73,22 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: echo "$GITHUB_WORKSPACE/build/media-tools" >> "$GITHUB_PATH"
+      - name: Select a DASH-capable independent decoder on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          decoder="$GITHUB_WORKSPACE/build/media-tools/ffmpeg"
+          formats="$("$decoder" -hide_banner -demuxers)"
+          if ! grep -Eq '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"; then
+            echo 'The bundled encoder has no DASH demuxer. Use Homebrew FFmpeg for the independent playback client.'
+            brew list --versions ffmpeg >/dev/null || brew install ffmpeg
+            decoder="$(brew --prefix ffmpeg)/bin/ffmpeg"
+          fi
+          formats="$("$decoder" -hide_banner -demuxers)"
+          grep -E '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"
+          echo "CUEPORCH_DASH_DECODER=$decoder" >> "$GITHUB_ENV"
       - name: Verify Windows Setup, cutover and recovery
         if: runner.os == 'Windows'
         shell: pwsh
