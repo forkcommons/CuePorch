@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 from playwright.sync_api import TimeoutError as BrowserTimeout
@@ -42,7 +42,7 @@ def browser_caption_state(video):
             .map(c=>[c.startTime,c.endTime,c.text]), active:[...(t.activeCues || [])].map(c=>c.text)}))})""")
 
 
-def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=False):
+def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=False, regional_origins=None):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=14)).strftime("%Y-%m-%dT%H:%M")
@@ -57,13 +57,17 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                      starting_options=dict(method="encoder", registration=registered, preview_encoder=False,
                                            captions=dict(enabled=True, language="en"), chat=dict(enabled=False, interval=0),
                                            qa=dict(enabled=False, anonymous=False, review=False)))
+    audience_origin = base
+    if regional_origins:
+        audience_origin, blocked_origin = regional_origins
+        event["regional_policy"] = {"mode": "allow", "areas": ["US-CO"]}
     response = requests.post(base + "/api/live-events", headers=auth, json=event, timeout=12)
     response.raise_for_status()
     entry = response.json()
     (slot,) = entry["occurrences"]
     opens = slot["id"]
-    stable = base + entry["watch"] + f"?occurrence={opens}"
-    caption_route = base + f"/events/{entry['slug']}/{opens}/captions"
+    stable = audience_origin + entry["watch"] + f"?occurrence={opens}"
+    caption_route = audience_origin + f"/events/{entry['slug']}/{opens}/captions"
     production = base + f"/api/live-events/{entry['id']}/{opens}"
     if registered:
         registration = production.rsplit("/", 1)[0] + "/registration"
@@ -195,6 +199,21 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                 assert encoder.poll() is None
                 manifest = urljoin(stable, audience.locator("#eventPlayer").get_attribute("data-address"))
                 assert requests.get(production + "/health", headers=auth, timeout=10).json()["public"] is False
+                if regional_origins:
+                    playlist = requests.get(manifest, timeout=10)
+                    playlist.raise_for_status()
+                    variant = next(line for line in playlist.text.splitlines() if line and not line.startswith("#"))
+                    rendition = urljoin(manifest, variant)
+                    segments = requests.get(rendition, timeout=10)
+                    segments.raise_for_status()
+                    chunk = next(line for line in segments.text.splitlines() if line and not line.startswith("#"))
+                    segment = urljoin(rendition, chunk)
+                    assert len(requests.get(segment, timeout=10).content) > 188
+                    for path in (manifest, segment, caption_route):
+                        target = urlsplit(path).path
+                        assert requests.get(blocked_origin + target, headers=viewer, timeout=10).status_code == 403
+                        assert requests.get(base + target, headers=viewer | {"X-CuePorch-Region": "US-CO"},
+                                            timeout=10).status_code == 403
                 response = requests.delete(production + "/delivery", headers=auth, timeout=30)
                 assert response.status_code == 204, response.status_code
                 withdrawn = True
@@ -208,7 +227,7 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=
                         viewer_decoded_caption_cue_after_transcript_seek=True, withdrawal_revokes_caption_access=True,
                         withdrawal_revokes_cueporch_manifest=True, peer_withdrawal_http=response.status_code,
                         rewind_seconds=round(rewind, 2), requires_registration=registered, requires_password=protected,
-                        inherited_caption_defaults=protected)
+                        inherited_caption_defaults=protected, trusted_region_enforced_on_hls_and_captions=bool(regional_origins))
         finally:
             browser.close()
             if not withdrawn:

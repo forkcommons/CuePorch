@@ -65,6 +65,12 @@
         <label id="eventViewingPassword" hidden>Viewing password <input type="password" name="view_password" maxlength="256" autocomplete="new-password"></label>
         <label>Where may this event be embedded? <select name="embed_mode"><option value="anywhere">Anywhere</option><option value="disabled">Nowhere</option><option value="domains">Specific domains</option></select></label>
         <label id="eventEmbedDomains" hidden>Allowed domains, one per line <textarea name="embed_domains" rows="3" placeholder="example.org"></textarea></label>
+        <label>Regional availability <select name="region_mode"><option value="anywhere">Anywhere</option><option value="allow">Allow listed locations</option><option value="deny">Block listed locations</option></select></label>
+        <div id="eventRegionFields" hidden>
+          <label>Locations, one per line <textarea name="region_areas" rows="3" placeholder="CA&#10;US-CO | Longmont&#10;80501"></textarea></label>
+          <label>Import regional availability CSV <input type="file" id="importEventRegions" accept=".csv,text/csv"></label>
+          <button type="button" id="exportEventRegions" hidden>Download saved regions CSV</button>
+        </div>
         <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
         <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
         <small id="eventDvrHelp">Leave blank for the host default. Enter 0 to turn DVR off. The host sets the maximum.</small>

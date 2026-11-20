@@ -1,6 +1,7 @@
 """Institution event schedules and the operator's live production controls."""
 
 from datetime import date, datetime, time, timedelta, timezone
+from csv import Error as CSVError
 from email.utils import parsedate_to_datetime
 import hmac
 import json
@@ -40,6 +41,7 @@ from library_interactivity import text_field
 from library_privacy import allowed_ancestor, frame_policy, normalize_domain, try_password
 import library_registration
 import media_bandwidth
+import regional_availability
 
 
 SCHEMA = """
@@ -86,8 +88,9 @@ def occurrence(con, uid, opens):
 
 
 def private_delivery(con, event, uid, opens):
-    return bool(event.get("cueporch_delivery") or event["visibility"] in RESTRICTED_AUDIENCES or con.execute(
-        "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
+    return bool(event.get("cueporch_delivery") or event["visibility"] in RESTRICTED_AUDIENCES
+                or territories(event)["mode"] != "anywhere" or con.execute(
+                    "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
 
 
 def encoder_preview_enabled(con, uid):
@@ -192,6 +195,11 @@ def edit(raw):
         value["archive_replay"] = raw["archive_replay"]
     if "embed_policy" in raw:
         value["embed_policy"] = embed_policy(raw["embed_policy"])
+    if "regional_policy" in raw:
+        try:
+            value["regional_policy"] = regional_availability.validated(raw["regional_policy"])
+        except ValueError as error:
+            abort(422, str(error))
     return value
 
 
@@ -218,6 +226,10 @@ def sharing_settings(event):
     if event["visibility"] == "embed_only" and policy["mode"] == "disabled":
         abort(422, "Choose where an embed-only event can be watched.")
     return dict(visibility=event["visibility"], embed=policy["mode"], domains=policy["domains"])
+
+
+def territories(event):
+    return event.get("regional_policy", regional_availability.DEFAULT)
 
 
 def validate_setup(raw):
@@ -378,6 +390,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
 
+    def enforce_territories(event):
+        if not regional_availability.permits(territories(event), analytics_proxies):
+            response = make_response("This event is unavailable in your region.", 403)
+            response.headers["Content-Type"] = "text/plain; charset=utf-8"
+            response.headers["Cache-Control"] = "no-store"
+            abort(response)
+
+    def check_territories(event):
+        if territories(event)["mode"] != "anywhere" and not analytics_proxies:
+            abort(422, "Connect a trusted region proxy before setting territories.")
+
     def viewer_enrolled(token, scope, released_archive):
         try:
             registered_scope = guests.loads(token, max_age=12 * 3600)
@@ -428,7 +451,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     setup = reuse_setup(con, reference, previous)
                 if "embed_policy" in previous:
                     event.setdefault("embed_policy", previous["embed_policy"])
+                if "regional_policy" in previous:
+                    event.setdefault("regional_policy", previous["regional_policy"])
             enforce_sharing(con, settings=sharing_settings(event))
+            check_territories(event)
             access = requested_access(event, body)
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
@@ -456,6 +482,30 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             _, event = read(con, uid)
             return reuse_setup(con, uid, event)
 
+    @app.post("/api/live-events/regions/import")
+    def event_region_import():
+        staff()
+        request.max_content_length = regional_availability.MAX_BYTES * 2
+        body = request.get_json()
+        text = body.get("csv") if isinstance(body, dict) else None
+        if not isinstance(text, str) or len(text.encode("utf-8", "replace")) > regional_availability.MAX_BYTES:
+            abort(422, "Choose a UTF-8 territory CSV under 256 KiB.")
+        try:
+            return regional_availability.from_csv(text.lstrip("\ufeff"))
+        except (CSVError, ValueError) as error:
+            abort(422, str(error))
+
+    @app.get("/api/live-events/<uid>/regions/export")
+    def event_region_export(uid):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            response = make_response(regional_availability.csv_text(territories(event)))
+        response.mimetype = "text/csv"
+        response.headers["Content-Disposition"] = 'attachment; filename="cueporch-event-regions.csv"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.put("/api/live-events/<uid>")
     def revise_event(uid):
         staff()
@@ -473,6 +523,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     changed.setdefault("archive_replay", prior["archive_replay"])
                 if "embed_policy" in prior:
                     changed.setdefault("embed_policy", prior["embed_policy"])
+                if "regional_policy" in prior:
+                    changed.setdefault("regional_policy", prior["regional_policy"])
                 if "setup" in prior:
                     changed["setup"] = prior["setup"]
                 if "preferred_method" in body:
@@ -480,6 +532,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         abort(422, "Choose a preferred method for the event.")
                     changed["setup"] = prior.get("setup", {}) | {"method": body["preferred_method"]}
                 enforce_sharing(con, settings=sharing_settings(changed), prior=sharing_settings(prior))
+                if territories(changed) != territories(prior):
+                    check_territories(changed)
                 previous_access = access_settings(con, uid)
                 access = requested_access(changed, body, previous_access)
                 if changed == prior and access == previous_access:
@@ -575,6 +629,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
         if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(row, embed):
             abort(404)
+        enforce_territories(event)
         form = library_registration.active(con, "event", row["id"])
         scope = [row["id"], row["revision"], opens, form["revision"] if form else None]
         if form:
@@ -602,7 +657,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)
 
     def can_simulcast(con, uid, event):
-        return event["visibility"] == "public" and library_registration.active(con, "event", uid) is None
+        return (event["visibility"] == "public" and territories(event)["mode"] == "anywhere"
+                and library_registration.active(con, "event", uid) is None)
 
     def destination_access(con, uid, opens):
         _, event = read(con, uid)
@@ -657,7 +713,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if visible in ("waiting", "rejected"):
                     abort(409, "This event's publication is waiting for approval or was declined.")
                 saved = occurrence(con, uid, opens)
-                registered = library_registration.active(con, "event", uid) is not None
+                broadcast = visible == "eligible" and can_simulcast(con, uid, event)
                 bridge = con.execute("SELECT source FROM live_encoder_preview WHERE event=? AND opens=?",
                                      (uid, opens)).fetchone()
                 state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
@@ -672,7 +728,6 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if state == "ready" and preview and not (bridge and bridge["source"]):
                     abort(409, "This occurrence already has a live delivery channel.")
             with event_peer.connected_host(expected) as host:
-                broadcast = visible == "eligible" and event["visibility"] == "public" and not registered
                 if state == "ready" and bridge and bridge["source"]:
                     if browser:
                         abort(409, "The original external encoder is already feeding this broadcast.")
@@ -1089,6 +1144,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 abort(404)
             ancestors, frame_grant = event_frame(row, event, embed, json_status)
             access, link_key, locked = viewer_permission(con, row, event, embed, json_status)
+            enforce_territories(event)
             if locked:
                 incorrect = request.method == "POST"
                 view = render_template("event_password.html", unlock_token=frame_grant, incorrect=incorrect)
@@ -1259,6 +1315,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(
                     row, request.args.get("framed") == "yes", request.args.get("access", "")):
                 abort(404)
+            enforce_territories(event)
             image = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
         if not image:
             abort(404)
@@ -1277,6 +1334,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 replay != (delivery["delivery"] == "replay") or
                 (form["revision"] if form else None) != form_revision):
             abort(404)
+        enforce_territories(event)
         return delivery
 
     @app.post("/api/event-playback")

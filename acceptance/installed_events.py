@@ -17,6 +17,7 @@ import requests
 from playwright.sync_api import expect, sync_playwright
 
 from browser import chromium
+from installed_regions import regional_proxy
 
 
 def check_event_calendar(page, base, auth):
@@ -444,6 +445,70 @@ def check_restricted_events(page, browser, base, auth, exhibition, venue):
     return dict(watch_and_embed_visibility_modes=True, wrong_password_rejected=True,
                 password_and_registration_both_enforced=True, prior_access_revoked=True,
                 unlisted_operator_link_and_private_auxiliary_routes=True, embed_only_frame_scope=True)
+
+
+def check_event_regions(page, browser, base, auth):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="New event").click()
+    editor = page.locator("#newEventForm")
+    editor.get_by_label("Title", exact=True).fill("Territorial arts rights")
+    editor.get_by_label("Link name").fill("territorial-arts-rights")
+    editor.get_by_label("Time zone").fill("America/Denver")
+    editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T11:00")
+    editor.get_by_label("End", exact=True).fill(f"{tomorrow}T12:00")
+    editor.get_by_role("combobox", name="Visibility", exact=True).select_option("public")
+    editor.get_by_label("Enable audience chat").check()
+    region = editor.get_by_role("combobox", name="Regional availability", exact=True)
+    locations = editor.get_by_label("Locations, one per line")
+    region.select_option("allow")
+    csv_doc = b"MODE,COUNTRY,REGION,CITY,ZIP CODE\r\nallowed,US,US-CO,Longmont,\r\nallowed,CA,,,\r\n"
+    editor.get_by_label("Import regional availability CSV").set_input_files(
+        {"name": "regions.csv", "mimeType": "text/csv", "buffer": csv_doc})
+    expect(page.locator("#eventsStatus")).to_have_text("Locations loaded into event settings.")
+    expect(locations).to_have_value("US-CO | Longmont\nCA")
+    path = "/events/territorial-arts-rights"
+    assert requests.get(base + path, timeout=10).status_code == 404
+    editor.get_by_role("button", name="Save event").click()
+    expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+    response = requests.get(portal, headers=auth, timeout=10)
+    response.raise_for_status()
+    listing = next(item for item in response.json()["events"] if item["slug"] == "territorial-arts-rights")
+    opens = listing["occurrences"][0]["id"]
+    chat_path = path + f"/{opens}/chat"
+    forged = {"X-CuePorch-Region": "US-CO", "X-CuePorch-City": "Longmont", "X-CuePorch-Postal-Code": "80501"}
+    assert requests.get(base + path, headers=forged, timeout=10).status_code == 403
+    assert requests.get(base + chat_path, headers=forged, timeout=10).status_code == 403
+
+    with regional_proxy(base, "US-CO", "Longmont", "80501") as allowed, regional_proxy(base, "US-CO", "Boulder", "80301") as denied:
+        guest = browser.new_page()
+        try:
+            guest.goto(allowed + path)
+            expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+            assert requests.get(allowed + chat_path, headers={"Sec-GPC": "1"}, timeout=10).json()["enabled"]
+            blocked = requests.get(denied + path, headers=forged, timeout=10)
+            assert blocked.status_code == 403 and "unavailable in your region" in blocked.text
+            assert requests.get(denied + chat_path, timeout=10).status_code == 403
+            with regional_proxy(base, "CA-ON") as canada:
+                assert requests.get(canada + path, timeout=10).ok
+            page.get_by_role("button", name="Edit event", exact=True).click()
+            with page.expect_download() as download:
+                editor.get_by_role("button", name="Download saved regions CSV").click()
+            assert download.value.path().read_bytes() == csv_doc
+            region.select_option("deny")
+            locations.fill("80501\nUS-CA")
+            editor.get_by_role("button", name="Save event").click()
+            expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+            expect(guest.locator("#eventStatus")).to_have_text("This event is unavailable in your region", timeout=15000)
+            assert requests.get(denied + path, timeout=10).ok
+            with regional_proxy(base, "US", None) as unknown_subdivision:
+                assert requests.get(unknown_subdivision + path, timeout=10).status_code == 403
+        finally:
+            guest.close()
+    return dict(vimeo_csv_preview_and_roundtrip=True, trusted_city_country_and_zip_rules=True,
+                revision_rechecks_open_viewer=True, denied_missing_detail=True,
+                forged_headers_denied=True, audience_chat_obeys_territory_even_with_opt_out=True)
 
 
 def check_live_delivery(base, origin, keys, home, ffmpeg, port):

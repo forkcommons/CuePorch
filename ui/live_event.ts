@@ -181,8 +181,8 @@ async function checkStatus() {
     if (lobby.dataset.analyticsContext) headers["X-CuePorch-Event-Context"] = lobby.dataset.analyticsContext;
     const response = await fetch(requested, {cache: "no-store", headers});
     if (requested !== location.href) return;
-    if (response.status === 404) {
-      eventStatus.textContent = "This event is unavailable";
+    if (response.status === 404 || response.status === 403) {
+      eventStatus.textContent = response.status === 403 ? "This event is unavailable in your region" : "This event is unavailable";
       closePlayer();
       waiting(null);
       showPlaylist(null);

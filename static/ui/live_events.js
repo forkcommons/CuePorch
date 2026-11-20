@@ -490,6 +490,7 @@ function openEditor(current) {
         field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     }
     showEmbedPolicy(values?.embed_policy);
+    showRegionalPolicy(values?.regional_policy);
     syncViewingPassword();
     recurrence();
     syncArchiveOption();
@@ -520,6 +521,17 @@ function syncViewingPassword() {
     if (!protectedEvent)
         field("view_password").value = "";
 }
+function syncRegionalPolicy() {
+    const active = field("region_mode").value !== "anywhere";
+    element("eventRegionFields").hidden = !active;
+    field("region_areas").required = active;
+}
+function showRegionalPolicy(policy) {
+    field("region_mode").value = policy?.mode ?? "anywhere";
+    field("region_areas").value = policy?.areas.join("\n") ?? "";
+    syncRegionalPolicy();
+    button("exportEventRegions").hidden = !editing || (editing.event.regional_policy?.mode ?? "anywhere") === "anywhere";
+}
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -533,6 +545,32 @@ field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
 field("embed_mode").onchange = syncEmbedPolicy;
 field("visibility").onchange = syncViewingPassword;
+field("region_mode").onchange = syncRegionalPolicy;
+const regionsFile = input("importEventRegions");
+regionsFile.onchange = () => void action(async () => {
+    const file = regionsFile.files?.[0];
+    if (!file)
+        return;
+    if (file.size > 262144)
+        throw new Error("Choose a UTF-8 territory CSV under 256 KiB.");
+    const imported = await request(root + "/regions/import", "POST", { csv: await file.text() });
+    showRegionalPolicy(imported);
+    regionsFile.value = "";
+}, "Locations loaded into event settings.");
+button("exportEventRegions").onclick = () => void action(async () => {
+    if (!editing)
+        return;
+    const response = await fetch(`${root}/${editing.id}/regions/export`, {
+        headers: { Authorization: "Bearer " + credential.value },
+    });
+    if (!response.ok)
+        throw new Error("Could not download the saved locations.");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = "cueporch-event-regions.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
 function showStartingOptions(options) {
     field("method").value = options.method;
     field("registration").checked = options.registration;
@@ -583,6 +621,7 @@ preset.onchange = () => void action(async () => {
     field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
     field("timezone").value = value.schedule.timezone;
     showEmbedPolicy(value.embed_policy);
+    showRegionalPolicy(value.regional_policy);
     showStartingOptions(options);
 }, "Event settings loaded.");
 form.onsubmit = (event) => {
@@ -611,6 +650,8 @@ form.onsubmit = (event) => {
             view_password: field("view_password").value || undefined,
             embed_policy: { mode: field("embed_mode").value,
                 domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean) },
+            regional_policy: { mode: field("region_mode").value,
+                areas: field("region_areas").value.split("\n").map((region) => region.trim()).filter(Boolean) },
             save_replay: field("save_replay").checked,
             archive_replay: field("archive_replay").checked,
             dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,

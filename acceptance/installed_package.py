@@ -40,7 +40,7 @@ from installed_workspaces import check_workspaces
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_embed_policy, check_event_engagement, check_event_setup
-from installed_events import check_restricted_events
+from installed_events import check_event_regions, check_restricted_events
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
@@ -638,6 +638,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             event_embed_policy=check_event_embed_policy(page, browser, base, auth, museum, venue),
                                             restricted_events=check_restricted_events(page, browser, base, auth, museum, venue),
                                             migrated_playback_width=width))
+                        if args.analytics_region_proxy:
+                            results[-1]["event_regions"] = check_event_regions(page, browser, base, auth)
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         save_report()
@@ -691,6 +693,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     event_setup = check_event_setup(page, base, auth)
                     event_embed_policy = check_event_embed_policy(page, browser, base, auth, museum, venue)
                     restricted_events = check_restricted_events(page, browser, base, auth, museum, venue)
+                    event_regions = check_event_regions(page, browser, base, auth) if args.analytics_region_proxy else None
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -734,6 +737,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             event_setup=event_setup,
                             event_embed_policy=event_embed_policy,
                             restricted_events=restricted_events,
+                            event_regions=event_regions,
                         )
                     )
                 shut_down(proc, base, desktop, home)
