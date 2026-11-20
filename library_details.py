@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from flask import abort, request
 
 import review_feedback
+from browser_account_security import private
 from catalog import video_version_key
 from library_privacy import playback
 from media_tools import video_properties
@@ -123,11 +124,11 @@ def parse_details(body):
     )
 
 
-def register(app, tx, staff, root, get_work, title_for, save_title):
+def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
     @app.route("/api/library/work/<uid>/editorial-status", methods=["GET", "PUT"])
     def editorial_status(uid):
-        staff()
         with tx() as con:
+            authorize_editor(con, uid)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
@@ -138,12 +139,12 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
                     abort(409, "The current version changed. Reload it before setting a status.")
                 review_feedback.set_editorial_status(con, uid, version, body.get("status"))
             state = review_feedback.editorial_status(con, uid, version)
-        return dict(status=state or review_feedback.STATUSES[0], version=version)
+        return private(dict(status=state or review_feedback.STATUSES[0], version=version))
 
     @app.route("/api/library/work/<uid>/details", methods=["GET", "PUT"])
     def video_details(uid):
-        staff()
         with tx() as con:
+            authorize_editor(con, uid)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
@@ -168,10 +169,10 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
             title = title_for(con, work)
         media = next((item for item in work["files"] if item["role"] == "original"), None) or playback(work)
         measured = video_properties(root / "objects" / media["sha256"]) if media else {}
-        return dict(
+        return private(dict(
             **state, title=title, embed_pages=embed_pages,
             media=dict(**measured, format=media["format"], bytes=media["bytes"]) if media else None,
             duration_seconds=work.get("duration_seconds"),
             projection=work.get("source_projection"),
             added_at=work.get("source_created_time") or work.get("library_added_at"),
-        )
+        ))

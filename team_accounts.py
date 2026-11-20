@@ -54,6 +54,20 @@ SESSION_MARKER = "team-session"
 MUTATION_HEADER = "X-CuePorch-Team"
 
 
+def initialize_permissions(con):
+    for table in ("team_work_grant", "team_folder_grant", "team_group_folder"):
+        if "permission" not in {row[1] for row in con.execute(f"PRAGMA table_info({table})")}:
+            con.execute(f"""ALTER TABLE {table} ADD COLUMN permission TEXT NOT NULL
+                DEFAULT 'view' CHECK(permission IN ('view','edit'))""")
+
+
+def permission_from(body):
+    permission = body.get("permission", "view")
+    if permission not in ("view", "edit"):
+        abort(400, "Choose Can view or Can edit.")
+    return permission
+
+
 def cookie_name(secure):
     return "__Host-cueporch-team" if secure else "cueporch-team"
 
@@ -111,12 +125,12 @@ def visible_folders(con):
     ) SELECT id,title FROM paths ORDER BY title COLLATE NOCASE,id""").fetchall()
 
 
-def inherited_works(con, member):
+def inherited_works(con, member, required="view"):
     rows = con.execute("""WITH RECURSIVE roots(id) AS (
-        SELECT folder FROM team_folder_grant WHERE member=?
+        SELECT folder FROM team_folder_grant WHERE member=? AND (?='view' OR permission='edit')
         UNION
         SELECT f.folder FROM team_group_folder f JOIN team_group_member m ON m.team_group=f.team_group
-        JOIN team_group g ON g.id=m.team_group WHERE m.member=?
+        JOIN team_group g ON g.id=m.team_group WHERE m.member=? AND (?='view' OR f.permission='edit')
     ), granted(id) AS (
         SELECT f.id FROM roots r JOIN library_folder f ON f.id=r.id
         WHERE NOT EXISTS (
@@ -124,7 +138,8 @@ def inherited_works(con, member):
         UNION
         SELECT f.id FROM library_folder f JOIN granted g ON f.parent=g.id
         WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
-    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""", (member, member))
+    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""",
+        (member, required, member, required))
     return {row[0] for row in rows}
 
 
@@ -178,6 +193,30 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
 
     def shared_ids(con, uid):
         return {row[0] for row in con.execute("SELECT work FROM team_work_grant WHERE member=?", (uid,))}
+
+    def can_edit(con, row, uid):
+        if not row or not grant_available(con, uid):
+            return False
+        if row["role"] == "admin":
+            return True
+        if row["role"] != "contributor":
+            return False
+        direct = con.execute("""SELECT 1 FROM team_owned_work WHERE member=? AND work=?
+            UNION ALL SELECT 1 FROM team_work_grant WHERE member=? AND work=? AND permission='edit'""",
+            (row["id"], uid, row["id"], uid)).fetchone()
+        return direct is not None or uid in inherited_works(con, row["id"], "edit")
+
+    def authorize_editor(con, uid):
+        if operator_name(con):
+            return
+        secure = secure_site(origin)
+        same_origin(secure)
+        if request.method != "GET":
+            mutation(secure)
+        if request.headers.get("Authorization") != "Bearer " + SESSION_MARKER:
+            abort(403)
+        if not can_edit(con, current(con, secure), uid):
+            abort(404)
 
     @app.get("/team/join")
     def team_join_page():
@@ -329,16 +368,18 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             members = [dict(row) for row in con.execute("""SELECT id,name,email FROM team_member
                 WHERE removed IS NULL ORDER BY name COLLATE NOCASE,email""")]
             folders = [dict(row) for row in visible_folders(con)]
-            groups = {row["id"]: dict(row, members=[], folders=[]) for row in con.execute(
+            groups = {row["id"]: dict(row, members=[], folders=[], edit_folders=[]) for row in con.execute(
                 "SELECT id,name,revision FROM team_group ORDER BY name COLLATE NOCASE")}
             for group_id, member_id in con.execute("SELECT team_group,member FROM team_group_member"):
                 if group_id in groups:
                     groups[group_id]["members"].append(member_id)
             available = {folder["id"] for folder in folders}
-            for group_id, folder_id, name in con.execute("""SELECT g.team_group,g.folder,f.name
+            for group_id, folder_id, name, permission in con.execute("""SELECT g.team_group,g.folder,f.name,g.permission
                 FROM team_group_folder g JOIN library_folder f ON f.id=g.folder"""):
                 if group_id in groups:
                     groups[group_id]["folders"].append(folder_id)
+                    if permission == "edit":
+                        groups[group_id]["edit_folders"].append(folder_id)
                     if folder_id not in available:
                         groups[group_id].setdefault("unavailable_folders", []).append(
                             dict(id=folder_id, title=f"{name} (unavailable)"))
@@ -375,13 +416,16 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             existing = {row[0] for row in con.execute("""SELECT g.folder FROM team_group_folder g
                 JOIN library_folder f ON f.id=g.folder WHERE g.team_group=?""", (uid,))}
             folders = group_selection(body.get("folders"), available | existing, "folders")
+            editors = group_selection(body.get("edit_folders", []), folders, "folders with edit access")
             revision = uuid.uuid4().hex
             con.execute("""INSERT INTO team_group VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,revision=excluded.revision""", (uid, name, revision))
             con.execute("DELETE FROM team_group_member WHERE team_group=?", (uid,))
             con.execute("DELETE FROM team_group_folder WHERE team_group=?", (uid,))
             con.executemany("INSERT INTO team_group_member VALUES(?,?)", [(uid, member) for member in members])
-            con.executemany("INSERT INTO team_group_folder VALUES(?,?)", [(uid, folder) for folder in folders])
+            con.executemany("INSERT INTO team_group_folder VALUES(?,?,?)", [
+                (uid, folder, "edit" if folder in editors else "view") for folder in folders
+            ])
             note(con, actor, "group_updated" if group else "group_created", uid, name)
         return private(dict(id=uid, revision=revision), 200 if group else 201)
 
@@ -391,16 +435,18 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
         with tx() as con:
             manager(con)
             member_role(con, uid)
-            shared = shared_ids(con, uid)
-            rows = [dict(id=work_id, title=title_for(con, work), shared=work_id in shared)
+            shared = dict(con.execute("SELECT work,permission FROM team_work_grant WHERE member=?", (uid,)))
+            rows = [dict(id=work_id, title=title_for(con, work), shared=work_id in shared,
+                         permission=shared.get(work_id))
                     for work_id, work in eligible_works(con).items()]
-            folders_shared = {row[0] for row in con.execute("SELECT folder FROM team_folder_grant WHERE member=?", (uid,))}
-            folders = [dict(row, shared=row["id"] in folders_shared) for row in visible_folders(con)]
+            folders_shared = dict(con.execute("SELECT folder,permission FROM team_folder_grant WHERE member=?", (uid,)))
+            folders = [dict(row, shared=row["id"] in folders_shared, permission=folders_shared.get(row["id"]))
+                       for row in visible_folders(con)]
         return private(dict(works=sorted(rows, key=lambda row: row["title"].casefold()), folders=folders))
 
     @app.route("/api/team/members/<uuid:account>/folders/<folder>", methods=("PUT", "DELETE"))
     def team_update_folder_sharing(account, folder):
-        mutation(secure_site(origin))
+        body = mutation(secure_site(origin))
         uid = str(account)
         with tx() as con:
             actor = manager(con)
@@ -408,7 +454,9 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             if request.method == "PUT":
                 if not any(row["id"] == folder for row in visible_folders(con)):
                     abort(404, "This folder is unavailable for team viewing.")
-                result = con.execute("INSERT OR IGNORE INTO team_folder_grant VALUES(?,?)", (uid, folder))
+                result = con.execute("""INSERT INTO team_folder_grant VALUES(?,?,?)
+                    ON CONFLICT(member,folder) DO UPDATE SET permission=excluded.permission
+                    WHERE permission<>excluded.permission""", (uid, folder, permission_from(body)))
                 event = "folder_shared"
             else:
                 result = con.execute("DELETE FROM team_folder_grant WHERE member=? AND folder=?", (uid, folder))
@@ -419,7 +467,7 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
 
     @app.route("/api/team/members/<uuid:account>/works/<uuid:work>", methods=("PUT", "DELETE"))
     def team_update_sharing(account, work):
-        mutation(secure_site(origin))
+        body = mutation(secure_site(origin))
         uid, work_id = str(account), str(work)
         with tx() as con:
             actor = manager(con)
@@ -427,7 +475,9 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             if request.method == "PUT":
                 if work_id not in eligible_works(con, {work_id}):
                     abort(404, "This video is unavailable for team viewing.")
-                result = con.execute("INSERT OR IGNORE INTO team_work_grant VALUES(?,?)", (uid, work_id))
+                result = con.execute("""INSERT INTO team_work_grant VALUES(?,?,?)
+                    ON CONFLICT(member,work) DO UPDATE SET permission=excluded.permission
+                    WHERE permission<>excluded.permission""", (uid, work_id, permission_from(body)))
                 event = "video_shared"
             else:
                 result = con.execute("DELETE FROM team_work_grant WHERE member=? AND work=?", (uid, work_id))
@@ -466,7 +516,19 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             if not item:
                 abort(404)
             title = title_for(con, item)
-        return private(render_template("team_watch.html", title=title, media=url_for("team_video", work=work)))
+            editable = can_edit(con, row, str(work))
+        return private(render_template("team_watch.html", title=title, media=url_for("team_video", work=work),
+                                       details=url_for("team_edit_video", work=work) if editable else None))
+
+    @app.get("/team/video/<uuid:work>/details")
+    def team_edit_video(work):
+        secure = secure_site(origin)
+        uid = str(work)
+        with tx() as con:
+            if not can_edit(con, member(con, secure), uid) or uid not in eligible_works(con, {uid}):
+                abort(404)
+        return private(render_template("video_details.html", work=uid, public_url="", team_editor=True,
+                                       team_preview=url_for("team_video", work=work)))
 
     @app.get("/team/video/<uuid:work>/media")
     def team_video(work):
@@ -481,3 +543,5 @@ def register(app, tx, origin, key, institution, operator_name, read_works, title
             if not path.is_file():
                 abort(404)
         return private(send_file(path, mimetype="video/mp4", conditional=True))
+
+    return authorize_editor

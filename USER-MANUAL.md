@@ -38,7 +38,9 @@ Open **Team members** from the Operator console. Enter the person’s email and 
 
 Administrators can open the Library and manage invitations, roles, and video access. Contributors can upload private videos to **My Library** and view videos shared with them. Viewers can play the videos you share with them. Choose **Manage media access** next to a member to share a video or a folder for viewing. A folder share includes playable videos in its subfolders. Moving a video out of that branch or revoking the folder share removes that path to it. A direct video share still applies. **Remove access** ends the member’s team sessions. Their retained uploads remain available to administrators. The installation’s operator credential remains available for owner access. Viewer accounts for public Watch are independent of team membership.
 
-In **Groups**, select **New group**, enter a name, and choose the members and folders to share. A group grants viewing access to the chosen folders and their subfolders. You can remove a member or folder from the group or delete the entire group. Any separate video, folder or group share still applies. If another administrator saved changes first, use **Reload groups** to load their changes before trying again.
+Shares start with **Can view**. Select **Can edit** on a video or folder share to let a Contributor update its video details and editorial status. Contributors can also edit their own uploads. They open **Edit video details** from the team player. Viewers can play a video shared with them, including one shared with a group that has edit access. Administrators manage privacy and public sharing.
+
+In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.
 
 ### First migration
 

@@ -80,7 +80,7 @@ def save_title(con, work, name):
     )
 
 
-def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key):
+def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key, authorize_editor):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -89,7 +89,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
 
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_appearance.register(app, tx, staff, get_work, read_works, title_for)
-    library_details.register(app, tx, staff, root, get_work, title_for, save_title)
+    library_details.register(app, tx, authorize_editor, root, get_work, title_for, save_title)
     library_interactivity.register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits)
     library_ratings.register(app, tx, staff, get_work)
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)

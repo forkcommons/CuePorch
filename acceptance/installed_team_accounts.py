@@ -192,7 +192,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         group_form.get_by_label("Group name").fill("Screening reviewers")
         group_member = group_form.get_by_role("checkbox", name=f"Val · {email('viewer')}")
         group_member.check()
-        group_form.get_by_role("checkbox", name="Station programs", exact=True).check()
+        group_folder = group_form.get_by_label("Station programs", exact=True)
+        group_folder.select_option("view")
         group_form.get_by_role("button", name="Save group").click()
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
         group, = admin.request.get(groups_api, headers=TEAM).json()["groups"]
@@ -208,10 +209,34 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         group_api = f"{groups_api}/{group['id']}"
         assert admin.request.put(group_api, headers=TEAM, data=group).status == 409
         assert contributor.request.delete(group_api, headers=TEAM, data=group).status == 403
+
         group_member.check()
+        group_form.get_by_role("checkbox", name=f"Cameron · {email('contributor')}").check()
+        group_folder.select_option("edit")
         group_form.get_by_role("button", name="Save group").click()
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
         assert viewer.request.get(migrated_media).ok
+        details_path = f"{base}/api/library/work/{migrated['work']}"
+        assert viewer.request.get(details_path + "/details", headers=TEAM).status == 404
+        contributor_page.goto(base + "/team")
+        contributor_page.get_by_role("link", name=migrated["title"], exact=True).click()
+        contributor_page.get_by_role("link", name="Edit video details").click()
+        edit_page = contributor_page.url
+        contributor_page.get_by_label("Description", exact=True).fill("Screening notes from the assigned contributor.")
+        contributor_page.get_by_role("button", name="Save video details").click()
+        expect(contributor_page.locator("#detailsStatus")).to_have_text("Video details saved.")
+        contributor_page.get_by_label("Editorial status").select_option("Needs review")
+        expect(contributor_page.locator("#detailsStatus")).to_have_text("Editorial status saved.")
+        assert contributor.request.put(details_path + "/share-link", headers=TEAM, data={"slug": "forged"}).status == 403
+        stored = requests.get(details_path + "/details", headers=auth, timeout=10).json()
+        assert stored["description"] == "Screening notes from the assigned contributor."
+        group_folder.select_option("view")
+        group_form.get_by_role("button", name="Save group").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group saved.")
+        assert contributor.request.get(edit_page).status == 404
+        assert contributor.request.put(details_path + "/details", headers=TEAM, data=stored).status == 404
+        assert contributor.request.get(migrated_media).ok
+
         group_form.get_by_role("button", name="Delete group").click()
         expect(admin_page.locator("#teamMembersStatus")).to_have_text("Group deleted.")
         assert viewer.request.get(migrated_media).status == 404
@@ -265,6 +290,7 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
                 inherited_folder_playback_width=inherited_width, folder_move_and_revocation_enforced=True,
                 group_folder_playback_width=group_width, group_revocation_and_stale_edit_enforced=True,
+                scoped_contributor_details_and_editorial_edit=True, edit_downgrade_preserved_playback=True,
                 existing_audience_identity_separate=True, range_playback=True, forged_origin_denied=True,
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
                 persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True)

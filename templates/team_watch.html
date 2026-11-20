@@ -6,6 +6,7 @@
 <main>
   <nav aria-label="Team"><a href="/team">Team workspace</a></nav>
   <h1>{{ title }}</h1>
+  {% if details %}<p><a href="{{ details }}">Edit video details</a></p>{% endif %}
   <video controls controlslist="nodownload" playsinline preload="metadata" aria-label="{{ title }}" src="{{ media }}"></video>
 </main>
 </html>

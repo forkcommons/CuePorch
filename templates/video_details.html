@@ -6,10 +6,14 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video details · CuePorch</title>
 </head>
-<body data-work="{{ work }}" data-public-url="{{ public_url }}">
+<body data-work="{{ work }}" data-public-url="{{ public_url }}" data-team-preview="{{ team_preview or '' }}">
+  {% if team_editor %}
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/video/{{ work }}">Play video</a></nav>
+  {% else %}
   <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
+  {% endif %}
   <h1 id="videoHeading">Video details</h1>
-  <form id="identify">
+  <form id="identify"{% if team_editor %} hidden{% endif %}>
     <label for="operatorKey">Operator credential</label>
     <input id="operatorKey" type="password" autocomplete="current-password" required>
     <button type="submit">Open video details</button>
@@ -22,6 +26,7 @@
           <option>In progress</option><option>Needs review</option><option>Approved</option>
         </select>
       </label>
+      <div class="video-operator-actions"{% if team_editor %} hidden{% endif %}>
       <a href="/operator/library?work={{ work }}&amp;action=versions">Versions</a>
       <a href="/operator/videos/{{ work }}/appearance">Player and page appearance</a>
       <a href="/operator/videos/{{ work }}/languages">Languages and subtitles</a>
@@ -39,12 +44,13 @@
         <a href="/operator/library?work={{ work }}&amp;action=thumbnail">Change thumbnail</a>
         <a href="/operator/library?work={{ work }}&amp;action=delete">Delete</a>
       </details>
+      </div>
     </div>
     <div class="video-workspace">
       <div>
       <section aria-labelledby="previewTitle">
-        <h2 id="previewTitle">Operator preview</h2>
-        <video id="workspacePreview" controls playsinline preload="metadata" hidden aria-label="Operator preview"></video>
+        <h2 id="previewTitle">{{ 'Team preview' if team_editor else 'Operator preview' }}</h2>
+        <video id="workspacePreview" controls playsinline preload="metadata" hidden aria-label="{{ 'Team preview' if team_editor else 'Operator preview' }}"></video>
         <p id="previewMessage" hidden>No browser-playable copy is stored for this video.</p>
       </section>
     <form id="videoMeta">
@@ -87,7 +93,7 @@
       <dl id="videoFacts"></dl>
     </section>
       </div>
-      <aside aria-labelledby="shareHeading">
+      <aside aria-labelledby="shareHeading"{% if team_editor %} hidden{% endif %}>
         <h2 id="shareHeading">Share</h2>
         <nav aria-label="Video sharing settings">
           <a id="editVideoPrivacy" href="/operator/library?work={{ work }}&amp;action=privacy" hidden>Video privacy and embed rules</a>

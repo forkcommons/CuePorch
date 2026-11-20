@@ -150,6 +150,7 @@ def create_app(root, database, operator, institution, simulation=None):
         if existing and existing[0] != institution:
             raise ValueError("Policy database belongs to another institution")
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
+        team_accounts.initialize_permissions(db)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 65536
 
@@ -1200,8 +1201,8 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_discovery.register(app, tx, staff, public_listing, root, institution)
     audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
-    team_accounts.register(app, tx, team_origin, operator, institution, operator_name, read_library_works,
-                           library_actions.title_for, root)
+    authorize_editor = team_accounts.register(app, tx, team_origin, operator, institution, operator_name,
+                                               read_library_works, library_actions.title_for, root)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
@@ -1210,6 +1211,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     start_editor = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
+        authorize_editor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

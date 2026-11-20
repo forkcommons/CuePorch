@@ -29,20 +29,27 @@
     <ul id="teamMemberList"></ul>
     <section id="teamShares" hidden>
       <h3 id="teamSharesTitle"></h3>
+      <p>Contributors can edit video metadata and editorial status with a Can edit share. Viewers can play shared videos.</p>
       <label for="teamShareWork">Video</label>
       <select id="teamShareWork"></select>
+      <label>Video permission <select id="teamWorkPermission">
+        <option value="view">Can view</option><option value="edit">Can edit</option>
+      </select></label>
       <button id="shareTeamVideo" type="button">Share video</button>
       <ul id="teamSharedVideos"></ul>
       <h3 id="teamFoldersTitle"></h3>
       <p>Folder access includes videos in its subfolders.</p>
       <label for="teamShareFolder">Folder</label>
       <select id="teamShareFolder"></select>
+      <label>Folder permission <select id="teamFolderPermission">
+        <option value="view">Can view</option><option value="edit">Can edit</option>
+      </select></label>
       <button id="shareTeamFolder" type="button">Share folder</button>
       <ul id="teamSharedFolders"></ul>
     </section>
     <section aria-labelledby="teamGroupsTitle">
       <h2 id="teamGroupsTitle">Groups</h2>
-      <p>Share folders and their subfolders with a group of team members.</p>
+      <p>Share folders and their subfolders with a group. Can edit gives contributors permission to edit video metadata and editorial status.</p>
       <label>Group <select id="teamGroup"></select></label>
       <form id="teamGroupForm">
         <label>Group name <input name="name" required maxlength="64"></label>

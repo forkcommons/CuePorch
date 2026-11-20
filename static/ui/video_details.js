@@ -1,4 +1,5 @@
 import { embedBuilder } from "./embed_builder.js";
+import { sessionMarker } from "./team_api.js";
 const identify = document.querySelector("#identify");
 const key = document.querySelector("#operatorKey");
 const status = document.querySelector("#detailsStatus");
@@ -29,15 +30,18 @@ const sharingMessage = document.querySelector("#sharingMessage");
 const privacy = document.querySelector("#editVideoPrivacy");
 const sourcePrivacy = document.querySelector("#restoreSourcePrivacy");
 const builder = embedBuilder();
-key.value = sessionStorage.getItem("cueporchOperator") || "";
+const teamPreview = document.body.dataset.teamPreview;
+key.value = teamPreview ? sessionMarker : sessionStorage.getItem("cueporchOperator") || "";
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 let info;
 let sharing;
 let editorialState;
 async function call(resource = "", method = "GET", body) {
+    const headers = { Authorization: "Bearer " + key.value, "Content-Type": "application/json",
+        ...(teamPreview ? { "X-CuePorch-Team": "1" } : {}) };
     const response = await fetch(endpoint + resource, {
         method,
-        headers: { Authorization: "Bearer " + key.value, "Content-Type": "application/json" },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
     });
     if (!response.ok) {
@@ -127,6 +131,14 @@ function populateCustom() {
     renderLinks();
 }
 async function loadWorkspace() {
+    if (teamPreview) {
+        editorialState = await call("/editorial-status");
+        editorial.value = editorialState.status;
+        editorial.disabled = false;
+        preview.src = teamPreview;
+        preview.hidden = false;
+        return;
+    }
     const [work, viewerSharing, state, reviews] = await Promise.all([
         call(), call("/share-link"), call("/editorial-status"),
         call("/review-links"),
@@ -152,7 +164,8 @@ async function loadWorkspace() {
 async function load() {
     try {
         show(await call("/details"));
-        sessionStorage.setItem("cueporchOperator", key.value);
+        if (!teamPreview)
+            sessionStorage.setItem("cueporchOperator", key.value);
         identify.hidden = true;
         pane.hidden = false;
         status.textContent = "";

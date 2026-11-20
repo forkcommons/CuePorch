@@ -107,6 +107,7 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 .timeline-clip [aria-pressed="true"] { background: #1f6965; color: white; }
 #videoDetails [hidden], #identify[hidden] { display: none; }
 .video-work-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: .7rem 1rem; }
+.video-operator-actions:not([hidden]) { display: contents; }
 #guestSlidePreview { width: min(100%, 640px); height: auto; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .themed-video-page, .appearance-preview { background: var(--viewer-background); color: var(--viewer-text); }

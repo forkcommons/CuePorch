@@ -1,12 +1,13 @@
 import {checked, type Member, type Role, roleLabels, teamRequest} from "./team_api.js";
 
 interface Invitation {id: string; email: string; role: Role; expires: number}
-interface Share {id: string; title: string; shared: boolean}
+type Permission = "view" | "edit";
+interface Share {id: string; title: string; shared: boolean; permission: Permission | null}
 interface Roster {members: (Member & {removed: number | null})[]; invitations: Invitation[]}
 interface Audit {actor: string; action: string; subject: string; detail: string | null; at: number}
 interface GroupFolder {id: string; title: string}
 interface Group {
-  id: string; name: string; revision: string; members: string[]; folders: string[];
+  id: string; name: string; revision: string; members: string[]; folders: string[]; edit_folders: string[];
   unavailable_folders?: GroupFolder[];
 }
 interface GroupOptions {
@@ -26,10 +27,12 @@ const invitations = document.querySelector<HTMLUListElement>("#teamInvitations")
 const members = document.querySelector<HTMLUListElement>("#teamMemberList")!;
 const sharing = document.querySelector<HTMLElement>("#teamShares")!;
 const shareWork = document.querySelector<HTMLSelectElement>("#teamShareWork")!;
+const workPermission = document.querySelector<HTMLSelectElement>("#teamWorkPermission")!;
 const shareButton = document.querySelector<HTMLButtonElement>("#shareTeamVideo")!;
 const shared = document.querySelector<HTMLUListElement>("#teamSharedVideos")!;
 const folderTitle = document.querySelector<HTMLElement>("#teamFoldersTitle")!;
 const shareFolder = document.querySelector<HTMLSelectElement>("#teamShareFolder")!;
+const folderPermission = document.querySelector<HTMLSelectElement>("#teamFolderPermission")!;
 const shareFolderButton = document.querySelector<HTMLButtonElement>("#shareTeamFolder")!;
 const sharedFolders = document.querySelector<HTMLUListElement>("#teamSharedFolders")!;
 const activity = document.querySelector<HTMLDetailsElement>("#teamMembershipActivity")!;
@@ -76,6 +79,29 @@ function clearInvitation() {
   invitationBox.hidden = true;
 }
 
+function permissionSelect(value: Permission | "", group = false) {
+  const select = document.createElement("select");
+  if (group) select.add(new Option("No access", ""));
+  select.add(new Option("Can view", "view"));
+  select.add(new Option("Can edit", "edit"));
+  select.value = value;
+  return select;
+}
+
+function shareRow(share: Share, path: string, isFolder = false) {
+  const row = document.createElement("li");
+  const select = permissionSelect(share.permission ?? "view");
+  select.setAttribute("aria-label", `Permission for ${share.title}`);
+  row.append(`${share.title} `, select, button("Save permission", () => void task(async () => {
+    await call(path, "PUT", {permission: select.value});
+    await loadShares();
+  }, "Permission saved.")), button(`Revoke ${isFolder ? "folder " : ""}${share.title}`, () => void task(async () => {
+    await call(path, "DELETE");
+    await loadShares();
+  }, isFolder ? "Folder access revoked." : "Video access revoked.")));
+  return row;
+}
+
 async function loadShares() {
   if (!selected) return;
   const member = selected;
@@ -87,12 +113,7 @@ async function loadShares() {
   shared.replaceChildren();
   for (const work of works) {
     if (work.shared) {
-      const row = document.createElement("li");
-      row.append(`${work.title} `, button(`Revoke ${work.title}`, () => void task(async () => {
-        await call(`members/${member.id}/works/${work.id}`, "DELETE");
-        await loadShares();
-      }, "Video access revoked.")));
-      shared.append(row);
+      shared.append(shareRow(work, `members/${member.id}/works/${work.id}`));
     } else shareWork.add(new Option(work.title, work.id));
   }
   shareButton.disabled = !shareWork.options.length;
@@ -100,12 +121,7 @@ async function loadShares() {
   sharedFolders.replaceChildren();
   for (const folder of folders) {
     if (folder.shared) {
-      const row = document.createElement("li");
-      row.append(`${folder.title} `, button(`Revoke folder ${folder.title}`, () => void task(async () => {
-        await call(`members/${member.id}/folders/${folder.id}`, "DELETE");
-        await loadShares();
-      }, "Folder access revoked.")));
-      sharedFolders.append(row);
+      sharedFolders.append(shareRow(folder, `members/${member.id}/folders/${folder.id}`, true));
     } else shareFolder.add(new Option(folder.title, folder.id));
   }
   shareFolderButton.disabled = !shareFolder.options.length;
@@ -113,13 +129,15 @@ async function loadShares() {
 
 shareButton.onclick = () => void task(async () => {
   if (!selected || !shareWork.value) return;
-  await call(`members/${selected.id}/works/${shareWork.value}`, "PUT");
+  await call(`members/${selected.id}/works/${shareWork.value}`, "PUT", {permission: workPermission.value});
+  workPermission.value = "view";
   await loadShares();
 }, "Video shared.");
 
 shareFolderButton.onclick = () => void task(async () => {
   if (!selected || !shareFolder.value) return;
-  await call(`members/${selected.id}/folders/${shareFolder.value}`, "PUT");
+  await call(`members/${selected.id}/folders/${shareFolder.value}`, "PUT", {permission: folderPermission.value});
+  folderPermission.value = "view";
   await loadShares();
 }, "Folder shared.");
 
@@ -146,8 +164,15 @@ function showGroup() {
   deleteGroup.disabled = !group;
   groupMembers.replaceChildren(...groupOptions.members.map(member =>
     checkbox("members", member.id, `${member.name} · ${member.email}`, group?.members.includes(member.id) ?? false)));
-  groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder =>
-    checkbox("folders", folder.id, folder.title, group?.folders.includes(folder.id) ?? false)));
+  groupFolders.replaceChildren(...[...groupOptions.folders, ...(group?.unavailable_folders ?? [])].map(folder => {
+    const value = group?.edit_folders.includes(folder.id) ? "edit" : group?.folders.includes(folder.id) ? "view" : "";
+    const select = permissionSelect(value, true);
+    select.name = folder.id;
+    select.setAttribute("aria-label", folder.title);
+    const label = document.createElement("label");
+    label.append(folder.title, " ", select);
+    return label;
+  }));
 }
 
 async function loadGroups(id = groupSelector.value) {
@@ -165,8 +190,11 @@ groupForm.onsubmit = event => {
   void task(async () => {
     const group = selectedGroup();
     const form = new FormData(groupForm);
+    const folders = Array.from(groupFolders.querySelectorAll("select"));
     const body = {
-      name: groupName.value, members: form.getAll("members"), folders: form.getAll("folders"),
+      name: groupName.value, members: form.getAll("members"),
+      folders: folders.filter(folder => folder.value).map(folder => folder.name),
+      edit_folders: folders.filter(folder => folder.value === "edit").map(folder => folder.name),
       revision: group?.revision,
     };
     const {id}: {id: string} = await (await call(
