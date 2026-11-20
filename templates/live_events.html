@@ -142,6 +142,23 @@
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
       <p id="eventHealthDetails"></p>
+      <details id="eventRoster">
+        <summary>Attendees for this occurrence</summary>
+        <form id="eventRosterSearch">
+          <label>Filter by email <input type="search" name="email" maxlength="254"></label>
+          <button type="submit">Filter</button>
+        </form>
+        <table>
+          <caption>Attendees registered for the selected occurrence</caption>
+          <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th>
+            <th scope="col">Source</th></tr></thead>
+          <tbody id="eventRosterRows"></tbody>
+        </table>
+        <button type="button" id="eventRosterPrevious" disabled>Previous attendees</button>
+        <button type="button" id="eventRosterNext" disabled>Next attendees</button>
+        <button type="button" id="eventRosterDownload">Download occurrence CSV</button>
+        <p id="eventRosterStatus" role="status"></p>
+      </details>
       <details id="eventCsvSettings">
         <summary>Import attendee CSV</summary>
         <form id="eventCsvForm">

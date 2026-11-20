@@ -7,6 +7,7 @@ import {playerColors, playerSwitches, type EventAppearance} from "./event_contro
 import {setupLiveApi} from "./live_api.js";
 import {setupEventMail} from "./event_mail.js";
 import {setupAttendeeCsv} from "./attendee_csv.js";
+import {setupEventRoster} from "./event_roster.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -181,6 +182,7 @@ async function request<T>(path: string, method = "GET", body?: object): Promise<
 setupLiveApi(request);
 const chooseEmailEvent = setupEventMail(request);
 const chooseCsvOccurrence = setupAttendeeCsv(request);
+const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
 
 async function action(work: () => Promise<void>, message = "") {
   if (pending) return;
@@ -279,17 +281,7 @@ const {close: closeEngagement} = setupProducerEngagement(() => mediaPath("engage
 const registrationEditor = element<HTMLFormElement>("registrationEditor");
 const openRegistration = setupRegistration(
   (suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body),
-  async () => {
-    const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
-      headers: {Authorization: "Bearer " + credential.value},
-    });
-    if (!response.ok) throw new Error("Could not download the registrants.");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-event-registrants.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  },
+  () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"),
 );
 
 function choose(event: LiveEvent, instance: Occurrence) {
@@ -300,6 +292,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   active = {event, instance};
   chooseEmailEvent(event.id);
   chooseCsvOccurrence(event.id, instance.id);
+  chooseRosterOccurrence(event.id, instance.id);
   closeEngagement();
   chatPanel.open = false;
   chatMessages.replaceChildren();

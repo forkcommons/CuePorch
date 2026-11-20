@@ -84,7 +84,7 @@ def validation(body):
     return dict(result, fields=fields)
 
 
-def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_create=None):
+def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_record=None):
     address = fields.get("email", "").strip()
     values = {}
     if len(address) > 254 or not EMAIL.fullmatch(address):
@@ -121,13 +121,11 @@ def enroll(con, kind, subject, definition, fields, query, *, replace=False, on_c
             if value:
                 values[key] = value
     address_key = address.casefold()
-    existing = on_create and con.execute("SELECT 1 FROM viewer_registrant WHERE kind=? AND subject=? AND email_key=?",
-                                        (kind, subject, address_key)).fetchone()
     conflict = ("DO UPDATE SET email=excluded.email,answers=excluded.answers" if replace else "DO NOTHING")
     con.execute("INSERT INTO viewer_registrant VALUES(?,?,?,?,?,?) ON CONFLICT(kind,subject,email_key) " + conflict,
                 (kind, subject, address_key, address, time.time(), json.dumps(values)))
-    if on_create and not existing:
-        on_create(address_key)
+    if on_record:
+        on_record(address, values)
     return None
 
 

@@ -7,6 +7,7 @@ import { playerColors, playerSwitches } from "./event_controls.js";
 import { setupLiveApi } from "./live_api.js";
 import { setupEventMail } from "./event_mail.js";
 import { setupAttendeeCsv } from "./attendee_csv.js";
+import { setupEventRoster } from "./event_roster.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -115,6 +116,7 @@ async function request(path, method = "GET", body) {
 setupLiveApi(request);
 const chooseEmailEvent = setupEventMail(request);
 const chooseCsvOccurrence = setupAttendeeCsv(request);
+const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
 async function action(work, message = "") {
     if (pending)
         return;
@@ -213,18 +215,7 @@ async function downloadEventFile(path, filename) {
 }
 const { close: closeEngagement } = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
-const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
-    const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
-        headers: { Authorization: "Bearer " + credential.value },
-    });
-    if (!response.ok)
-        throw new Error("Could not download the registrants.");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-event-registrants.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-});
+const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"));
 function choose(event, instance) {
     if (registrationEvent !== event.id) {
         registrationEditor.hidden = true;
@@ -233,6 +224,7 @@ function choose(event, instance) {
     active = { event, instance };
     chooseEmailEvent(event.id);
     chooseCsvOccurrence(event.id, instance.id);
+    chooseRosterOccurrence(event.id, instance.id);
     closeEngagement();
     chatPanel.open = false;
     chatMessages.replaceChildren();

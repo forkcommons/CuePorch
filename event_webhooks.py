@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS live_webhook_registrant(
 """
 TOPICS = (
     "live-event-updated", "live-event-clip-created", "live-event-started", "live-event-ended",
-    "live-event-archive-available", "registration-created",
+    "live-event-archive-available", "registration-created", "registration-updated",
 )
 RETRY_SECONDS = (10, 30, 120, 300, 900)
 
@@ -72,15 +72,6 @@ def subscribed(con, topics):
     placeholders = ",".join("?" for _ in topics)
     return con.execute(f"SELECT 1 FROM live_webhook, json_each(topics) WHERE value IN ({placeholders}) LIMIT 1",
                        topics).fetchone() is not None
-
-
-def registration_created(con, event, opens, email_key):
-    topic = "registration-created"
-    if subscribed(con, (topic,)):
-        uid = uuid.uuid4().hex
-        con.execute("""INSERT INTO live_webhook_registrant VALUES(?,?,?) ON CONFLICT(event,email_key)
-                       DO UPDATE SET id=excluded.id""", (uid, event, email_key))
-        enqueue(con, topic, event, opens, uid, dict(registrant=uid))
 
 
 def observe(con, event, opens, state):

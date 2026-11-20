@@ -1,7 +1,9 @@
 """Exercise real TLS mail, the production settings panel and event attendance links."""
 
 from contextlib import ExitStack, closing, contextmanager
+import csv
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,7 @@ import requests
 from werkzeug.serving import make_server
 
 from browser import chromium
+from installed_event_webhooks import webhook_receiver
 from installed_simulcast import free_port, tls_certificate
 from test_team_invitation_delivery import Relay
 
@@ -50,10 +53,25 @@ def wait_until(check, seconds=12):
     raise AssertionError("A scheduled delivery or state change did not arrive.")
 
 
-def check_csv(origin, api, client, certificate, operator, relay, clock, create):
+def check_csv(origin, api, client, certificate, operator, relay, clock, create, receiver):
     clock[0] = None
+    origins, messages = receiver
+    subscription = client.post(origin + "/api/operator/live-api/webhooks", timeout=8, json=dict(
+        endpoint=origins["CUEPORCH_EVENT_WEBHOOK_ORIGINS"] + "/hook",
+        topics=["registration-created", "registration-updated"]))
+    subscription.raise_for_status()
+    subscription_url = origin + "/api/operator/live-api/webhooks/" + subscription.json()["id"]
+
+    def receive(topic, occurs):
+        _, raw, status = messages.get(timeout=12)
+        payload = json.loads(raw)
+        assert status == 204 and payload["type"] == topic and payload["occurrence"] == occurs
+        assert b"@example.invalid" not in raw
+        return payload["data"]["registrant"]
+
     event, email_settings = create("csv-webinar", "CSV webinar", recurring=True)
     uid = event["id"]
+    first_opens = event["occurrences"][0]["id"]
     opens = event["occurrences"][1]["id"]
     registration = f"{api}/{uid}/registration"
     form = client.get(registration, timeout=8).json()
@@ -89,7 +107,26 @@ def check_csv(origin, api, client, certificate, operator, relay, clock, create):
         expect(panel.locator("#eventCsvStatus")).to_have_text("2 added, 0 already registered, 1 duplicate row combined.")
         panel.get_by_role("button", name="Import attendees").click()
         expect(panel.locator("#eventCsvStatus")).to_have_text("0 added, 2 already registered, 1 duplicate row combined.")
+        organizer.get_by_text("Attendees for this occurrence", exact=True).click()
+        roster = organizer.locator("#eventRoster")
+        expect(roster.get_by_text("Lia, D’Ávila", exact=True)).to_be_visible()
+        roster.get_by_role("searchbox", name="Filter by email").fill("LEE@")
+        roster.get_by_role("button", name="Filter", exact=True).click()
+        expect(roster.get_by_text("李", exact=True)).to_be_visible()
+        expect(roster.get_by_text("Lia, D’Ávila", exact=True)).to_have_count(0)
+        with organizer.expect_download() as pending:
+            roster.get_by_role("button", name="Download occurrence CSV").click()
+        downloaded = pending.value
+        assert downloaded.suggested_filename == f"cueporch-attendees-{opens}.csv"
+        exported = list(csv.DictReader(StringIO(downloaded.path().read_text(encoding="utf-8"))))
+        assert len(exported) == 2 and {row["occurrence"] for row in exported} == {str(opens)}
+        assert {row["registration_source"] for row in exported} == {"csv"}
+        organizer.get_by_role("button", name="Open production for CSV webinar", exact=False).first.click()
+        organizer.get_by_text("Attendees for this occurrence", exact=True).click()
+        expect(roster.locator("#eventRosterStatus")).to_have_text("No matching attendees.")
     assert len(relay.deliveries) == 8
+    registered = {receive("registration-created", opens), receive("registration-created", opens)}
+    assert len(registered) == 2
     stored = client.get(registration, timeout=8).json()["registrants"]
     assert {row["answers"]["first_name"] for row in stored} == {"Lia, D’Ávila", "李"}
     clock[0] = opens - 59
@@ -98,6 +135,25 @@ def check_csv(origin, api, client, certificate, operator, relay, clock, create):
     assert len(imported) == 2 and all(mail["Subject"] == "Reminder about CSV webinar" for mail in imported)
     assert {str(mail["To"]).casefold() for mail in imported} == {"lia@example.invalid", "lee@example.invalid"}
     clock[0] = None
+    mail = client.get(email_settings, timeout=8).json()
+    mail["settings"]["confirmation"] = False
+    client.put(email_settings, json=mail, timeout=8).raise_for_status()
+    in_first = f"{api}/{uid}/{first_opens}/registrants"
+    contact = dict(email="lia@example.invalid", first_name="First occurrence")
+    assert client.post(in_first, json=contact, timeout=8).status_code == 201
+    created_id = receive("registration-created", first_opens)
+    assert created_id not in registered
+    contact["first_name"] = "=1+1"
+    assert client.post(in_first, json=contact, timeout=8).status_code == 200
+    assert receive("registration-updated", first_opens) == created_id
+    assert messages.empty()
+    first_csv = client.get(f"{api}/{uid}/{first_opens}/registration/export", timeout=8)
+    first_csv.raise_for_status()
+    (first_row,) = csv.DictReader(StringIO(first_csv.text))
+    assert first_row["first_name"] == "'=1+1" and first_row["registration_source"] == "api"
+    second_roster = client.get(f"{api}/{uid}/{opens}/registrants", timeout=8).json()["attendees"]
+    assert {record["answers"]["first_name"] for record in second_roster} == {"Lia, D’Ávila", "李"}
+    client.delete(subscription_url, timeout=12).raise_for_status()
 
     bulk, _ = create("bulk-webinar", "Bulk webinar")
     bulk_opens = bulk["occurrences"][0]["id"]
@@ -115,9 +171,13 @@ def check_csv(origin, api, client, certificate, operator, relay, clock, create):
             else:
                 result.raise_for_status()
                 assert result.json() == dict(added=1000, existing=0, duplicates=0, occurrence=bulk_opens)
+                data_url = versioned.removesuffix("registration/import") + "registrants"
+                page = integration.get(data_url, params={"offset": 950}, timeout=8).json()
+                assert page["total"] == 1000 and page["offset"] == 950 and len(page["attendees"]) == 50
                 largest = import_csv(content + "extra@example.invalid,Guest\r\n", address=versioned, session=integration)
                 assert largest.status_code == 422 and "1000 attendee rows" in largest.json()["error"]["message"]
     print("Verified mapped UTF-8 CSV in the browser, rollback, idempotent import, no confirmation, target occurrence reminder, scopes, and the 1000-row limit.")
+    print("Verified private occurrence rosters and downloads, paging, formula-safe CSV, independent attendee answers, and per-occurrence create/update webhooks.")
 
 
 class WebinarEmail(unittest.TestCase):
@@ -131,6 +191,11 @@ class WebinarEmail(unittest.TestCase):
             relay.deliveries = []
             relay.delivered = Event()
             cleanup.enter_context(service_worker(relay))
+            hook_root = root / "hook"
+            hook_root.mkdir()
+            receiver = cleanup.enter_context(webhook_receiver(hook_root))
+            bundle = root / "ca-bundle.pem"
+            bundle.write_bytes(certificate.read_bytes() + Path(receiver[0]["REQUESTS_CA_BUNDLE"]).read_bytes())
             port = free_port()
             origin = f"https://127.0.0.1:{port}"
             cleanup.enter_context(patch.dict(os.environ, {
@@ -138,7 +203,7 @@ class WebinarEmail(unittest.TestCase):
                 "CUEPORCH_SMTP_PORT": str(relay.server_address[1]), "CUEPORCH_SMTP_FROM": "station@example.invalid",
                 "CUEPORCH_SMTP_USER": "fixture", "CUEPORCH_SMTP_PASSWORD": "mail-credential",
                 "SSL_CERT_FILE": str(certificate),
-            }))
+            } | receiver[0] | {"REQUESTS_CA_BUNDLE": str(bundle)}))
             clock = [None]
 
             def simulated_time():
@@ -269,7 +334,7 @@ class WebinarEmail(unittest.TestCase):
             wait_until(lambda: len(relay.deliveries) == 8)
             assert relay.deliveries[-1]["Subject"] == "You're registered for Held webinar"
             print("Verified 8 messages over TLS, default-off and revocation, expiry, and release after disabling optional approval.")
-            check_csv(origin, api, client, certificate, operator, relay, clock, create)
+            check_csv(origin, api, client, certificate, operator, relay, clock, create, receiver)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ import audience_accounts
 import audience_comments
 import content_rating
 import event_api
+import event_registrants
 import event_webhooks
 from browser_account_security import same_origin, secure_site
 import community_analytics
@@ -202,6 +203,7 @@ def create_app(root, database, operator, institution, simulation=None):
             raise ValueError("Policy database belongs to another institution")
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
         team_accounts.initialize_permissions(db)
+        event_registrants.initialize(db)
         team_sessions.initialize(db)
         library_caption_jobs.initialize(db)
         library_ai_drafts.initialize(db)

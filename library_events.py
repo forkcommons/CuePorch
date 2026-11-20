@@ -32,6 +32,7 @@ import event_player
 import event_playlist
 import event_program
 import event_questions
+import event_registrants
 import event_replay_captions
 import event_schedule
 import event_scenes
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
-       + event_mail.SCHEMA)
+       + event_mail.SCHEMA + event_registrants.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -682,6 +683,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(404)
         return candidate
 
+    event_registrants.register(app, tx, staff, read, selected_open)
+
     def registration_intake(con, uid, opens):
         row, event = read(con, uid)
         slot = selected_open(event, opens)
@@ -694,16 +697,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409, "This occurrence has ended.")
         return row, slot, form
 
-    def enroll_attendee(con, row, slot, form, body, *, send_confirmation):
+    def enroll_attendee(con, row, slot, form, body, *, source):
         uid, opens = row["id"], slot["id"]
+        added = False
+
+        def remember(email, answers):
+            nonlocal added
+            added = event_registrants.record(con, uid, opens, email, answers, source)
+
         registrant, created = event_attendance.enroll(
-            con, uid, row["revision"], slot, form, body,
-            on_create=lambda email_key: event_webhooks.registration_created(con, uid, opens, email_key))
+            con, uid, row["revision"], slot, form, body, on_record=remember)
         if mail_configured:
             _, rules = event_mail.settings(con, uid)
             event_mail.schedule(con, registrant["id"], opens, registrant["expires_at"], rules,
-                                int(datetime.now(timezone.utc).timestamp()), confirmation=created and send_confirmation)
-        return registrant, created
+                                int(datetime.now(timezone.utc).timestamp()), confirmation=created and source == "api")
+        return registrant, created, added
 
     @app.post("/api/live-events/<uid>/<int:opens>/registrants")
     def add_event_registrant(uid, opens):
@@ -711,7 +719,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         body = request.get_json()
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
-            registrant, created = enroll_attendee(con, row, slot, form, body, send_confirmation=True)
+            registrant, created, _ = enroll_attendee(con, row, slot, form, body, source="api")
         address = url_for("event_attendance_join", slug=row["slug"])
         return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
 
@@ -737,8 +745,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             added = 0
             for line, fields in contacts.values():
                 try:
-                    _, created = enroll_attendee(con, row, slot, form, fields, send_confirmation=False)
-                    added += int(created)
+                    _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source="csv")
+                    added += int(enrolled)
                 except (Conflict, UnprocessableEntity) as error:
                     abort(error.code, f"CSV line {line}: {error.description}")
             note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} attendees")
@@ -749,6 +757,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         staff()
         with tx() as con:
             read(con, uid)
+            found = con.execute("SELECT * FROM live_event_registrant WHERE event=? AND id=?", (uid, registrant)).fetchone()
+            if found:
+                return event_registrants.describe(found)
             found = con.execute("""SELECT r.email,r.registered,r.answers FROM live_webhook_registrant a
                                    JOIN viewer_registrant r ON r.subject=a.event AND r.email_key=a.email_key
                                    WHERE a.id=? AND a.event=? AND r.kind='event'""", (registrant, uid)).fetchone()
@@ -1413,7 +1424,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         abort(403, "Open the registration form again.")
                     form_error = library_registration.enroll(
                         con, "event", row["id"], form, request.form, request.args,
-                        on_create=lambda email_key: event_webhooks.registration_created(con, row["id"], shown["id"], email_key))
+                        on_record=lambda email, answers: event_registrants.record(
+                            con, row["id"], shown["id"], email, answers, "form"))
                     if not form_error:
                         grant = guests.dumps(scope)
                         if mail_configured and event["visibility"] in event_mail.WATCHABLE:
