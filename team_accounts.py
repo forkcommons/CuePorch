@@ -17,6 +17,7 @@ import account_email_factor
 import team_saml
 import team_scim
 import team_group_roles
+import team_sessions
 import account_recovery
 import account_totp
 import creator_profiles
@@ -66,7 +67,6 @@ CREATE TABLE IF NOT EXISTS team_membership_event(
 MANAGERS = ("owner", "admin")
 CONTRIBUTORS = ("contributor", "contributor_plus")
 ROLES = ("admin", *CONTRIBUTORS, "viewer")
-SESSION_SECONDS = 12 * 3600
 INVITE_SECONDS = 7 * 86400
 SESSION_MARKER = "team-session"
 MUTATION_HEADER = "X-CuePorch-Team"
@@ -95,11 +95,23 @@ def permission_from(body):
 
 
 def current(con, secure):
-    return con.execute(f"""SELECT m.id,m.name,m.email,{team_group_roles.EFFECTIVE_ROLE} AS role
+    digest = workspace_session("team", secure)
+    if not digest:
+        return None
+    now = team_sessions.clock()
+    idle = team_sessions.idle_cutoff(con, now)
+    row = con.execute(f"""SELECT m.id,m.name,m.email,{team_group_roles.EFFECTIVE_ROLE} AS role
         FROM team_session s JOIN team_member m ON m.id=s.member
         WHERE s.token_hash=? AND s.expires>? AND m.removed IS NULL AND
+        (? IS NULL OR s.last_active>?) AND
         (m.role<>'owner' OR NOT EXISTS(SELECT 1 FROM team_saml_session f WHERE f.token_hash=s.token_hash))""",
-        (workspace_session("team", secure), time.time())).fetchone()
+        (digest, now, idle, idle)).fetchone()
+    if row and idle is not None and not con.execute(
+        "UPDATE team_session SET last_active=max(last_active,?) WHERE token_hash=? AND expires>? AND last_active>?",
+        (now, digest, now, idle),
+    ).rowcount:
+        return None
+    return row
 
 
 def actor_id(member):
@@ -142,15 +154,6 @@ def roster(con):
 
 def spreadsheet_cell(value):
     return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
-
-
-def issue_session(con, uid, secure):
-    token = secrets.token_urlsafe(32)
-    now = time.time()
-    con.execute("DELETE FROM team_session WHERE expires<=? OR token_hash=?",
-                (now, workspace_session("team", secure)))
-    con.execute("INSERT INTO team_session VALUES(?,?,?)", (token_hash(token), uid, now + SESSION_SECONDS))
-    return token
 
 
 def grant_available(con, uid):
@@ -229,14 +232,20 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             abort(401, "Sign in to your team account.")
         return row
 
+    def set_session_cookie(response, secure, token):
+        lifetime = None
+        if token:
+            with tx() as con:
+                lifetime = team_sessions.cookie_age(con)
+        return workspace_session_cookie(response, "team", secure, lifetime, token)
+
     def session_response(body, secure, token=None, status=200):
-        return workspace_session_cookie(private(body, status), "team", secure, SESSION_SECONDS, token)
+        return set_session_cookie(private(body, status), secure, token)
 
     saml_available = team_saml.register(
-        app, tx, origin, operator_name, ownership, mutation, issue_session,
-        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
-        note, limit,
+        app, tx, origin, operator_name, ownership, mutation, team_sessions.issue, set_session_cookie, note, limit,
     )
+    team_sessions.register(app, tx, origin, manager, note)
 
     def security_account(con, secure):
         uid = member(con, secure)["id"]
@@ -246,7 +255,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         federated = con.execute("""SELECT s.expires FROM team_session s JOIN team_saml_session f USING(token_hash)
                                  WHERE s.member=? AND s.token_hash=?""", (uid, workspace_session("team", secure))).fetchone()
         con.execute("DELETE FROM team_session WHERE member=?", (uid,))
-        token = issue_session(con, uid, secure)
+        token = team_sessions.issue(con, uid, secure)
         if federated:
             team_saml.mark_session(con, token, federated["expires"])
         return token
@@ -256,7 +265,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
 
     authenticator = account_totp.register(
         app, tx, "team", key, lambda: secure_site(origin), mutation, security_account, limit, rotate_security_session,
-        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
+        set_session_cookie,
         note_authenticator,
     )
     email_security = account_email.register(
@@ -266,7 +275,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     email_factor = account_email_factor.register(
         app, tx, email_security, authenticator, lambda: secure_site(origin), mutation, security_account, limit,
         rotate_security_session,
-        lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
+        set_session_cookie,
         lambda con, actor, enabled: note(con, actor_id(actor),
                                          "email_factor_enabled" if enabled else "email_factor_disabled", actor["id"]),
     )
@@ -400,7 +409,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 abort(403, "Use your organization's single sign-on for this account.")
             needs_mail, prepared = email_factor.check(con, factor_actor, body)
             if not needs_mail:
-                token = issue_session(con, row["id"], secure)
+                token = team_sessions.issue(con, row["id"], secure)
         if needs_mail:
             return email_factor.deliver(tx, factor_actor, prepared)
         return session_response(dict(logged_in), secure, token)
@@ -436,7 +445,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                         (uid, pending["email"], name, pending["role"], encoded, time.time()))
             con.execute("DELETE FROM team_invitation WHERE id=?", (pending["id"],))
             note(con, "team:" + uid, "joined", uid, pending["role"])
-            token = None if team_saml.forces_saml(team_saml.configured(con)[1], pending) else issue_session(con, uid, secure)
+            token = None if team_saml.forces_saml(team_saml.configured(con)[1], pending) else team_sessions.issue(con, uid, secure)
         return session_response(dict(id=uid, email=pending["email"], name=name, role=pending["role"]), secure, token, 201)
 
     @app.get("/api/team/members")

@@ -78,6 +78,7 @@ import team_accounts
 import team_saml
 import team_scim
 import team_group_roles
+import team_sessions
 import team_brand_kits
 import team_branding
 import team_sharing_policy
@@ -158,6 +159,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + team_saml.SCHEMA
             + team_scim.SCHEMA
             + team_group_roles.SCHEMA
+            + team_sessions.SCHEMA
             + team_branding.SCHEMA
             + team_brand_kits.SCHEMA
             + team_sharing_policy.SCHEMA
@@ -182,6 +184,7 @@ def create_app(root, database, operator, institution, simulation=None):
             raise ValueError("Policy database belongs to another institution")
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
         team_accounts.initialize_permissions(db)
+        team_sessions.initialize(db)
         workspace_updates.initialize(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
@@ -228,7 +231,8 @@ def create_app(root, database, operator, institution, simulation=None):
             return team_accounts.current(con, secure)
         with closing(sqlite3.connect(database, timeout=30)) as lookup:
             lookup.row_factory = sqlite3.Row
-            return team_accounts.current(lookup, secure)
+            with lookup:
+                return team_accounts.current(lookup, secure)
 
     def team_contributor(con=None):
         member = team_member(con)

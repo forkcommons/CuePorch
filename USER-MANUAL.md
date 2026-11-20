@@ -88,6 +88,8 @@ To connect a provisioning service, use **Create provisioning token** in **Single
 
 Enable **Match SCIM users to existing team accounts** to transfer existing memberships to your directory. The provider must send the member's exact email on an authorized domain and its directory identifier (`externalId`). Members keep their IDs, roles, work and current shares. CuePorch signs them out and removes their local sign-in credentials. They return through the configured SAML provider. The Owner always retains local sign-in.
 
+Owners and Administrators can use **Team settings → Session controls**. Select a fixed time after sign-in or a period of inactivity and choose minutes, hours or days. The initial setting is 12 hours after sign-in. An inactivity policy uses a browser-session cookie, and a provider's earlier expiration continues to apply to a SAML session. Saving a changed setting ends all team sessions in the workspace. Choose **Sign out all team members now** to end them without changing the policy. Viewer accounts and the installation credential continue to work.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from threading import Thread
+from time import time
 import unittest
 from unittest.mock import patch
 
@@ -304,6 +305,8 @@ class TeamSAML(unittest.TestCase):
                             self.verify_scim_adoption(page, admin, local, federated, start, origin, policy,
                                                       operator_headers, work, existing, owner_email, local_password)
                             self.assertEqual(owner.request.get(origin + "/api/team/account").json()["role"], "owner")
+                            self.verify_session_controls(admin, owner, local, federated, start, origin, policy,
+                                                         operator_headers, work, owner_email, local_password)
 
                     audit = admin.request.get(origin + "/api/team/audit", headers=operator_headers).json()["events"]
                     self.assertTrue({"saml_enabled", "saml_signed_in", "saml_disabled", "saml_provisioned", "removed"} <=
@@ -536,6 +539,84 @@ class TeamSAML(unittest.TestCase):
         policy["issuer"] = ISSUER
         expect(federate().get_by_text("This identity is not linked to an eligible workspace member.")).to_be_visible()
         self.assertEqual(federated.request.get(member).status, 401)
+
+    def verify_session_controls(self, admin, owner, local, federated, start, origin, policy,
+                                operator, work, owner_email, password):
+        settings = origin + "/api/team/session-policy"
+        account = origin + "/api/team/account"
+        media = origin + f"/team/video/{work}/media"
+        workspace = owner.new_page()
+        authorized_member = {"Authorization": "Bearer team-session"}
+
+        def sign_in(context, address):
+            result = context.request.post(origin + "/api/team/session", headers=TEAM,
+                                          data=dict(email=address, password=password))
+            self.assertTrue(result.ok)
+            return result
+
+        def configure(mode, duration, unit):
+            workspace.goto(origin + "/team/session-policy")
+            workspace.get_by_label("Require sign-in again").select_option(mode)
+            workspace.get_by_label("Duration").fill(str(duration))
+            workspace.get_by_label("Unit").select_option(unit)
+            workspace.get_by_role("button", name="Save and sign out team").click()
+            expect(workspace.get_by_role("status")).to_have_text("Team sessions ended. Members must sign in again.")
+
+        def from_provider():
+            policy.update(subject="fixture-user", email=EMAIL, issuer=ISSUER)
+            screen = start(federated)
+            screen.get_by_role("button", name="Continue as station crew").click()
+            expect(screen.get_by_text("Station crew · Contributor")).to_be_visible()
+
+        contributor = sign_in(local, EMAIL).json()["id"]
+        self.assertEqual(local.request.get(settings, headers=authorized_member).status, 403)
+        self.assertTrue(admin.request.put(origin + f"/api/team/members/{contributor}/works/{work}",
+                                          headers=operator, data={}).ok)
+        self.assertTrue(local.request.get(media).ok)
+        initial = admin.request.get(settings, headers=operator).json()
+        self.assertEqual((initial["mode"], initial["duration"], initial["unit"]), ("fixed", 12, "hours"))
+
+        now = time()
+        elapsed = 0
+        with patch("team_sessions.clock", lambda: now + elapsed):
+            configure("fixed", 1, "minutes")
+            self.assertEqual(owner.request.get(account).status, 401)
+            self.assertEqual(local.request.get(media).status, 401)
+            self.assertIn("Max-Age=60", sign_in(local, EMAIL).headers["set-cookie"])
+            elapsed = 45
+            self.assertTrue(local.request.get(media).ok)
+            elapsed = 61
+            self.assertEqual(local.request.get(media).status, 401)
+
+            sign_in(owner, owner_email)
+            configure("idle", 2, "hours")
+            elapsed = 0
+            self.assertNotIn("Max-Age=", sign_in(local, EMAIL).headers["set-cookie"])
+            from_provider()
+            elapsed = 45 * 60
+            self.assertTrue(federated.request.get(media).ok)
+            self.assertTrue(local.request.get(media).ok)
+            elapsed = 65 * 60
+            self.assertEqual(federated.request.get(media).status, 401)
+            self.assertTrue(local.request.get(media).ok)
+            elapsed = 160 * 60
+            self.assertTrue(local.request.get(media).ok)
+            elapsed = 281 * 60
+            self.assertEqual(local.request.get(media).status, 401)
+
+        sign_in(owner, owner_email)
+        sign_in(local, EMAIL)
+        federated.request.delete(origin + "/api/team/session", headers=TEAM, data={})
+        from_provider()
+        workspace.goto(origin + "/team/session-policy")
+        workspace.get_by_role("button", name="Sign out all team members now").click()
+        expect(workspace.get_by_role("status")).to_have_text("Team sessions ended. Members must sign in again.")
+        for context in (owner, local, federated):
+            self.assertEqual(context.request.get(account).status, 401)
+            self.assertEqual(context.request.get(media).status, 401)
+        self.assertEqual(sign_in(owner, owner_email).json()["role"], "owner")
+        audit = admin.request.get(origin + "/api/team/audit", headers=operator).json()["events"]
+        self.assertTrue({"session_policy_changed", "all_team_sessions_ended"} <= {row["action"] for row in audit})
 
 
 if __name__ == "__main__":
