@@ -121,6 +121,7 @@ def check_team_accounts(page, browser, base, auth, replacement):
         assert requests.get(f"{base}/watch/work/{owned[0]['id']}", timeout=10).status_code == 404
         draft_width = playback(contributor_page, draft_name)
 
+        admin_page.reload()
         member_row = admin_page.locator("#teamMemberList li").filter(has_text=email("viewer"))
         member_row.get_by_role("button", name="Manage video access").click()
         expect(admin_page.get_by_role("heading", name="Videos shared with Val")).to_be_visible()
