@@ -16,10 +16,17 @@
   <p id="socialConnect" hidden><a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a></p>
   <form id="socialForm" method="post" hidden>
     <label>Title <input name="title" maxlength="100" required></label>
-    {% if provider == "linkedin" %}
+    {% if provider != "youtube" %}
     <label>Post text <textarea name="description" maxlength="3000" rows="4"></textarea></label>
+    {% if provider == "linkedin" %}
     <p>Company Page <output id="socialCompany"></output></p>
     <label><input type="checkbox" name="publicPost" required> Publish a public post on this Company Page</label>
+    {% else %}
+    <label for="socialPage">Facebook Page</label>
+    <select name="company" id="socialPage" required></select>
+    <label><input type="checkbox" name="publicPost" required> Publish a public video on this Facebook Page</label>
+    {% endif %}
+    <button>{{ "Post to LinkedIn" if provider == "linkedin" else "Post to Facebook" }}</button>
     {% else %}
     <label>Description <textarea name="description" maxlength="5000" rows="4"></textarea></label>
     <label>Visibility on YouTube
@@ -27,8 +34,8 @@
         <option value="public">Public</option></select>
     </label>
     <label><input type="checkbox" name="madeForKids"> This video is made for kids</label>
+    <button>Upload to YouTube</button>
     {% endif %}
-    <button>{{ "Post to LinkedIn" if provider == "linkedin" else "Upload to YouTube" }}</button>
   </form>
   <section id="socialHistory" aria-labelledby="socialHistoryTitle" hidden>
     <h2 id="socialHistoryTitle">Upload history</h2>

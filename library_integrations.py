@@ -16,6 +16,7 @@ from werkzeug.exceptions import TooManyRequests
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
+import facebook_upload
 import google_meet_recordings
 import linkedin_upload
 import mail_relay
@@ -292,7 +293,8 @@ def register(app, tx, staff, operator, origin, import_video, database):
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
-    publishing = {youtube.config.key: youtube, linkedin.config.key: linkedin}
+    facebook = facebook_upload.PageConnection(tx, operator)
+    publishing = {item.config.key: item for item in (youtube, linkedin, facebook)}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | publishing
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(

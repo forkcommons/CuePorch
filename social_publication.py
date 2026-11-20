@@ -13,6 +13,7 @@ from werkzeug.exceptions import HTTPException
 
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from catalog import video_version_key
+import facebook_upload
 import library_privacy
 import linkedin_upload
 from team_accounts import MANAGERS
@@ -36,15 +37,16 @@ RETRY_SECONDS = (5, 20, 60, 240)
 MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "mkv": "video/x-matroska"}
 
 
-def metadata_for(body, provider, company):
+def metadata_for(body, provider, pages):
     title, description = body.get("title"), body.get("description", "")
     visibility, made_for_kids = body.get("visibility"), body.get("made_for_kids")
-    if provider == "linkedin":
+    if provider in ("linkedin", "facebook"):
+        page = body.get("company")
         if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "\n\r\0")
                 or not isinstance(description, str) or len(description) > 3000 or "\0" in description
-                or visibility != "public" or body.get("company") != company):
-            abort(400, "Check the LinkedIn title, post text, Page and public visibility.")
-        return dict(title=title.strip(), description=description, company=company, visibility=visibility)
+                or visibility != "public" or not isinstance(page, str) or page not in pages):
+            abort(400, "Check the title, post text, connected Page and public visibility.")
+        return dict(title=title.strip(), description=description, company=page, visibility=visibility)
     category = body.get("category", "22")
     if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "<>\n\r\0")
             or not isinstance(description, str) or len(description.encode("utf8", errors="replace")) > 5000
@@ -66,16 +68,19 @@ def transferable(con, work, visibility, provider):
         source, _ = vimeo_privacy.target_settings(work)
         if source["visibility"] != "public" and source["visibility"] != visibility:
             abort(403, "The Vimeo source privacy restricts this video to a narrower destination audience.")
+    formats = ("mp4",) if provider == "linkedin" else MIME
+    limits = {"linkedin": (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES),
+              "facebook": (1, facebook_upload.MAX_BYTES)}
+    minimum, maximum = limits.get(provider, (1, 256 * 1000**3))
     for role in ("original", "playback"):
         for file in work["files"]:
-            formats = ("mp4",) if provider == "linkedin" else MIME
-            minimum, maximum = (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES) if provider == "linkedin" else (
-                1, 256 * 1000**3)
             if (file["role"] == role and file["format"] in formats and minimum <= file["bytes"] <= maximum
                     and re.fullmatch(r"[0-9a-f]{64}", file["sha256"])):
                 return file
     if provider == "linkedin":
         abort(409, "LinkedIn needs a retained MP4 between 75 KB and 500 MB.")
+    if provider == "facebook":
+        abort(409, "Facebook needs a retained video under 4 GB.")
     abort(409, "This version needs a retained video file before it can be published.")
 
 
@@ -144,6 +149,48 @@ class Publisher:
         if len(body) != count:
             abort(409, "The retained video file no longer matches its recorded size.")
         return body
+
+    def save_session(self, job, session, offset, delay=0):
+        with self.tx() as con:
+            con.execute("""UPDATE social_publication SET session=?,offset=?,attempts=0,error=NULL,due=?
+                           WHERE id=? AND state='queued'""",
+                        (self.connection.cipher.encrypt(json.dumps(session).encode()), offset,
+                         int(time()) + delay, job["id"]))
+
+    def saved_session(self, job):
+        try:
+            return json.loads(self.connection.cipher.decrypt(job["session"]))
+        except (InvalidToken, ValueError):
+            abort(409, "The video upload session could not be reopened.")
+
+    def unconfirmed(self, job, destination):
+        with self.tx() as con:
+            con.execute("""UPDATE social_publication SET state='unconfirmed',session=NULL,error=?
+                           WHERE id=? AND state='queued'""",
+                        (f"The provider may have published the video. Check {destination} before sending another.",
+                         job["id"]))
+
+    def finalize_public_post(self, job, send, destination):
+        with self.tx() as con:
+            self.authorize(con, job)
+            con.execute("UPDATE social_publication SET final_sent=1 WHERE id=?", (job["id"],))
+        try:
+            post_id = send()
+        except HTTPException as error:
+            if error.code >= 500:
+                self.unconfirmed(job, destination)
+                return
+            with self.tx() as con:
+                con.execute("UPDATE social_publication SET final_sent=0 WHERE id=? AND state='queued'", (job["id"],))
+                if error.code == 429:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL WHERE id=? AND decision='automatic'
+                                   AND EXISTS(SELECT 1 FROM policy WHERE step='publication' AND required=1)""",
+                                (job["id"],))
+            raise
+        with self.tx() as con:
+            con.execute("""UPDATE social_publication SET state='delivered',session=NULL,remote=?,
+                           remote_privacy='public',error=NULL WHERE id=? AND state IN ('queued','unconfirmed')""",
+                        (post_id, job["id"]))
 
     def tick(self):
         with self.tx() as con:
@@ -235,45 +282,9 @@ class YoutubePublisher(Publisher):
                                 (acknowledged, int(time()) + result["delay"], job["id"]))
 
 class LinkedinPublisher(Publisher):
-    def save_session(self, job, session, offset, delay=0):
-        with self.tx() as con:
-            con.execute("""UPDATE social_publication SET session=?,offset=?,attempts=0,error=NULL,due=?
-                           WHERE id=? AND state='queued'""",
-                        (self.connection.cipher.encrypt(json.dumps(session).encode()), offset,
-                         int(time()) + delay, job["id"]))
-
-    def unconfirmed(self, job):
-        with self.tx() as con:
-            con.execute("""UPDATE social_publication SET state='unconfirmed',session=NULL,error=?
-                           WHERE id=? AND state='queued'""",
-                        ("LinkedIn may have received the post. Check the Company Page before sending another.",
-                         job["id"]))
-
-    def publish_post(self, job, session, metadata):
-        with self.tx() as con:
-            self.authorize(con, job)
-            con.execute("UPDATE social_publication SET final_sent=1 WHERE id=?", (job["id"],))
-        try:
-            post_id = linkedin_upload.post(self.connection, job["connection"], session["video"], metadata)
-        except HTTPException as error:
-            if error.code >= 500:
-                self.unconfirmed(job)
-                return
-            with self.tx() as con:
-                con.execute("UPDATE social_publication SET final_sent=0 WHERE id=? AND state='queued'", (job["id"],))
-                if error.code == 429:
-                    con.execute("""UPDATE action SET status='waiting',decision=NULL WHERE id=? AND decision='automatic'
-                                   AND EXISTS(SELECT 1 FROM policy WHERE step='publication' AND required=1)""",
-                                (job["id"],))
-            raise
-        with self.tx() as con:
-            con.execute("""UPDATE social_publication SET state='delivered',session=NULL,remote=?,
-                           remote_privacy='public',error=NULL WHERE id=? AND state IN ('queued','unconfirmed')""",
-                        (post_id, job["id"]))
-
     def post_next(self, job):
         if job["final_sent"]:
-            self.unconfirmed(job)
+            self.unconfirmed(job, "the LinkedIn Company Page")
             return
         with self.tx() as con:
             metadata = self.authorize(con, job)
@@ -286,10 +297,7 @@ class LinkedinPublisher(Publisher):
             session["started"] = int(time())
             self.save_session(job, session, 0)
             return
-        try:
-            session = json.loads(self.connection.cipher.decrypt(job["session"]))
-        except (InvalidToken, ValueError):
-            abort(409, "The LinkedIn video upload session could not be reopened.")
+        session = self.saved_session(job)
         index = len(session["tags"])
         if index < len(session["parts"]):
             if time() * 1000 >= session["expires"]:
@@ -304,7 +312,8 @@ class LinkedinPublisher(Publisher):
             return
         state = linkedin_upload.status(*args, session, company)
         if state == "AVAILABLE":
-            self.publish_post(job, session, metadata)
+            self.finalize_public_post(job, lambda: linkedin_upload.post(*args, session["video"], metadata),
+                                      "the LinkedIn Company Page")
             return
         if time() - session["started"] > 2 * 3600:
             abort(409, "LinkedIn is still processing the video. Check the Company Page before publishing again.")
@@ -316,13 +325,39 @@ class LinkedinPublisher(Publisher):
         self.save_session(job, session, job["bytes"], linkedin_upload.POLL_SECONDS)
 
 
+class FacebookPublisher(Publisher):
+    def post_next(self, job):
+        if job["final_sent"]:
+            self.unconfirmed(job, "the Facebook Page")
+            return
+        with self.tx() as con:
+            metadata = self.authorize(con, job)
+        args = self.connection, job["connection"], metadata["company"]
+        size, offset = job["bytes"], job["offset"]
+        if not job["session"]:
+            self.save_session(job, facebook_upload.start(*args, size), 0)
+            return
+        session = self.saved_session(job)
+        if offset == size:
+            self.finalize_public_post(job, lambda: facebook_upload.post(*args, session, metadata), "the Facebook Page")
+            return
+        body = self.media_part(job, offset, session["end"] - offset)
+        with self.tx() as con:
+            self.authorize(con, job)
+            con.execute("UPDATE social_publication SET probe=1 WHERE id=?", (job["id"],))
+        acknowledged, end = facebook_upload.send_part(*args, session, size, offset, body)
+        session["end"] = end
+        self.save_session(job, session, acknowledged)
+
+
 def register(app, tx, database, root, origin, connections, read_works, title_for, staff, action,
              sharing_access, enforce_sharing):
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
 
     workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access)
-               for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher))]
+               for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher),
+                                     ("facebook", FacebookPublisher))]
 
     def close():
         for worker in workers:
@@ -335,6 +370,13 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         if connection is None:
             abort(404)
         return connection
+
+    def pages_for(con, connection):
+        if connection.config.key == "facebook":
+            return {page: row["name"] for page, row in connection.pages(con).items()}
+        if connection.config.key == "linkedin" and connection.company:
+            return {connection.company: connection.company}
+        return {}
 
     @app.get("/operator/videos/<uuid:work>/social")
     def social_page(work):
@@ -357,15 +399,22 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
             if state == "queued" and job["approval"] in ("waiting", "rejected"):
                 state = "waiting for publication approval" if job["approval"] == "waiting" else "rejected"
             remote = job["remote"]
-            link = (linkedin_upload.link(remote) if provider == "linkedin" else
-                    f"https://www.youtube.com/watch?v={remote}") if remote else None
+            link = None
+            if remote:
+                if provider == "linkedin":
+                    link = linkedin_upload.link(remote)
+                elif provider == "facebook":
+                    link = facebook_upload.link(metadata["company"], remote)
+                else:
+                    link = f"https://www.youtube.com/watch?v={remote}"
             jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"], company=metadata.get("company"),
                              cancelable=job["state"] == "queued" and not job["final_sent"],
                              requested_privacy=visibility_for(metadata),
                              privacy=job["remote_privacy"], error=job["error"], link=link))
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],
                     configured=connection.configured, connected=bool(connection.connection(con)), jobs=jobs,
-                    allowed=sharing_access(con)["outbound"], company=getattr(connection, "company", None))
+                    allowed=sharing_access(con)["outbound"], company=getattr(connection, "company", None),
+                    pages=[dict(id=page, name=name) for page, name in pages_for(con, connection).items()])
 
     @app.route("/api/library/work/<uuid:work>/social/<provider>", methods=("GET", "POST"))
     def publication(work, provider):
@@ -382,7 +431,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                 abort(404, "The selected video is unavailable.")
             if body is None:
                 return private(receipt(con, uid, item, connection))
-            metadata = metadata_for(body, provider, getattr(connection, "company", None))
+            metadata = metadata_for(body, provider, pages_for(con, connection))
             visibility = visibility_for(metadata)
             enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": visibility})
             connection.authorize(con, revision)

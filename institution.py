@@ -812,7 +812,7 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM social_publication WHERE state='queued' AND final_sent=0
-                            AND (provider='linkedin' OR (probe=0 AND offset=0)))""", (step,))
+                            AND (provider IN ('linkedin','facebook') OR (probe=0 AND offset=0)))""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",

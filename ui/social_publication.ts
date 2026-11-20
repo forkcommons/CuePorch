@@ -8,6 +8,7 @@ interface Upload {
 interface Publication {
   cut: string; title: string; connected: boolean; configured: boolean; allowed: boolean; jobs: Upload[];
   company: string | null;
+  pages: {id: string; name: string}[];
 }
 
 const provider = document.body.dataset.provider!;
@@ -20,6 +21,7 @@ const connect = document.querySelector<HTMLElement>("#socialConnect")!;
 const form = document.querySelector<HTMLFormElement>("#socialForm")!;
 const title = form.querySelector<HTMLInputElement>("[name=title]")!;
 const companyLabel = form.querySelector<HTMLOutputElement>("#socialCompany");
+const pageSelector = form.querySelector<HTMLSelectElement>("#socialPage");
 const submit = form.querySelector<HTMLButtonElement>("button")!;
 const historySection = document.querySelector<HTMLElement>("#socialHistory")!;
 const jobs = document.querySelector<HTMLUListElement>("#socialJobs")!;
@@ -53,6 +55,9 @@ function render(data: Publication, fresh = false) {
     if (companyLabel) {
       companyLabel.value = company || "";
     }
+    if (pageSelector) {
+      pageSelector.replaceChildren(new Option("Choose a Page", ""), ...data.pages.map(page => new Option(page.name, page.id)));
+    }
     title.value = data.title;
     if (!data.allowed) notice.textContent = "Publishing to this destination is restricted by your workspace.";
     else if (!data.configured) notice.textContent = `Configure ${providerName} for this workspace in Integrations.`;
@@ -62,7 +67,10 @@ function render(data: Publication, fresh = false) {
   jobs.replaceChildren(...data.jobs.map(job => {
     const item = document.createElement("li");
     item.textContent = `${job.state} · ${job.privacy || job.requested_privacy} · ${job.sent.toLocaleString()} of ${job.bytes.toLocaleString()} bytes`;
-    if (job.company) item.append(` · Company Page ${job.company}`);
+    if (job.company) {
+      const page = data.pages.find(candidate => candidate.id === job.company);
+      item.append(` · ${page?.name && page.name !== job.company ? page.name : "Page " + job.company}`);
+    }
     if (job.error) item.append(`. ${job.error}`);
     if (job.link) {
       const link = document.createElement("a");
@@ -120,9 +128,9 @@ form.onsubmit = async (event) => {
   submit.disabled = true;
   const fields = new FormData(form);
   try {
-    const options = provider === "linkedin"
-      ? {company, visibility: fields.has("publicPost") ? "public" : null}
-      : {visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids")};
+    const options = provider === "youtube"
+      ? {visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids")}
+      : {company: pageSelector ? fields.get("company") : company, visibility: fields.has("publicPost") ? "public" : null};
     render(await api({id: draft, cut, title: fields.get("title"), description: fields.get("description"), ...options}));
     draft = crypto.randomUUID();
     notice.textContent = "Upload requested. Follow its progress below.";
