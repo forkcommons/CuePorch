@@ -811,7 +811,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 if step == "publication":
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
-                            SELECT id FROM social_publication WHERE state='queued' AND probe=0 AND offset=0)""", (step,))
+                            SELECT id FROM social_publication WHERE state='queued' AND final_sent=0
+                            AND (provider='linkedin' OR (probe=0 AND offset=0)))""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1375,8 +1376,8 @@ def create_app(root, database, operator, institution, simulation=None):
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
-    youtube = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
-    social_publication.register(app, tx, database, root, team_origin, youtube, read_library_works,
+    publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
+    social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, staff, action, sharing_access, enforce_sharing)
     app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)

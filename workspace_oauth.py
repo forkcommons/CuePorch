@@ -60,6 +60,8 @@ class Config:
     revoke_style: str = "refresh-form"
     public_client: bool = False
     authorize_scope: bool = True
+    refresh_optional: bool = False
+    implicit_bearer: bool = False
 
 
 def provider_request(method, url, **kwargs):
@@ -116,7 +118,7 @@ class Connection:
     def authorize(self, con, revision):
         row = self.connection(con)
         if not row or row["revision"] != revision:
-            abort(409, "The storage connection changed. Reopen Integrations and try again.")
+            abort(409, "The provider connection changed. Reopen Integrations and try again.")
         return row
 
     def tokens(self, row):
@@ -138,12 +140,15 @@ class Connection:
         access = data.get("access_token")
         expires = data.get("expires_in")
         scope = data.get("scope", self.config.scope)
+        valid_refresh = (isinstance(refresh, str) and 1 <= len(refresh) <= 4096
+                         or refresh is None and self.config.refresh_optional)
+        token_type = data.get("token_type", "Bearer" if self.config.implicit_bearer else "")
         if not (isinstance(access, str) and 1 <= len(access) <= 4096 and access.isascii()
-                and access.isprintable() and isinstance(refresh, str) and 1 <= len(refresh) <= 4096
+                and access.isprintable() and valid_refresh
                 and type(expires) is int and 1 <= expires <= 90 * 86400
                 and isinstance(scope, str) and set(self.config.scope.split()) <= set(scope.split())
-                and str(data.get("token_type", "")).casefold() == "bearer"):
-            abort(502, "The storage provider did not grant the offline read access needed for imports.")
+                and str(token_type).casefold() == "bearer"):
+            abort(502, "The provider did not grant the access requested for this integration.")
         return dict(access=access, refresh=refresh, expires=int(time.time()) + expires)
 
     def client_fields(self):
@@ -154,14 +159,14 @@ class Connection:
 
     def require_configured(self):
         if not self.configured:
-            abort(503, "Set up the workspace's storage OAuth application to continue.")
+            abort(503, "Set up this integration's workspace OAuth application to continue.")
 
     def revision(self):
         self.require_configured()
         with self.tx() as con:
             row = self.connection(con)
             if not row:
-                abort(409, "Connect the storage provider to continue.")
+                abort(409, "Connect this provider to continue.")
             return row["revision"]
 
     def prepare(self, secure, current, context=None):
@@ -271,6 +276,8 @@ class Connection:
                 saved = self.tokens(self.authorize(con, revision))
             if saved["expires"] > time.time() + 30 and saved["access"] != rejected:
                 return saved["access"]
+            if not saved["refresh"]:
+                abort(409, "Authorization expired or was withdrawn. Reconnect this integration to continue.")
             updated = self.refresh(saved)
             with self.tx() as con:
                 self.authorize(con, revision)

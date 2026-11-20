@@ -14,6 +14,7 @@ from werkzeug.exceptions import HTTPException
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from catalog import video_version_key
 import library_privacy
+import linkedin_upload
 from team_accounts import MANAGERS
 import vimeo_privacy
 import youtube_upload
@@ -35,9 +36,15 @@ RETRY_SECONDS = (5, 20, 60, 240)
 MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "mkv": "video/x-matroska"}
 
 
-def metadata_for(body):
+def metadata_for(body, provider, company):
     title, description = body.get("title"), body.get("description", "")
     visibility, made_for_kids = body.get("visibility"), body.get("made_for_kids")
+    if provider == "linkedin":
+        if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "\n\r\0")
+                or not isinstance(description, str) or len(description) > 3000 or "\0" in description
+                or visibility != "public" or body.get("company") != company):
+            abort(400, "Check the LinkedIn title, post text, Page and public visibility.")
+        return dict(title=title.strip(), description=description, company=company, visibility=visibility)
     category = body.get("category", "22")
     if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "<>\n\r\0")
             or not isinstance(description, str) or len(description.encode("utf8", errors="replace")) > 5000
@@ -48,7 +55,11 @@ def metadata_for(body):
                 status=dict(privacyStatus=visibility, selfDeclaredMadeForKids=made_for_kids))
 
 
-def transferable(con, work, visibility):
+def visibility_for(metadata):
+    return metadata["visibility"] if "visibility" in metadata else metadata["status"]["privacyStatus"]
+
+
+def transferable(con, work, visibility, provider):
     if work is None or work.get("asset_type", "video") != "video" or library_privacy.blocked(con, work["id"]):
         abort(404, "The selected video is unavailable.")
     if work["provider"] == "vimeo" and visibility != "private":
@@ -57,9 +68,14 @@ def transferable(con, work, visibility):
             abort(403, "The Vimeo source privacy restricts this video to a narrower destination audience.")
     for role in ("original", "playback"):
         for file in work["files"]:
-            if (file["role"] == role and file["format"] in MIME and 0 < file["bytes"] <= 256 * 1000**3
+            formats = ("mp4",) if provider == "linkedin" else MIME
+            minimum, maximum = (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES) if provider == "linkedin" else (
+                1, 256 * 1000**3)
+            if (file["role"] == role and file["format"] in formats and minimum <= file["bytes"] <= maximum
                     and re.fullmatch(r"[0-9a-f]{64}", file["sha256"])):
                 return file
+    if provider == "linkedin":
+        abort(409, "LinkedIn needs a retained MP4 between 75 KB and 500 MB.")
     abort(409, "This version needs a retained video file before it can be published.")
 
 
@@ -76,15 +92,16 @@ class AwaitingApproval(Exception):
     pass
 
 
-class YoutubePublisher:
+class Publisher:
     def __init__(self, app, tx, database, root, connection, find_work, sharing_access):
         self.app, self.tx, self.root = app, tx, root
         self.connection, self.find_work, self.sharing_access = connection, find_work, sharing_access
+        self.provider = connection.config.key
         self.stop = Event()
-        self.lock = FileLock(str(database.with_suffix(".youtube-publish.lock")), timeout=0)
+        self.lock = FileLock(str(database.with_suffix(f".{self.provider}-publish.lock")), timeout=0)
         self.worker = None
         if connection.configured:
-            self.worker = Thread(target=self.run, name="CuePorch YouTube publication", daemon=True)
+            self.worker = Thread(target=self.run, name=f"CuePorch {connection.config.name} publication", daemon=True)
             self.worker.start()
 
     def close(self):
@@ -101,7 +118,7 @@ class YoutubePublisher:
         if self.stop.is_set():
             abort(503, "CuePorch is stopping the upload worker.")
         metadata = json.loads(job["metadata"])
-        visibility = metadata["status"]["privacyStatus"]
+        visibility = visibility_for(metadata)
         actor = job["actor"]
         if actor.startswith("team:"):
             row = con.execute("SELECT * FROM team_member WHERE id=? AND removed IS NULL", (actor[5:],)).fetchone()
@@ -111,10 +128,61 @@ class YoutubePublisher:
             if not rules["outbound"] or visibility not in rules["modes"]:
                 abort(403, "The current workspace sharing policy prevents this upload.")
         work = self.find_work(job["work"])
-        file = transferable(con, work, visibility)
+        file = transferable(con, work, visibility, self.provider)
         if job["cut"] != video_version_key(work) or job["sha256"] != file["sha256"]:
             abort(409, "The video changed while this upload was queued. Select its current cut to publish.")
         return metadata
+
+    def media_part(self, job, offset, count):
+        source = self.root / "objects" / job["sha256"]
+        try:
+            with source.open("rb") as media:
+                media.seek(offset)
+                body = media.read(count)
+        except OSError:
+            abort(409, "The retained video file is unavailable.")
+        if len(body) != count:
+            abort(409, "The retained video file no longer matches its recorded size.")
+        return body
+
+    def tick(self):
+        with self.tx() as con:
+            job = con.execute("""SELECT p.* FROM social_publication p JOIN action a ON a.id=p.id
+                                 WHERE p.provider=? AND p.state='queued' AND a.status='eligible' AND p.due<=?
+                                 ORDER BY p.due,p.rowid LIMIT 1""", (self.provider, int(time()))).fetchone()
+        if not job:
+            return False
+        try:
+            self.post_next(job)
+        except AwaitingApproval:
+            return False
+        except HTTPException as error:
+            if self.stop.is_set():
+                return False
+            attempts = job["attempts"] + 1
+            retry = (error.code == 429 or error.code >= 500) and attempts <= len(RETRY_SECONDS)
+            wait = max(RETRY_SECONDS[attempts - 1], int(getattr(error, "retry_after", 0) or 0)) if retry else 0
+            with self.tx() as con:
+                con.execute("""UPDATE social_publication SET state=?,due=?,attempts=?,error=?,
+                               session=CASE WHEN ? THEN session ELSE NULL END WHERE id=? AND state='queued'""",
+                            ("queued" if retry else "failed", int(time()) + wait, attempts,
+                             error.description, retry, job["id"]))
+        return True
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                with self.lock, self.app.app_context():
+                    if self.tick():
+                        continue
+            except Timeout:
+                pass
+            except Exception:
+                self.app.logger.exception("Social publication failed to process a queued upload.")
+            self.stop.wait(1)
+
+
+class YoutubePublisher(Publisher):
 
     def post_next(self, job):
         with self.tx() as con:
@@ -135,15 +203,7 @@ class YoutubePublisher:
         body = b""
         offset = job["offset"]
         if not job["probe"] and offset < size:
-            source = self.root / "objects" / job["sha256"]
-            try:
-                with source.open("rb") as media:
-                    media.seek(offset)
-                    body = media.read(min(youtube_upload.CHUNK, size - offset))
-            except OSError:
-                abort(409, "The retained video file is unavailable.")
-            if len(body) != min(youtube_upload.CHUNK, size - offset):
-                abort(409, "The retained video file no longer matches its recorded size.")
+            body = self.media_part(job, offset, min(youtube_upload.CHUNK, size - offset))
             with self.tx() as con:
                 self.authorize(con, job)
                 con.execute("UPDATE social_publication SET probe=1,final_sent=max(final_sent,?) WHERE id=?",
@@ -174,80 +234,146 @@ class YoutubePublisher:
                                    WHERE id=? AND state='queued'""",
                                 (acknowledged, int(time()) + result["delay"], job["id"]))
 
-    def tick(self):
+class LinkedinPublisher(Publisher):
+    def save_session(self, job, session, offset, delay=0):
         with self.tx() as con:
-            job = con.execute("""SELECT p.* FROM social_publication p JOIN action a ON a.id=p.id
-                                 WHERE p.provider='youtube' AND p.state='queued' AND a.status='eligible' AND p.due<=?
-                                 ORDER BY p.due,p.rowid LIMIT 1""", (int(time()),)).fetchone()
-        if not job:
-            return False
+            con.execute("""UPDATE social_publication SET session=?,offset=?,attempts=0,error=NULL,due=?
+                           WHERE id=? AND state='queued'""",
+                        (self.connection.cipher.encrypt(json.dumps(session).encode()), offset,
+                         int(time()) + delay, job["id"]))
+
+    def unconfirmed(self, job):
+        with self.tx() as con:
+            con.execute("""UPDATE social_publication SET state='unconfirmed',session=NULL,error=?
+                           WHERE id=? AND state='queued'""",
+                        ("LinkedIn may have received the post. Check the Company Page before sending another.",
+                         job["id"]))
+
+    def publish_post(self, job, session, metadata):
+        with self.tx() as con:
+            self.authorize(con, job)
+            con.execute("UPDATE social_publication SET final_sent=1 WHERE id=?", (job["id"],))
         try:
-            self.post_next(job)
-        except AwaitingApproval:
-            return False
+            post_id = linkedin_upload.post(self.connection, job["connection"], session["video"], metadata)
         except HTTPException as error:
-            if self.stop.is_set():
-                return False
-            attempts = job["attempts"] + 1
-            retry = (error.code == 429 or error.code >= 500) and attempts <= len(RETRY_SECONDS)
-            wait = max(RETRY_SECONDS[attempts - 1], int(getattr(error, "retry_after", 0) or 0)) if retry else 0
+            if error.code >= 500:
+                self.unconfirmed(job)
+                return
             with self.tx() as con:
-                con.execute("""UPDATE social_publication SET state=?,due=?,attempts=?,error=?
-                               WHERE id=? AND state='queued'""",
-                            ("queued" if retry else "failed", int(time()) + wait, attempts, error.description, job["id"]))
-        return True
+                con.execute("UPDATE social_publication SET final_sent=0 WHERE id=? AND state='queued'", (job["id"],))
+                if error.code == 429:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL WHERE id=? AND decision='automatic'
+                                   AND EXISTS(SELECT 1 FROM policy WHERE step='publication' AND required=1)""",
+                                (job["id"],))
+            raise
+        with self.tx() as con:
+            con.execute("""UPDATE social_publication SET state='delivered',session=NULL,remote=?,
+                           remote_privacy='public',error=NULL WHERE id=? AND state IN ('queued','unconfirmed')""",
+                        (post_id, job["id"]))
 
-    def run(self):
-        while not self.stop.is_set():
-            try:
-                with self.lock, self.app.app_context():
-                    if self.tick():
-                        continue
-            except Timeout:
-                pass
-            except Exception:
-                self.app.logger.exception("YouTube publication failed to process a queued upload.")
-            self.stop.wait(1)
+    def post_next(self, job):
+        if job["final_sent"]:
+            self.unconfirmed(job)
+            return
+        with self.tx() as con:
+            metadata = self.authorize(con, job)
+        company = metadata["company"]
+        if company != self.connection.company:
+            abort(409, "The LinkedIn Company Page changed. Open a new publication request.")
+        args = (self.connection, job["connection"])
+        if not job["session"]:
+            session = linkedin_upload.start(*args, company, job["bytes"])
+            session["started"] = int(time())
+            self.save_session(job, session, 0)
+            return
+        try:
+            session = json.loads(self.connection.cipher.decrypt(job["session"]))
+        except (InvalidToken, ValueError):
+            abort(409, "The LinkedIn video upload session could not be reopened.")
+        index = len(session["tags"])
+        if index < len(session["parts"]):
+            if time() * 1000 >= session["expires"]:
+                abort(409, "LinkedIn's video upload addresses expired. Open a new publication request.")
+            first, last, address = session["parts"][index]
+            data = self.media_part(job, first, last - first + 1)
+            with self.tx() as con:
+                self.authorize(con, job)
+                con.execute("UPDATE social_publication SET probe=1 WHERE id=?", (job["id"],))
+            session["tags"].append(linkedin_upload.send_part(session, address, data))
+            self.save_session(job, session, last + 1)
+            return
+        state = linkedin_upload.status(*args, session, company)
+        if state == "AVAILABLE":
+            self.publish_post(job, session, metadata)
+            return
+        if time() - session["started"] > 2 * 3600:
+            abort(409, "LinkedIn is still processing the video. Check the Company Page before publishing again.")
+        if state == "WAITING_UPLOAD" and not session["finalized"]:
+            with self.tx() as con:
+                self.authorize(con, job)
+            linkedin_upload.finalize(*args, session)
+            session["finalized"] = True
+        self.save_session(job, session, job["bytes"], linkedin_upload.POLL_SECONDS)
 
 
-def register(app, tx, database, root, origin, connection, read_works, title_for, staff, action,
+def register(app, tx, database, root, origin, connections, read_works, title_for, staff, action,
              sharing_access, enforce_sharing):
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
 
-    publisher = YoutubePublisher(app, tx, database, root, connection, find_work, sharing_access)
-    app.extensions["stop_social_publication"] = publisher.close
+    workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access)
+               for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher))]
+
+    def close():
+        for worker in workers:
+            worker.close()
+
+    app.extensions["stop_social_publication"] = close
+
+    def destination(provider):
+        connection = connections.get(provider)
+        if connection is None:
+            abort(404)
+        return connection
 
     @app.get("/operator/videos/<uuid:work>/social")
     def social_page(work):
         secure_site(origin)
-        return private(render_template("social_publication.html", work=str(work)))
+        provider = request.args.get("destination", "youtube")
+        connection = destination(provider)
+        return private(render_template("social_publication.html", work=str(work), provider=provider,
+                                       provider_name=connection.config.name))
 
-    def receipt(con, uid, work):
+    def receipt(con, uid, work, connection):
+        provider = connection.config.key
         entries = con.execute("""SELECT p.id,p.state,p.offset,p.bytes,p.metadata,p.remote,p.remote_privacy,p.error,p.final_sent,
                                   a.status AS approval FROM social_publication p JOIN action a ON a.id=p.id
-                                  WHERE p.work=? AND p.provider='youtube' ORDER BY p.rowid DESC LIMIT 20""",
-                              (uid,)).fetchall()
+                                  WHERE p.work=? AND p.provider=? ORDER BY p.rowid DESC LIMIT 20""",
+                              (uid, provider)).fetchall()
         jobs = []
         for job in entries:
+            metadata = json.loads(job["metadata"])
             state = job["state"]
             if state == "queued" and job["approval"] in ("waiting", "rejected"):
                 state = "waiting for publication approval" if job["approval"] == "waiting" else "rejected"
-            jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"],
+            remote = job["remote"]
+            link = (linkedin_upload.link(remote) if provider == "linkedin" else
+                    f"https://www.youtube.com/watch?v={remote}") if remote else None
+            jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"], company=metadata.get("company"),
                              cancelable=job["state"] == "queued" and not job["final_sent"],
-                             requested_privacy=json.loads(job["metadata"])["status"]["privacyStatus"],
-                             privacy=job["remote_privacy"], error=job["error"],
-                             link=f"https://www.youtube.com/watch?v={job['remote']}" if job["remote"] else None))
+                             requested_privacy=visibility_for(metadata),
+                             privacy=job["remote_privacy"], error=job["error"], link=link))
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],
                     configured=connection.configured, connected=bool(connection.connection(con)), jobs=jobs,
-                    allowed=sharing_access(con)["outbound"])
+                    allowed=sharing_access(con)["outbound"], company=getattr(connection, "company", None))
 
-    @app.route("/api/library/work/<uuid:work>/social/youtube", methods=("GET", "POST"))
-    def youtube_publication(work):
+    @app.route("/api/library/work/<uuid:work>/social/<provider>", methods=("GET", "POST"))
+    def publication(work, provider):
         secure = secure_site(origin)
         actor = staff()
         same_origin(secure)
         body = json_mutation(secure, MARKER) if request.method == "POST" else None
+        connection = destination(provider)
         revision = connection.revision() if body is not None else None
         uid = str(work)
         with tx() as con:
@@ -255,17 +381,17 @@ def register(app, tx, database, root, origin, connection, read_works, title_for,
             if item is None or item.get("asset_type", "video") != "video" or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")
             if body is None:
-                return private(receipt(con, uid, item))
-            metadata = metadata_for(body)
-            visibility = metadata["status"]["privacyStatus"]
+                return private(receipt(con, uid, item, connection))
+            metadata = metadata_for(body, provider, getattr(connection, "company", None))
+            visibility = visibility_for(metadata)
             enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": visibility})
             connection.authorize(con, revision)
-            file = transferable(con, item, visibility)
+            file = transferable(con, item, visibility, provider)
             cut = video_version_key(item)
             if cut != body.get("cut"):
                 abort(409, "The current cut changed. Reload the video before publishing.")
             try:
-                request_id = "youtube-" + UUID(str(body.get("id"))).hex
+                request_id = provider + "-" + UUID(str(body.get("id"))).hex
             except ValueError:
                 abort(400, "Open a new request before sending this video.")
             encoded = json.dumps(metadata, sort_keys=True)
@@ -274,28 +400,30 @@ def register(app, tx, database, root, origin, connection, read_works, title_for,
                 if tuple(prior) != (uid, actor, cut, encoded):
                     abort(409, "This publication request has already been used.")
             else:
-                action(con, request_id, "publication", dict(work=uid, destination="YouTube", visibility=visibility, cut=cut))
+                action(con, request_id, "publication", dict(work=uid, destination=connection.config.name,
+                                                            company=metadata.get("company"), visibility=visibility, cut=cut))
                 con.execute("""INSERT INTO social_publication(id,provider,connection,actor,work,cut,sha256,bytes,media_type,metadata,due)
                                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                            (request_id, "youtube", revision, actor, uid, cut, file["sha256"], file["bytes"],
+                            (request_id, provider, revision, actor, uid, cut, file["sha256"], file["bytes"],
                              MIME[file["format"]], encoded, int(time())))
-            return private(receipt(con, uid, item), 200 if prior else 202)
+            return private(receipt(con, uid, item, connection), 200 if prior else 202)
 
-    @app.post("/api/library/work/<uuid:work>/social/youtube/<job>/cancel")
-    def cancel_upload(work, job):
+    @app.post("/api/library/work/<uuid:work>/social/<provider>/<job>/cancel")
+    def cancel_upload(work, provider, job):
         secure = secure_site(origin)
         actor = staff()
         json_mutation(secure, MARKER)
+        connection = destination(provider)
         uid = str(work)
         with tx() as con:
             item = find_work(uid)
             if item is None or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")
             canceled = con.execute("""UPDATE social_publication SET state='canceled',session=NULL,error=NULL
-                                       WHERE id=? AND work=? AND provider='youtube' AND state='queued' AND final_sent=0""",
-                                   (job, uid)).rowcount
+                                       WHERE id=? AND work=? AND provider=? AND state='queued' AND final_sent=0""",
+                                   (job, uid, provider)).rowcount
             if not canceled:
                 abort(409, "The upload can no longer be canceled. Check its current status.")
             con.execute("""UPDATE action SET status='canceled',decision='cancel',actor=?
                            WHERE id=? AND status IN ('waiting','eligible')""", (actor, job))
-            return private(receipt(con, uid, item))
+            return private(receipt(con, uid, item, connection))

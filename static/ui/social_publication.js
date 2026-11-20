@@ -1,16 +1,20 @@
-const endpoint = `/api/library/work/${document.body.dataset.work}/social/youtube`;
+const provider = document.body.dataset.provider;
+const providerName = document.body.dataset.providerName;
+const endpoint = `/api/library/work/${document.body.dataset.work}/social/${provider}`;
 const access = document.querySelector("#socialAccess");
 const operator = access.querySelector("input");
 const notice = document.querySelector("#socialState");
 const connect = document.querySelector("#socialConnect");
 const form = document.querySelector("#socialForm");
 const title = form.querySelector("[name=title]");
+const companyLabel = form.querySelector("#socialCompany");
 const submit = form.querySelector("button");
 const historySection = document.querySelector("#socialHistory");
 const jobs = document.querySelector("#socialJobs");
 let credential = sessionStorage.getItem("cueporchOperator") || "";
 let draft = crypto.randomUUID();
 let cut = "";
+let company = null;
 let watch = 0;
 async function api(body, path = endpoint) {
     const response = await fetch(path, {
@@ -31,24 +35,31 @@ function render(data, fresh = false) {
     historySection.hidden = data.jobs.length === 0;
     if (fresh) {
         cut = data.cut;
+        company = data.company;
+        if (companyLabel) {
+            companyLabel.value = company || "";
+        }
         title.value = data.title;
         if (!data.allowed)
             notice.textContent = "Publishing to this destination is restricted by your workspace.";
         else if (!data.configured)
-            notice.textContent = "Configure YouTube for this workspace in Integrations.";
+            notice.textContent = `Configure ${providerName} for this workspace in Integrations.`;
         else
-            notice.textContent = data.connected ? "Choose how this copy should appear on YouTube." : "Connect a YouTube channel to publish.";
+            notice.textContent = data.connected ? `Choose how this copy should appear on ${providerName}.` :
+                `Connect ${providerName} to publish.`;
     }
     jobs.replaceChildren(...data.jobs.map(job => {
         const item = document.createElement("li");
         item.textContent = `${job.state} · ${job.privacy || job.requested_privacy} · ${job.sent.toLocaleString()} of ${job.bytes.toLocaleString()} bytes`;
+        if (job.company)
+            item.append(` · Company Page ${job.company}`);
         if (job.error)
             item.append(`. ${job.error}`);
         if (job.link) {
             const link = document.createElement("a");
             link.href = job.link;
             link.rel = "noreferrer";
-            link.textContent = "Open on YouTube";
+            link.textContent = `Open on ${providerName}`;
             item.append(" · ", link);
         }
         if (job.cancelable) {
@@ -108,8 +119,10 @@ form.onsubmit = async (event) => {
     submit.disabled = true;
     const fields = new FormData(form);
     try {
-        render(await api({ id: draft, cut, title: fields.get("title"), description: fields.get("description"),
-            visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids") }));
+        const options = provider === "linkedin"
+            ? { company, visibility: fields.has("publicPost") ? "public" : null }
+            : { visibility: fields.get("visibility"), made_for_kids: fields.has("madeForKids") };
+        render(await api({ id: draft, cut, title: fields.get("title"), description: fields.get("description"), ...options }));
         draft = crypto.randomUUID();
         notice.textContent = "Upload requested. Follow its progress below.";
     }

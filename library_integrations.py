@@ -17,6 +17,7 @@ from werkzeug.exceptions import TooManyRequests
 from browser_account_security import json_mutation, private, same_origin, secure_site
 from intake_watch import CursorReset, Watch, changed_since
 import google_meet_recordings
+import linkedin_upload
 import mail_relay
 import social_publication
 from team_accounts import MANAGERS
@@ -290,7 +291,9 @@ def register(app, tx, staff, operator, origin, import_video, database):
         "", webex_recordings.SCOPE,
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, youtube)}
+    linkedin = linkedin_upload.CompanyConnection(tx, operator)
+    publishing = {youtube.config.key: youtube, linkedin.config.key: linkedin}
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | publishing
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -374,14 +377,14 @@ def register(app, tx, staff, operator, origin, import_video, database):
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category=("Social publishing" if item is youtube else
+                category=("Social publishing" if item.config.key in publishing else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
                 description=("Upload a native video from the Library to your channel."
-                             if item is youtube else "Copy meeting recordings into your private Library."
+                             if item.config.key in publishing else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
                 configured=item.configured, connected=item.connection(con) is not None,
                 browse_folders=item in (dropbox, box, meet), meeting=item.config.key in meetings,
-                publishing=item is youtube,
+                publishing=item.config.key in publishing,
             ) for item in connections.values()]
             slack = con.execute("""SELECT 1 FROM folder_slack s WHERE NOT EXISTS(
                 SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=s.folder) LIMIT 1""").fetchone()
@@ -406,7 +409,7 @@ def register(app, tx, staff, operator, origin, import_video, database):
         connection = configured_provider(provider)
         active_watch = watches.get(provider)
         cleanup = active_watch.clear if active_watch else None
-        if connection is youtube:
+        if provider in publishing:
             cleanup = lambda con: social_publication.disconnect(con, provider)
         return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
 
@@ -673,4 +676,4 @@ def register(app, tx, staff, operator, origin, import_video, database):
                                           lambda con: box.authorize(con, revision))
         return private(receipt, status)
 
-    return youtube
+    return publishing

@@ -2,27 +2,33 @@
 <html lang="en">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/cueporch.css">
-<title>Publish to YouTube · CuePorch</title>
-<body data-work="{{ work }}">
+<title>Publish to {{ provider_name }} · CuePorch</title>
+<body data-work="{{ work }}" data-provider="{{ provider }}" data-provider-name="{{ provider_name }}">
 <main>
   {% include "operator_navigation.html" %}
   <p><a href="/operator/videos/{{ work }}">Back to video</a></p>
-  <h1>Publish to YouTube</h1>
+  <h1>Publish to {{ provider_name }}</h1>
   <form id="socialAccess" method="post" hidden>
     <label>Operator credential <input type="password" required autocomplete="current-password"></label>
     <button>Open publication</button>
   </form>
   <p id="socialState" role="status" aria-live="polite"></p>
-  <p id="socialConnect" hidden><a href="/operator/integrations">Connect YouTube in Integrations</a></p>
+  <p id="socialConnect" hidden><a href="/operator/integrations">Connect {{ provider_name }} in Integrations</a></p>
   <form id="socialForm" method="post" hidden>
     <label>Title <input name="title" maxlength="100" required></label>
+    {% if provider == "linkedin" %}
+    <label>Post text <textarea name="description" maxlength="3000" rows="4"></textarea></label>
+    <p>Company Page <output id="socialCompany"></output></p>
+    <label><input type="checkbox" name="publicPost" required> Publish a public post on this Company Page</label>
+    {% else %}
     <label>Description <textarea name="description" maxlength="5000" rows="4"></textarea></label>
     <label>Visibility on YouTube
       <select name="visibility"><option value="private">Private</option><option value="unlisted">Unlisted</option>
         <option value="public">Public</option></select>
     </label>
     <label><input type="checkbox" name="madeForKids"> This video is made for kids</label>
-    <button>Upload to YouTube</button>
+    {% endif %}
+    <button>{{ "Post to LinkedIn" if provider == "linkedin" else "Upload to YouTube" }}</button>
   </form>
   <section id="socialHistory" aria-labelledby="socialHistoryTitle" hidden>
     <h2 id="socialHistoryTitle">Upload history</h2>
