@@ -35,6 +35,18 @@
       <p>Save these codes somewhere safe. This is the only time CuePorch displays them. Each works once.</p>
       <ul></ul>
     </section>
+    <section id="verifyAccountEmail" aria-labelledby="verifyAccountEmailHeading" hidden>
+      <h2 id="verifyAccountEmailHeading">Email address</h2>
+      <p id="verifiedAccountAddress"></p>
+      <p id="verifyAccountEmailStatus" role="status"></p>
+      <button type="button" id="sendVerificationCode" hidden>Send verification code</button>
+      <form id="confirmEmailCode" method="post" hidden>
+        <label>Eight-digit verification code
+          <input name="code" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code" required>
+        </label>
+        <button type="submit">Verify email</button>
+      </form>
+    </section>
   </main>
   <script type="module" src="/static/ui/account_security.js"></script>
 </body>

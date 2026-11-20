@@ -8,19 +8,24 @@ const disable = document.querySelector("#authenticatorDisable");
 const recovery = document.querySelector("#authenticatorRecovery");
 const seed = document.querySelector("#authenticatorSeed");
 const openApp = document.querySelector("#authenticatorOpen");
+const emailSection = document.querySelector("#verifyAccountEmail");
+const emailAddress = document.querySelector("#verifiedAccountAddress");
+const emailStatus = document.querySelector("#verifyAccountEmailStatus");
+const sendCode = document.querySelector("#sendVerificationCode");
+const confirmEmail = document.querySelector("#confirmEmailCode");
 let setupTicket = "";
 let busy = false;
-async function request(method, body = {}) {
+async function request(method, body = {}, path = "authenticator") {
     const send = security.dataset.scope === "team" ? teamRequest : viewerRequest;
-    const response = await send("authenticator", method, body);
+    const response = await send(path, method, body);
     if (response.ok)
         return response.json();
     const detail = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p")?.textContent;
     if (method === "GET" && response.status === 401)
         throw new Error("Sign in to manage your account security.");
-    throw new Error(detail || "CuePorch could not change the authenticator.");
+    throw new Error(detail || "CuePorch could not complete the security request.");
 }
-async function perform(action) {
+async function perform(action, feedback = status) {
     if (busy)
         return;
     busy = true;
@@ -29,7 +34,7 @@ async function perform(action) {
         await action();
     }
     catch (error) {
-        status.textContent = error instanceof Error ? error.message : String(error);
+        feedback.textContent = error instanceof Error ? error.message : String(error);
     }
     finally {
         busy = false;
@@ -49,12 +54,12 @@ function state(enabled) {
     disable.hidden = !enabled;
     status.textContent = enabled ? "Authenticator sign-in is on." : "Authenticator sign-in is off.";
 }
-function bind(form, action) {
+function bind(form, action, feedback = status) {
     form.addEventListener("submit", event => {
         event.preventDefault();
         const values = Object.fromEntries(new FormData(form));
         form.reset();
-        void perform(() => action(values));
+        void perform(() => action(values), feedback);
     });
 }
 bind(begin, async (values) => {
@@ -88,4 +93,30 @@ document.querySelector("#authenticatorCancel").onclick = () => {
     if (!busy)
         state(false);
 };
-void perform(async () => state((await request("GET")).enabled));
+function emailState(address, message, canSend, canConfirm) {
+    emailAddress.textContent = address;
+    emailStatus.textContent = message;
+    sendCode.hidden = !canSend;
+    confirmEmail.hidden = !canConfirm;
+    emailSection.hidden = false;
+}
+sendCode.onclick = () => void perform(async () => {
+    const result = await request("POST", {}, "email-verification");
+    if (result.verified)
+        emailState(result.address, "Email verified.", false, false);
+    else {
+        emailState(result.address, "The relay accepted your code. Check your email.", true, true);
+        confirmEmail.querySelector("input").focus();
+    }
+}, emailStatus);
+bind(confirmEmail, async (values) => {
+    const result = await request("PUT", values, "email-verification");
+    emailState(result.address, "Email verified.", false, false);
+}, emailStatus);
+void perform(async () => {
+    state((await request("GET")).enabled);
+    const result = await request("GET", {}, "email-verification");
+    const message = result.verified ? "Email verified." : result.pending ? "Enter the verification code from your email."
+        : result.available ? "Email is awaiting verification." : "Email delivery is unavailable on this installation.";
+    emailState(result.address, message, !result.verified && result.available, result.pending);
+});

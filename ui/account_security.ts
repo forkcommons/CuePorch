@@ -11,23 +11,28 @@ const disable = document.querySelector<HTMLFormElement>("#authenticatorDisable")
 const recovery = document.querySelector<HTMLElement>("#authenticatorRecovery")!;
 const seed = document.querySelector<HTMLInputElement>("#authenticatorSeed")!;
 const openApp = document.querySelector<HTMLAnchorElement>("#authenticatorOpen")!;
+const emailSection = document.querySelector<HTMLElement>("#verifyAccountEmail")!;
+const emailAddress = document.querySelector<HTMLElement>("#verifiedAccountAddress")!;
+const emailStatus = document.querySelector<HTMLElement>("#verifyAccountEmailStatus")!;
+const sendCode = document.querySelector<HTMLButtonElement>("#sendVerificationCode")!;
+const confirmEmail = document.querySelector<HTMLFormElement>("#confirmEmailCode")!;
 let setupTicket = "";
 let busy = false;
 
-async function request(method: Method, body: object = {}) {
+async function request(method: Method, body: object = {}, path = "authenticator") {
   const send = security.dataset.scope === "team" ? teamRequest : viewerRequest;
-  const response = await send("authenticator", method, body);
+  const response = await send(path, method, body);
   if (response.ok) return response.json();
   const detail = new DOMParser().parseFromString(await response.text(), "text/html").querySelector("p")?.textContent;
   if (method === "GET" && response.status === 401) throw new Error("Sign in to manage your account security.");
-  throw new Error(detail || "CuePorch could not change the authenticator.");
+  throw new Error(detail || "CuePorch could not complete the security request.");
 }
 
-async function perform(action: () => Promise<void>) {
+async function perform(action: () => Promise<void>, feedback = status) {
   if (busy) return;
   busy = true;
   security.setAttribute("aria-busy", "true");
-  try { await action(); } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); }
+  try { await action(); } catch (error) { feedback.textContent = error instanceof Error ? error.message : String(error); }
   finally { busy = false; security.removeAttribute("aria-busy"); }
 }
 
@@ -46,12 +51,12 @@ function state(enabled: boolean) {
   status.textContent = enabled ? "Authenticator sign-in is on." : "Authenticator sign-in is off.";
 }
 
-function bind(form: HTMLFormElement, action: (values: object) => Promise<void>) {
+function bind(form: HTMLFormElement, action: (values: object) => Promise<void>, feedback = status) {
   form.addEventListener("submit", event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form));
     form.reset();
-    void perform(() => action(values));
+    void perform(() => action(values), feedback);
   });
 }
 
@@ -88,4 +93,33 @@ bind(disable, async values => {
 document.querySelector<HTMLButtonElement>("#authenticatorCancel")!.onclick = () => {
   if (!busy) state(false);
 };
-void perform(async () => state((await request("GET")).enabled));
+
+function emailState(address: string, message: string, canSend: boolean, canConfirm: boolean) {
+  emailAddress.textContent = address;
+  emailStatus.textContent = message;
+  sendCode.hidden = !canSend;
+  confirmEmail.hidden = !canConfirm;
+  emailSection.hidden = false;
+}
+
+sendCode.onclick = () => void perform(async () => {
+  const result = await request("POST", {}, "email-verification");
+  if (result.verified) emailState(result.address, "Email verified.", false, false);
+  else {
+    emailState(result.address, "The relay accepted your code. Check your email.", true, true);
+    confirmEmail.querySelector("input")!.focus();
+  }
+}, emailStatus);
+
+bind(confirmEmail, async values => {
+  const result = await request("PUT", values, "email-verification");
+  emailState(result.address, "Email verified.", false, false);
+}, emailStatus);
+
+void perform(async () => {
+  state((await request("GET")).enabled);
+  const result = await request("GET", {}, "email-verification");
+  const message = result.verified ? "Email verified." : result.pending ? "Enter the verification code from your email."
+    : result.available ? "Email is awaiting verification." : "Email delivery is unavailable on this installation.";
+  emailState(result.address, message, !result.verified && result.available, result.pending);
+});

@@ -32,6 +32,8 @@ In **Viewer account**, you can change your display name, pronouns or sign-in ema
 
 **Account security** in Viewer account and Team lets you turn on authenticator sign-in. Enter your current password, add the setup key to your authenticator app, and confirm with its six-digit code. Save the recovery codes shown after activation. When you sign in, use a current app code or an unused recovery code. Turning the authenticator on or off signs out your other sessions for that account.
 
+When account mail is configured, choose **Send verification code** in Account security. Enter the eight-digit code from your email within ten minutes. Changing a viewer account's email clears verification so you can verify the new address.
+
 Use **Viewing preferences** to show everything, hide mature videos, or hide selected descriptors and unrated videos. The setting follows your account and applies to Explore, search, Staff Picks and your Feed. A direct link to a filtered public video gives you the option to show it. The video's publishing and registration rules still apply.
 
 On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.

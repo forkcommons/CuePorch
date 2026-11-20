@@ -1,4 +1,4 @@
-"""Exercise team mail through a local TLS relay and the actual invitation routes."""
+"""Exercise invitations and account email through the real routes and a local TLS relay."""
 
 from base64 import b64decode
 from contextlib import closing, ExitStack
@@ -7,6 +7,7 @@ from email.parser import BytesParser
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 from socketserver import StreamRequestHandler, TCPServer
 import sqlite3
@@ -70,6 +71,87 @@ class Relay(StreamRequestHandler):
 
 
 class InvitationDelivery(unittest.TestCase):
+    def verify_account_email(self, browser, base, relay, db, operator):
+        address = "recipient@example.test"
+        credentials = "Rehearsal passphrase"
+
+        def delivered_code():
+            return next(line for line in relay.deliveries[-1].get_content().splitlines()
+                        if re.fullmatch(r"[0-9]{8}", line))
+
+        with browser.new_context() as browser_scope:
+            page = browser_scope.new_page()
+            page.goto(base + "/team")
+            form = page.locator("#teamSignIn")
+            form.get_by_label("Team email").fill(address)
+            form.get_by_label("Password").fill(credentials)
+            form.get_by_role("button", name="Sign in to team").click()
+            page.get_by_role("link", name="Account security").click()
+            email_status = page.locator("#verifyAccountEmailStatus")
+            expect(email_status).to_have_text("Email is awaiting verification.")
+            page.get_by_role("button", name="Send verification code").click()
+            expect(email_status).to_have_text("The relay accepted your code. Check your email.")
+            team_code = delivered_code()
+            self.assertEqual(relay.deliveries[-1]["To"], address)
+            with closing(sqlite3.connect(db)) as con:
+                stored = con.execute("SELECT code_hash FROM account_email_verification WHERE scope='team'").fetchone()[0]
+                self.assertEqual(len(stored), 32)
+                self.assertNotIn(team_code.encode(), stored)
+            page.reload()
+            expect(email_status).to_have_text("Enter the verification code from your email.")
+            page.get_by_label("Eight-digit verification code").fill(team_code)
+            page.get_by_role("button", name="Verify email", exact=True).click()
+            expect(email_status).to_have_text("Email verified.")
+            team = browser_scope.request
+            self.assertEqual(team.get(base + "/api/team/email-verification").json(), dict(
+                address=address, available=True, verified=True, pending=False,
+            ))
+            audit = team.get(base + "/api/team/audit", headers={"Authorization": "Bearer " + operator}).json()
+            self.assertIn("email_verified", [row["action"] for row in audit["events"]])
+
+            page.goto(base + "/account")
+            form = page.locator("#viewerSignUp")
+            form.get_by_label("Display name").fill("Local viewer")
+            form.get_by_label("Email").fill(address)
+            form.get_by_label("Password").fill(credentials)
+            form.get_by_role("button", name="Create account").click()
+            page.get_by_role("link", name="Account security").click()
+            expect(email_status).to_have_text("Email is awaiting verification.")
+            mailbox = base + "/api/viewer/email-verification"
+            headers = {"X-CuePorch-Viewer": "1"}
+            sent_before = len(relay.deliveries)
+            self.assertEqual(browser_scope.request.post(mailbox, headers=headers | {"Origin": "https://unrelated.invalid"},
+                                                        data={}).status, 403)
+            self.assertEqual(len(relay.deliveries), sent_before)
+            page.get_by_role("button", name="Send verification code").click()
+            expect(email_status).to_have_text("The relay accepted your code. Check your email.")
+            viewer_code = delivered_code()
+            self.assertEqual(browser_scope.request.post(mailbox, headers=headers, data={}).status, 429)
+            self.assertEqual(len(relay.deliveries), sent_before + 1)
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE account_email_verification SET expires=0 WHERE scope='viewer'")
+            page.get_by_label("Eight-digit verification code").fill(viewer_code)
+            page.get_by_role("button", name="Verify email", exact=True).click()
+            expect(email_status).to_have_text("The verification code did not match or expired.")
+            page.get_by_role("button", name="Send verification code").click()
+            expect(email_status).to_have_text("The relay accepted your code. Check your email.")
+            new_code = delivered_code()
+            page.get_by_label("Eight-digit verification code").fill(new_code)
+            page.get_by_role("button", name="Verify email", exact=True).click()
+            expect(email_status).to_have_text("Email verified.")
+            self.assertEqual(browser_scope.request.put(mailbox, headers=headers, data={"code": new_code}).status, 422)
+
+            changed = browser_scope.request.put(base + "/api/viewer/account", headers=headers, data=dict(
+                email="fail@example.test", name="Local viewer", current_password=credentials,
+            ))
+            self.assertTrue(changed.ok)
+            page.reload()
+            expect(email_status).to_have_text("Email is awaiting verification.")
+            page.get_by_role("button", name="Send verification code").click()
+            expect(email_status).to_have_text("CuePorch could not send the verification email. Try again later.")
+            self.assertFalse(browser_scope.request.get(mailbox).json()["pending"])
+            self.assertTrue(team.get(base + "/api/team/email-verification").json()["verified"])
+
     def test_relay_expiration_and_copy_fallback(self):
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as cleanup:
             for worker in ("library_worker", "library_caption_jobs", "review_push"):
@@ -97,6 +179,7 @@ class InvitationDelivery(unittest.TestCase):
             app = create_app(root, db, operator, "station")
             cleanup.callback(app.extensions["stop_event_capture"])
             cleanup.callback(app.extensions["stop_editor"])
+            cleanup.callback(app.extensions["stop_file_links"])
             request = app.test_client()
             team_headers = {"X-CuePorch-Team": "1"}
             operator_headers = {**team_headers, "Authorization": "Bearer " + operator}
@@ -164,6 +247,7 @@ class InvitationDelivery(unittest.TestCase):
                 self.assertTrue(link.startswith(canonical + "/team/join#"))
                 self.assertIn(link, relay.deliveries[-1].get_content())
                 self.assertIn("Invitation from the team screen.", relay.deliveries[-1].get_content())
+                self.verify_account_email(browser, f"http://127.0.0.1:{service.server_port}", relay, db, operator)
 
 
 if __name__ == "__main__":

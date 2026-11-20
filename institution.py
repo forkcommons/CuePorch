@@ -37,6 +37,7 @@ from waitress import serve
 
 from cueporch import dump, verify
 import analytics_reports
+import account_email
 import account_totp
 import audience_accounts
 import audience_comments
@@ -145,6 +146,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA
             + account_totp.SCHEMA
+            + account_email.SCHEMA
             + team_accounts.SCHEMA
             + team_branding.SCHEMA
             + team_brand_kits.SCHEMA

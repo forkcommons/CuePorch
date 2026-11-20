@@ -2,27 +2,23 @@
 
 import csv
 from datetime import datetime, timezone
-from email.errors import HeaderParseError
-from email.headerregistry import Address
-from email.message import EmailMessage
 import hashlib
 import hmac
 from io import StringIO
-import os
 import secrets
-import smtplib
-import ssl
 import time
 import uuid
 
 from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import account_email
+import account_totp
 import creator_profiles
 import library_analytics
+import mail_relay
 import team_analytics
 import team_workspaces
-import account_totp
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
                                       secure_site, token_hash, workspace_session, workspace_session_cookie)
 from library_privacy import blocked, current_settings, editable, playback, protected_route
@@ -71,39 +67,11 @@ SESSION_MARKER = "team-session"
 MUTATION_HEADER = "X-CuePorch-Team"
 
 
-def invitation_mail_config(origin):
-    host = os.environ.get("CUEPORCH_SMTP_HOST", "").strip()
-    sender = os.environ.get("CUEPORCH_SMTP_FROM", "").strip()
-    username = os.environ.get("CUEPORCH_SMTP_USER", "")
-    secret = os.environ.get("CUEPORCH_SMTP_PASSWORD", "")
-    if not origin.startswith("https://") or not host or not sender or bool(username) != bool(secret):
-        return None
-    try:
-        port = int(os.environ.get("CUEPORCH_SMTP_PORT", "465"))
-        sender = Address(addr_spec=sender).addr_spec
-    except (ValueError, HeaderParseError):
-        return None
-    return (host, port, sender, username, secret) if 0 < port < 65536 and "@" in sender else None
-
-
 def email_invitation(config, address, url, note):
-    host, port, sender, username, secret = config
-    message = EmailMessage()
-    message["Subject"] = "Your CuePorch team invitation"
-    accepted = False
-    try:
-        message["From"] = sender
-        message["To"] = address
-        introduction = note + "\n\n" if note else ""
-        message.set_content(introduction + "Join the CuePorch team at:\n\n" + url +
-                            "\n\nThis private link expires in seven days and can be used once.\n")
-        with smtplib.SMTP_SSL(host, port, timeout=6, context=ssl.create_default_context()) as relay:
-            if username:
-                relay.login(username, secret)
-            relay.send_message(message, from_addr=sender, to_addrs=[address])
-            accepted = True
-    except (OSError, ValueError):
-        pass
+    introduction = note + "\n\n" if note else ""
+    accepted = mail_relay.deliver(config, address, "Your CuePorch team invitation",
+                                 introduction + "Join the CuePorch team at:\n\n" + url +
+                                 "\n\nThis private link expires in seven days and can be used once.\n")
     return "accepted" if accepted else "failed"
 
 
@@ -222,7 +190,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
              entry_payload, sharing_access):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
-    invitation_mail = invitation_mail_config(origin)
+    invitation_mail = mail_relay.configured(origin)
 
     def limit(con, operation, subject=""):
         now = time.time()
@@ -270,6 +238,10 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         app, tx, "team", key, lambda: secure_site(origin), mutation, security_account, limit, rotate_security_session,
         lambda response, secure, token: workspace_session_cookie(response, "team", secure, SESSION_SECONDS, token),
         note_authenticator,
+    )
+    email_security = account_email.register(
+        app, tx, "team", key, origin, lambda: secure_site(origin), mutation, security_account, limit,
+        lambda con, actor: note(con, actor_id(actor), "email_verified", actor["id"]),
     )
 
     def eligible_works(con, ids=None):
@@ -486,6 +458,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
                 authenticator.forget(con, uid)
+                email_security.forget(con, uid)
                 con.execute("DELETE FROM team_work_grant WHERE member=?", (uid,))
                 con.execute("DELETE FROM team_folder_grant WHERE member=?", (uid,))
                 con.execute("""UPDATE team_group SET revision=lower(hex(randomblob(16)))

@@ -11,6 +11,7 @@ import uuid
 from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import account_email
 import account_totp
 import audience_comments
 import audience_library
@@ -134,10 +135,15 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         con.execute("DELETE FROM audience_session WHERE account=?", (uid,))
         return issue(con, uid, None)
 
+    def security_account(con, secure):
+        return current(con, browser_session(secure))
+
     authenticator = account_totp.register(
-        app, tx, "viewer", operator, scheme, mutation, lambda con, secure: current(con, browser_session(secure)),
+        app, tx, "viewer", operator, scheme, mutation, security_account,
         limit, rotate_security_session, cookie,
     )
+    email_security = account_email.register(app, tx, "viewer", operator, public_origin, scheme, mutation,
+                                            security_account, limit)
 
     @app.get("/account")
     def viewer_account_page():
@@ -178,6 +184,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 authenticator.forget(con, row["id"])
+                email_security.forget(con, row["id"])
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
             return cookie(private("", 204), secure)
@@ -192,6 +199,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 abort(409, "Your account changed. Try again.")
             if con.execute("SELECT 1 FROM audience_account WHERE email=? AND id<>?", (email, row["id"])).fetchone():
                 abort(409, "That email address is already in use.")
+            if email != row["email"]:
+                email_security.forget(con, row["id"])
             con.execute("UPDATE audience_account SET name=?,email=?,pronouns=? WHERE id=?", (name, email, pronouns, row["id"]))
         return private(dict(name=name, email=email, pronouns=pronouns))
 
