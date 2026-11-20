@@ -1,11 +1,14 @@
+import { browserIdentity } from "./browser_analytics.js";
 export function measureEventPlayback(video, token) {
     if (!token)
         return undefined;
+    const viewer = browserIdentity();
     const listeners = new AbortController();
     const { signal } = listeners;
     let sequence = 0;
     let played = false;
     let playing = false;
+    let completed = false;
     let watched = 0;
     let position = video.currentTime;
     let sampleTime = performance.now();
@@ -28,7 +31,7 @@ export function measureEventPlayback(video, token) {
         void fetch("/api/event-playback", {
             method: "POST", keepalive: true,
             headers: { "Content-Type": "application/json", "X-CuePorch-Playback": token },
-            body: JSON.stringify({ sequence: ++sequence, played, playing, watched: Math.round(watched * 1000) }),
+            body: JSON.stringify({ sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer }),
         }).catch(() => { });
     }
     function start() {
@@ -55,8 +58,15 @@ export function measureEventPlayback(video, token) {
     for (const event of ["waiting", "seeking"]) {
         video.addEventListener(event, () => { sample(); interrupted = true; }, { signal });
     }
-    for (const event of ["pause", "ended", "error"])
+    for (const event of ["pause", "error"])
         video.addEventListener(event, stop, { signal });
+    video.addEventListener("ended", () => {
+        completed = played;
+        if (playing)
+            stop();
+        else if (completed)
+            send();
+    }, { signal });
     video.addEventListener("seeked", () => {
         if (!video.paused && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA)
             start();

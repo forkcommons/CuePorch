@@ -1,8 +1,10 @@
 """Test a released and captioned fallback recording on the installed event player."""
 
+import csv
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 import json
+from io import StringIO
 from threading import Thread
 import time
 
@@ -15,7 +17,7 @@ from installed_embed_builder import PublisherPage
 from installed_events import play_event, send_signal, wait_for_delivery
 
 
-def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
+def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False, verify_streaming=False):
     auth = {"Authorization": "Bearer " + keys["operator"]}
 
     def api(method, path, data=None):
@@ -34,6 +36,23 @@ def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
     def event_bytes():
         result = bandwidth(base, auth, event["id"], bandwidth_group="video")
         return result["totals"], result["rows"]
+
+    def streaming_report(**filters):
+        today = datetime.now(timezone.utc).date().isoformat()
+        return api("POST", "/api/analytics/video-report",
+                   {"videos": [event["id"]], "from": today, "to": today, "breakdown": "streaming"} | filters)
+
+    def watched(row):
+        return row["views"] >= 1 and row["watched_seconds"] > 0
+
+    def wait_report(check):
+        deadline = time.monotonic() + 15
+        result = streaming_report()
+        while not check(result) and time.monotonic() < deadline:
+            time.sleep(.2)
+            result = streaming_report()
+        assert check(result), result
+        return result
 
     if verify_bandwidth:
         assert event_bytes()[0]["total_bytes"] == 0
@@ -115,6 +134,23 @@ def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
             _, old_width, duration = play_event(watch_page, watch, "Replay", navigate=False)
             _, old_embed_width, _ = play_event(frame, embed, "Replay", navigate=False)
             assert (old_width, old_embed_width) == (320, 320) and duration >= 30
+            if verify_streaming:
+                token = watch_page.locator("#eventLobby").get_attribute("data-viewer-grant")
+                opted_out = requests.get(watch + "&dnt=1", timeout=10, headers={
+                    "Accept": "application/json", "X-CuePorch-Event-Viewer": token,
+                })
+                opted_out.raise_for_status()
+                assert opted_out.json()["address"] and not opted_out.json()["analytics_token"]
+                for page in (watch_page, frame):
+                    page.locator("#eventPlayer video").evaluate("""v => new Promise(resolve => {
+                        if (v.currentTime >= 1) { v.pause(); resolve(); return; }
+                        v.addEventListener('timeupdate', function sample() {
+                            if (v.currentTime >= 1) { v.removeEventListener('timeupdate', sample); v.pause(); resolve(); }
+                        });
+                    })""")
+                replay = wait_report(lambda result: result["totals"]["views"] == 2 and watched(result["totals"]))
+                assert {row["breakdown"] for row in replay["rows"]} == {"Replay"}
+                assert replay["totals"]["average_watched_fraction"] > 0
             if verify_bandwidth:
                 replay_bytes, rows = event_bytes()
                 assert replay_bytes["live_bytes"] == 0 < replay_bytes["vod_bytes"]
@@ -143,6 +179,9 @@ def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
                 _, live_embed_width, _ = play_event(frame, embed, "Live", navigate=False)
                 assert 320 < live_width <= 640 and 320 < live_embed_width <= 640
                 assert watch_page.url == watch and frame.url == embed
+                if verify_streaming:
+                    grouped = wait_report(lambda result: any(
+                        row["breakdown"] == "Live" and row["views"] == 2 and watched(row) for row in result["rows"]))
                 assert process.wait(timeout=65) == 0
             evidence = dict(approval_and_registration_gate_replay=True, direct_unauthorized_replay_denied=True,
                             independent_embed_replay=True, recorded_width=old_width, recorded_duration=round(duration, 1),
@@ -155,6 +194,27 @@ def check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=False):
                 content = api("GET", "/api/analytics/videos?events=1")
                 assert {"id": event["id"], "title": title, "event": True} in content
                 evidence["gateway_bandwidth"] = delivered | {"vod_before_live_bytes": replay_bytes["vod_bytes"]}
+            if verify_streaming:
+                phases = {row["breakdown"]: row for row in grouped["rows"]}
+                assert phases["Live"]["average_watched_fraction"] is None
+                assert phases["Replay"]["views"] == 2 and phases["Live"]["views"] == 2
+                assert grouped["totals"]["unique_viewers"] == 2
+                assert streaming_report(streaming="vod")["totals"]["views"] == 0
+                assert streaming_report(streaming="live", surface="watch")["totals"]["views"] == 1
+                assert streaming_report(streaming="live", surface="embed", source=f"http://127.0.0.1:{publisher.server_port}")["totals"]["views"] == 1
+                assert streaming_report(streaming="replay", **{"from": "2000-01-01", "to": "2000-01-01"})["totals"]["views"] == 0
+                operator.goto(f"{base}/operator/analytics?video={event['id']}")
+                operator.locator('select[name="streaming"]').select_option("live")
+                operator.locator('select[name="breakdown"]').select_option("streaming")
+                operator.get_by_role("button", name="Apply filters").click()
+                expect(operator.locator("#reportRows")).to_contain_text("Live")
+                expect(operator.locator("#reportRows")).not_to_contain_text("Replay")
+                with operator.expect_download() as downloaded:
+                    operator.get_by_role("button", name="Download CSV").click()
+                rows = list(csv.DictReader(StringIO(downloaded.value.path().read_text(encoding="utf-8"))))
+                assert [(row["video_id"], row["streaming"], row["views"]) for row in rows] == [(event["id"], "Live", "2")]
+                evidence["streaming"] = dict(live_views=2, replay_views=2, unique_browsers=2, date_and_surface_filters=True,
+                                             external_origin_retained=True, dnt=True, filtered_csv=True)
             return evidence
         finally:
             browser.close()

@@ -1,3 +1,4 @@
+import { browserIdentity } from "./browser_analytics.js";
 const video = document.querySelector("video[data-analytics]");
 const viewer = browserIdentity();
 let sequence = 0;
@@ -9,21 +10,6 @@ let last = performance.now();
 let lastSent = 0;
 const captionTime = new Map();
 const textTracks = Array.from(video.querySelectorAll("track"));
-function browserIdentity() {
-    const key = "cueporchAnalyticsViewer";
-    try {
-        const saved = localStorage.getItem(key);
-        if (saved && /^[a-f0-9]{32}$/.test(saved))
-            return saved;
-        const bytes = crypto.getRandomValues(new Uint8Array(16));
-        const id = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
-        localStorage.setItem(key, id);
-        return id;
-    }
-    catch {
-        return undefined;
-    }
-}
 function sample() {
     const now = performance.now();
     const delta = video.currentTime - position;
@@ -79,4 +65,3 @@ video.addEventListener("ended", () => { completed = true; sample(); send(); });
 window.addEventListener("pagehide", () => { sample(); if (played)
     send(); });
 send();
-export {};

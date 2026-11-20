@@ -5,7 +5,6 @@ from io import BytesIO
 import hmac
 import ipaddress
 import json
-import os
 import re
 import secrets
 import time
@@ -294,10 +293,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     registration_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-registration")
     analytics_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-analytics")
     viewer_key = operator.encode("utf-8")
-    analytics_proxies = {
-        ipaddress.ip_address(address.strip())
-        for address in os.getenv("CUEPORCH_ANALYTICS_PROXIES", "").split(",") if address.strip()
-    }
+    analytics_proxies = library_analytics.configured_proxies()
 
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)

@@ -1,6 +1,7 @@
 const dimensionNames = {
     video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
     caption: "Captions and subtitles",
+    streaming: "Streaming type",
 };
 const metricNames = {
     impressions: "Impressions", views: "Views", view_rate: "View rate", finishes: "Finishes",
@@ -33,6 +34,7 @@ const select = (name) => controls.elements.namedItem(name);
 const input = (name) => controls.elements.namedItem(name);
 const chosen = new Set();
 let catalog = [];
+const eventIds = new Set();
 let overview = [];
 let requestNumber = 0;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
@@ -50,13 +52,15 @@ async function call(path, filters) {
     return response;
 }
 function selectedCount() {
-    const everything = reportType.value === "bandwidth" ? "All videos and events" : "All videos";
+    const kind = reportType.value;
+    const everything = usesVideoMetrics(kind) || kind === "bandwidth" ? "All videos and events" : "All videos";
     selectedLabel.textContent = chosen.size ? `${count.format(chosen.size)} selected` : everything;
 }
 function videoOptions() {
     const query = search.value.trim().toLocaleLowerCase();
     const list = document.createDocumentFragment();
-    const allowEvents = reportType.value === "bandwidth";
+    const kind = reportType.value;
+    const allowEvents = usesVideoMetrics(kind) || kind === "bandwidth";
     document.querySelector("#reportVideoLabel").textContent = allowEvents ? "Videos and events" : "Videos";
     document.querySelector("#reportSearchLabel").textContent = allowEvents ? "Search videos and events" : "Search library videos";
     for (const item of catalog) {
@@ -148,7 +152,8 @@ function videoLink(cell, title, uid) {
         return;
     }
     const link = document.createElement("a");
-    link.href = "/operator/videos/" + encodeURIComponent(uid) + "/analytics";
+    link.href = eventIds.has(uid) ? "/operator/analytics?video=" + encodeURIComponent(uid)
+        : "/operator/videos/" + encodeURIComponent(uid) + "/analytics";
     link.textContent = title;
     cell.append(link);
 }
@@ -339,6 +344,10 @@ function showError(error) {
 }
 async function open() {
     catalog = await (await call("videos?events=1")).json();
+    eventIds.clear();
+    for (const item of catalog)
+        if (item.event)
+            eventIds.add(item.id);
     const initial = new URLSearchParams(location.search).get("video");
     if (initial && catalog.some(item => item.id === initial))
         chosen.add(initial);

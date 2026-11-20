@@ -3,6 +3,7 @@
 from datetime import date, datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
+import math
 import re
 import uuid
 
@@ -30,6 +31,7 @@ import event_slide_decks
 import event_speakers
 from catalog import video_version_key
 from library_actions import title_for
+import library_analytics
 from library_interactivity import text_field
 import library_registration
 import media_bandwidth
@@ -245,6 +247,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
     measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
+    measurement_context = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback-context")
+    analytics_proxies = library_analytics.configured_proxies()
+    viewer_key = signing_key.encode("utf-8")
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
 
@@ -820,7 +825,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         except (BadSignature, ValueError, requests.RequestException):
             abort(404)
 
-    def viewer_playback(event, delivery, scope, native_video, host_private):
+    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope):
         address = analytics_token = None
         status = "Scheduled"
         try:
@@ -834,8 +839,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     replay = observed["state"] == "replay"
                     session = files.dumps(scope + [delivery["remote"], gateway, replay])
                     address = url_for("event_media_file", token=session, filename=filename)
-                    if event_analytics.permitted():
-                        analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex])
+                    if analytics_scope is not None:
+                        duration = raw.get("duration")
+                        duration_ms = (round(duration * 1000) if replay and type(duration) in (int, float)
+                                       and math.isfinite(duration) and .001 <= duration <= 7 * 86400 else None)
+                        analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex,
+                                                                      [*analytics_scope, duration_ms]])
                     status = "Replay" if replay else "Live"
             else:
                 observed = event_peer.public_status(delivery["origin"], delivery["remote"])
@@ -864,6 +873,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
                 abort(404)
+            context_key = [row["id"], row["revision"], embed]
             now = datetime.now(timezone.utc)
             upcoming = list(event_schedule.occurrences(event["schedule"], now - timedelta(days=1), now + timedelta(days=366)))
             if "occurrence" in request.args:
@@ -932,6 +942,19 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             pre_live = event_player.lobby(artwork, event, next_broadcast, poster) if not withdrawn else None
         address = None
         analytics_token = None
+        reporting_scope = reporting_token = None
+        if library_analytics.permitted() and request.args.get("dnt", "").lower() not in ("1", "true"):
+            origin = library_analytics.request_context(analytics_proxies)
+            supplied = request.headers.get("X-CuePorch-Event-Context") or request.form.get("event_context")
+            if supplied:
+                try:
+                    event_id, revision, framed, prior_origin = measurement_context.loads(supplied, max_age=12 * 3600)
+                    if [event_id, revision, framed] == context_key:
+                        origin = prior_origin
+                except (BadSignature, ValueError):
+                    pass
+            reporting_token = measurement_context.dumps([*context_key, origin])
+            reporting_scope = ["embed" if embed else "watch", *origin]
         protected = bool(form)
         host_private = protected or managed
         native_video = host_private or captioned or replay_captioned or appearance["customize"] or viewers is not None
@@ -944,12 +967,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
-            address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private)
+            address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private, reporting_scope)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
             native_replay = private_replay or latest_captioned or appearance["customize"]
-            replay_address, replay_measurement, replay_status = viewer_playback(event, latest, replay_scope, native_replay, private_replay)
+            replay_address, replay_measurement, replay_status = viewer_playback(
+                event, latest, replay_scope, native_replay, private_replay, reporting_scope)
             if replay_address and replay_status == "Replay":
                 address, analytics_token, status = replay_address, replay_measurement, replay_status
                 native_video, playing, preview_replay = native_replay, latest_slot, True
@@ -972,7 +996,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      address=address, status=status, embed=embed, protected=protected,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
-                                     analytics_token=analytics_token, playlist=archives,
+                                     analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
@@ -1026,15 +1050,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     @app.post("/api/event-playback")
     def event_playback_sample():
         try:
-            uid, revision, opens, form_revision, _, remote, replay, nonce = measurement.loads(
+            uid, revision, opens, form_revision, _, remote, replay, nonce, *reporting = measurement.loads(
                 request.headers.get("X-CuePorch-Playback", ""), max_age=12 * 3600
             )
         except (BadSignature, ValueError):
             abort(404)
-        if event_analytics.permitted():
+        if library_analytics.permitted():
             with tx() as con:
                 delivered(con, uid, revision, opens, form_revision, remote, replay)
-                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, request.get_json())
+                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, request.get_json(),
+                                       report_scope=reporting[0] if reporting else None, viewer_key=viewer_key)
         return "", 204
 
     @app.get("/event-media/<token>/<filename>")

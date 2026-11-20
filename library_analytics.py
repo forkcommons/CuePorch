@@ -9,6 +9,7 @@ from ipaddress import ip_address
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 from urllib.parse import urlsplit
@@ -100,9 +101,20 @@ def observed_region(trusted_proxies):
     return code if REGION_CODE.fullmatch(code) else None
 
 
+def configured_proxies():
+    return {ip_address(address.strip()) for address in os.getenv("CUEPORCH_ANALYTICS_PROXIES", "").split(",")
+            if address.strip()}
+
+
 def request_context(trusted_proxies):
     return [source_origin(request.referrer), device_type(request.headers.get("User-Agent")),
             observed_region(trusted_proxies)]
+
+
+def record_identity(con, nonce, viewer, viewer_key):
+    if viewer_key and isinstance(viewer, str) and re.fullmatch(r"[a-f0-9]{32}", viewer):
+        digest = hmac.digest(viewer_key, b"cueporch-video-analytics:" + viewer.encode("ascii"), "sha256").hex()
+        con.execute("INSERT OR IGNORE INTO video_analytics_viewer VALUES(?,?)", (nonce, digest))
 
 
 def record_download(tx, work, response, origin):
@@ -184,10 +196,7 @@ def record(con, work, nonce, surface, body, context=None, *, viewer_key=None):
         con.execute("INSERT OR IGNORE INTO video_analytics_context VALUES(?,?,?)", (nonce, source, device))
         if region and region[0]:
             con.execute("INSERT OR IGNORE INTO video_analytics_region VALUES(?,?)", (nonce, region[0]))
-    viewer = body.get("viewer")
-    if viewer_key and isinstance(viewer, str) and re.fullmatch(r"[a-f0-9]{32}", viewer):
-        identity = hmac.digest(viewer_key, b"cueporch-video-analytics:" + viewer.encode("ascii"), "sha256").hex()
-        con.execute("INSERT OR IGNORE INTO video_analytics_viewer VALUES(?,?)", (nonce, identity))
+    record_identity(con, nonce, body.get("viewer"), viewer_key)
 
 
 def bounds(filters=None):

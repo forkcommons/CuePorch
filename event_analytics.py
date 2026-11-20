@@ -4,7 +4,7 @@ import time
 
 from flask import abort
 
-from library_analytics import permitted
+from library_analytics import record_identity
 
 
 WINDOW = 30
@@ -17,6 +17,10 @@ CREATE INDEX IF NOT EXISTS live_playback_active ON live_playback(event,opens,pha
 CREATE TABLE IF NOT EXISTS live_playback_peak(
  event TEXT NOT NULL, opens INTEGER NOT NULL, phase TEXT NOT NULL, peak INTEGER NOT NULL,
  PRIMARY KEY(event,opens,phase));
+CREATE TABLE IF NOT EXISTS live_playback_reporting(
+ session TEXT PRIMARY KEY, created REAL NOT NULL, surface TEXT NOT NULL,
+ source TEXT NOT NULL, device TEXT NOT NULL, region TEXT, completed INTEGER NOT NULL, duration_ms INTEGER);
+CREATE INDEX IF NOT EXISTS live_playback_reporting_date ON live_playback_reporting(created);
 """
 
 
@@ -27,14 +31,15 @@ def current(con, uid, opens, phase, now=None):
     ).fetchone()[0]
 
 
-def record(con, uid, opens, phase, nonce, body):
+def record(con, uid, opens, phase, nonce, body, *, report_scope=None, viewer_key=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
     sequence, watched = body.get("sequence"), body.get("watched")
     played, playing = body.get("played"), body.get("playing")
+    completed = body.get("completed", False)
     if (type(sequence) is not int or not 1 <= sequence < 10**9 or type(watched) is not int
             or not 0 <= watched <= 24 * 3600 * 1000 or type(played) is not bool or type(playing) is not bool
-            or (not played and (playing or watched))):
+            or type(completed) is not bool or (not played and (playing or watched or completed))):
         abort(422, "Invalid playback observation.")
     now = time.time()
     prior = con.execute("SELECT sequence,playing,seen FROM live_playback WHERE id=?", (nonce,)).fetchone()
@@ -46,6 +51,14 @@ def record(con, uid, opens, phase, nonce, body):
            playing=excluded.playing, watched=max(watched,excluded.watched), seen=excluded.seen""",
         (nonce, uid, opens, phase, sequence, played, playing, watched, now),
     )
+    if report_scope is not None:
+        surface, source, device, region, duration_ms = report_scope
+        if prior is None:
+            con.execute("INSERT INTO live_playback_reporting VALUES(?,?,?,?,?,?,?,?)",
+                        (nonce, now, surface, source, device, region, completed and phase == "replay", duration_ms))
+        elif completed and phase == "replay":
+            con.execute("UPDATE live_playback_reporting SET completed=1 WHERE session=?", (nonce,))
+        record_identity(con, nonce, body.get("viewer"), viewer_key)
     if playing and (not prior or not prior["playing"] or prior["seen"] <= now - WINDOW):
         count = current(con, uid, opens, phase, now)
         con.execute(

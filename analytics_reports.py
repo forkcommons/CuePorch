@@ -22,6 +22,7 @@ DIMENSIONS = {
     "source": "coalesce(s.source, 'Unknown')",
     "region": "coalesce(s.region, 'Unknown')",
     "surface": "s.surface",
+    "streaming": "CASE s.streaming WHEN 'live' THEN 'Live' WHEN 'replay' THEN 'Replay' ELSE 'On demand' END",
     "caption": "CASE caption.kind WHEN 'none' THEN 'Off' WHEN 'captions' THEN caption.language || ' · Captions'"
                " WHEN 'subtitles' THEN caption.language || ' · Subtitles'"
                " WHEN 'captions_ai' THEN caption.language || ' · Automated captions'"
@@ -43,19 +44,23 @@ VIDEO_COUNTS = """coalesce(sum(s.impression),0) AS impressions, coalesce(sum(s.p
     count(DISTINCT identity.viewer) FILTER (WHERE s.played=1) AS unique_viewers,
     count(identity.viewer) AS identified_impressions,
     count(identity.viewer) FILTER (WHERE s.played=1) AS identified_views,
-    avg(cueporch_watched_fraction(s.work,s.version,{watched})) FILTER (WHERE s.played=1) AS average_watched_fraction,
+    avg(cueporch_watched_fraction(s.work,s.version,s.duration_ms,{watched})) FILTER (WHERE s.played=1) AS average_watched_fraction,
     coalesce(sum(s.download),0) AS downloads"""
 MILESTONES = (1, 25, 50, 75, 100)
 PLAYBACK_ROWS = """SELECT s.id,s.work,s.version,s.surface,s.created,s.played,s.completed,s.watched,s.intervals,
-    c.source,c.device,g.region,1 AS impression,0 AS download
+    c.source,c.device,g.region,1 AS impression,0 AS download,'vod' AS streaming,NULL AS duration_ms
     FROM video_analytics_session s
     LEFT JOIN video_analytics_context c ON c.session=s.id
     LEFT JOIN video_analytics_region g ON g.session=s.id"""
-DOWNLOAD_ROWS = """SELECT NULL,work,NULL,surface,created,0,0,0,NULL,source,device,region,0,1
+DOWNLOAD_ROWS = """SELECT NULL,work,NULL,surface,created,0,0,0,NULL,source,device,region,0,1,'vod',NULL
     FROM video_analytics_download"""
+EVENT_ROWS = """SELECT playback.id,playback.event,NULL,details.surface,details.created,playback.played,
+    details.completed,playback.watched,NULL,details.source,details.device,details.region,1,0,playback.phase,details.duration_ms
+    FROM live_playback_reporting details JOIN live_playback playback ON playback.id=details.session
+    JOIN live_event event ON event.id=playback.event"""
 ACTIVE_WORKS = " LEFT JOIN library_deleted_item d ON d.kind='work' AND d.item=s.work"
 PLAYBACK_TABLES = f" FROM ({PLAYBACK_ROWS}) s{ACTIVE_WORKS}"
-VIDEO_TABLES = f" FROM ({PLAYBACK_ROWS} UNION ALL {DOWNLOAD_ROWS}) s{ACTIVE_WORKS}"
+VIDEO_TABLES = f" FROM ({PLAYBACK_ROWS} UNION ALL {DOWNLOAD_ROWS} UNION ALL {EVENT_ROWS}) s{ACTIVE_WORKS}"
 
 
 def row_metrics(row):
@@ -74,7 +79,7 @@ def content_selection(options, include_events=False):
     return list(dict.fromkeys(selected))
 
 
-def filter_settings(options):
+def filter_settings(options, *, include_events=False):
     first, last, start, end = bounds(options)
     primary, secondary = options.get("group", "video"), options.get("breakdown", "")
     period = options.get("period", "day")
@@ -84,18 +89,25 @@ def filter_settings(options):
             or period not in PERIODS or surface not in ("", *SURFACES) or device not in ("", *DEVICES)
             or len(source) > 270 or (region not in ("", "Unknown") and not REGION_CODE.fullmatch(region))):
         abort(422, "Choose valid report filters and distinct breakdowns.")
-    selected = content_selection(options)
+    selected = content_selection(options, include_events=include_events)
     clause = " WHERE s.created>=? AND s.created<? AND d.item IS NULL"
     params = [start, end]
     for dimension, value in (("surface", surface), ("device", device), ("source", source), ("region", region)):
         if value:
             clause += f" AND {DIMENSIONS[dimension]}=?"
             params.append(value)
+    streaming = options.get("streaming", "") if include_events else ""
+    if streaming not in ("", "vod", "live", "replay"):
+        abort(422, "Choose a valid streaming type.")
+    if streaming:
+        clause += " AND s.streaming=?"
+        params.append(streaming)
     if selected:
         clause += " AND s.work IN (SELECT value FROM json_each(?))"
         params.append(json.dumps(selected))
     filters = dict(date_from=first.isoformat(), date_to=last.isoformat(), group=primary, breakdown=secondary,
-                   period=period, surface=surface, device=device, source=source, region=region, videos=selected)
+                   period=period, surface=surface, device=device, source=source, region=region, videos=selected,
+                   streaming=streaming)
     return filters, clause, tuple(params)
 
 
@@ -119,7 +131,7 @@ def caption_scope(language, kind, split):
 
 
 def summarize(con, options, catalog, lengths, *, include_top=False):
-    filters, clause, params = filter_settings(options)
+    filters, clause, params = filter_settings(options, include_events=True)
     language, kind = options.get("caption_language", ""), options.get("caption_kind", "")
     if (not isinstance(language, str) or len(language) > 53 or (language and not LANGUAGE.fullmatch(language))
             or not isinstance(kind, str) or kind not in ("", *CAPTION_KINDS)):
@@ -131,11 +143,11 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
     scope, scope_params = base + join + clause + where, before + params + after
     counts = VIDEO_COUNTS.format(watched=watched)
 
-    def watched_fraction(uid, version, watched):
-        duration = lengths.get((uid, version))
+    def watched_fraction(uid, version, measured_duration, watched):
+        duration = measured_duration or lengths.get((uid, version))
         return watched / duration if duration else None
 
-    con.create_function("cueporch_watched_fraction", 3, watched_fraction, deterministic=True)
+    con.create_function("cueporch_watched_fraction", 4, watched_fraction, deterministic=True)
     period = PERIODS[filters["period"]]
     primary, secondary = filters["group"], filters["breakdown"]
     group = DIMENSIONS[primary] or period
@@ -167,7 +179,7 @@ def summarize(con, options, catalog, lengths, *, include_top=False):
         result["top"] = {}
         for dimension in TOP_DIMENSIONS:
             leaders = con.execute(f"""SELECT {DIMENSIONS[dimension]} AS category,count(*) AS views
-                                      {PLAYBACK_TABLES} {join} {clause} {where} AND s.played=1
+                                      {VIDEO_TABLES} {join} {clause} {where} AND s.played=1
                                       GROUP BY category ORDER BY views DESC,category LIMIT 5""", scope_params)
             result["top"][dimension] = [
                 dict(label=catalog.get(category, category) if dimension == "video" else category,
@@ -299,11 +311,10 @@ def register(app, tx, staff, read_works):
         with tx() as con:
             works = read_works()
             titles = catalog(con, works)
-            if kind in GROUP_REPORTS:
-                result = summarize(con, options | {"group": kind}, titles, durations(works))
-            elif kind == "video":
-                result = summarize(con, options, titles, durations(works),
-                                   include_top=request.args.get("format") != "csv")
+            if kind in GROUP_REPORTS or kind == "video":
+                selected = options | {"group": kind} if kind in GROUP_REPORTS else options
+                result = summarize(con, selected, titles | event_titles(con), durations(works),
+                                   include_top=kind == "video" and request.args.get("format") != "csv")
             elif kind == "engagement":
                 result = engagement(con, options, titles, durations(works))
             elif kind == "bandwidth":

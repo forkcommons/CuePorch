@@ -125,8 +125,8 @@ def check_advanced_analytics(page, browser, base, auth, museum, venue, clip,
         expect(page.locator("#topVideos").get_by_role("link", name=title_a)).to_have_attribute(
             "href", f"/operator/videos/{a}/analytics")
         page.get_by_text("1 selected", exact=True).click()
-        page.get_by_label("Search library videos").fill("Advanced report")
-        page.get_by_role("listbox", name="Videos", exact=True).select_option([a, b])
+        page.get_by_label("Search videos and events").fill("Advanced report")
+        page.get_by_role("listbox", name="Videos and events", exact=True).select_option([a, b])
         page.get_by_label("Group by").select_option("device")
         page.get_by_label("Break down by").select_option("video")
         page.get_by_label("Time scale").select_option("week")
