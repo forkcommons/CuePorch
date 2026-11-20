@@ -1,0 +1,119 @@
+"""Public creator profiles scoped to the creator's current public Library videos."""
+
+import json
+import re
+import uuid
+
+from flask import abort, make_response, render_template, request, url_for
+
+from browser_account_security import private, same_origin, secure_site
+from library_interactivity import text_field, web_link
+from library_trash import hidden
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS creator_profile(
+ member TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE, name TEXT NOT NULL, bio TEXT NOT NULL,
+ links TEXT NOT NULL, visible INTEGER NOT NULL CHECK(visible IN (0,1)), cover TEXT,
+ featured TEXT NOT NULL, revision TEXT NOT NULL);
+"""
+HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])")
+VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor') AND p.visible=1"
+
+
+def for_work(con, uid):
+    return con.execute(f"""
+        SELECT p.handle,p.name FROM creator_profile p JOIN team_member m ON m.id=p.member
+        JOIN team_owned_work o ON o.member=p.member WHERE o.work=? AND {VISIBLE}
+    """, (uid,)).fetchone()
+
+
+def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):
+    def creator(con, secure):
+        row = member(con, secure)
+        if row["role"] == "viewer":
+            abort(403, "A creator membership is required.")
+        return row
+
+    def owned_works(con, uid):
+        owned = {row[0] for row in con.execute("SELECT work FROM team_owned_work WHERE member=?", (uid,))}
+        return {work["id"]: work for work in read_works()
+                if work["id"] in owned and not hidden(con, "work", work["id"])}
+
+    def draft(con, row, works):
+        profile = con.execute("SELECT * FROM creator_profile WHERE member=?", (row["id"],)).fetchone()
+        if profile:
+            settings = {key: profile[key] for key in ("handle", "name", "bio", "revision")}
+            settings.update(links=json.loads(profile["links"]), visible=bool(profile["visible"]),
+                            cover=profile["cover"] if profile["cover"] in works else None,
+                            featured=[uid for uid in json.loads(profile["featured"]) if uid in works])
+        else:
+            settings = dict(handle="", name=row["name"], bio="", links=[], visible=False,
+                            cover=None, featured=[], revision="")
+        settings["url"] = url_for("creator_page", handle=settings["handle"]) if settings["handle"] else None
+        settings["videos"] = sorted((dict(id=uid, title=title_for(con, work)) for uid, work in works.items()),
+                                   key=lambda item: (item["title"].casefold(), item["id"]))
+        return settings
+
+    @app.get("/team/profile")
+    def creator_editor():
+        with tx() as con:
+            creator(con, secure_site(origin))
+        return private(render_template("creator_editor.html"))
+
+    @app.route("/api/team/profile", methods=("GET", "PUT"))
+    def creator_settings():
+        secure = secure_site(origin)
+        same_origin(secure)
+        with tx() as con:
+            row = creator(con, secure)
+            uid = row["id"]
+            works = owned_works(con, uid)
+            if request.method == "PUT":
+                body = mutation(secure)
+                current = con.execute("SELECT revision FROM creator_profile WHERE member=?", (uid,)).fetchone()
+                if body.get("revision") != (current["revision"] if current else ""):
+                    abort(409, "This profile changed. Reload before saving.")
+                handle = text_field(body.get("handle"), "a creator handle", 40).lower()
+                name = text_field(body.get("name"), "a creator name", 120)
+                bio = text_field(body.get("bio"), "a biography", 2000)
+                visible, cover = body.get("visible"), body.get("cover")
+                links, featured = body.get("links"), body.get("featured")
+                if not HANDLE.fullmatch(handle) or not name:
+                    abort(422, "Enter a name and a handle of 3 to 40 letters, numbers or hyphens.")
+                if con.execute("SELECT 1 FROM creator_profile WHERE handle=? AND member<>?", (handle, uid)).fetchone():
+                    abort(409, "That creator handle is already in use.")
+                if type(visible) is not bool or (cover is not None and (not isinstance(cover, str) or cover not in works)):
+                    abort(422, "Choose a profile visibility and a cover from your videos.")
+                if not isinstance(links, list) or len(links) > 5:
+                    abort(422, "Use up to five profile links.")
+                links = list(dict.fromkeys(link for value in links if (link := web_link(value))))
+                if (not isinstance(featured, list) or len(featured) > 24
+                        or any(not isinstance(work, str) or work not in works for work in featured)):
+                    abort(422, "Choose up to 24 featured videos from your library.")
+                featured = list(dict.fromkeys(featured))
+                con.execute("""INSERT INTO creator_profile VALUES(?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(member) DO UPDATE SET handle=excluded.handle,name=excluded.name,bio=excluded.bio,
+                    links=excluded.links,visible=excluded.visible,cover=excluded.cover,featured=excluded.featured,
+                    revision=excluded.revision""",
+                    (uid, handle, name, bio, json.dumps(links), visible, cover, json.dumps(featured), uuid.uuid4().hex))
+                note(con, "team:" + uid, "creator_profile_saved", uid, "public" if visible else "hidden")
+            return private(draft(con, row, works))
+
+    @app.get("/creators/<handle>")
+    def creator_page(handle):
+        with tx() as con:
+            row = con.execute(f"""SELECT p.* FROM creator_profile p JOIN team_member m ON m.id=p.member
+                WHERE p.handle=? AND {VISIBLE}""", (handle,)).fetchone()
+            if not row:
+                abort(404)
+            owned = {item[0] for item in con.execute("SELECT work FROM team_owned_work WHERE member=?", (row["member"],))}
+            videos = {slug: entry_payload(entry) for (kind, slug), entry in listing(con).items()
+                      if kind == "work" and slug in owned}
+            cover = videos.get(row["cover"])
+            featured = [videos[uid] for uid in json.loads(row["featured"]) if uid in videos]
+        response = make_response(render_template("creator_profile.html", name=row["name"], bio=row["bio"],
+                                                 handle=row["handle"], links=json.loads(row["links"]),
+                                                 cover=cover, featured=featured, video_count=len(videos)))
+        response.cache_control.no_store = True
+        return response

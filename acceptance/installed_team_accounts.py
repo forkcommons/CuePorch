@@ -110,6 +110,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         assert viewer.request.get(base + "/api/viewer/account").json()["name"] == "Public account"
         assert viewer.request.get(media).status == contributor.request.get(media).status == 404
         assert viewer.request.post(base + "/api/team/uploads", headers=TEAM).status == 403
+        assert viewer.request.get(base + "/team/profile").status == 403
+        assert viewer.request.get(base + "/api/team/profile").status == 403
         assert contributor.request.get(base + "/api/library", headers=TEAM).status == 403
         assert contributor.request.get(base + "/api/team/members", headers=TEAM).status == 403
         assert contributor.request.post(base + "/api/team/invitations", headers=TEAM,
@@ -423,6 +425,77 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         expect(successor.locator("#teamAnalyticsTotals")).to_have_text("Members 1 · Videos 1 · Views 1")
         save_named_tracking(False)
 
+        second_title = "Arts program excerpt"
+        second_upload = contributor.request.post(base + "/api/team/uploads", headers=TEAM, multipart={
+            "file": {"name": second_title + ".mp4", "mimeType": "video/mp4", "buffer": replacement.read_bytes()},
+            "upload_id": uuid.uuid4().hex,
+        })
+        assert second_upload.status == 201, second_upload.text()
+        second_work = second_upload.json()["id"]
+        profile_api = base + "/api/team/profile"
+        assert requests.get(profile_api, timeout=10).status_code == 401
+        contributor_page.goto(base + "/team")
+        contributor_page.get_by_role("link", name="Edit creator profile").click()
+        contributor_page.get_by_label("Creator name").fill("Cameron · Local arts")
+        handle = "local-arts-" + label
+        contributor_page.get_by_label("Profile handle").fill(handle)
+        contributor_page.get_by_label("Biography").fill("Short films and local exhibitions. <section id=unsafe>")
+        contributor_page.get_by_label("Profile links, one per line").fill("https://gallery.example.org/portfolio")
+        contributor_page.get_by_label("Cover video").select_option(owned[0]["id"])
+        for video_id in (owned[0]["id"], second_work):
+            contributor_page.get_by_label("Add a video").select_option(video_id)
+            contributor_page.get_by_role("button", name="Add featured video").click()
+        contributor_page.get_by_role("button", name=f"Move up {second_title}").click()
+        contributor_page.get_by_role("button", name="Save creator profile").click()
+        expect(contributor_page.locator("#creatorStatus")).to_have_text("Creator profile saved.")
+        profile_url = f"{base}/creators/{handle}"
+        assert requests.get(profile_url, timeout=10).status_code == 404
+        draft_profile = contributor.request.get(profile_api).json()
+        assert draft_profile["featured"] == [second_work, owned[0]["id"]]
+        assert contributor.request.put(profile_api, headers=TEAM,
+                                       data=draft_profile | {"cover": migrated["work"]}).status == 422
+        assert contributor.request.put(profile_api, headers=TEAM,
+                                       data=draft_profile | {"links": ["javascript:alert(1)"]}).status == 422
+        assert contributor.request.put(profile_api, headers=TEAM, data=draft_profile | {"revision": ""}).status == 409
+        contributor_page.get_by_label("Publish profile").check()
+        contributor_page.get_by_role("button", name="Save creator profile").click()
+        expect(contributor_page.get_by_role("link", name="Open public profile")).to_be_visible()
+        public_settings = dict(visibility="public", embed="anywhere", domains=[], download=False)
+        private_settings = dict(visibility="private", embed="disabled", domains=[], download=False)
+
+        def privacy(work, settings):
+            endpoint = f"{base}/api/library/work/{work}/privacy"
+            requests.put(endpoint, headers=auth, timeout=15, json=settings).raise_for_status()
+
+        privacy(owned[0]["id"], public_settings)
+        privacy(second_work, public_settings)
+        with browser.new_context() as guest:
+            profile_visitor = guest.new_page()
+            profile_visitor.goto(profile_url)
+            expect(profile_visitor.get_by_role("heading", name="Cameron · Local arts")).to_be_visible()
+            expect(profile_visitor.get_by_text("Short films and local exhibitions.", exact=False)).to_be_visible()
+            expect(profile_visitor.locator("#unsafe")).to_have_count(0)
+            assert profile_visitor.get_by_text("https://gallery.example.org/portfolio").get_attribute("href") == (
+                "https://gallery.example.org/portfolio"
+            )
+            cards = profile_visitor.get_by_role("region", name="Featured videos").get_by_role("link")
+            expect(cards).to_have_text([second_title, draft_name])
+            profile_visitor.get_by_role("region", name="Cover video").get_by_role("link", name=draft_name).click()
+            assert profile_visitor.locator("video").evaluate(
+                "async v => {v.muted = true; await v.play(); return v.videoWidth;}"
+            ) > 0
+            profile_visitor.get_by_role("link", name="Cameron · Local arts").click()
+            assert profile_visitor.url == profile_url
+            privacy(owned[0]["id"], private_settings)
+            profile_visitor.reload()
+            expect(profile_visitor.get_by_role("region", name="Cover video")).to_have_count(0)
+            expect(cards).to_have_text([second_title])
+        privacy(second_work, private_settings)
+        contributor_page.get_by_label("Publish profile").uncheck()
+        contributor_page.get_by_role("button", name="Save creator profile").click()
+        expect(contributor_page.get_by_role("link", name="Open public profile")).not_to_be_visible()
+        assert requests.get(profile_url, timeout=10).status_code == 404
+
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
@@ -435,4 +508,5 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 owner_assignment_and_transfer_with_stale_check=True, admin_cannot_take_ownership=True,
                 private_audited_roster_csv=True, private_contributor_video_report_and_export=True,
                 report_requires_current_ownership_and_session=True,
-                named_playback_report_scope_opt_out_and_csv=True), email("contributor")
+                named_playback_report_scope_opt_out_and_csv=True,
+                public_creator_profile_ordering_playback_and_withdrawal=True), email("contributor")

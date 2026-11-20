@@ -44,6 +44,8 @@ Open **Video analytics** from the team player to see the video's playback totals
 
 Owners and Administrators can open **Team analytics** from **Team members**. Named viewing activity starts off. Turn on **Record named viewing activity** to report signed-in playback from the team player. The player shows that recording is enabled and honors browser Do Not Track and Global Privacy Control. Filter by date, select a member or video, or download the matching CSV. Turning it off stops collection and hides the report. Turning it back on makes earlier recorded activity available again.
 
+Use **Edit creator profile** in your team workspace to save a creator name, handle, biography and links. Select a cover video and order the featured section from your own uploads. Turn on **Publish profile** when you want to share the profile link. Only your videos currently available in public Watch appear. If an administrator withdraws a video or makes it private, it disappears from the profile too.
+
 In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.
 
 Use **Manage workspace links** in **Team members** to add a CuePorch workspace by name and HTTPS origin. Choose the groups that can find it under **Workspaces** in their team library. Set up the member's role in the destination workspace. After they sign in there, the same browser can keep both sessions. Remove access to a workspace from its own **Team members** screen.

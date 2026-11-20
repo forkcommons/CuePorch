@@ -27,9 +27,11 @@ function reveal(member?: Member) {
   signIn.hidden = Boolean(member);
   library.hidden = !member;
   const nav = library.querySelector<HTMLElement>("#teamAdminLinks")!;
+  const profile = library.querySelector<HTMLAnchorElement>("#editCreatorProfile")!;
   const managesTeam = member?.role === "admin" || member?.role === "owner";
   nav.hidden = !managesTeam;
   upload.hidden = !member || member.role === "viewer";
+  profile.hidden = upload.hidden;
   if (member) {
     if (managesTeam) sessionStorage.setItem("cueporchOperator", sessionMarker);
     else clearOperatorMarker();

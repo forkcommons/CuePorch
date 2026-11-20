@@ -40,6 +40,7 @@ import audience_accounts
 import audience_comments
 from browser_account_security import same_origin, secure_site
 import community_analytics
+import creator_profiles
 import library_actions
 import library_appearance
 import library_caption_jobs
@@ -1091,6 +1092,7 @@ def create_app(root, database, operator, institution, simulation=None):
                    AND NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)""",
                 (kind, slug),
             ).fetchone()
+            creator = creator_profiles.for_work(con, slug) if row and kind == "work" and not embed else None
         if not row:
             abort(404)
         if request.method == "POST":
@@ -1102,6 +1104,7 @@ def create_app(root, database, operator, institution, simulation=None):
             title=row["description"] or row["slug"],
             url=row["destination"],
             slug=slug, save_kind=kind if kind in ("work", "meeting") else None, save_slug=slug,
+            creator=creator,
         )
 
     @app.get("/support")
@@ -1214,7 +1217,8 @@ def create_app(root, database, operator, institution, simulation=None):
     library_discovery.register(app, tx, staff, public_listing, root, institution)
     audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
     authorize_editor = team_accounts.register(app, tx, team_origin, operator, workspace_brand, operator_name,
-                                               read_library_works, library_actions.title_for, root)
+                                               read_library_works, library_actions.title_for, root,
+                                               public_listing, library_discovery.entry_payload)
     library_folders.register(app, tx, staff, action, read_library_works)
     library_folder_privacy.register(app, tx, staff, action, read_library_works)
     library_trash.register(app, tx, staff, read_library_works)
@@ -1236,7 +1240,7 @@ def create_app(root, database, operator, institution, simulation=None):
     vimeo_privacy.register(app, tx, staff, action, read_library_works)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
-        vimeo_privacy.permits, library_details.details_for,
+        vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
     )
 
     @app.get("/api/library")

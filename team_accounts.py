@@ -12,6 +12,7 @@ import uuid
 from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import creator_profiles
 import library_analytics
 import team_analytics
 import team_workspaces
@@ -53,7 +54,7 @@ CREATE INDEX IF NOT EXISTS team_owned_work_member ON team_owned_work(member);
 CREATE TABLE IF NOT EXISTS team_membership_event(
  sequence INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  subject TEXT NOT NULL, detail TEXT, at REAL NOT NULL);
-""" + team_analytics.SCHEMA
+""" + team_analytics.SCHEMA + creator_profiles.SCHEMA
 ROLES = ("admin", "contributor", "viewer")
 MANAGERS = ("owner", "admin")
 SESSION_SECONDS = 12 * 3600
@@ -173,7 +174,8 @@ def group_selection(values, available, label):
     return selection
 
 
-def register(app, tx, origin, key, workspace_brand, operator_name, read_works, title_for, root):
+def register(app, tx, origin, key, workspace_brand, operator_name, read_works, title_for, root, public_listing,
+             entry_payload):
     rate_key = hmac.digest(key.encode(), b"CuePorch team attempts", "sha256")
     dummy = generate_password_hash(secrets.token_urlsafe(24))
 
@@ -652,4 +654,6 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         return private(send_file(path, mimetype="video/mp4", conditional=True))
 
     team_workspaces.register(app, tx, origin, manager, note)
+    creator_profiles.register(app, tx, origin, member, mutation, public_listing, entry_payload, read_works,
+                              title_for, note)
     return authorize_editor

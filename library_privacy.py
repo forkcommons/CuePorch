@@ -287,7 +287,7 @@ def apply_settings(con, action, work, settings, password_hash):
     )
 
 
-def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for):
+def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -444,6 +444,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             token = serializer.dumps(payload) if can_watch else None
             title = "Protected video" if locked else title_for(con, work)
             details = details_for(con, work) if can_watch and not embed else None
+            creator = creator_for_work(con, uid) if can_watch and mode == "public" and not embed else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
             chapters = library_interactivity.readable_chapters(work) if can_watch and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
@@ -474,6 +475,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         response = make_response(
             render_template("library_watch.html", work=uid, title=title, embed=embed,
                             save_kind="work" if mode == "public" and not embed else None, save_slug=uid,
+                            creator=creator,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
                             audio_tracks=library_audio.tracks_for(work) if can_watch else [],
                             audio_labels=library_audio.KINDS,
