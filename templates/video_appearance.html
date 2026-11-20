@@ -23,6 +23,10 @@
         <button type="button" id="removePreset" disabled>Remove selected preset</button>
         <fieldset>
           <legend>Branding</legend>
+          <label for="appearanceBrandKit">Reusable brand kit</label>
+          <select id="appearanceBrandKit"><option value="">Choose a brand kit</option></select>
+          <button type="button" id="applyAppearanceKit" disabled>Use brand kit</button>
+          <a href="{{ url_for('brand_kits_page') }}">Manage brand kits</a>
           <div class="palette">
             <label>Primary color <input type="color" name="primary"></label>
             <label>Accent color <input type="color" name="accent"></label>

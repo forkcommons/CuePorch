@@ -28,6 +28,7 @@ import library_share
 import library_peer_handoff
 import media_bandwidth
 import review_links
+import team_brand_kits
 import timeline_jobs
 from catalog import copy_work
 from library_trash import hidden
@@ -82,7 +83,7 @@ def save_title(con, work, name):
 
 
 def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key, authorize_editor,
-             operator_name, enforce_sharing):
+             operator_name, enforce_sharing, team_origin):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -100,6 +101,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
     library_analytics.register(app, tx, staff, get_work, title_for)
     library_editing.register(app, tx, staff, get_work, root, remember_work, title_for, VIDEO_MIME)
     library_timeline.register(app, tx, staff, get_work, root, signing_key)
+    team_brand_kits.register(app, tx, staff, team_origin, root, get_work, library_timeline.video_source)
     start_editor = timeline_jobs.register(app, tx, staff, get_work, root, remember_work)
     library_caption_jobs.register(app, tx, staff, get_work, action)
     library_languages.register(

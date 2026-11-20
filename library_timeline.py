@@ -13,6 +13,7 @@ from catalog import video_version_key
 from library_languages import tracks_for, track_language
 from media_tools import video_properties
 import subtitles
+from team_brand_kits import written_kit
 
 
 SCHEMA = """
@@ -21,7 +22,7 @@ CREATE TABLE IF NOT EXISTS video_editor_project(
  contents TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(work,actor));
 """
 SIZES = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720), "4:3": (960, 720)}
-DEFAULT = {"ratio": "16:9", "color": "182629", "clips": [], "music": None}
+DEFAULT = {"ratio": "16:9", "color": "182629", "clips": [], "music": None, "brand": None}
 VIDEO_FORMATS = ("mp4", "mov", "webm", "mkv")
 
 
@@ -54,7 +55,7 @@ def valid_range(source, limit):
     return first, last
 
 
-def normalize(raw, get_work, root):
+def normalize(raw, get_work, root, con):
     if not isinstance(raw, dict):
         abort(422, "Enter valid editor settings.")
     ratio, color, raw_clips = raw.get("ratio"), raw.get("color"), raw.get("clips")
@@ -85,7 +86,12 @@ def normalize(raw, get_work, root):
                 or (work.get("duration_seconds") and start >= work["duration_seconds"] * 1000)):
             abort(422, "Choose a valid audio offset and volume.")
         music = dict(work=work["id"], cut=video_version_key(work), start=start, gain=gain)
-    return dict(ratio=ratio, color=color.lower(), clips=clips, music=music)
+    brand = raw.get("brand")
+    if brand is not None:
+        if not isinstance(brand, dict) or not all(isinstance(brand.get(key), str) for key in ("id", "revision")):
+            abort(422, "Choose a saved brand kit for this timeline.")
+        brand = written_kit(con, brand["id"], brand["revision"])
+    return dict(ratio=ratio, color=color.lower(), clips=clips, music=music, brand=brand)
 
 
 def project(con, root, work, actor):
@@ -186,7 +192,7 @@ def register(app, tx, staff, get_work, root, signing_key):
                 return project(con, root, work, actor)
             if body.get("base") != previous["current"]:
                 abort(409, "The current cut has changed. Reopen the editor before saving.")
-            settings = normalize(body.get("settings"), lambda selected: get_work(con, selected), root)
+            settings = normalize(body.get("settings"), lambda selected: get_work(con, selected), root, con)
             revision = uuid.uuid4().hex
             updated = datetime.now(timezone.utc).isoformat()
             con.execute("""INSERT INTO video_editor_project VALUES(?,?,?,?,?,?)

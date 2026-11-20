@@ -47,6 +47,15 @@
           <label>Background color <input type="color" id="timelineColor"></label>
         </fieldset>
         <fieldset>
+          <legend>Brand kit</legend>
+          <label for="timelineBrandKit">Reusable brand kit</label>
+          <select id="timelineBrandKit"><option value="">Choose a brand kit</option></select>
+          <button id="applyTimelineKit" type="button" disabled>Use brand kit</button>
+          <button id="clearTimelineKit" type="button" hidden>Remove from timeline</button>
+          <a href="{{ url_for('brand_kits_page') }}">Manage brand kits</a>
+          <p id="timelineBrandSources" hidden></p>
+        </fieldset>
+        <fieldset>
           <legend>Library media</legend>
           <label>Find video <input id="timelineSearch" type="search"></label>
           <label for="timelineVideo">Add video</label>

@@ -32,6 +32,7 @@ let stopTime;
 let cues = [];
 let uploading = false;
 let uploadId = "";
+let kits = [];
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 function message(error) {
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -66,6 +67,7 @@ function controls() {
     button("appendTimeline").disabled = !select("timelineVideo").value || full;
     button("recordTimeline").disabled = full;
     button("uploadTimeline").disabled = uploading || full;
+    button("applyTimelineKit").disabled = !select("timelineBrandKit").value;
     fileInput.disabled = uploading;
 }
 function listSources() {
@@ -106,7 +108,18 @@ function paint() {
     select("timelineMusic").value = state.music?.work || "";
     input("timelineMusicStart").value = seconds(state.music?.start || 0);
     input("timelineMusicGain").value = String(state.music?.gain ?? 25);
-    node("timelineDuration").textContent = seconds(duration(state.clips)) + " seconds";
+    const bookends = [state.brand?.intro, state.brand?.outro].filter(clip => clip != null);
+    node("timelineDuration").textContent = seconds(duration(state.clips) + duration(bookends)) + " seconds";
+    const brandSummary = node("timelineBrandSources");
+    brandSummary.hidden = !state.brand;
+    if (state.brand) {
+        const { name, intro, outro } = state.brand;
+        brandSummary.textContent = [name, intro && "Intro: " + nameOf(intro.work), outro && "Outro: " + nameOf(outro.work)]
+            .filter(Boolean).join(" · ");
+    }
+    else
+        brandSummary.textContent = "";
+    button("clearTimelineKit").hidden = !state.brand;
     trackList.replaceChildren();
     for (const [index, clip] of state.clips.entries()) {
         const row = document.createElement("li");
@@ -413,10 +426,19 @@ input("timelineTextSearch").oninput = paintCues;
 select("timelineSubtitle").onchange = () => run(transcript);
 select("timelineRatio").onchange = () => change({ ...state, ratio: select("timelineRatio").value });
 input("timelineColor").onchange = () => change({ ...state, color: input("timelineColor").value.slice(1) });
+select("timelineBrandKit").onchange = controls;
+button("applyTimelineKit").onclick = () => {
+    const kit = kits.find(item => item.id === select("timelineBrandKit").value);
+    if (kit)
+        change({ ...state, brand: kit, color: kit.style.background.slice(1) });
+};
+button("clearTimelineKit").onclick = () => change({ ...state, brand: null });
 async function open() {
-    const [items, loaded] = await Promise.all([
-        call("/api/library"), call(endpoint() + "/timeline"),
+    const [items, loaded, shelf] = await Promise.all([
+        call("/api/library"), call(endpoint() + "/timeline"), call("/api/library/brand-kits"),
     ]);
+    kits = shelf.kits;
+    select("timelineBrandKit").replaceChildren(new Option("Choose a brand kit", ""), ...kits.map(kit => new Option(kit.name, kit.id)));
     media = new Map(items.map(item => [item.id, item]));
     project = loaded;
     state = project.settings;

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Brand kits · CuePorch</title>
+<body data-brand-kit-team="{{ 'yes' if team else 'no' }}">
+{% if team %}<nav aria-label="Team"><a href="/team">Team workspace</a></nav>
+{% else %}{% include "operator_navigation.html" %}{% endif %}
+<main>
+  <h1>Brand kits</h1>
+  <form id="brandKitAccess" method="post"{% if team %} hidden{% endif %}>
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open brand kits</button>
+  </form>
+  <p id="brandKitStatus" role="status"></p>
+  <section id="brandKitsWorkspace" hidden>
+    <button type="button" id="newBrandKit">New brand kit</button>
+    <ul id="brandKitList"></ul>
+    <form id="brandKitForm" method="post" hidden>
+      <label>Kit name <input name="name" required maxlength="80"></label>
+      <fieldset>
+        <legend>Colors</legend>
+        {% set names = {'primary': 'Primary color', 'accent': 'Accent color', 'icon': 'Icons', 'text': 'Text', 'background': 'Background'} %}
+        <div class="palette">{% for color, default in colors %}
+          <label>{{ names[color] }} <input type="color" name="{{ color }}" value="{{ default }}"></label>
+        {% endfor %}</div>
+      </fieldset>
+      <label for="kitFont">Title font</label>
+      <select name="font" id="kitFont">
+        <option value="serif">Serif</option><option value="sans">Sans-serif</option><option value="mono">Monospace</option>
+      </select>
+      <label for="kitIntro">Intro video</label>
+      <select name="intro" id="kitIntro"><option value="">None</option></select>
+      <label for="kitOutro">Outro video</label>
+      <select name="outro" id="kitOutro"><option value="">None</option></select>
+      <label>Logo image <input name="logo_file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <img id="kitLogoPreview" class="brand-kit-preview" alt="Brand kit logo" hidden>
+      <button type="button" id="copyWorkspaceLogo" hidden>Use workspace logo</button>
+      <button type="button" id="removeKitLogo" hidden>Remove logo</button>
+      <button type="submit">Save brand kit</button>
+      <button type="button" id="deleteBrandKit" hidden>Remove kit</button>
+    </form>
+  </section>
+</main>
+<script type="module" src="/static/ui/brand_kits.js"></script>
+</body>
+</html>

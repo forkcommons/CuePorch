@@ -70,6 +70,7 @@ import media_bandwidth
 import review_links
 import review_push
 import team_accounts
+import team_brand_kits
 import team_branding
 import team_sharing_policy
 import team_workspaces
@@ -143,6 +144,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + audience_accounts.SCHEMA
             + team_accounts.SCHEMA
             + team_branding.SCHEMA
+            + team_brand_kits.SCHEMA
             + team_sharing_policy.SCHEMA
             + team_workspaces.SCHEMA
             + workspace_help.SCHEMA
@@ -1253,7 +1255,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     start_editor, start_file_links = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
-        authorize_editor, operator_name, enforce_sharing,
+        authorize_editor, operator_name, enforce_sharing, team_origin,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

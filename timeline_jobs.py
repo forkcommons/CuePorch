@@ -114,8 +114,10 @@ def register(app, tx, staff, get_work, root, remember_work):
         if video_version_key(work) != job["base"]:
             raise ValueError("The current cut changed before rendering. Open the editor and save a new draft.")
         render_input = json.loads(job["contents"])
+        brand = render_input.get("brand") or {}
+        ordered = (brand.get("intro"), *render_input["clips"], brand.get("outro"))
         sources = []
-        for item in render_input["clips"]:
+        for item in (item for item in ordered if item):
             source_work = get_work(con, item["work"])
             sources.append((item, source_work, find_cut(source_work, item["cut"])))
         music = render_input["music"]

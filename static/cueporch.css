@@ -27,6 +27,8 @@ main { max-width: 65rem; }
 .workspace-overview dd { margin: 0; font-size: 1.2rem; font-weight: 650; }
 .help-conversation p { margin-block: .2rem .8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .announcement-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.brand-kit-preview { display: block; max-width: 12rem; max-height: 6rem; object-fit: contain; }
+.brand-kit-preview[hidden] { display: none; }
 [data-update-votes] button[aria-pressed="true"] { outline: 2px solid #176b69; outline-offset: 1px; }
 .watch-featured { --watch-ink: #162e33; }
 @media (min-width: 66rem) {

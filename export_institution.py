@@ -76,6 +76,8 @@ def export(collection, database, target):
                 "team_workspace_link",
                 "team_workspace_link_group",
                 "team_branding",
+                "team_brand_kit",
+                "team_brand_kit_revision",
                 "creator_profile",
             ):
                 if has_table(db, table):
@@ -91,7 +93,11 @@ def export(collection, database, target):
                 row["featured"] = json.loads(row["featured"])
             for row in record.get("video_file_link", []):
                 row["renditions"] = json.loads(row["renditions"]) if row["renditions"] else None
-            for brand in record.get("team_branding", []):
+            brands = list(record.get("team_branding", []))
+            for row in record.get("team_brand_kit_revision", []):
+                row["settings"] = json.loads(row["settings"])
+                brands.append(row["settings"]["style"])
+            for brand in brands:
                 if not (digest := brand["logo"]):
                     continue
                 image = db.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()

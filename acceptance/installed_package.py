@@ -43,6 +43,7 @@ from installed_events import check_event_calendar, check_event_chat, check_event
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
+from installed_brand_kits import check_brand_kits
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
@@ -73,6 +74,7 @@ focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo mig
 focused.add_argument("--creator-only", action="store_true", help="Test recording, timeline editing and render recovery")
 focused.add_argument("--library-batch-only", action="store_true", help="Test bulk Library operations and individual playback")
 focused.add_argument("--panorama-only", action="store_true", help="Test migration and browser panoramic video playback")
+focused.add_argument("--brand-kits-only", action="store_true", help="Test branding in the player and the timeline")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -611,6 +613,15 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
                                                   home / "institution.sqlite")
                         results.append(dict(recording=recording, timeline=timeline, migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
+                    if args.brand_kits_only:
+                        timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
+                                                  home / "institution.sqlite")
+                        brands = check_brand_kits(page, browser, base, auth, home, timeline_green)
+                        results.append(dict(timeline=timeline, brand_kits=brands, migrated_playback_width=width))
                         browser.close()
                         shut_down(proc, base, desktop, home)
                         save_report()

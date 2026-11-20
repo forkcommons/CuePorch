@@ -1,4 +1,4 @@
-export {};
+import type {BrandKits} from "./brand_kits.js";
 
 type Value = string | boolean | null;
 type Settings = Record<string, Value>;
@@ -26,12 +26,15 @@ const catalog = document.querySelector<HTMLElement>("#previewCatalog")!;
 const image = document.querySelector<HTMLImageElement>("#previewLogo")!;
 const video = document.querySelector<HTMLVideoElement>("#appearanceVideo")!;
 const clear = document.querySelector<HTMLButtonElement>("#clearLogo")!;
+const kitPicker = document.querySelector<HTMLSelectElement>("#appearanceBrandKit")!;
+const useKit = document.querySelector<HTMLButtonElement>("#applyAppearanceKit")!;
 const input = (key: string) => form.elements.namedItem(key) as HTMLInputElement;
 const work = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 let stored: Appearance;
 let logo: string | null = null;
 let temporaryLogo: string | null = null;
 let loading = 0;
+let kitShelf: BrandKits;
 
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
@@ -117,6 +120,8 @@ function error(value: unknown) {
 async function signIn() {
   try {
     await load();
+    kitShelf = await request<BrandKits>("/api/library/brand-kits");
+    for (const kit of kitShelf.kits) kitPicker.add(new Option(kit.name, kit.id));
     sessionStorage.setItem("cueporchOperator", credential.value);
     identify.hidden = true;
     editor.hidden = false;
@@ -163,6 +168,18 @@ input("logo_file").onchange = () => {
   const file = input("logo_file").files?.[0];
   if (temporaryLogo) URL.revokeObjectURL(temporaryLogo);
   temporaryLogo = file ? URL.createObjectURL(file) : null;
+  live();
+};
+kitPicker.onchange = () => { useKit.disabled = !kitPicker.value; };
+useKit.onclick = () => {
+  const kit = kitShelf.kits.find(option => option.id === kitPicker.value);
+  if (!kit) return;
+  discardLocalLogo();
+  Object.assign(stored.logos, kitShelf.logos);
+  logo = kit.style.logo;
+  for (const [name, value] of Object.entries(kit.style)) {
+    if (name !== "logo" && value) input(name).value = value;
+  }
   live();
 };
 clear.onclick = () => { discardLocalLogo(); logo = null; live(); };
