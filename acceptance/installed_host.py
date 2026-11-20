@@ -21,6 +21,7 @@ from installed_event_waiting import check_event_waiting
 from installed_event_controls import check_event_controls
 from installed_encoder_preview import check_encoder_preview
 from installed_waiting_replay import check_waiting_replay
+from installed_peer_event_report import check_peer_event_report
 from installed_program_graphics import check_program_graphics
 from installed_replay_captions import check_replay_captions
 from installed_simulcast import check_simulcast, tls_certificate
@@ -54,6 +55,7 @@ live_modes.add_argument("--event-waiting", action="store_true", help="Verify eve
 live_modes.add_argument("--event-controls", action="store_true", help="Verify customized live playback controls on watch and embed")
 live_modes.add_argument("--encoder-preview", action="store_true", help="Verify private external RTMP and SRT previews and release")
 live_modes.add_argument("--waiting-replay", action="store_true", help="Verify registered replay and live transition on the same event player")
+live_modes.add_argument("--peer-event-report", action="store_true", help="Verify reports from existing events using direct PeerTube embeds")
 p.add_argument("--event-bandwidth", action="store_true", help="Measure the replay and live gateway response bodies")
 p.add_argument("--event-streaming-report", action="store_true", help="Verify dated event viewing in the shared reports")
 live_modes.add_argument("--simulcast-event", action="store_true", help="Verify real RTMP and RTMPS event receivers")
@@ -65,7 +67,7 @@ if a.station_only and not a.station_package:
     p.error("--station-only requires --station-package")
 if (a.registered_event or a.browser_event or a.scenes_event or a.event_diagnostics or a.speakers_event or a.program_graphics or a.studio_slides or
         a.captions_event or a.replay_captions or a.library_replay or a.replay_playlist or a.event_waiting or a.event_controls or
-        a.waiting_replay or a.simulcast_event or a.encoder_preview or
+        a.waiting_replay or a.peer_event_report or a.simulcast_event or a.encoder_preview or
         a.srt_event or a.program_event) and not a.live_rtmp_port:
     p.error("Live acceptance modes require --live-rtmp-port")
 if (a.captions_event or a.replay_captions) and (not a.caption_speech or not a.caption_speech.is_file()):
@@ -205,6 +207,8 @@ with tempfile.TemporaryDirectory() as tmp:
                 elif a.waiting_replay:
                     evidence["event_delivery"] = check_waiting_replay(base, keys, ffmpeg, verify_bandwidth=a.event_bandwidth,
                                                                      verify_streaming=a.event_streaming_report)
+                elif a.peer_event_report:
+                    evidence["event_delivery"] = check_peer_event_report(base, keys, home, ffmpeg)
                 elif a.simulcast_event:
                     evidence["event_delivery"] = check_simulcast(base, keys, ffmpeg, root, material)
                 elif a.captions_event:

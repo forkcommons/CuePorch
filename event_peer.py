@@ -146,4 +146,5 @@ def public_status(origin, target):
     if response.is_redirect:
         raise ValueError("Unexpected redirect from the video host.")
     response.raise_for_status()
-    return status(response.json())
+    raw = response.json()
+    return status(raw) | {"duration": raw.get("duration")}

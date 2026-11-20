@@ -839,19 +839,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     replay = observed["state"] == "replay"
                     session = files.dumps(scope + [delivery["remote"], gateway, replay])
                     address = url_for("event_media_file", token=session, filename=filename)
-                    if analytics_scope is not None:
-                        duration = raw.get("duration")
-                        duration_ms = (round(duration * 1000) if replay and type(duration) in (int, float)
-                                       and math.isfinite(duration) and .001 <= duration <= 7 * 86400 else None)
-                        analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex,
-                                                                      [*analytics_scope, duration_ms]])
                     status = "Replay" if replay else "Live"
+                duration = raw.get("duration")
             else:
                 observed = event_peer.public_status(delivery["origin"], delivery["remote"])
-            if not native_video and observed["public"] and observed["state"] in ("live", "replay"):
-                address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
-                status = "Live" if observed["state"] == "live" else "Replay"
-            elif observed["state"] == "waiting_for_encoder":
+                duration = observed["duration"]
+                replay = observed["state"] == "replay"
+                if observed["public"] and (observed["state"] == "live" or (replay and delivery["delivery"] == "replay")):
+                    address = f"{delivery['origin']}/videos/embed/{delivery['remote']}"
+                    status = "Replay" if replay else "Live"
+            if address and analytics_scope is not None:
+                duration_ms = (round(duration * 1000) if replay and type(duration) in (int, float)
+                               and math.isfinite(duration) and .001 <= duration <= 7 * 86400 else None)
+                analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex,
+                                                              [*analytics_scope, duration_ms]])
+                if not native_video:
+                    address += "?api=1"
+            if observed["state"] == "waiting_for_encoder":
                 status = "Waiting for the encoder"
             elif observed["state"] in ("preparing_replay", "ended"):
                 status = "Preparing the replay" if event["save_replay"] else "This event has ended"

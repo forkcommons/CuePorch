@@ -1,11 +1,22 @@
 import {browserIdentity} from "./browser_analytics.js";
 
+export function eventObservation(token: string) {
+  const viewer = browserIdentity();
+  let sequence = 0;
+  return (played: boolean, playing: boolean, completed: boolean, watched: number) => {
+    void fetch("/api/event-playback", {
+      method: "POST", keepalive: true,
+      headers: {"Content-Type": "application/json", "X-CuePorch-Playback": token},
+      body: JSON.stringify({sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer}),
+    }).catch(() => {});
+  };
+}
+
 export function measureEventPlayback(video: HTMLVideoElement, token: string) {
   if (!token) return undefined;
-  const viewer = browserIdentity();
+  const report = eventObservation(token);
   const listeners = new AbortController();
   const {signal} = listeners;
-  let sequence = 0;
   let played = false;
   let playing = false;
   let completed = false;
@@ -29,11 +40,7 @@ export function measureEventPlayback(video: HTMLVideoElement, token: string) {
 
   function send() {
     sent = performance.now();
-    void fetch("/api/event-playback", {
-      method: "POST", keepalive: true,
-      headers: {"Content-Type": "application/json", "X-CuePorch-Playback": token},
-      body: JSON.stringify({sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer}),
-    }).catch(() => {});
+    report(played, playing, completed, watched);
   }
 
   function start() {

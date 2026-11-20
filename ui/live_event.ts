@@ -1,5 +1,6 @@
 import {setupLiveCaptions} from "./live_caption_player.js";
 import {measureEventPlayback} from "./event_playback.js";
+import {measurePeerEventPlayback} from "./peer_event_playback.js";
 import {waitingPlayer, type BeforeEvent} from "./event_waiting.js";
 import {eventControls, type EventAppearance} from "./event_controls.js";
 
@@ -213,18 +214,20 @@ async function checkStatus() {
         renderVideo(src, next, analytics || "");
       }
     } else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
-      if (player.querySelector("video")) closePlayer();
+      closePlayer();
       const frame = document.createElement("iframe");
       frame.title = "Event video";
       frame.src = src;
       frame.allow = "autoplay; fullscreen; picture-in-picture";
       frame.allowFullscreen = true;
-      captions.bind();
       player.replaceChildren(frame, branding);
+      stopMeasuring = measurePeerEventPlayback(frame, analytics || "");
       if (next === "Replay" && !archives && !previewReplay) stopChecking();
     } else if (current && !src && next === "The stream is unavailable") {
       // A live player can coast through a delayed host poll without restarting.
       return;
+    } else if (current && !src) {
+      closePlayer();
     }
     waiting(src || player.querySelector("video,iframe") ? null : before);
     captions.select(captionPath || "");
@@ -256,3 +259,5 @@ if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence
     (!initial && eventStatus.textContent === "Replay"))) stopChecking();
 if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "",
   player.dataset.analytics || "", initial);
+const initialFrame = player.querySelector("iframe");
+if (initialFrame) stopMeasuring = measurePeerEventPlayback(initialFrame, player.dataset.analytics || "");
