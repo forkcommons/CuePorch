@@ -10,6 +10,7 @@
   <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
         data-analytics-context="{{ event_context or '' }}"
         data-frame-grant="{{ unlock_token or '' }}"
+        data-audience-access="{{ event_access or '' }}"
         data-embed="{{ 'yes' if embed else 'no' }}" data-latency="{{ event.latency }}"
         data-occurrence="{{ audience_occurrence.id if audience_occurrence else '' }}"
         data-playing="{{ occurrence.id if occurrence else '' }}" data-preview-replay="{{ 'yes' if preview_replay else 'no' }}"
@@ -53,7 +54,7 @@
       <button type="button" id="archivePrevious">Previous replay</button>
       <label>Choose a broadcast <select id="archiveChoice"></select></label>
       <button type="button" id="archiveNext">Next replay</button>
-      <a href="{{ url_for('event_embed' if embed else 'event_page', slug=request.view_args.slug) }}">Open current event</a>
+      <a href="{{ current_event_url }}">Open current event</a>
     </nav>
     <section id="eventCaptions" data-endpoint="{{ caption_endpoint or '' }}" aria-label="Live captions" hidden>
       <button type="button" id="toggleLiveCaptions" aria-pressed="false" disabled>Show live captions</button>

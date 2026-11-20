@@ -6,6 +6,7 @@
     <input type="hidden" name="enrollment" value="{{ enrollment }}">
     {% if event_context %}<input type="hidden" name="event_context" value="{{ event_context }}">{% endif %}
     {% if unlock_token %}<input type="hidden" name="frame" value="{{ unlock_token }}">{% endif %}
+    {% if event_access %}<input type="hidden" name="event_access" value="{{ event_access }}">{% endif %}
     <div data-identity>
     <label>Email <input type="email" name="email" autocomplete="email" maxlength="254" value="{{ request.form.get('email', '') }}" required></label>
     {% if registration.first_name != 'off' %}

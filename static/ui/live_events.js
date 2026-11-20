@@ -280,10 +280,15 @@ function choose(event, instance) {
     studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
     element("eventShare").hidden = !event.watch;
     element("eventEmbedField").hidden = !event.embed;
+    function occurrenceLink(path) {
+        const address = new URL(path, publicBase);
+        address.searchParams.set("occurrence", String(instance.id));
+        return address.href;
+    }
     if (event.watch)
-        watch.href = new URL(event.watch + "?occurrence=" + instance.id, publicBase).href;
-    const address = event.embed ? new URL(event.embed + "?occurrence=" + instance.id, publicBase).href : "";
-    input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
+        watch.href = occurrenceLink(event.watch);
+    const address = event.embed ? occurrenceLink(event.embed) : "";
+    input("eventEmbedCode").value = address ? `<iframe src="${address.replaceAll("&", "&amp;")}" title="Live event" allowfullscreen></iframe>` : "";
 }
 function releaseArtworkPreview(name) {
     if (artworkPreview[name])
@@ -485,6 +490,7 @@ function openEditor(current) {
         field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     }
     showEmbedPolicy(values?.embed_policy);
+    syncViewingPassword();
     recurrence();
     syncArchiveOption();
     form.hidden = false;
@@ -507,6 +513,13 @@ function showEmbedPolicy(policy) {
     field("embed_domains").value = policy?.domains.join("\n") ?? "";
     syncEmbedPolicy();
 }
+function syncViewingPassword() {
+    const protectedEvent = field("visibility").value === "password";
+    element("eventViewingPassword").hidden = !protectedEvent;
+    field("view_password").required = protectedEvent && editing?.event.visibility !== "password";
+    if (!protectedEvent)
+        field("view_password").value = "";
+}
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -519,6 +532,7 @@ button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
 field("embed_mode").onchange = syncEmbedPolicy;
+field("visibility").onchange = syncViewingPassword;
 function showStartingOptions(options) {
     field("method").value = options.method;
     field("registration").checked = options.registration;
@@ -562,6 +576,7 @@ preset.onchange = () => void action(async () => {
     for (const name of ["title", "type", "description", "latency"])
         field(name).value = value[name];
     field("visibility").value = "private";
+    syncViewingPassword();
     field("save_replay").checked = value.save_replay;
     field("archive_replay").checked = value.archive_replay ?? true;
     syncArchiveOption();
@@ -593,6 +608,7 @@ form.onsubmit = (event) => {
             starting_options: setup, reuse_event: !editing && mode.value === "reuse" ? preset.value : undefined,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
+            view_password: field("view_password").value || undefined,
             embed_policy: { mode: field("embed_mode").value,
                 domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean) },
             save_replay: field("save_replay").checked,

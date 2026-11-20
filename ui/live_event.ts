@@ -50,7 +50,8 @@ interface HlsClient {
 type HlsFactory = {new (config: object): HlsClient; isSupported(): boolean};
 const Hls = (window as Window & {Hls?: HlsFactory}).Hls;
 const viewer = lobby.dataset.viewerGrant || "";
-const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
+const audienceAccess = lobby.dataset.audienceAccess || "";
+const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
 const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
 
 function showBranding(value: EventBranding) {
@@ -175,6 +176,7 @@ async function checkStatus() {
   try {
     const headers: Record<string, string> = {Accept: "application/json"};
     if (viewer) headers["X-CuePorch-Event-Viewer"] = viewer;
+    if (audienceAccess) headers["X-CuePorch-Event-Access"] = audienceAccess;
     if (lobby.dataset.frameGrant) headers["X-CuePorch-Event-Frame"] = lobby.dataset.frameGrant;
     if (lobby.dataset.analyticsContext) headers["X-CuePorch-Event-Context"] = lobby.dataset.analyticsContext;
     const response = await fetch(requested, {cache: "no-store", headers});

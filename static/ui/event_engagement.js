@@ -226,7 +226,8 @@ const audience = document.querySelector("#viewerEngagement");
 if (audience) {
     const panel = audience;
     const path = panel.dataset.endpoint;
-    const viewer = element("eventLobby").dataset.viewerGrant || "";
+    const lobby = element("eventLobby");
+    const viewer = lobby.dataset.viewerGrant || "";
     const questionForm = element("askQuestion");
     const name = field(questionForm, "name");
     const anonymous = field(questionForm, "anonymous");
@@ -287,6 +288,8 @@ if (audience) {
             const headers = { "X-CuePorch-Chat-Embed": panel.dataset.embed || "no" };
             if (viewer)
                 headers["X-CuePorch-Event-Viewer"] = viewer;
+            if (lobby.dataset.audienceAccess)
+                headers["X-CuePorch-Event-Access"] = lobby.dataset.audienceAccess;
             if (session)
                 headers["X-CuePorch-Engagement-Session"] = session;
             if (body)

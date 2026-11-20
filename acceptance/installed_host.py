@@ -216,6 +216,7 @@ with tempfile.TemporaryDirectory() as tmp:
                     evidence["event_delivery"] = {
                         "public": check_live_captions(base, keys, ffmpeg, speech),
                         "registered": check_live_captions(base, keys, ffmpeg, speech, registered=True),
+                        "password_and_registration": check_live_captions(base, keys, ffmpeg, speech, registered=True, protected=True),
                     }
                 elif a.srt_event:
                     evidence["event_delivery"] = check_srt_delivery(base, keys, ffmpeg)

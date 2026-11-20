@@ -42,16 +42,21 @@ def browser_caption_state(video):
             .map(c=>[c.startTime,c.endTime,c.text]), active:[...(t.activeCues || [])].map(c=>c.text)}))})""")
 
 
-def check_live_captions(base, keys, ffmpeg, speech, registered=False):
+def check_live_captions(base, keys, ffmpeg, speech, registered=False, protected=False):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=14)).strftime("%Y-%m-%dT%H:%M")
     auth = {"Authorization": "Bearer " + keys["operator"]}
-    title = "Restricted caption commissioning" if registered else "Live caption commissioning"
-    slug = "restricted-caption-rehearsal" if registered else "live-caption-rehearsal"
+    title = "Protected caption commissioning" if protected else "Restricted caption commissioning" if registered else "Live caption commissioning"
+    slug = "protected-caption-rehearsal" if protected else "restricted-caption-rehearsal" if registered else "live-caption-rehearsal"
     event = dict(title=title, slug=slug, visibility="public", type="live",
                  latency="standard", save_replay=False, dvr_seconds=120,
                  schedule=dict(timezone="UTC", start=start, end=end, repeat="none"))
+    if protected:
+        event.update(visibility="password", view_password="fixture-caption-screening",
+                     starting_options=dict(method="encoder", registration=registered, preview_encoder=False,
+                                           captions=dict(enabled=True, language="en"), chat=dict(enabled=False, interval=0),
+                                           qa=dict(enabled=False, anonymous=False, review=False)))
     response = requests.post(base + "/api/live-events", headers=auth, json=event, timeout=12)
     response.raise_for_status()
     entry = response.json()
@@ -80,9 +85,10 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
             operator.goto(base + "/operator/live-events")
             operator.get_by_role("button", name=f"Open production for {title}", exact=False).click()
             operator.get_by_text("Live captions", exact=True).click()
-            expect(operator.locator("#productionCaptionStatus")).to_have_text("Automatic captions are off.")
-            operator.get_by_label("Generate automatic live captions").check()
-            operator.get_by_role("button", name="Save live caption settings").click()
+            if not protected:
+                expect(operator.locator("#productionCaptionStatus")).to_have_text("Automatic captions are off.")
+                operator.get_by_label("Generate automatic live captions").check()
+                operator.get_by_role("button", name="Save live caption settings").click()
             expect(operator.locator("#productionCaptionStatus")).to_contain_text("Waiting for the event stream")
             setup = requests.post(production + "/encoder", headers=auth, timeout=30)
             setup.raise_for_status()
@@ -106,6 +112,9 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
             })()""")
             audience.goto(stable)
             viewer = {}
+            if protected:
+                audience.get_by_label("Event password").fill(event["view_password"])
+                audience.get_by_role("button", name="Unlock event").click()
             if registered:
                 signup = audience.get_by_role("form", name="Register for caption commissioning")
                 signup.get_by_label("Email").fill("viewer@example.invalid")
@@ -113,6 +122,9 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
                 expect(signup).to_have_count(0)
                 viewer["X-CuePorch-Event-Viewer"] = audience.locator("#eventLobby").get_attribute("data-viewer-grant")
                 assert viewer["X-CuePorch-Event-Viewer"]
+            if protected:
+                viewer["X-CuePorch-Event-Access"] = audience.locator("#eventLobby").get_attribute("data-audience-access")
+                assert viewer["X-CuePorch-Event-Access"]
             expect(audience.locator("#eventStatus")).to_have_text("Waiting for the encoder")
             with spoken_signal(ffmpeg, setup.json(), speech, 145) as encoder:
                 wait_for_delivery(production, auth, "live", 45, encoder)
@@ -144,9 +156,13 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
                 audience.get_by_role("button", name="Show live captions").click(timeout=15000)
                 audience.get_by_text("Live transcript", exact=True).click()
                 expect(audience.get_by_label("Caption lines")).to_contain_text(re.compile(r"city\s*council", re.I), timeout=15000)
-                if registered:
+                if registered or protected:
                     assert requests.get(caption_route, timeout=10).status_code == 404
-                    assert not requests.get(stable, headers={"Accept": "application/json"}, timeout=10).json()["address"]
+                    anonymous = requests.get(stable, headers={"Accept": "application/json"}, timeout=10)
+                    if protected:
+                        assert anonymous.status_code == 404
+                    else:
+                        assert not anonymous.json()["address"]
                 pick = """() => {
                     const v = document.querySelector('#eventPlayer video');
                     const track = [...v.textTracks].find(item => item.mode === 'showing' && item.label === 'Live captions');
@@ -191,7 +207,8 @@ def check_live_captions(base, keys, ffmpeg, speech, registered=False):
                         optional_caption_approval_holds_then_releases=True,
                         viewer_decoded_caption_cue_after_transcript_seek=True, withdrawal_revokes_caption_access=True,
                         withdrawal_revokes_cueporch_manifest=True, peer_withdrawal_http=response.status_code,
-                        rewind_seconds=round(rewind, 2), requires_registration=registered)
+                        rewind_seconds=round(rewind, 2), requires_registration=registered, requires_password=protected,
+                        inherited_caption_defaults=protected)
         finally:
             browser.close()
             if not withdrawn:

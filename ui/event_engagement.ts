@@ -237,7 +237,8 @@ const audience = document.querySelector<HTMLElement>("#viewerEngagement");
 if (audience) {
   const panel = audience;
   const path = panel.dataset.endpoint!;
-  const viewer = element("eventLobby").dataset.viewerGrant || "";
+  const lobby = element("eventLobby");
+  const viewer = lobby.dataset.viewerGrant || "";
   const questionForm = element<HTMLFormElement>("askQuestion");
   const name = field<HTMLInputElement>(questionForm, "name");
   const anonymous = field<HTMLInputElement>(questionForm, "anonymous");
@@ -295,6 +296,7 @@ if (audience) {
     try {
       const headers: Record<string, string> = {"X-CuePorch-Chat-Embed": panel.dataset.embed || "no"};
       if (viewer) headers["X-CuePorch-Event-Viewer"] = viewer;
+      if (lobby.dataset.audienceAccess) headers["X-CuePorch-Event-Access"] = lobby.dataset.audienceAccess;
       if (session) headers["X-CuePorch-Engagement-Session"] = session;
       if (body) headers["Content-Type"] = "application/json";
       const response = await fetch(path, {method: body ? "POST" : "GET", headers,

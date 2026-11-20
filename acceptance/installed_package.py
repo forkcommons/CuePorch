@@ -40,6 +40,7 @@ from installed_workspaces import check_workspaces
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
 from installed_events import check_event_calendar, check_event_chat, check_event_embed_policy, check_event_engagement, check_event_setup
+from installed_events import check_restricted_events
 from installed_recording import check_recording
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
@@ -635,6 +636,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             event_engagement=check_event_engagement(page, browser, base, auth),
                                             event_setup=check_event_setup(page, base, auth),
                                             event_embed_policy=check_event_embed_policy(page, browser, base, auth, museum, venue),
+                                            restricted_events=check_restricted_events(page, browser, base, auth, museum, venue),
                                             migrated_playback_width=width))
                         browser.close()
                         shut_down(proc, base, desktop, home)
@@ -688,6 +690,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     event_engagement = check_event_engagement(page, browser, base, auth)
                     event_setup = check_event_setup(page, base, auth)
                     event_embed_policy = check_event_embed_policy(page, browser, base, auth, museum, venue)
+                    restricted_events = check_restricted_events(page, browser, base, auth, museum, venue)
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
@@ -730,6 +733,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             event_engagement=event_engagement,
                             event_setup=event_setup,
                             event_embed_policy=event_embed_policy,
+                            restricted_events=restricted_events,
                         )
                     )
                 shut_down(proc, base, desktop, home)

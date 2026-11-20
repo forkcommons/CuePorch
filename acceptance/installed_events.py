@@ -334,6 +334,118 @@ def check_event_embed_policy(page, browser, base, auth, exhibition, venue):
                 frame_ancestors=True, unsigned_status_and_form_denied=True, embed_off_revokes_old_frame=True)
 
 
+def check_restricted_events(page, browser, base, auth, exhibition, venue):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    editor = page.locator("#newEventForm")
+    visibility = editor.get_by_role("combobox", name="Visibility", exact=True)
+
+    def new_event(title, slug, mode):
+        page.get_by_role("button", name="New event").click()
+        editor.get_by_label("Title", exact=True).fill(title)
+        editor.get_by_label("Link name").fill(slug)
+        editor.get_by_label("Time zone").fill("America/Denver")
+        editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T17:00")
+        editor.get_by_label("End", exact=True).fill(f"{tomorrow}T18:00")
+        visibility.select_option(mode)
+        editor.get_by_label("Enable automatic captions").check()
+        editor.get_by_label("Enable audience chat").check()
+
+    def save(slug):
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        current = requests.get(portal, headers=auth, timeout=10)
+        current.raise_for_status()
+        return next(item for item in current.json()["events"] if item["slug"] == slug)
+
+    def credentials(lobby):
+        access = lobby.get_attribute("data-audience-access")
+        viewer = lobby.get_attribute("data-viewer-grant")
+        assert access
+        return {"X-CuePorch-Event-Access": access, "X-CuePorch-Event-Viewer": viewer or ""}
+
+    new_event("Member preview screening", "member-preview", "password")
+    first_password = "only-used-by-synthetic-audience"
+    editor.get_by_label("Viewing password").fill(first_password)
+    editor.get_by_label("Require event registration").check()
+    protected = save("member-preview")
+    assert "view_password" not in protected["event"] and first_password not in str(protected)
+    watch = base + protected["watch"]
+    opens = protected["occurrences"][0]["id"]
+    caption_route = f"{watch}/{opens}/captions"
+    locked = requests.get(watch, timeout=10)
+    assert locked.ok and "Member preview screening" not in locked.text and "noindex" in locked.headers["X-Robots-Tag"]
+    assert requests.get(caption_route, timeout=10).status_code == 404
+
+    guest = browser.new_page()
+    previous = exhibition.embed
+    try:
+        guest.goto(watch)
+        guest.get_by_label("Event password").fill("wrong-synthetic-value")
+        with guest.expect_response(lambda response: response.url == watch and response.request.method == "POST") as rejected:
+            guest.get_by_role("button", name="Unlock event").click()
+        assert rejected.value.status == 403
+        expect(guest.get_by_role("alert")).to_have_text("That event password is incorrect.")
+        guest.get_by_label("Event password").fill(first_password)
+        guest.get_by_role("button", name="Unlock event").click()
+        expect(guest.locator("#eventStatus")).to_have_text("Registration required")
+        only_password = credentials(guest.locator("#eventLobby"))
+        assert requests.get(caption_route, headers=only_password, timeout=10).status_code == 404
+        guest.get_by_label("Email").fill("screening-guest@example.invalid")
+        guest.get_by_role("button", name="Register and watch").click()
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        session = credentials(guest.locator("#eventLobby"))
+        assert requests.get(caption_route, headers=session, timeout=10).json()["enabled"]
+        expect(guest.locator("#audienceChat")).to_be_visible()
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        expect(editor.get_by_label("Viewing password")).to_have_value("")
+        editor.get_by_label("Viewing password").fill("new-synthetic-viewing-pass")
+        rotated = save("member-preview")
+        assert rotated["revision"] != protected["revision"] and rotated["watch"] == protected["watch"]
+        assert requests.get(caption_route, headers=session, timeout=10).status_code == 404
+        assert requests.post(watch, data={"password": first_password}, timeout=10).status_code == 403
+
+        new_event("Link holder screening", "link-holder-screening", "unlisted")
+        unlisted = save("link-holder-screening")
+        undisclosed = base + "/events/link-holder-screening"
+        linked = base + unlisted["watch"]
+        assert (urlsplit(linked).query).startswith("key=")
+        assert requests.get(undisclosed, timeout=10).status_code == 404
+        assert requests.get(undisclosed + "?key=wrong", timeout=10).status_code == 404
+        address = page.get_by_role("link", name="Open event page").get_attribute("href")
+        assert address and "key=" in address and "&occurrence=" in address and address.startswith(linked)
+        guest.goto(address)
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        unlisted_session = credentials(guest.locator("#eventLobby"))
+        audience_path = f"{undisclosed}/{unlisted['occurrences'][0]['id']}/chat"
+        assert requests.get(audience_path, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=unlisted_session, timeout=10).json()["enabled"]
+
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        visibility.select_option("embed_only")
+        embedded = save("link-holder-screening")
+        assert embedded["watch"] is None and embedded["embed"]
+        assert requests.get(linked, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=unlisted_session, timeout=10).status_code == 404
+        target = base + embedded["embed"]
+        assert requests.get(target, timeout=10).status_code == 404
+        exhibition.embed = target
+        guest.goto(venue)
+        frame = guest.frame_locator("iframe")
+        expect(frame.locator("#eventStatus")).to_have_text("Scheduled")
+        expect(frame.locator("#audienceChat")).to_be_visible()
+        embed_grant = credentials(frame.locator("#eventLobby"))
+        assert requests.get(audience_path, headers=embed_grant, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=embed_grant | {"X-CuePorch-Chat-Embed": "yes"}, timeout=10).ok
+    finally:
+        exhibition.embed = previous
+        guest.close()
+    return dict(watch_and_embed_visibility_modes=True, wrong_password_rejected=True,
+                password_and_registration_both_enforced=True, prior_access_revoked=True,
+                unlisted_operator_link_and_private_auxiliary_routes=True, embed_only_frame_scope=True)
+
+
 def check_live_delivery(base, origin, keys, home, ffmpeg, port):
     assert urlsplit(origin).hostname in ("localhost", "127.0.0.1")
     assert ffmpeg.is_file(), "Bundled encoder is missing"

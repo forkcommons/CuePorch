@@ -61,7 +61,8 @@
       <fieldset>
         <legend>Production and viewers</legend>
         <label>Preferred streaming method <select name="method"><option value="browser">Browser studio</option><option value="encoder">External encoder</option></select></label>
-        <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
+        <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="password">Password</option><option value="embed_only">Embed only</option></select></label>
+        <label id="eventViewingPassword" hidden>Viewing password <input type="password" name="view_password" maxlength="256" autocomplete="new-password"></label>
         <label>Where may this event be embedded? <select name="embed_mode"><option value="anywhere">Anywhere</option><option value="disabled">Nowhere</option><option value="domains">Specific domains</option></select></label>
         <label id="eventEmbedDomains" hidden>Allowed domains, one per line <textarea name="embed_domains" rows="3" placeholder="example.org"></textarea></label>
         <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>

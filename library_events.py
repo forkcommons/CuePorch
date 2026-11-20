@@ -2,15 +2,18 @@
 
 from datetime import date, datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
+import hmac
 import json
 import math
 import re
+import secrets
 import uuid
 
 from filelock import FileLock, Timeout
 from flask import abort, make_response, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 import requests
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
@@ -34,7 +37,7 @@ from catalog import video_version_key
 from library_actions import title_for
 import library_analytics
 from library_interactivity import text_field
-from library_privacy import allowed_ancestor, frame_policy, normalize_domain
+from library_privacy import allowed_ancestor, frame_policy, normalize_domain, try_password
 import library_registration
 import media_bandwidth
 
@@ -50,13 +53,15 @@ CREATE TABLE IF NOT EXISTS live_encoder_preview(
  event TEXT NOT NULL, opens INTEGER NOT NULL, source TEXT, cutoff REAL, server TEXT, key BLOB,
  PRIMARY KEY(event,opens));
 CREATE TABLE IF NOT EXISTS live_encoder_preference(event TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TEXT, password_hash TEXT);
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
-PUBLIC_MODES = ("public", "private")
+EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
+RESTRICTED_AUDIENCES = ("unlisted", "password", "embed_only")
 DELIVERED = ("ready", "replay")
 UNRESTRICTED_EMBED = dict(mode="anywhere", domains=[])
 
@@ -70,7 +75,7 @@ def read(con, value, by_slug=False):
 
 
 def publication(con, row, event):
-    if event["visibility"] != "public":
+    if event["visibility"] == "private":
         return "private"
     status = con.execute("SELECT status FROM action WHERE id=?", (row["publication"],)).fetchone()
     return status["status"] if status else "private"
@@ -81,7 +86,7 @@ def occurrence(con, uid, opens):
 
 
 def private_delivery(con, event, uid, opens):
-    return bool(event.get("cueporch_delivery") or con.execute(
+    return bool(event.get("cueporch_delivery") or event["visibility"] in RESTRICTED_AUDIENCES or con.execute(
         "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
 
 
@@ -91,10 +96,10 @@ def encoder_preview_enabled(con, uid):
 
 
 def publishing_action(con, action, uid, event):
-    if event["visibility"] != "public":
+    if event["visibility"] == "private":
         return None
     key = f"live-event-{uid}-{uuid.uuid4().hex}"
-    action(con, key, "publication", dict(title=event["title"], event=uid, visibility="public"))
+    action(con, key, "publication", dict(title=event["title"], event=uid, visibility=event["visibility"]))
     return key
 
 
@@ -165,7 +170,7 @@ def edit(raw):
     title = text_field(raw.get("title"), "an event title", 128, True)
     description = text_field(raw.get("description", ""), "an event description", 5000)
     kind, latency, visibility = raw.get("type"), raw.get("latency"), raw.get("visibility")
-    if kind not in TYPES or latency not in tuple(event_peer.LATENCY) or visibility not in PUBLIC_MODES:
+    if kind not in TYPES or latency not in tuple(event_peer.LATENCY) or visibility not in EVENT_VISIBILITY:
         abort(422, "Choose the event type, latency and visibility.")
     replay = raw.get("save_replay", False)
     if type(replay) is not bool:
@@ -210,6 +215,8 @@ def embed_policy(body):
 
 def sharing_settings(event):
     policy = event.get("embed_policy", UNRESTRICTED_EMBED)
+    if event["visibility"] == "embed_only" and policy["mode"] == "disabled":
+        abort(422, "Choose where an embed-only event can be watched.")
     return dict(visibility=event["visibility"], embed=policy["mode"], domains=policy["domains"])
 
 
@@ -264,9 +271,44 @@ def apply_setup(con, uid, event, setup, reference):
         con.execute("INSERT INTO viewer_form VALUES('event',?,?,?)", (uid, uuid.uuid4().hex, json.dumps(form)))
 
 
+def access_settings(con, uid):
+    row = con.execute("SELECT link_key,password_hash FROM live_event_access WHERE event=?", (uid,)).fetchone()
+    return tuple(row) if row else (None, None)
+
+
+def requested_access(event, body, previous=(None, None)):
+    key, password_hash = previous
+    password = body.get("view_password", "")
+    if not isinstance(password, str) or len(password) > 256:
+        abort(422, "Enter a viewing password of up to 256 characters.")
+    if event["visibility"] == "unlisted":
+        return key or secrets.token_urlsafe(21), None
+    if event["visibility"] == "password":
+        if not (password or password_hash):
+            abort(422, "Enter a password for event viewers.")
+        if password and (not password_hash or not check_password_hash(password_hash, password)):
+            password_hash = generate_password_hash(password)
+        return None, password_hash
+    return None, None
+
+
+def store_access(con, uid, access):
+    if any(access):
+        con.execute("INSERT OR REPLACE INTO live_event_access VALUES(?,?,?)", (uid, *access))
+    else:
+        con.execute("DELETE FROM live_event_access WHERE event=?", (uid,))
+
+
+def viewer_url(row, event, embed, key=None):
+    if event["visibility"] == "embed_only" and not embed:
+        return None
+    return url_for("event_embed" if embed else "event_page", slug=row["slug"], key=key)
+
+
 def summary(con, row, event, first, last):
     visible = publication(con, row, event)
     can_embed = visible == "eligible" and event.get("embed_policy", UNRESTRICTED_EMBED)["mode"] != "disabled"
+    key, _ = access_settings(con, row["id"]) if event["visibility"] == "unlisted" else (None, None)
     sessions = []
     for upcoming in event_schedule.occurrences(event["schedule"], first, last):
         target = occurrence(con, row["id"], upcoming["id"])
@@ -277,8 +319,8 @@ def summary(con, row, event, first, last):
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
                 preview_encoder=encoder_preview_enabled(con, row["id"]),
                 publication=visible, occurrences=sessions,
-                watch=url_for("event_page", slug=row["slug"]) if visible == "eligible" else None,
-                embed=url_for("event_embed", slug=row["slug"]) if can_embed else None)
+                watch=viewer_url(row, event, False, key) if visible == "eligible" else None,
+                embed=viewer_url(row, event, True, key) if can_embed else None)
 
 
 def calendar_window():
@@ -325,6 +367,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
     frames = URLSafeTimedSerializer(signing_key, salt="cueporch-event-frame")
+    audiences = URLSafeTimedSerializer(signing_key, salt="cueporch-event-audience")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
@@ -386,6 +429,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if "embed_policy" in previous:
                     event.setdefault("embed_policy", previous["embed_policy"])
             enforce_sharing(con, settings=sharing_settings(event))
+            access = requested_access(event, body)
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
             if setup:
@@ -399,6 +443,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             approval = publishing_action(con, action, uid, event)
             con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, uuid.uuid4().hex,
                         json.dumps(event), approval, datetime.now(timezone.utc).isoformat()))
+            store_access(con, uid, access)
             if setup:
                 apply_setup(con, uid, event, setup, reference)
             row, _ = read(con, uid)
@@ -435,7 +480,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         abort(422, "Choose a preferred method for the event.")
                     changed["setup"] = prior.get("setup", {}) | {"method": body["preferred_method"]}
                 enforce_sharing(con, settings=sharing_settings(changed), prior=sharing_settings(prior))
-                if changed == prior:
+                previous_access = access_settings(con, uid)
+                access = requested_access(changed, body, previous_access)
+                if changed == prior and access == previous_access:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):
                     abort(409, "Withdraw prepared occurrences before changing this event.")
@@ -443,6 +490,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 approval = publishing_action(con, action, uid, changed)
                 con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
                             (uuid.uuid4().hex, json.dumps(changed), approval, uid))
+                store_access(con, uid, access)
                 row, _ = read(con, uid)
                 if prior["schedule"] != changed["schedule"]:
                     for program in con.execute("SELECT * FROM live_program WHERE event=?", (uid,)).fetchall():
@@ -524,9 +572,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         delivery = occurrence(con, row["id"], opens)
         if publication(con, row, event) != "eligible" or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
             abort(404)
+        embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
+        if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(row, embed):
+            abort(404)
         form = library_registration.active(con, "event", row["id"])
         scope = [row["id"], row["revision"], opens, form["revision"] if form else None]
-        embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
         if form:
             on_playlist = (delivery and delivery["delivery"] == "replay"
                            and event_playlist.settings(con, row["id"])["enabled"]
@@ -622,7 +672,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if state == "ready" and preview and not (bridge and bridge["source"]):
                     abort(409, "This occurrence already has a live delivery channel.")
             with event_peer.connected_host(expected) as host:
-                broadcast = visible == "eligible" and not registered
+                broadcast = visible == "eligible" and event["visibility"] == "public" and not registered
                 if state == "ready" and bridge and bridge["source"]:
                     if browser:
                         abort(409, "The original external encoder is already feeding this broadcast.")
@@ -998,6 +1048,33 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             supplied = frames.dumps(scope)
         return frame_policy(policy["domains"]), supplied
 
+    def audience_allowed(row, embed, token=None):
+        if token is None:
+            token = request.headers.get("X-CuePorch-Event-Access", "")
+        return valid_ticket(audiences, token, [row["id"], row["revision"], embed], 12 * 3600)
+
+    def viewer_permission(con, row, event, embed, json_status):
+        mode = event["visibility"]
+        if mode not in RESTRICTED_AUDIENCES:
+            return None, None, False
+        key, password_hash = access_settings(con, row["id"])
+        received = request.form.get("event_access") or request.headers.get("X-CuePorch-Event-Access", "")
+        allowed = audience_allowed(row, embed, received)
+        if mode == "embed_only":
+            if not embed or (not allowed and (json_status or request.method != "GET"
+                    or request.headers.get("Sec-Fetch-Dest") not in ("iframe", "frame"))):
+                abort(404)
+        elif mode == "unlisted":
+            if not key or not hmac.compare_digest(request.args.get("key", "").encode(), key.encode()):
+                abort(404)
+        elif not allowed:
+            if json_status or not password_hash:
+                abort(404)
+            if request.method != "POST" or not try_password(con, signing_key, "event:" + row["id"],
+                                                             request.form.get("password", ""), password_hash):
+                return None, None, True
+        return received if allowed else audiences.dumps([row["id"], row["revision"], embed]), key, False
+
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
         grant = None
@@ -1011,6 +1088,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if publication(con, row, event) != "eligible":
                 abort(404)
             ancestors, frame_grant = event_frame(row, event, embed, json_status)
+            access, link_key, locked = viewer_permission(con, row, event, embed, json_status)
+            if locked:
+                incorrect = request.method == "POST"
+                view = render_template("event_password.html", unlock_token=frame_grant, incorrect=incorrect)
+                return audience_response(view, ancestors, 403 if incorrect else 200, restricted=True)
+            artwork_access = dict(access=access, framed="yes" if embed else None) if access else {}
             context_key = [row["id"], row["revision"], embed]
             now = datetime.now(timezone.utc)
             upcoming = list(event_schedule.occurrences(event["schedule"], now - timedelta(days=1), now + timedelta(days=366)))
@@ -1039,7 +1122,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             if form:
-                if request.method == "POST" and not withdrawn:
+                just_unlocked = event["visibility"] == "password" and "password" in request.form and "enrollment" not in request.form
+                if request.method == "POST" and not withdrawn and not just_unlocked:
                     if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
                         abort(403, "Open the registration form again.")
                     form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
@@ -1064,9 +1148,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     latest_slot = selected_open(event, latest["opens"])
                     latest_managed = private_delivery(con, event, row["id"], latest["opens"])
                     latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
-            poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"]) if (
+            poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"], **artwork_access) if (
                 shown and not withdrawn and artwork["poster"]) else None
-            logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"]) if (
+            logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"], **artwork_access) if (
                 shown and not withdrawn and artwork["logo"]) else None
             viewers = event_analytics.current(con, row["id"], shown["id"], "live") if (
                 artwork["show_viewers"] and delivery and delivery["delivery"] == "ready" and (not form or grant)) else None
@@ -1136,17 +1220,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=form if enrollment else None,
-                                     unlock_token=frame_grant,
+                                     unlock_token=frame_grant, event_access=access,
+                                     current_event_url=viewer_url(row, event, embed, link_key),
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
                                      if can_participate else None,
                                      engagement_endpoint=url_for("audience_event_engagement", slug=slug, opens=shown["id"])
                                      if can_participate else None))
-        response = make_response(view, 422 if form_error else 200)
+        return audience_response(view, ancestors, 422 if form_error else 200, bool(access))
+
+    def audience_response(view, ancestors, status, restricted):
+        response = make_response(view, status)
         response.headers["Vary"] = "Accept"
         response.headers["Content-Security-Policy"] = "frame-ancestors " + ancestors
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
+        if restricted:
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
     @app.route("/events/<slug>", methods=["GET", "POST"])
@@ -1165,6 +1255,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             delivery = occurrence(con, row["id"], opens)
             if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])[kind] != digest
                     or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
+                abort(404)
+            if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(
+                    row, request.args.get("framed") == "yes", request.args.get("access", "")):
                 abort(404)
             image = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
         if not image:
