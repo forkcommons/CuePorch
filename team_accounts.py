@@ -812,7 +812,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
                               and mode in allowed["modes"])
         return private(render_template("video_details.html", work=uid, public_url="", team_editor=True,
                                        team_preview=url_for("team_video", work=work), team_privacy=privacy_editor,
-                                       team_file_links=allowed["file_links"]))
+                                       team_file_links=allowed["file_links"], team_social=allowed["outbound"]))
 
     @app.get("/team/video/<uuid:work>/interactivity")
     def team_edit_interactivity(work):
@@ -843,4 +843,4 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     team_workspaces.register(app, tx, origin, manager, note)
     creator_profiles.register(app, tx, origin, member, mutation, public_listing, entry_payload, read_works,
                               title_for, note)
-    return authorize_editor, access
+    return authorize_editor, access, can_edit

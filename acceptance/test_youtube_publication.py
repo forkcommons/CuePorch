@@ -15,6 +15,7 @@ from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlencode
+from uuid import uuid4
 
 from flask import Flask, Response, redirect, request
 from playwright.sync_api import expect, sync_playwright
@@ -235,6 +236,68 @@ class YouTubePublication(unittest.TestCase):
                 self.assertEqual(409, api.post(base + f"/api/actions/{cancel_id}/decision", headers=auth,
                                                data={"decision": "approve"}).status)
                 self.assertEqual(3, len(uploads))
+
+                team = {"X-CuePorch-Team": "1"}
+                team_request = team | {"Authorization": "Bearer team-session", "X-CuePorch-Social": "1"}
+                detail = base + f"/team/video/{uid}/details"
+                policy_url = base + "/api/team/sharing-policy"
+
+                def join(role):
+                    invitation = api.post(base + "/api/team/invitations", headers=auth | team,
+                                          data={"email": f"{role}@example.test", "role": role})
+                    self.assertEqual(201, invitation.status, invitation.text())
+                    member = browser.new_page()
+                    member.goto(base + invitation.json()["path"])
+                    member.get_by_label("Display name").fill(role)
+                    member.get_by_label("Choose a password").fill("A temporary source fixture password!")
+                    member.get_by_role("button", name="Join team").click()
+                    expect(member.locator("#teamIdentity")).to_contain_text(role)
+                    account = member.request.get(base + "/api/team/account").json()["id"]
+                    grant = base + f"/api/team/members/{account}/works/{uid}"
+                    self.assertTrue(api.put(grant, headers=auth | team, data={"permission": "edit"}).ok)
+                    member.goto(detail)
+                    return member, grant
+
+                contributor, contributor_grant = join("contributor")
+                plus, _ = join("contributor_plus")
+                expect(contributor.get_by_role("link", name="Publish to YouTube")).to_have_count(0)
+                contributor_data = contributor.request.get(endpoint, headers=team_request).json()
+                self.assertFalse(contributor_data["allowed"])
+                private_request = dict(id=str(uuid4()), cut=contributor_data["cut"], title=clip.stem,
+                                       visibility="private", made_for_kids=False)
+                self.assertEqual(403, contributor.request.post(endpoint, headers=team_request, data=private_request).status)
+                restrictions = api.get(policy_url, headers=auth).json()
+                restrictions["rules"]["contributor"]["outbound"] = True
+                self.assertTrue(api.put(policy_url, headers=auth | team, data=restrictions).ok)
+                for member in (contributor, plus):
+                    member.reload()
+                    member.get_by_role("link", name="Publish to YouTube").click()
+                    expect(member.locator("#socialForm")).to_be_visible()
+                    expect(member.locator("[name=visibility] option[value=public]")).to_be_disabled()
+                    self.assertEqual([], member.request.get(endpoint, headers=team_request).json()["jobs"])
+                self.assertEqual(403, contributor.request.post(endpoint, headers=team_request,
+                                                                data=private_request | {"visibility": "public"}).status)
+                for member in (contributor, plus):
+                    member.get_by_role("button", name="Upload to YouTube").click()
+                    expect(member.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                contributor_jobs = contributor.request.get(endpoint, headers=team_request).json()["jobs"]
+                plus_jobs = plus.request.get(endpoint, headers=team_request).json()["jobs"]
+                revoked_id, allowed_id = contributor_jobs[0]["id"], plus_jobs[0]["id"]
+                self.assertEqual((1, 1), (len(contributor_jobs), len(plus_jobs)))
+                self.assertNotEqual(revoked_id, allowed_id)
+                self.assertEqual(409, contributor.request.post(endpoint + f"/{allowed_id}/cancel",
+                                                                headers=team_request, data={}).status)
+                self.assertTrue(api.put(contributor_grant, headers=auth | team, data={"permission": "view"}).ok)
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": False}).ok)
+                expect(plus.get_by_role("link", name="Open on YouTube")).to_have_count(1, timeout=20000)
+                self.assertEqual(404, contributor.request.get(endpoint, headers=team_request).status)
+                operator_jobs = {job["id"]: job for job in api.get(endpoint, headers=auth).json()["jobs"]}
+                self.assertEqual("failed", operator_jobs[revoked_id]["state"])
+                self.assertIn("no longer has access", operator_jobs[revoked_id]["error"])
+                self.assertEqual(("delivered", "private"), (operator_jobs[allowed_id]["state"], operator_jobs[allowed_id]["privacy"]))
+                self.assertEqual(digest, hashlib.sha256(uploads["4"]["received"]).hexdigest())
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
+
                 form.get_by_role("button", name="Upload to YouTube").click()
                 expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
                 page.goto(base + "/operator/integrations")
@@ -242,9 +305,9 @@ class YouTubePublication(unittest.TestCase):
                 expect(page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
                 self.assertTrue(observed["revoked"])
                 self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
-                self.assertEqual(3, len(uploads))
+                self.assertEqual(4, len(uploads))
         print("YouTube OAuth refresh, default private upload, interrupted-session restart and byte-range recovery,"
-              " verified bytes and playback, opt-in approval, per-upload cancellation and disconnect passed.")
+              " verified bytes and playback, opt-in approval, per-upload cancellation, scoped contributors and disconnect passed.")
 
 
 if __name__ == "__main__":

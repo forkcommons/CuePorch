@@ -16,7 +16,8 @@ from catalog import video_version_key
 import facebook_upload
 import library_privacy
 import linkedin_upload
-from team_accounts import MANAGERS
+import team_accounts
+from team_group_roles import EFFECTIVE_ROLE
 import vimeo_privacy
 import youtube_upload
 
@@ -98,9 +99,10 @@ class AwaitingApproval(Exception):
 
 
 class Publisher:
-    def __init__(self, app, tx, database, root, connection, find_work, sharing_access):
+    def __init__(self, app, tx, database, root, connection, find_work, sharing_access, can_edit):
         self.app, self.tx, self.root = app, tx, root
         self.connection, self.find_work, self.sharing_access = connection, find_work, sharing_access
+        self.can_edit = can_edit
         self.provider = connection.config.key
         self.stop = Event()
         self.lock = FileLock(str(database.with_suffix(f".{self.provider}-publish.lock")), timeout=0)
@@ -126,8 +128,9 @@ class Publisher:
         visibility = visibility_for(metadata)
         actor = job["actor"]
         if actor.startswith("team:"):
-            row = con.execute("SELECT * FROM team_member WHERE id=? AND removed IS NULL", (actor[5:],)).fetchone()
-            if not row or row["role"] not in MANAGERS:
+            row = con.execute(f"""SELECT m.id,{EFFECTIVE_ROLE} AS role FROM team_member m
+                                  WHERE m.id=? AND m.removed IS NULL""", (actor[5:],)).fetchone()
+            if not self.can_edit(con, row, job["work"]):
                 abort(403, "The team member who queued this upload no longer has access.")
             rules = self.sharing_access(con, row)
             if not rules["outbound"] or visibility not in rules["modes"]:
@@ -350,12 +353,12 @@ class FacebookPublisher(Publisher):
         self.save_session(job, session, acknowledged)
 
 
-def register(app, tx, database, root, origin, connections, read_works, title_for, staff, action,
-             sharing_access, enforce_sharing):
+def register(app, tx, database, root, origin, connections, read_works, title_for, operator_name,
+             team_member, authorize_editor, can_edit, action, sharing_access, enforce_sharing):
     def find_work(uid):
         return next((work for work in read_works() if work["id"] == uid), None)
 
-    workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access)
+    workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access, can_edit)
                for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher),
                                      ("facebook", FacebookPublisher))]
 
@@ -378,20 +381,28 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
             return {connection.company: connection.company}
         return {}
 
+    def identity(con, uid):
+        actor = operator_name(con)
+        if actor:
+            return actor, None
+        authorize_editor(con, uid)
+        actor = team_accounts.actor_id(team_member(con))
+        return actor, actor
+
     @app.get("/operator/videos/<uuid:work>/social")
     def social_page(work):
         secure_site(origin)
         provider = request.args.get("destination", "youtube")
         connection = destination(provider)
         return private(render_template("social_publication.html", work=str(work), provider=provider,
-                                       provider_name=connection.config.name))
+                                       provider_name=connection.config.name, team=request.args.get("team") == "1"))
 
-    def receipt(con, uid, work, connection):
+    def receipt(con, uid, work, connection, own_jobs):
         provider = connection.config.key
         entries = con.execute("""SELECT p.id,p.state,p.offset,p.bytes,p.metadata,p.remote,p.remote_privacy,p.error,p.final_sent,
                                   a.status AS approval FROM social_publication p JOIN action a ON a.id=p.id
-                                  WHERE p.work=? AND p.provider=? ORDER BY p.rowid DESC LIMIT 20""",
-                              (uid, provider)).fetchall()
+                                  WHERE p.work=? AND p.provider=? AND (? IS NULL OR p.actor=?)
+                                  ORDER BY p.rowid DESC LIMIT 20""", (uid, provider, own_jobs, own_jobs)).fetchall()
         jobs = []
         for job in entries:
             metadata = json.loads(job["metadata"])
@@ -411,30 +422,36 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                              cancelable=job["state"] == "queued" and not job["final_sent"],
                              requested_privacy=visibility_for(metadata),
                              privacy=job["remote_privacy"], error=job["error"], link=link))
+        policy = sharing_access(con)
+        modes = [mode for mode in youtube_upload.PRIVACY if mode in policy["modes"]]
+        allowed = policy["outbound"] and bool(modes if provider == "youtube" else "public" in modes)
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],
                     configured=connection.configured, connected=bool(connection.connection(con)), jobs=jobs,
-                    allowed=sharing_access(con)["outbound"], company=getattr(connection, "company", None),
-                    pages=[dict(id=page, name=name) for page, name in pages_for(con, connection).items()])
+                    allowed=allowed, modes=modes, company=getattr(connection, "company", None) if allowed else None,
+                    pages=[dict(id=page, name=name) for page, name in pages_for(con, connection).items()] if allowed else [])
 
     @app.route("/api/library/work/<uuid:work>/social/<provider>", methods=("GET", "POST"))
     def publication(work, provider):
         secure = secure_site(origin)
-        actor = staff()
         same_origin(secure)
         body = json_mutation(secure, MARKER) if request.method == "POST" else None
         connection = destination(provider)
-        revision = connection.revision() if body is not None else None
         uid = str(work)
         with tx() as con:
+            actor, own_jobs = identity(con, uid)
             item = find_work(uid)
             if item is None or item.get("asset_type", "video") != "video" or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")
             if body is None:
-                return private(receipt(con, uid, item, connection))
+                return private(receipt(con, uid, item, connection, own_jobs))
             metadata = metadata_for(body, provider, pages_for(con, connection))
             visibility = visibility_for(metadata)
             enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": visibility})
-            connection.authorize(con, revision)
+            connection.require_configured()
+            grant = connection.connection(con)
+            if not grant:
+                abort(409, "Connect this provider to continue.")
+            revision = grant["revision"]
             file = transferable(con, item, visibility, provider)
             cut = video_version_key(item)
             if cut != body.get("cut"):
@@ -455,24 +472,24 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                             (request_id, provider, revision, actor, uid, cut, file["sha256"], file["bytes"],
                              MIME[file["format"]], encoded, int(time())))
-            return private(receipt(con, uid, item, connection), 200 if prior else 202)
+            return private(receipt(con, uid, item, connection, own_jobs), 200 if prior else 202)
 
     @app.post("/api/library/work/<uuid:work>/social/<provider>/<job>/cancel")
     def cancel_upload(work, provider, job):
         secure = secure_site(origin)
-        actor = staff()
         json_mutation(secure, MARKER)
         connection = destination(provider)
         uid = str(work)
         with tx() as con:
+            actor, own_jobs = identity(con, uid)
             item = find_work(uid)
             if item is None or library_privacy.blocked(con, uid):
                 abort(404, "The selected video is unavailable.")
             canceled = con.execute("""UPDATE social_publication SET state='canceled',session=NULL,error=NULL
-                                       WHERE id=? AND work=? AND provider=? AND state='queued' AND final_sent=0""",
-                                   (job, uid, provider)).rowcount
+                                       WHERE id=? AND work=? AND provider=? AND state='queued' AND final_sent=0
+                                       AND (? IS NULL OR actor=?)""", (job, uid, provider, own_jobs, own_jobs)).rowcount
             if not canceled:
                 abort(409, "The upload can no longer be canceled. Check its current status.")
             con.execute("""UPDATE action SET status='canceled',decision='cancel',actor=?
                            WHERE id=? AND status IN ('waiting','eligible')""", (actor, job))
-            return private(receipt(con, uid, item, connection))
+            return private(receipt(con, uid, item, connection, own_jobs))

@@ -1,5 +1,6 @@
 const provider = document.body.dataset.provider;
 const providerName = document.body.dataset.providerName;
+const team = document.body.dataset.team === "1";
 const endpoint = `/api/library/work/${document.body.dataset.work}/social/${provider}`;
 const access = document.querySelector("#socialAccess");
 const operator = access.querySelector("input");
@@ -9,10 +10,11 @@ const form = document.querySelector("#socialForm");
 const title = form.querySelector("[name=title]");
 const companyLabel = form.querySelector("#socialCompany");
 const pageSelector = form.querySelector("#socialPage");
+const visibility = form.querySelector("[name=visibility]");
 const submit = form.querySelector("button");
 const historySection = document.querySelector("#socialHistory");
 const jobs = document.querySelector("#socialJobs");
-let credential = sessionStorage.getItem("cueporchOperator") || "";
+let credential = team ? "team-session" : sessionStorage.getItem("cueporchOperator") || "";
 let draft = crypto.randomUUID();
 let cut = "";
 let company = null;
@@ -20,7 +22,8 @@ let watch = 0;
 async function api(body, path = endpoint) {
     const response = await fetch(path, {
         method: body ? "POST" : "GET",
-        headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json", "X-CuePorch-Social": "1" },
+        headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json", "X-CuePorch-Social": "1",
+            ...(team ? { "X-CuePorch-Team": "1" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
     });
     if (!response.ok) {
@@ -33,6 +36,13 @@ function render(data, fresh = false) {
     access.hidden = true;
     connect.hidden = data.connected || !data.allowed;
     form.hidden = !data.connected || !data.configured || !data.allowed;
+    if (visibility) {
+        for (const option of visibility.options) {
+            option.disabled = !data.modes.includes(option.value);
+        }
+        if (!data.modes.includes(visibility.value))
+            visibility.value = data.modes[0] || "";
+    }
     historySection.hidden = data.jobs.length === 0;
     if (fresh) {
         cut = data.cut;
@@ -47,7 +57,8 @@ function render(data, fresh = false) {
         if (!data.allowed)
             notice.textContent = "Publishing to this destination is restricted by your workspace.";
         else if (!data.configured)
-            notice.textContent = `Configure ${providerName} for this workspace in Integrations.`;
+            notice.textContent = team ? `${providerName} needs workspace setup.` :
+                `Configure ${providerName} for this workspace in Integrations.`;
         else
             notice.textContent = data.connected ? `Choose how this copy should appear on ${providerName}.` :
                 `Connect ${providerName} to publish.`;
@@ -108,10 +119,11 @@ function render(data, fresh = false) {
 async function open() {
     try {
         render(await api(), true);
-        sessionStorage.setItem("cueporchOperator", credential);
+        if (!team)
+            sessionStorage.setItem("cueporchOperator", credential);
     }
     catch (error) {
-        access.hidden = false;
+        access.hidden = team;
         notice.textContent = error instanceof Error ? error.message : String(error);
     }
 }

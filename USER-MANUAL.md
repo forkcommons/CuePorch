@@ -153,6 +153,8 @@ To publish an MP4 on your LinkedIn Company Page, connect that integration and ch
 
 For Facebook, connect **Facebook Pages** and choose **Publish to Facebook** from the video’s Share controls. Select a Page and confirm the public video post. Only Pages where the connected person can create content appear. The upload history shows the received byte count and the Facebook video link. The Page receives the video file, with its destination title and post text. [Vimeo's Facebook Page publishing requirements](https://help.vimeo.com/hc/en-us/articles/12427445401361-About-restrictions-and-requirements-for-publishing-to-social)
 
+Workspace Owners can enable **Publish to third-party destinations** for Contributors and Contributors Plus in **Sharing restrictions**. Team members with an edit grant then see the publishing links on the video’s details page. Choose a destination privacy mode permitted by the workspace. The worker checks the current edit grant and sharing policy before sending the copy. Administrators can see every upload for the video. Contributors see their own uploads.
+
 ### Work actions
 
 To add local files, open a library folder and choose **Upload**, or drop files anywhere on the library page. Confirm the folder and choose **Upload selected files**. CuePorch preserves the original and shows when each file is uploading, preparing or ready. You can retry failed files from the same dialog. New uploads start private until you change **Upload defaults** for your operator account. Open **Customize privacy for these videos** to override your defaults for the current upload. Audio, images and documents stay private.

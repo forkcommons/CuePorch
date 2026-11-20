@@ -1343,7 +1343,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
     )
     library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
-    authorize_editor, team_works = team_accounts.register(
+    authorize_editor, team_works, can_edit = team_accounts.register(
         app, tx, team_origin, operator, workspace_brand, operator_name, read_library_works,
         library_actions.title_for, root, public_listing, library_discovery.entry_payload, sharing_access,
     )
@@ -1378,7 +1378,8 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
-                                library_actions.title_for, staff, action, sharing_access, enforce_sharing)
+                                library_actions.title_for, operator_name, team_member, authorize_editor,
+                                can_edit, action, sharing_access, enforce_sharing)
     app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
