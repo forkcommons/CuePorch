@@ -181,10 +181,11 @@ let program: EventProgram | undefined;
 let programSources: ProgramSource[] = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
-async function request<T>(path: string, method = "GET", body?: object): Promise<T> {
+async function request<T>(path: string, method = "GET", body?: object, integration = false): Promise<T> {
   const headers: Record<string, string> = {Authorization: "Bearer " + credential.value};
   const multipart = body instanceof FormData;
   if (body && !multipart) headers["Content-Type"] = "application/json";
+  if (integration) headers["X-CuePorch-Integration"] = "1";
   const result = await fetch(path, {method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined});
   if (!result.ok) {
     const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;

@@ -184,7 +184,12 @@ function render() {
       card.append(manage);
     } else if (item.connected) {
       if (item.configured) {
-        if (item.publishing) {
+        if (item.id === "hubspot") {
+          const live = document.createElement("a");
+          live.href = "/operator/live-events";
+          live.textContent = "Open webinar attendees";
+          card.append(live);
+        } else if (item.publishing) {
           const library = document.createElement("a");
           library.href = personal ? "/team" : "/operator/library";
           library.textContent = "Choose a video in Library";

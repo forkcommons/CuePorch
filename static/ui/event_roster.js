@@ -1,4 +1,5 @@
-const sourceNames = { form: "Registration form", api: "API", csv: "CSV import",
+import { setupHubSpot } from "./event_hubspot.js";
+const sourceNames = { form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot",
     "retained-link": "Retained join link" };
 function watchTime(seconds) {
     if (seconds === undefined)
@@ -52,6 +53,7 @@ export function setupEventRoster(request, download) {
                 status.textContent = error.message;
         }
     }
+    const chooseHubSpot = setupHubSpot(request, () => void load(0));
     panel.addEventListener("toggle", () => {
         if (panel.open)
             void load(page);
@@ -80,6 +82,7 @@ export function setupEventRoster(request, download) {
         generation++;
         occurrence = opens;
         base = selected;
+        chooseHubSpot(base);
         filter = "";
         page = 0;
         panel.open = false;

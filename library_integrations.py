@@ -19,6 +19,7 @@ from intake_watch import CursorReset, Watch, changed_since
 import editor_exports
 import facebook_upload
 import google_meet_recordings
+import hubspot_crm
 import linkedin_upload
 import mail_relay
 import social_publication
@@ -301,9 +302,11 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
     shopify = shopify_product_media.StoreConnection(tx, operator)
+    hubspot = Connection(hubspot_crm.OAUTH, tx, operator)
+    app.extensions["hubspot_connection"] = hubspot
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | outbound
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot)} | outbound
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -429,10 +432,12 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category=("Commerce" if item.config.key == "shopify" else
+                category=("Marketing" if item.config.key == "hubspot" else
+                          "Commerce" if item.config.key == "shopify" else
                           "Social publishing" if item.config.key in outbound else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
-                description=("Add a Library video to a Shopify product's media."
+                description=("Import a contact segment into a webinar occurrence." if item.config.key == "hubspot" else
+                             "Add a Library video to a Shopify product's media."
                              if item.config.key == "shopify" else
                              "Upload a native video from the Library to your channel."
                              if item.config.key in outbound else "Copy meeting recordings into your private Library."
@@ -511,6 +516,15 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
         return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
+
+    @app.get("/api/integrations/hubspot/segments")
+    def hubspot_segments():
+        read_api()
+        revision = hubspot.revision()
+        result = hubspot_crm.segments(hubspot, revision, request.args.get("after", ""))
+        with tx() as con:
+            hubspot.authorize(con, revision)
+        return private(result)
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():

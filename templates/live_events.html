@@ -178,6 +178,19 @@
         <button type="button" id="eventRosterNext" disabled>Next attendees</button>
         <button type="button" id="eventRosterDownload">Download occurrence CSV</button>
         <p id="eventRosterStatus" role="status"></p>
+        <fieldset id="eventHubSpot">
+          <legend>Import attendees from HubSpot</legend>
+          <a href="/operator/integrations">Manage HubSpot connection</a>
+          <button type="button" id="eventHubSpotLists">Load contact segments</button>
+          <button type="button" id="eventHubSpotMore" hidden>More segments</button>
+          <label>Contact segment
+            <select id="eventHubSpotSegment">
+              <option value="">Choose a contact segment</option>
+            </select>
+          </label>
+          <button type="button" id="eventHubSpotImport" disabled>Import selected segment</button>
+          <p id="eventHubSpotStatus" role="status"></p>
+        </fieldset>
       </details>
       <details id="eventCsvSettings">
         <summary>Import attendee CSV</summary>

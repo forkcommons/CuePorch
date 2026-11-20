@@ -1,4 +1,6 @@
-type Request = <T>(path: string, method?: string, body?: object) => Promise<T>;
+import {setupHubSpot} from "./event_hubspot.js";
+
+type Request = <T>(path: string, method?: string, body?: object, integration?: boolean) => Promise<T>;
 type Download = (path: string, filename: string) => Promise<void>;
 
 interface Roster {
@@ -10,7 +12,7 @@ interface Roster {
   page_size: number;
 }
 
-const sourceNames: Record<string, string> = {form: "Registration form", api: "API", csv: "CSV import",
+const sourceNames: Record<string, string> = {form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot",
   "retained-link": "Retained join link"};
 
 function watchTime(seconds?: number) {
@@ -63,6 +65,8 @@ export function setupEventRoster(request: Request, download: Download) {
     }
   }
 
+  const chooseHubSpot = setupHubSpot(request, () => void load(0));
+
   panel.addEventListener("toggle", () => {
     if (panel.open) void load(page);
   });
@@ -88,6 +92,7 @@ export function setupEventRoster(request: Request, download: Download) {
     generation++;
     occurrence = opens;
     base = selected;
+    chooseHubSpot(base);
     filter = "";
     page = 0;
     panel.open = false;

@@ -109,11 +109,13 @@ let pending = false;
 let program;
 let programSources = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
-async function request(path, method = "GET", body) {
+async function request(path, method = "GET", body, integration = false) {
     const headers = { Authorization: "Bearer " + credential.value };
     const multipart = body instanceof FormData;
     if (body && !multipart)
         headers["Content-Type"] = "application/json";
+    if (integration)
+        headers["X-CuePorch-Integration"] = "1";
     const result = await fetch(path, { method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined });
     if (!result.ok) {
         const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;

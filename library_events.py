@@ -764,6 +764,46 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} attendees")
         return private(dict(added=added, existing=len(contacts) - added, duplicates=len(rows) - len(contacts), occurrence=opens))
 
+    def enroll_hubspot_contacts(con, row, slot, form, contacts):
+        added = existing = duplicates = 0
+        seen = set()
+        for contact in contacts:
+            email = (contact.get("email") or "").strip()
+            key = email.casefold()
+            if not key or key in seen:
+                duplicates += 1
+                continue
+            seen.add(key)
+            hit = con.execute("SELECT 1 FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?", (row["id"], slot["id"], key)).fetchone()
+            if hit:
+                existing += 1
+                continue
+            fields = dict(email=email, first_name=contact.get("first_name"), last_name=contact.get("last_name"))
+            _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source="hubspot")
+            added += int(enrolled)
+        return dict(added=added, existing=existing, duplicates=duplicates)
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/hubspot")
+    def live_event_hubspot_registration(uid, opens):
+        import hubspot_crm
+        from browser_account_security import json_mutation
+        actor = staff()
+        body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
+        connection = app.extensions["hubspot_connection"]
+        revision = connection.revision()
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            saved = (row["revision"], form["revision"])
+        contacts, skipped = hubspot_crm.contacts(connection, revision, body.get("segment"))
+        with tx() as con:
+            connection.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            if (row["revision"], form["revision"]) != saved:
+                abort(409, "The event or registration form changed. Reopen this occurrence and try again.")
+            result = enroll_hubspot_contacts(con, row, slot, form, contacts)
+            note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} HubSpot contacts")
+        return private(dict(result, skipped=skipped, occurrence=opens))
+
     @app.get("/api/live-events/<uid>/registrants/<registrant>")
     def event_registrant_details(uid, registrant):
         staff()
