@@ -1,4 +1,5 @@
 import { playbackObservation } from "./playback_analytics.js";
+import { setupVideoQuestions } from "./video_questions.js";
 function copyLink(id, makeLink, confirmation) {
     const button = document.querySelector("#" + id);
     if (!button)
@@ -28,12 +29,16 @@ if (contents) {
     const download = document.querySelector("#showcaseDownload");
     let current = cards.findIndex((card) => card.hasAttribute("aria-current"));
     const observe = items.map((item) => item.analytics ? playbackObservation(item.analytics, true) : undefined);
+    const questions = document.querySelector("#showcaseQuestions");
+    const setQuestions = questions ? setupVideoQuestions(questions, () => video || clips[current]) : undefined;
     copyLink("showcaseCopyVideo", () => {
         const link = galleryLink();
         link.searchParams.set("video", items[current].id);
         return link;
     }, "Link to this video copied.");
     function setCurrent(index) {
+        if (index === current)
+            return;
         cards[current].removeAttribute("aria-current");
         cards[index].setAttribute("aria-current", "true");
         current = index;
@@ -46,6 +51,7 @@ if (contents) {
             download.href = item.download;
         else
             download.removeAttribute("href");
+        setQuestions?.(item.questions);
     }
     function advance(playItem) {
         if (document.body.dataset.next !== "yes")

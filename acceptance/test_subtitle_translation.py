@@ -617,6 +617,37 @@ class SubtitleTranslation(unittest.TestCase):
                              data=dict(query, session=locked_key)).status, 429)
         print("Video questions: exact transcript sources, decoded seek, embed language, authorization, withdrawal and budget verified.")
 
+        gallery = api.post(origin + "/api/showcases", headers=headers).json()
+        path = origin + "/api/showcases/" + gallery["id"]
+        gallery = api.put(path, headers=headers, data=dict(slug="protected-caption-gallery", revision=gallery["revision"],
+            password="gallery fixture", settings=gallery["settings"] | dict(
+                visibility="password", videos=[work], grid_media="players", questions=True))).json()
+        self.assertTrue(gallery["settings"]["questions"])
+        viewer.goto(origin + gallery["watch"])
+        questions = viewer.locator("#showcaseQuestions")
+        expect(questions).to_have_count(0)
+        viewer.get_by_label("Showcase password").fill("gallery fixture")
+        viewer.get_by_role("button", name="Unlock showcase").click()
+        questions.get_by_text("Ask AI about this video").click()
+        questions.get_by_role("button", name="What is this video about?").click()
+        expect(questions.locator("[data-answer-text]")).to_have_text("The Council is opening the public session.")
+        expect(questions.get_by_role("list", name="Answer sources")).to_contain_text("The public session starts now.")
+        questions.get_by_role("button", name="Play from 0:01").click()
+        viewer.wait_for_function("() => document.querySelector('video').currentTime >= 0.99")
+        self.assertEqual(256, viewer.locator(".showcase-playlist video").evaluate("video => video.videoWidth"))
+        key = questions.get_attribute("data-session")
+        self.assertEqual(404, viewer.request.post(questions_path, headers=marker,
+                         data=dict(query, session=key)).status)
+        showcase_questions = origin + "/api/viewer/showcase-questions"
+        self.assertEqual(404, viewer.request.post(showcase_questions, headers=marker,
+                         data=dict(query, session=locked_key)).status)
+        self.assertTrue(api.put(path, headers=headers, data=gallery | {
+            "settings": gallery["settings"] | {"questions": False},
+        }).ok)
+        self.assertEqual(404, viewer.request.post(showcase_questions, headers=marker,
+                         data=dict(query, session=key)).status)
+        print("Showcase questions: password gate, decoded citation, session scope and withdrawal verified.")
+
 
 if __name__ == "__main__":
     unittest.main()

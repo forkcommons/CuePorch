@@ -1,0 +1,27 @@
+<details id="{{ question_id }}" data-session="{{ questions or '' }}"
+         data-endpoint="{{ question_path }}" {% if not questions %}hidden{% endif %}>
+  <summary>{{ question_label }}</summary>
+  <form inert>
+    <p>Answers use the video's subtitles. Check the excerpts against the video.</p>
+    <label>Answer language
+      <select name="language">
+        <option value="auto">Same as the question</option>
+        <option value="en">English</option><option value="es">Español</option>
+        <option value="fr">Français</option><option value="de">Deutsch</option>
+        <option value="it">Italiano</option><option value="pt">Português</option>
+        <option value="ja">日本語</option><option value="ko">한국어</option>
+      </select>
+    </label>
+    <div>
+      <button type="button" data-question="What is this video about?">What is this video about?</button>
+      <button type="button" data-question="What are the main points?">What are the main points?</button>
+    </div>
+    <label>Your question <input name="question" maxlength="600" required></label>
+    <button type="submit">Ask</button>
+  </form>
+  <p data-question-status role="status"></p>
+  <div data-question-answer hidden>
+    <p data-answer-text></p>
+    <ol data-video-moments aria-label="Answer sources"></ol>
+  </div>
+</details>

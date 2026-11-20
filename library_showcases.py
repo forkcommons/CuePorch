@@ -20,6 +20,7 @@ import library_details
 import library_peer_handoff
 import library_privacy as privacy
 import library_registration
+import library_video_questions
 import media_bandwidth
 from library_appearance import brand_image
 from library_interactivity import image_id, selected_ids, text_field, web_link
@@ -44,7 +45,7 @@ DEFAULTS = dict(
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
     feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
-    download=False,
+    download=False, questions=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
@@ -129,7 +130,7 @@ def validate_settings(con, raw, lookup):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
     for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled",
-                 "navigation", "product_brand", "download"):
+                 "navigation", "product_brand", "download", "questions"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
@@ -201,7 +202,7 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
     return file, policy
 
 
-def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url):
+def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url, questions_enabled):
     access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-access")
     media = URLSafeTimedSerializer(operator, salt="cueporch-showcase-media")
     registration = URLSafeTimedSerializer(operator, salt="cueporch-showcase-registration")
@@ -434,12 +435,15 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                              policy["revision"] if policy else None, internal, embed, origin, form_revision])
                         details = library_details.details_for(con, work)
                         sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
+                        questions = (question_session(con, work, token, "embed" if embed else "watch")
+                                     if not internal and values["questions"] else None)
                         entries.append(dict(id=uid, title=title_for(con, work),
                                             description=details.get("description", ""),
                                             media=url_for("showcase_file", token=token),
                                             download=url_for("showcase_file", token=token, download=1)
                                             if not internal and values["download"] and sharing.get("download") else None,
                                             analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
+                                            questions=questions,
                                             poster=url_for("showcase_file", token=token, poster=1)
                                             if selected_thumbnail(con, work) else None,
                                             captions=[dict(language=track.get("language") or "und", key=track_key(track),
@@ -493,6 +497,17 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         if not allowed:
             abort(404)
         return uid, work, values, allowed, internal
+
+    def question_work(con, token):
+        _, work, values, _, internal = authorized_media(con, token)
+        if internal or not values["questions"]:
+            abort(404)
+        return work
+
+    question_session = library_video_questions.register(
+        app, tx, root, operator.encode("utf-8"), library_analytics.source_origin(public_url), questions_enabled,
+        question_work, resource="showcase-questions",
+    )
 
     @app.post("/showcase-observation/<sample>")
     def showcase_analytics_sample(sample):

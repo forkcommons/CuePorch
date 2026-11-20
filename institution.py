@@ -1347,9 +1347,13 @@ def create_app(root, database, operator, institution, simulation=None):
                             ai_actor)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
+
+    def questions_enabled(con):
+        return team_ai_policy.load(con)[1]["viewer_questions"]
+
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
-        vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
+        vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""), questions_enabled,
     )
     library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work,
                             enforce_sharing)
@@ -1358,7 +1362,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
         vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
         operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
-        lambda con: team_ai_policy.load(con)[1]["viewer_questions"],
+        questions_enabled,
     )
 
     @app.get("/api/library")

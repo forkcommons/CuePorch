@@ -102,32 +102,9 @@
       {% if details.license and (not appearance or appearance.license) %}<p>{{ 'CC0 Public Domain Dedication' if details.license == 'cc0' else 'Creative Commons ' ~ details.license | upper }}</p>{% endif %}
     {% endif %}
     {% if questions %}
-      <details id="videoQuestions" data-session="{{ questions }}">
-        <summary>Ask about this video</summary>
-        <form inert>
-          <p>Answers use the video's subtitles. Check the excerpts against the video.</p>
-          <label>Answer language
-            <select name="language">
-              <option value="auto">Same as the question</option>
-              <option value="en">English</option><option value="es">Español</option>
-              <option value="fr">Français</option><option value="de">Deutsch</option>
-              <option value="it">Italiano</option><option value="pt">Português</option>
-              <option value="ja">日本語</option><option value="ko">한국어</option>
-            </select>
-          </label>
-          <div>
-            <button type="button" data-question="What is this video about?">What is this video about?</button>
-            <button type="button" data-question="What are the main points?">What are the main points?</button>
-          </div>
-          <label>Your question <input name="question" maxlength="600" required></label>
-          <button type="submit">Ask</button>
-        </form>
-        <p data-question-status role="status"></p>
-        <div data-question-answer hidden>
-          <p data-answer-text></p>
-          <ol data-video-moments aria-label="Answer sources"></ol>
-        </div>
-      </details>
+      {% with question_id="videoQuestions", question_path=url_for("viewer_video_questions"), question_label="Ask about this video" %}
+        {% include "video_questions.html" %}
+      {% endwith %}
       <script type="module" src="/static/ui/video_questions.js"></script>
     {% endif %}
   {% elif registration %}

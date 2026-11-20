@@ -67,6 +67,12 @@
           <span id="showcaseCopyVideoStatus" role="status"></span>
           {% endif %}
           {% if not grid_players %}{{ player(active, 'nowPlaying', 'metadata') }}{% endif %}
+          {% if entries | selectattr("questions") | list %}
+            {% with question_id="showcaseQuestions", question_path=url_for("viewer_showcase_questions"),
+                    question_label="Ask AI about this video", questions=active.questions %}
+              {% include "video_questions.html" %}
+            {% endwith %}
+          {% endif %}
         </section>
         <section aria-label="Playlist" class="showcase-playlist">
           {% if settings.search %}<label>Search videos <input type="search" id="showcaseSearch"></label>{% endif %}

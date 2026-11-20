@@ -564,7 +564,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         return work, video, settings, extra
 
     question_session = library_video_questions.register(
-        app, tx, root, viewer_key, team_origin, questions_enabled, authorized_playback,
+        app, tx, root, viewer_key, team_origin, questions_enabled, lambda con, token: authorized_playback(con, token)[0],
     )
 
     @app.get("/shared-video/<token>")

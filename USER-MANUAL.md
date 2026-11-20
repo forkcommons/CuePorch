@@ -274,6 +274,8 @@ Use **Brand and layout** to add a featured background, align the text and choose
 
 Enable **Offer downloads where the video allows them** to show the download link on permitted videos. **Copy link to this video** opens the selected title in the same showcase. Visitors still pass the gallery's passwords and registration.
 
+Enable **Offer Ask AI where the video allows it** to let viewers ask about the current video's captions. The workspace must allow viewer questions and have a local model configured. The video’s appearance settings govern availability and whether viewers can jump to a cited moment.
+
 Select **Analytics** to see player impressions, starts, finishes and watched time for that showcase. Enter a date range and use **Download analytics CSV** for daily totals. The report uses anonymous observations on first-party and embedded showcase pages and honors browser opt-out.
 
 Choose **Public**, **Password** or **Embed only** to create viewer links. The optional list of allowed sites restricts embeds. A public showcase lists publicly visible videos. A password-protected showcase can play other restricted videos when their embed settings permit it. Private videos stay in the operator preview. A video with its own registration form keeps that gate and is omitted from guest playlists. Use **Registration** to require a form for the whole showcase and export the answers as CSV. Use **Make a copy** to start a private gallery with the same presentation and video order.

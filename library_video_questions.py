@@ -93,15 +93,14 @@ def answer(root, track, question, language):
     return dict(answer=text.strip(), moments=moments)
 
 
-def register(app, tx, root, secret, origin, enabled, authorized_playback):
-    serializer = URLSafeTimedSerializer(secret, salt="cueporch-viewer-video-questions")
-    slots = BoundedSemaphore(2)
+def register(app, tx, root, secret, origin, enabled, authorized_work, *, resource="video-questions"):
+    serializer = URLSafeTimedSerializer(secret, salt="cueporch-viewer-" + resource)
+    slots = app.extensions.setdefault("viewer_question_slots", BoundedSemaphore(2))
 
     def session(con, work, token, surface):
         track, _ = available(con, work, surface, enabled)
         return serializer.dumps([token, video_version_key(work), surface]) if track else None
 
-    @app.post("/api/viewer/video-questions")
     def viewer_video_questions():
         request.max_content_length = 12 * 1024
         body = json_mutation(secure_site(origin), "X-CuePorch-Questions")
@@ -117,7 +116,7 @@ def register(app, tx, root, secret, origin, enabled, authorized_playback):
         language = language if language == "auto" else language_tag(language)
 
         def check(con):
-            work, _, _, _ = authorized_playback(con, token)
+            work = authorized_work(con, token)
             if video_version_key(work) != version:
                 abort(404)
             track, seek = available(con, work, surface, enabled)
@@ -143,4 +142,6 @@ def register(app, tx, root, secret, origin, enabled, authorized_playback):
         finally:
             slots.release()
 
+    app.add_url_rule("/api/viewer/" + resource, "viewer_" + resource.replace("-", "_"),
+                     viewer_video_questions, methods=["POST"])
     return session

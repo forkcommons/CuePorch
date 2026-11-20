@@ -1,16 +1,6 @@
 import {checked} from "./team_api.js";
 
 interface Answer {answer: string | null; moments: {seconds: number; quote: string}[]; seek: boolean}
-const panel = document.querySelector<HTMLDetailsElement>("#videoQuestions")!;
-const form = panel.querySelector<HTMLFormElement>("form")!;
-const input = form.elements.namedItem("question") as HTMLInputElement;
-const language = form.elements.namedItem("language") as HTMLSelectElement;
-const submit = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
-const status = panel.querySelector<HTMLElement>("[data-question-status]")!;
-const result = panel.querySelector<HTMLElement>("[data-question-answer]")!;
-const text = result.querySelector<HTMLElement>("[data-answer-text]")!;
-const sources = result.querySelector<HTMLOListElement>("[data-video-moments]")!;
-const video = document.querySelector<HTMLVideoElement>("video")!;
 
 function elapsed(seconds: number) {
   const whole = Math.floor(seconds);
@@ -20,53 +10,84 @@ function elapsed(seconds: number) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${end}` : `${minutes}:${end}`;
 }
 
-form.onsubmit = async event => {
-  event.preventDefault();
-  if (submit.disabled) return;
-  submit.disabled = true;
-  result.hidden = true;
-  status.textContent = "Looking for an answer in the subtitles.";
-  try {
-    const response = await checked(await fetch("/api/viewer/video-questions", {
-      method: "POST",
-      headers: {"Content-Type": "application/json", "X-CuePorch-Questions": "1"},
-      body: JSON.stringify({session: panel.dataset.session, question: input.value, language: language.value}),
-    }));
-    const answer: Answer = await response.json();
-    if (!answer.answer) {
-      status.textContent = "The subtitles do not contain an answer to this question.";
-      return;
-    }
-    text.textContent = answer.answer;
-    sources.replaceChildren(...answer.moments.map(({seconds, quote}) => {
-      const row = document.createElement("li");
-      if (answer.seek) {
-        const jump = document.createElement("button");
-        jump.type = "button";
-        jump.textContent = "Play from " + elapsed(seconds);
-        jump.onclick = () => {
-          video.currentTime = seconds;
-          void video.play().catch(() => { status.textContent = "Press play to watch from the cited moment."; });
-        };
-        row.append(jump, " ");
-      } else {
-        row.append(elapsed(seconds) + " ");
+export function setupVideoQuestions(panel: HTMLDetailsElement, activeVideo: () => HTMLVideoElement) {
+  const form = panel.querySelector<HTMLFormElement>("form")!;
+  const input = form.elements.namedItem("question") as HTMLInputElement;
+  const language = form.elements.namedItem("language") as HTMLSelectElement;
+  const submit = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+  const status = panel.querySelector<HTMLElement>("[data-question-status]")!;
+  const result = panel.querySelector<HTMLElement>("[data-question-answer]")!;
+  const text = result.querySelector<HTMLElement>("[data-answer-text]")!;
+  const sources = result.querySelector<HTMLOListElement>("[data-video-moments]")!;
+  let generation = 0;
+
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const session = panel.dataset.session;
+    if (submit.disabled || !session) return;
+    const current = generation;
+    submit.disabled = true;
+    result.hidden = true;
+    status.textContent = "Looking for an answer in the subtitles.";
+    try {
+      const response = await checked(await fetch(panel.dataset.endpoint!, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-CuePorch-Questions": "1"},
+        body: JSON.stringify({session, question: input.value, language: language.value}),
+      }));
+      const answer: Answer = await response.json();
+      if (generation !== current) return;
+      if (!answer.answer) {
+        status.textContent = "The subtitles do not contain an answer to this question.";
+        return;
       }
-      row.append(quote);
-      return row;
-    }));
-    status.textContent = "Answer ready.";
-    result.hidden = false;
-  } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error);
-  } finally {
-    submit.disabled = false;
+      text.textContent = answer.answer;
+      sources.replaceChildren(...answer.moments.map(({seconds, quote}) => {
+        const row = document.createElement("li");
+        if (answer.seek) {
+          const jump = document.createElement("button");
+          jump.type = "button";
+          jump.textContent = "Play from " + elapsed(seconds);
+          jump.onclick = () => {
+            const video = activeVideo();
+            video.currentTime = seconds;
+            void video.play().catch(() => { status.textContent = "Press play to watch from the cited moment."; });
+          };
+          row.append(jump, " ");
+        } else {
+          row.append(elapsed(seconds) + " ");
+        }
+        row.append(quote);
+        return row;
+      }));
+      status.textContent = "Answer ready.";
+      result.hidden = false;
+    } catch (error) {
+      if (generation === current) status.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (generation === current) submit.disabled = false;
+    }
+  };
+  for (const button of form.querySelectorAll<HTMLButtonElement>("[data-question]")) {
+    button.onclick = () => {
+      input.value = button.dataset.question!;
+      form.requestSubmit();
+    };
   }
-};
-for (const button of form.querySelectorAll<HTMLButtonElement>("[data-question]")) {
-  button.onclick = () => {
-    input.value = button.dataset.question!;
-    form.requestSubmit();
+  form.inert = false;
+
+  return (session: string | null) => {
+    generation += 1;
+    panel.dataset.session = session || "";
+    panel.hidden = !session;
+    panel.open = false;
+    submit.disabled = false;
+    result.hidden = true;
+    text.textContent = status.textContent = "";
+    sources.replaceChildren();
+    input.value = "";
   };
 }
-form.inert = false;
+
+const standalone = document.querySelector<HTMLDetailsElement>("#videoQuestions");
+if (standalone) setupVideoQuestions(standalone, () => document.querySelector<HTMLVideoElement>("video")!);
