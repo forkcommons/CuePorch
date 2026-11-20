@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS team_workspace_link_group_by_group ON team_workspace_
 
 def linked_workspaces(con, member):
     return [dict(row) for row in con.execute("""SELECT name,origin FROM team_workspace_link link
-        WHERE ?='admin' OR EXISTS (
+        WHERE ? IN ('owner','admin') OR EXISTS (
             SELECT 1 FROM team_workspace_link_group scope
             JOIN team_group_member membership ON membership.team_group=scope.team_group
             WHERE scope.workspace=link.id AND membership.member=?

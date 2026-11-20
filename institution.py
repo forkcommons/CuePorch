@@ -205,7 +205,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     def team_contributor(con=None):
         member = team_member(con)
-        if not member or member["role"] not in ("contributor", "admin"):
+        if not member or member["role"] not in ("contributor", *team_accounts.MANAGERS):
             abort(403)
         return member
 
@@ -221,7 +221,7 @@ def create_app(root, database, operator, institution, simulation=None):
         if actor is not None:
             return actor
         member = team_member(con)
-        return team_accounts.actor_id(member) if member and member["role"] == "admin" else None
+        return team_accounts.actor_id(member) if member and member["role"] in team_accounts.MANAGERS else None
 
     def staff():
         actor = operator_name()

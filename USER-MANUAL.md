@@ -46,6 +46,8 @@ Use **Manage workspace links** in **Team members** to add a CuePorch workspace b
 
 Open **Team settings** in **Team members** to set the workspace's display name, accent and JPEG or PNG logo. The name takes up to 32 characters and the logo up to 5 MB. Changes appear on team screens, creator intake and the public catalog. The local data directory and institution identity stay bound to the original installation.
 
+Use the installation credential to assign an active member as **Owner**. The Owner can transfer ownership to another active member from **Team members**. The previous Owner becomes an Administrator. The installation credential can recover ownership if the Owner loses access. Team administrators can choose **Download team roster** for a CSV of members and invitations, including roles, dates and membership status.
+
 ### First migration
 
 1. Choose **Move from Vimeo**, enter the operator credential, leave the Vimeo token blank for the practice source and select **Preview transfer**. Expect three rows. Read each source ID, quality and viewing permission. Inventory completes before media transfer.

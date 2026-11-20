@@ -27,10 +27,11 @@ function reveal(member?: Member) {
   signIn.hidden = Boolean(member);
   library.hidden = !member;
   const nav = library.querySelector<HTMLElement>("#teamAdminLinks")!;
-  nav.hidden = member?.role !== "admin";
+  const managesTeam = member?.role === "admin" || member?.role === "owner";
+  nav.hidden = !managesTeam;
   upload.hidden = !member || member.role === "viewer";
   if (member) {
-    if (member.role === "admin") sessionStorage.setItem("cueporchOperator", sessionMarker);
+    if (managesTeam) sessionStorage.setItem("cueporchOperator", sessionMarker);
     else clearOperatorMarker();
     library.querySelector("#teamIdentity")!.textContent = `${member.name} · ${roleLabels[member.role]}`;
   } else clearOperatorMarker();

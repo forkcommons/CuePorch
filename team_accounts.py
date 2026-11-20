@@ -1,12 +1,15 @@
 """Team invitations, member sessions and private Library access."""
 
+import csv
+from datetime import datetime, timezone
 import hashlib
 import hmac
+from io import StringIO
 import secrets
 import time
 import uuid
 
-from flask import abort, render_template, request, send_file, url_for
+from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import team_workspaces
@@ -20,6 +23,7 @@ CREATE TABLE IF NOT EXISTS team_member(
  id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL,
  password_hash TEXT NOT NULL, joined REAL NOT NULL, removed REAL);
 CREATE UNIQUE INDEX IF NOT EXISTS team_active_email ON team_member(email) WHERE removed IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS team_active_owner ON team_member(role) WHERE removed IS NULL AND role='owner';
 CREATE TABLE IF NOT EXISTS team_invitation(
  id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, role TEXT NOT NULL,
  token_hash TEXT UNIQUE NOT NULL, expires REAL NOT NULL);
@@ -49,6 +53,7 @@ CREATE TABLE IF NOT EXISTS team_membership_event(
  subject TEXT NOT NULL, detail TEXT, at REAL NOT NULL);
 """
 ROLES = ("admin", "contributor", "viewer")
+MANAGERS = ("owner", "admin")
 SESSION_SECONDS = 12 * 3600
 INVITE_SECONDS = 7 * 86400
 SESSION_MARKER = "team-session"
@@ -96,6 +101,23 @@ def member_role(con, uid):
     if row is None:
         abort(404, "This member is no longer active.")
     return row[0]
+
+
+def ownership(con, actor):
+    row = con.execute("SELECT id FROM team_member WHERE role='owner' AND removed IS NULL").fetchone()
+    uid = row["id"] if row else None
+    return dict(owner=uid, can_transfer=actor == "operator" or (uid is not None and actor == "team:" + uid))
+
+
+def roster(con):
+    members = [dict(row) for row in con.execute("""SELECT id,email,name,role,joined,removed
+        FROM team_member ORDER BY removed IS NOT NULL,name,email""")]
+    invitations = [dict(row) for row in con.execute("SELECT id,email,role,expires FROM team_invitation ORDER BY email")]
+    return members, invitations
+
+
+def spreadsheet_cell(value):
+    return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
 
 
 def issue_session(con, uid, secure):
@@ -194,7 +216,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     def can_edit(con, row, uid):
         if not row or not grant_available(con, uid):
             return False
-        if row["role"] == "admin":
+        if row["role"] in MANAGERS:
             return True
         if row["role"] != "contributor":
             return False
@@ -297,11 +319,52 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     @app.get("/api/team/members")
     def team_members():
         with tx() as con:
-            manager(con)
-            members = [dict(row) for row in con.execute("""SELECT id,email,name,role,joined,removed
-                FROM team_member ORDER BY removed IS NOT NULL,name,email""")]
-            invitations = [dict(row) for row in con.execute("SELECT id,email,role,expires FROM team_invitation ORDER BY email")]
-        return private(dict(members=members, invitations=invitations))
+            actor = manager(con)
+            members, invitations = roster(con)
+            owner = ownership(con, actor)
+        return private(dict(members=members, invitations=invitations, ownership=owner))
+
+    @app.get("/api/team/roster.csv")
+    def roster_csv():
+        with tx() as con:
+            actor = manager(con)
+            members, invitations = roster(con)
+            note(con, actor, "roster_exported", "roster", f"{len(members)} members, {len(invitations)} invitations")
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(("Email", "Name", "Role", "Date added (UTC)", "Status"))
+        for row in members:
+            joined = datetime.fromtimestamp(row["joined"], timezone.utc).isoformat()
+            writer.writerow((spreadsheet_cell(row["email"]), spreadsheet_cell(row["name"]), row["role"],
+                             joined, "Removed" if row["removed"] is not None else "Accepted"))
+        now = time.time()
+        for row in invitations:
+            invited = datetime.fromtimestamp(row["expires"] - INVITE_SECONDS, timezone.utc).isoformat()
+            writer.writerow((spreadsheet_cell(row["email"]), "", row["role"], invited,
+                             "Pending" if row["expires"] > now else "Expired"))
+        return private(Response(output.getvalue(), mimetype="text/csv", headers={
+            "Content-Disposition": "attachment; filename=cueporch-team-roster.csv",
+        }))
+
+    @app.put("/api/team/owner/<uuid:account>")
+    def set_team_owner(account):
+        body = mutation(secure_site(origin))
+        uid = str(account)
+        with tx() as con:
+            actor = manager(con)
+            owner = ownership(con, actor)
+            if not owner["can_transfer"]:
+                abort(403, "Ownership can be changed by the Owner or the installation credential.")
+            current_owner = owner["owner"]
+            if "previous" not in body or body["previous"] != current_owner:
+                abort(409, "The owner changed. Reload the roster before assigning ownership.")
+            if member_role(con, uid) == "owner":
+                return private("", 204)
+            if current_owner:
+                con.execute("UPDATE team_member SET role='admin' WHERE id=?", (current_owner,))
+            con.execute("UPDATE team_member SET role='owner' WHERE id=?", (uid,))
+            note(con, actor, "owner_changed", uid, current_owner)
+        return private("", 204)
 
     @app.post("/api/team/invitations")
     def team_invite():
@@ -337,6 +400,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         with tx() as con:
             actor = manager(con)
             previous = member_role(con, uid)
+            if previous == "owner":
+                abort(409, "Transfer ownership before changing this member's role or removing access.")
             if request.method == "DELETE":
                 con.execute("UPDATE team_member SET removed=?,password_hash='' WHERE id=?", (time.time(), uid))
                 con.execute("DELETE FROM team_session WHERE member=?", (uid,))
@@ -487,7 +552,7 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         return private("", 204)
 
     def access(con, row, work_id=None):
-        if row["role"] == "admin":
+        if row["role"] in MANAGERS:
             selected = {work_id} if work_id else None
         else:
             selected = shared_ids(con, row["id"]) | inherited_works(con, row["id"])

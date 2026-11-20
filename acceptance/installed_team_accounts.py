@@ -1,5 +1,8 @@
 """Exercise team invitations and private team media from the installed service."""
 
+import csv
+from io import StringIO
+from pathlib import Path
 import uuid
 from urllib.parse import urlsplit
 
@@ -286,6 +289,47 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         }
         assert all("token" not in record for record in audit)
 
+        successor = join(viewer, invite(page, email("owner-successor"), "admin"), "=North Arts", "Administrator")
+        successor_id = signed_in(viewer)["id"]
+        pending = invite(page, email("roster-pending"), "viewer")
+        ownership_path = base + "/api/team/owner/"
+        assert viewer.request.put(ownership_path + successor_id, headers=TEAM, data={"previous": None}).status == 403
+
+        page.get_by_role("button", name="Make Avery owner").click()
+        expect(page.locator("#teamMembersStatus")).to_have_text("Ownership updated.")
+        assert signed_in(admin)["role"] == "owner"
+        assert admin.request.get(base + "/api/library", headers=TEAM).ok
+        assert viewer.request.delete(base + "/api/team/members/" + admin_id, headers=TEAM, data={}).status == 409
+        assert viewer.request.put(base + "/api/team/members/" + admin_id, headers=TEAM, data={"role": "viewer"}).status == 409
+        assert requests.put(ownership_path + successor_id, headers=TEAM | auth, json={"previous": None},
+                            timeout=10).status_code == 409
+
+        admin_page.goto(base + "/team")
+        expect(admin_page.locator("#teamIdentity")).to_have_text("Avery · Owner")
+        admin_page.get_by_role("link", name="Team members").click()
+        admin_page.get_by_role("button", name="Make =North Arts owner").click()
+        expect(admin_page.locator("#teamMembersStatus")).to_have_text("Ownership updated.")
+        assert signed_in(admin)["role"] == "admin" and signed_in(viewer)["role"] == "owner"
+        assert admin.request.put(ownership_path + admin_id, headers=TEAM, data={"previous": successor_id}).status == 403
+        successor.goto(base + "/team")
+        expect(successor.locator("#teamIdentity")).to_have_text("=North Arts · Owner")
+        successor.get_by_role("link", name="Team members").click()
+        with successor.expect_download() as downloaded:
+            successor.get_by_role("button", name="Download team roster").click()
+        receipt = downloaded.value
+        assert receipt.suggested_filename == "cueporch-team-roster.csv"
+        content = Path(receipt.path()).read_text(encoding="utf8")
+        rows = {row["Email"]: row for row in csv.DictReader(StringIO(content))}
+        assert rows[email("roster-pending")]["Status"] == "Pending"
+        assert rows[email("viewer")]["Status"] == "Removed"
+        assert rows[email("owner-successor")]["Role"] == "owner" and rows[email("owner-successor")]["Name"] == "'=North Arts"
+        assert rows[email("admin")]["Role"] == "admin" and all(row["Date added (UTC)"] for row in rows.values())
+        assert urlsplit(pending).fragment not in content and PASSWORD not in content
+        assert contributor.request.get(base + "/api/team/roster.csv", headers=TEAM).status == 403
+        audit = requests.get(base + "/api/team/audit", headers=auth, timeout=10).json()["events"]
+        assert any(event["action"] == "owner_changed" and event["subject"] == successor_id for event in audit)
+        assert any(event["action"] == "roster_exported" and event["actor"] == f"team:{successor_id}" for event in audit)
+
     return dict(single_use_and_rotated_invitations=True, canceled_link_rejected=True, admin_role_applied=True,
                 scoped_viewer_video_width=viewer_width, contributor_private_video_width=draft_width,
                 migrated_private_video_width=migrated_width, migrated_grant_revoked=True,
@@ -294,4 +338,6 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                 scoped_contributor_details_and_editorial_edit=True, edit_downgrade_preserved_playback=True,
                 existing_audience_identity_separate=True, range_playback=True, forged_origin_denied=True,
                 removed_session_denied=True, revoked_grant_denied=True, demoted_admin_denied=True,
-                persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True), email("contributor")
+                persistent_contributor_sign_in=True, bootstrap_operator_preserved=True, membership_audit=True,
+                owner_assignment_and_transfer_with_stale_check=True, admin_cannot_take_ownership=True,
+                private_audited_roster_csv=True), email("contributor")

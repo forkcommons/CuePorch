@@ -208,6 +208,7 @@ async function loadActivity() {
 }
 async function loadMembers() {
     const roster = await (await call("members")).json();
+    document.querySelector("#teamOwnershipHelp").hidden = !roster.ownership.can_transfer;
     names = new Map([...roster.members.map(member => [member.id, member.name]),
         ...roster.invitations.map(pending => [pending.id, pending.email])]);
     invitations.replaceChildren();
@@ -227,11 +228,12 @@ async function loadMembers() {
         item.append(`${member.name} · ${member.email} · ${roleLabels[member.role]} `);
         if (member.removed)
             item.append("· Access removed");
-        else {
+        else if (member.role !== "owner") {
             const role = document.createElement("select");
             role.setAttribute("aria-label", `Role for ${member.name}`);
             for (const [value, label] of Object.entries(roleLabels))
-                role.add(new Option(label, value));
+                if (value !== "owner")
+                    role.add(new Option(label, value));
             role.value = member.role;
             item.append(role, button("Save role", () => void task(async () => {
                 await call(`members/${member.id}`, "PUT", { role: role.value });
@@ -243,6 +245,11 @@ async function loadMembers() {
                 await call(`members/${member.id}`, "DELETE");
                 await loadMembers();
             }, "Team access removed.")));
+            if (roster.ownership.can_transfer)
+                item.append(button(`Make ${member.name} owner`, () => void task(async () => {
+                    await call(`owner/${member.id}`, "PUT", { previous: roster.ownership.owner });
+                    await loadMembers();
+                }, "Ownership updated.")));
         }
         members.append(item);
     }
@@ -256,6 +263,17 @@ async function loadMembers() {
     management.hidden = false;
     access.hidden = true;
 }
+document.querySelector("#downloadTeamRoster").onclick = () => void task(async () => {
+    const response = await call("roster.csv");
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "cueporch-team-roster.csv";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (activity.open)
+        await loadActivity();
+}, "Roster downloaded.");
 async function createInvitation(body) {
     const { path } = await (await call("invitations", "POST", body)).json();
     await loadMembers();

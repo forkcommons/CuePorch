@@ -3,7 +3,11 @@ import {checked, type Member, type Role, roleLabels, teamRequest} from "./team_a
 interface Invitation {id: string; email: string; role: Role; expires: number}
 type Permission = "view" | "edit";
 interface Share {id: string; title: string; shared: boolean; permission: Permission | null}
-interface Roster {members: (Member & {removed: number | null})[]; invitations: Invitation[]}
+interface Roster {
+  members: (Member & {removed: number | null})[];
+  invitations: Invitation[];
+  ownership: {owner: string | null; can_transfer: boolean};
+}
 interface Audit {actor: string; action: string; subject: string; detail: string | null; at: number}
 interface GroupFolder {id: string; title: string}
 interface Group {
@@ -230,6 +234,7 @@ async function loadActivity() {
 
 async function loadMembers() {
   const roster: Roster = await (await call("members")).json();
+  document.querySelector<HTMLElement>("#teamOwnershipHelp")!.hidden = !roster.ownership.can_transfer;
   names = new Map([...roster.members.map(member => [member.id, member.name] as const),
     ...roster.invitations.map(pending => [pending.id, pending.email] as const)]);
   invitations.replaceChildren();
@@ -250,10 +255,10 @@ async function loadMembers() {
     const item = document.createElement("li");
     item.append(`${member.name} · ${member.email} · ${roleLabels[member.role]} `);
     if (member.removed) item.append("· Access removed");
-    else {
+    else if (member.role !== "owner") {
       const role = document.createElement("select");
       role.setAttribute("aria-label", `Role for ${member.name}`);
-      for (const [value, label] of Object.entries(roleLabels)) role.add(new Option(label, value));
+      for (const [value, label] of Object.entries(roleLabels)) if (value !== "owner") role.add(new Option(label, value));
       role.value = member.role;
       item.append(role, button("Save role", () => void task(async () => {
         await call(`members/${member.id}`, "PUT", {role: role.value});
@@ -265,6 +270,10 @@ async function loadMembers() {
         await call(`members/${member.id}`, "DELETE");
         await loadMembers();
       }, "Team access removed.")));
+      if (roster.ownership.can_transfer) item.append(button(`Make ${member.name} owner`, () => void task(async () => {
+        await call(`owner/${member.id}`, "PUT", {previous: roster.ownership.owner});
+        await loadMembers();
+      }, "Ownership updated.")));
     }
     members.append(item);
   }
@@ -277,6 +286,17 @@ async function loadMembers() {
   management.hidden = false;
   access.hidden = true;
 }
+
+document.querySelector<HTMLButtonElement>("#downloadTeamRoster")!.onclick = () => void task(async () => {
+  const response = await call("roster.csv");
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "cueporch-team-roster.csv";
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  if (activity.open) await loadActivity();
+}, "Roster downloaded.");
 
 async function createInvitation(body: object) {
   const {path}: {path: string} = await (await call("invitations", "POST", body)).json();
