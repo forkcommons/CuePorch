@@ -101,6 +101,33 @@
       </label>
       <button type="submit">Save video details</button>
     </form>
+    <section id="aiVideoTools" aria-labelledby="videoAIHeading" hidden>
+      <h2 id="videoAIHeading">Generate from subtitles</h2>
+      <p>Uses the configured local model. Check generated text for accuracy.</p>
+      <label>Source subtitle track <select id="aiVideoTrack"></select></label>
+      <label><input type="checkbox" id="aiVideoAuto" checked> Save generated results automatically</label>
+      <p id="aiVideoStatus" role="status"></p>
+      <form data-ai-step="ai_details">
+        <button type="button" data-generate>Generate video details</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Suggested details</legend>
+          <label>Suggested title <input name="title" maxlength="128"></label>
+          <label>Suggested description <textarea name="description" maxlength="5000" rows="4"></textarea></label>
+          <label>Suggested tags (one per line) <textarea name="tags" rows="3"></textarea></label>
+          <button type="submit">Save suggested details</button>
+        </fieldset>
+      </form>
+      <form data-ai-step="ai_chapters">
+        <button type="button" data-generate>Generate chapters</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Suggested chapters</legend>
+          <div data-chapters></div>
+          <button type="submit">Save suggested chapters</button>
+        </fieldset>
+      </form>
+    </section>
     <section aria-labelledby="factsTitle">
       <h2 id="factsTitle">Stored video</h2>
       <dl id="videoFacts"></dl>

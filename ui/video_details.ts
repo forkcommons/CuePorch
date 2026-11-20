@@ -1,6 +1,7 @@
 import { embedBuilder } from "./embed_builder.js";
 import {sessionMarker} from "./team_api.js";
 import {sharingFields, type Sharing} from "./library_privacy.js";
+import {videoAIDrafts} from "./video_ai_drafts.js";
 
 interface VideoDetails {
   title: string;
@@ -99,6 +100,13 @@ async function call<T>(resource = "", method = "GET", body?: object): Promise<T>
   }
   return response.status === 204 ? undefined as T : response.json();
 }
+
+const loadAIDrafts = videoAIDrafts(call, ({title, description, tags}) => {
+  heading.textContent = title;
+  input("title").value = title;
+  input("description").value = description;
+  input("tags").value = tags.join("\n");
+});
 
 function contentVisibility() {
   descriptors.hidden = descriptors.disabled = rating.value !== "mature";
@@ -256,6 +264,7 @@ async function load() {
     identify.hidden = true;
     pane.hidden = false;
     status.textContent = "";
+    void loadAIDrafts();
     await loadWorkspace();
   } catch (error) {
     status.textContent = String(error);

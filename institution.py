@@ -50,6 +50,7 @@ import creator_profiles
 import library_actions
 import library_appearance
 import library_caption_jobs
+import library_ai_drafts
 import team_ai_policy
 import library_details
 import library_discovery
@@ -95,6 +96,7 @@ STEPS = (
     "intake",
     "caption",
     "translation",
+    *library_ai_drafts.FEATURES,
     "publication",
     "replay",
     "migration",
@@ -151,6 +153,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_actions.SCHEMA
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
+            + library_ai_drafts.SCHEMA
             + team_ai_policy.SCHEMA
             + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
@@ -755,6 +758,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM caption_job WHERE state='queued')""", (step,))
+                if step in library_ai_drafts.FEATURES:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM library_ai_draft WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1294,7 +1301,7 @@ def create_app(root, database, operator, institution, simulation=None):
     def remember_work(work):
         works[work["id"]] = work
 
-    start_editor, start_file_links = library_actions.register(
+    start_editor, start_file_links, start_ai_drafts = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
         authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
@@ -1590,6 +1597,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_worker.start(app, root, database, tx, action, apply_routes)
     app.extensions["stop_caption_jobs"] = library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_ai_drafts"] = start_ai_drafts()
     app.extensions["stop_editor"] = start_editor()
     app.extensions["stop_file_links"] = start_file_links()
     review_push.start(app, tx, database)

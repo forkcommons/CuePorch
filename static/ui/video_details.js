@@ -1,6 +1,7 @@
 import { embedBuilder } from "./embed_builder.js";
 import { sessionMarker } from "./team_api.js";
 import { sharingFields } from "./library_privacy.js";
+import { videoAIDrafts } from "./video_ai_drafts.js";
 const identify = document.querySelector("#identify");
 const key = document.querySelector("#operatorKey");
 const status = document.querySelector("#detailsStatus");
@@ -51,6 +52,12 @@ async function call(resource = "", method = "GET", body) {
     }
     return response.status === 204 ? undefined : response.json();
 }
+const loadAIDrafts = videoAIDrafts(call, ({ title, description, tags }) => {
+    heading.textContent = title;
+    input("title").value = title;
+    input("description").value = description;
+    input("tags").value = tags.join("\n");
+});
 function contentVisibility() {
     descriptors.hidden = descriptors.disabled = rating.value !== "mature";
 }
@@ -209,6 +216,7 @@ async function load() {
         identify.hidden = true;
         pane.hidden = false;
         status.textContent = "";
+        void loadAIDrafts();
         await loadWorkspace();
     }
     catch (error) {

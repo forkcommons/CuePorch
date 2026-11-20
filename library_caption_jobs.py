@@ -130,7 +130,7 @@ def register(app, tx, get_work, action, request_actor):
                 )
             ]
             restrictions = {feature: team_ai_policy.restriction(con, feature, actor[1])
-                            for feature in team_ai_policy.FEATURES}
+                            for feature in ("caption", "translation")}
         return dict(available=bool(caption_adapter.command()[0]) and not restrictions["caption"],
                     translation_available=bool(caption_adapter.translation_runtime()) and not restrictions["translation"],
                     restrictions=restrictions, jobs=jobs)

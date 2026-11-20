@@ -54,6 +54,7 @@ class SubtitleTranslation(unittest.TestCase):
 
             mock = Flask("local-translation-model")
             calls = []
+            draft_calls = []
             control = {"available": True}
             model_started, release_model = Event(), Event()
             cleanup.callback(release_model.set)
@@ -65,6 +66,19 @@ class SubtitleTranslation(unittest.TestCase):
             @mock.post("/api/generate")
             def complete():
                 payload = request.get_json()
+                if "format" in payload:
+                    self.assertEqual((payload["model"], payload["stream"]), ("local-editorial-fixture", False))
+                    transcript = json.loads(payload["prompt"].split("\nTranscript:\n", 1)[1])
+                    self.assertIn("Welcome to the Council.", transcript[0]["text"])
+                    fields = payload["format"]["properties"]
+                    if "chapters" in fields:
+                        draft_calls.append("chapters")
+                        result = {"chapters": [{"cue": 1, "title": "Welcome"}, {"cue": 2, "title": "Public session"}]}
+                    else:
+                        draft_calls.append("details")
+                        result = dict(title="Council session", description="The Council opens a public session.",
+                                      tags=["council", "public session"])
+                    return dict(done=True, done_reason="stop", response=json.dumps(result))
                 self.assertEqual((payload["model"], payload["stream"]), ("local-translation-fixture", False))
                 self.assertIn("Welcome to the Council.", payload["prompt"])
                 language = payload["prompt"].split("numbered line into ", 1)[1].split(".", 1)[0]
@@ -81,13 +95,15 @@ class SubtitleTranslation(unittest.TestCase):
             cleanup.enter_context(patch.dict(os.environ, {
                 "TEXTFLOWKIT_OLLAMA_HOST": mock_origin,
                 "TEXTFLOWKIT_TRANSLATE_MODEL": "local-translation-fixture",
+                "CUEPORCH_OLLAMA_HOST": mock_origin,
+                "CUEPORCH_OLLAMA_MODEL": "local-editorial-fixture",
             }))
             for service in ("library_worker", "review_push"):
                 cleanup.enter_context(patch(f"institution.{service}.start"))
             operator = secrets.token_urlsafe(32)
             headers = {"Authorization": "Bearer " + operator}
             app = create_app(collection, root / "institution.sqlite", operator, "station")
-            for name in ("stop_event_capture", "stop_editor", "stop_file_links", "stop_caption_jobs"):
+            for name in ("stop_event_capture", "stop_editor", "stop_file_links", "stop_caption_jobs", "stop_ai_drafts"):
                 cleanup.callback(app.extensions[name])
             origin = self.serve(cleanup, app)
             video = origin + "/api/library/work/" + work
@@ -169,6 +185,7 @@ class SubtitleTranslation(unittest.TestCase):
                 self.assertEqual(calls, ["es", "fr", "fr"])
                 self.verify_batches(page, origin, headers, work, nested, outside, calls, subtitles_path)
                 self.verify_ai_policy(browser, page, origin, headers, work, calls, model_started, release_model)
+                self.verify_video_drafts(page, viewer, origin, headers, work, draft_calls)
                 browser.close()
 
     def verify_batches(self, page, origin, headers, work, nested, outside, calls, vtt):
@@ -355,6 +372,79 @@ class SubtitleTranslation(unittest.TestCase):
         self.assertEqual(recent[0]["work_id"], work)
         self.assertEqual(admin.request.get(settings_api + "/usage", headers=member_headers).status, 403)
         print("AI settings: Owner access, disabled/role restrictions, queued and running blocks, dictionary and usage verified.")
+
+    def verify_video_drafts(self, page, viewer, origin, headers, work, calls):
+        api = page.request
+        video = origin + f"/api/library/work/{work}"
+        details_gate = origin + "/api/policy/ai_details"
+        chapters_gate = origin + "/api/policy/ai_chapters"
+        self.assertEqual(api.get(video + "/ai-drafts").status, 403)
+        self.assertFalse(api.get(details_gate.rpartition("/")[0], headers=headers).json()["ai_details"])
+        page.goto(origin + f"/operator/videos/{work}")
+        tools = page.locator("#aiVideoTools")
+        details = tools.locator('[data-ai-step="ai_details"]')
+        chapters = tools.locator('[data-ai-step="ai_chapters"]')
+        details_button = details.get_by_role("button", name="Generate video details")
+        chapters_button = chapters.get_by_role("button", name="Generate chapters")
+        automatic = tools.get_by_label("Save generated results automatically")
+        expect(automatic).to_be_checked()
+        tools.get_by_label("Source subtitle track").select_option("en")
+        details_button.click()
+        expect(details.get_by_role("status")).to_have_text("Generated result saved.", timeout=18000)
+        expect(page.get_by_role("heading", name="Council session")).to_be_visible()
+        metadata = api.get(video + "/details", headers=headers).json()
+        self.assertEqual((metadata["description"], metadata["tags"]),
+                         ("The Council opens a public session.", ["council", "public session"]))
+        self.assertEqual(calls, ["details"])
+
+        self.assertTrue(api.put(details_gate, headers=headers, data={"required": True}).ok)
+        details_button.click()
+        expect(details.get_by_role("status")).to_have_text("Waiting for operator approval.")
+        self.assertEqual(calls, ["details"])
+        manual = page.locator("#videoMeta")
+        manual.get_by_label("Title", exact=True).fill("Approved Council record")
+        manual.get_by_role("button", name="Save video details").click()
+        expect(page.get_by_role("heading", name="Approved Council record")).to_be_visible()
+        self.assertTrue(api.put(details_gate, headers=headers, data={"required": False}).ok)
+        expect(details.get_by_role("status")).to_have_text(
+            "Existing details or chapters changed after this job was queued. Generate a new draft.", timeout=18000)
+        self.assertEqual(api.get(video + "/details", headers=headers).json()["title"], "Approved Council record")
+
+        automatic.uncheck()
+        self.assertTrue(api.put(chapters_gate, headers=headers, data={"required": True}).ok)
+        chapters_button.click()
+        expect(chapters.get_by_role("status")).to_have_text("Waiting for operator approval.")
+        self.assertEqual(calls, ["details", "details"])
+        self.assertTrue(api.put(chapters_gate, headers=headers, data={"required": False}).ok)
+        expect(chapters.get_by_role("status")).to_have_text("Draft ready. Edit it here before saving.", timeout=18000)
+        self.assertEqual(api.get(video + "/chapters", headers=headers).json()["chapters"], [])
+        page.reload()
+        second = chapters.get_by_role("group", name="Chapter 2")
+        seconds = second.get_by_label("Start (seconds)")
+        expect(seconds).to_have_value("1")
+        second.get_by_label("Chapter title").fill("Open Council session")
+        seconds.fill("8")
+        chapters.get_by_role("button", name="Save suggested chapters").click()
+        expect(chapters.get_by_role("status")).to_have_text("Enter chapter times in whole seconds within the video.")
+        self.assertEqual(api.get(video + "/chapters", headers=headers).json()["chapters"], [])
+        seconds.fill("1")
+        chapters.get_by_role("button", name="Save suggested chapters").click()
+        expect(chapters.get_by_role("status")).to_have_text("Generated result saved.")
+        result = api.get(video + "/chapters", headers=headers).json()["chapters"]
+        self.assertEqual(result, [dict(title="Welcome", timecode=0), dict(title="Open Council session", timecode=1)])
+        self.assertEqual(calls, ["details", "details", "chapters"])
+
+        viewer.goto(origin + "/watch/work/" + work)
+        player = viewer.locator("video")
+        self.assertEqual(player.evaluate("async video => {video.muted=true; await video.play(); video.pause(); return video.videoWidth;}"), 256)
+        viewer.get_by_label("Chapters", exact=True).select_option(label="Open Council session")
+        viewer.wait_for_function("() => document.querySelector('video').currentTime >= 0.99")
+        usage = api.get(origin + "/api/team/ai/usage", headers=headers)
+        self.assertTrue(usage.ok)
+        rows = list(csv.DictReader(usage.text().splitlines()))
+        self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_details"], ["superseded", "saved"])
+        self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_chapters"], ["saved"])
+        print("Video draft verification: automatic details, stale-edit protection, persisted chapter draft and decoded chapter seek.")
 
 
 if __name__ == "__main__":

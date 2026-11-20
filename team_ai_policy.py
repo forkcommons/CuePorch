@@ -20,7 +20,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS team_ai_policy(
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision TEXT NOT NULL, settings TEXT NOT NULL);
 """
-FEATURES = {"caption": "Generate captions", "translation": "Translate subtitles"}
+FEATURES = {"caption": "Generate captions", "translation": "Translate subtitles",
+            "ai_details": "Generate video details", "ai_chapters": "Generate chapters"}
 DEFAULTS = {
     "features": {key: {"enabled": True, "administrators": True} for key in FEATURES},
     "dictionary": [],
@@ -30,7 +31,11 @@ MAX_TERMS = 200
 
 def load(con):
     row = con.execute("SELECT revision,settings FROM team_ai_policy WHERE singleton=1").fetchone()
-    return (row["revision"], json.loads(row["settings"])) if row else ("", DEFAULTS)
+    if not row:
+        return "", DEFAULTS
+    settings = json.loads(row["settings"])
+    settings["features"] = DEFAULTS["features"] | settings["features"]
+    return row["revision"], settings
 
 
 def validate(settings):
@@ -38,7 +43,7 @@ def validate(settings):
         abort(400, "Supply generation settings and the subtitle dictionary.")
     features = settings["features"]
     if not isinstance(features, dict) or features.keys() != FEATURES.keys():
-        abort(400, "Choose settings for both generation workflows.")
+        abort(400, "Choose settings for the listed generation workflows.")
     for rule in features.values():
         if (not isinstance(rule, dict) or rule.keys() != {"enabled", "administrators"}
                 or any(type(value) is not bool for value in rule.values())):
@@ -103,17 +108,25 @@ def usage_report(con):
     writer = csv.writer(output)
     writer.writerow(("requested_at_utc", "workflow", "job_id", "work_id", "requested_by", "language", "status",
                      "published_cues"))
-    for job in con.execute("""SELECT j.*,a.step,
-        CASE WHEN j.state='queued' AND a.status='waiting' THEN 'waiting' ELSE j.state END AS public_state
-        FROM caption_job j JOIN action a ON a.id=j.id WHERE j.created>=? ORDER BY j.created DESC,j.id""",
+    for job in con.execute("""WITH jobs AS (
+        SELECT j.id,j.work,j.language,j.created,j.requested_by,j.state,
+            CASE WHEN j.requested_by IS NULL AND j.state='complete' AND j.cue_count=0
+                THEN NULL ELSE j.cue_count END AS cue_count
+        FROM caption_job j
+        UNION ALL SELECT id,work,source_language,created,requested_by,state,NULL FROM library_ai_draft
+        )
+        SELECT j.*,a.step,CASE
+            WHEN a.status='rejected' AND j.state='queued' THEN 'rejected'
+            WHEN a.status='waiting' AND j.state='queued' THEN 'waiting'
+            ELSE j.state END AS public_state
+        FROM jobs j JOIN action a ON a.id=j.id WHERE j.created>=? ORDER BY j.created DESC,j.id""",
         (time.time() - 90 * 86400,),
     ):
         actor = job["requested_by"] or ""
         if actor.lstrip()[:1] in ("=", "+", "-", "@") or actor.startswith(("\t", "\r", "\n")):
             actor = "'" + actor
         writer.writerow((datetime.fromtimestamp(job["created"], timezone.utc).isoformat(), job["step"], job["id"],
-                         job["work"], actor, job["language"], job["public_state"],
-                         None if not actor and job["state"] == "complete" and not job["cue_count"] else job["cue_count"]))
+                         job["work"], actor, job["language"], job["public_state"], job["cue_count"]))
     response = private(output.getvalue())
     response.mimetype = "text/csv"
     response.headers["Content-Disposition"] = 'attachment; filename="cueporch-ai-usage.csv"'

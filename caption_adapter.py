@@ -7,9 +7,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 from time import monotonic
-from urllib.parse import urlsplit
 
 from cueporch import checksum
+from local_model import loopback_origin
 
 
 class CaptionError(ValueError):
@@ -31,13 +31,8 @@ sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
 def translation_runtime():
     env = dict(os.environ)
     model = env.get("TEXTFLOWKIT_TRANSLATE_MODEL", "").strip()
-    try:
-        host = urlsplit(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))
-    except ValueError:
-        return None
-    if (not model or model.casefold().endswith(":cloud") or host.scheme not in ("http", "https")
-            or host.hostname not in ("localhost", "127.0.0.1", "::1") or host.username is not None
-            or host.path not in ("", "/") or host.query or host.fragment):
+    if (not model or model.casefold().endswith(":cloud")
+            or not loopback_origin(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))):
         return None
     python = env.get("CUEPORCH_TEXTFLOWKIT_PYTHON")
     if not python:

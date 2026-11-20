@@ -13,6 +13,7 @@ import library_details
 import library_appearance
 import library_audio
 import library_languages
+import library_ai_drafts
 import library_caption_jobs
 import subtitle_translation_batches
 import library_interactivity
@@ -105,6 +106,8 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
     team_brand_kits.register(app, tx, staff, team_origin, root, get_work, library_timeline.video_source)
     start_editor = timeline_jobs.register(app, tx, staff, get_work, root, remember_work)
     library_caption_jobs.register(app, tx, get_work, action, ai_actor)
+    start_ai_drafts = library_ai_drafts.register(app, tx, root, get_work, title_for, save_title, remember_work,
+                                                 action, ai_actor)
     subtitle_translation_batches.register(app, tx, read_works, action, ai_actor)
     library_languages.register(
         app, tx, staff, get_work, root, remember_work, title_for,
@@ -296,7 +299,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         response.cache_control.private = True
         return media_bandwidth.measure(response, tx, work["id"]) if asset_type == "video" else response
 
-    return start_editor, start_file_links
+    return start_editor, start_file_links, start_ai_drafts
 
 
 def sync_edits(tx, receipts, origin, root, connect):
