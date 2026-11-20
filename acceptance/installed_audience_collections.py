@@ -29,6 +29,7 @@ def check_audience_collections(browser, base, staff, sample):
     artist, discussion = "Paper Animation", "Animation Discussion"
     first, second = upload(artist), upload(discussion)
     like_path = f"{base}/api/viewer/likes/work/{first}"
+    entries = base + "/api/viewer/collections"
     collection_title = "Weekend in the studio"
     privacy = f"{base}/api/library/work/{first}/privacy"
 
@@ -79,7 +80,9 @@ def check_audience_collections(browser, base, staff, sample):
 
         viewer.goto(watch(second))
         viewer.get_by_role("button", name="Add to collection").click()
-        expect(dialog.get_by_label("Collection", exact=True).locator("option:checked")).to_have_text(collection_title)
+        collections = a.request.get(entries).json()
+        assert len(collections) == 1 and collections[0]["title"] == collection_title
+        expect(dialog.locator("[data-collect-options]")).to_have_value(collections[0]["id"])
         dialog.get_by_role("button", name="Add video", exact=True).click()
         expect(dialog.get_by_role("status")).to_have_text("Video added to collection.")
         viewer.goto(base + "/watch")
@@ -87,7 +90,7 @@ def check_audience_collections(browser, base, staff, sample):
         viewer.get_by_role("link", name=collection_title).click()
         collection = viewer.url
         uid = urlsplit(collection).path.rsplit("/", 1)[-1]
-        entries = base + "/api/viewer/collections"
+        assert uid == collections[0]["id"]
         assert b.request.get(entries).json() == []
         assert b.request.get(collection).status == 404
         assert b.request.delete(f"{entries}/{uid}/videos/work/{first}", headers=MUTATION, data={}).status == 404
