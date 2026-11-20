@@ -1,11 +1,14 @@
+import {playbackObservation} from "./playback_analytics.js";
+
 interface Item {
   id: string;
   title: string;
   description: string;
   media: string;
   download: string | null;
+  analytics: string | null;
   poster: string | null;
-  captions: { language: string; url: string }[];
+  captions: { language: string; url: string; key: string }[];
 }
 
 function copyLink(id: string, makeLink: () => URL, confirmation: string) {
@@ -36,6 +39,7 @@ if (contents) {
   const description = document.querySelector<HTMLElement>("#showcasePlayingDescription")!;
   const download = document.querySelector<HTMLAnchorElement>("#showcaseDownload")!;
   let current = cards.findIndex((card) => card.hasAttribute("aria-current"));
+  const observe = items.map((item) => item.analytics ? playbackObservation(item.analytics, true) : undefined);
   copyLink("showcaseCopyVideo", () => {
     const link = galleryLink();
     link.searchParams.set("video", items[current].id);
@@ -62,17 +66,21 @@ if (contents) {
   }
 
   if (video) {
+    let detach = observe[current]?.(video, true);
     function playItem(index: number, player: HTMLVideoElement) {
       const item = items[index];
       if (index !== current) {
+        detach?.();
         setCurrent(index);
         player.poster = item.poster || "";
-        player.replaceChildren(...item.captions.map(({language, url}) => {
+        player.replaceChildren(...item.captions.map(({language, url, key}) => {
           const track = document.createElement("track");
           Object.assign(track, {kind: "captions", srclang: language, label: language, src: url});
+          track.dataset.analyticsTrack = key;
           return track;
         }));
         player.src = item.media;
+        detach = observe[index]?.(player);
       } else if (player.ended) {
         player.currentTime = 0;
       }
@@ -81,8 +89,23 @@ if (contents) {
     cards.forEach((card, index) => { card.onclick = () => playItem(index, video); });
     video.onended = () => advance((index) => playItem(index, video));
   } else {
+    const unsampled = new Map<Element, () => void>();
+    const visible = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) unsampled.get(entry.target)?.();
+      }
+    });
     clips.forEach((clip, index) => {
+      if (observe[index]) {
+        unsampled.set(clip, () => {
+          visible.unobserve(clip);
+          unsampled.delete(clip);
+          observe[index]?.(clip, true);
+        });
+        visible.observe(clip);
+      }
       clip.onplay = () => {
+        unsampled.get(clip)?.();
         for (const other of clips) if (other !== clip) other.pause();
         setCurrent(index);
       };

@@ -73,7 +73,8 @@ function render(report) {
     rows.replaceChildren();
     for (const day of report.daily) {
         const row = rows.insertRow();
-        const values = [day.day, day.surface === "watch" ? "Watch page" : "Embed",
+        const surfaceName = { watch: "Watch page", embed: "Embed", showcase: "Showcase" };
+        const values = [day.day, surfaceName[day.surface] || day.surface,
             amount.format(day.impressions), amount.format(day.views), percent.format(day.view_rate),
             amount.format(day.finishes), amount.format(day.watched_seconds) + " s"];
         for (const value of values)

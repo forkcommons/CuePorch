@@ -24,6 +24,7 @@
         <button type="button" id="showcaseDuplicate" data-showcase-action>Make a copy</button>
         <button type="button" id="showcaseDelete" data-showcase-action>Delete showcase</button>
         <button type="button" id="showcaseRegistration" data-showcase-action>Registration</button>
+        <button type="button" id="showcaseAnalytics" data-showcase-action>Analytics</button>
         <button type="button" id="showcasePreview" data-showcase-action>Preview saved showcase</button>
       </div>
       <div id="showcaseSharing" class="library-tools" hidden>
@@ -32,6 +33,16 @@
         <label>Roku catalog feed <input id="showcaseRokuFeed" readonly></label>
       </div>
       {% include 'registration_editor.html' %}
+      <section id="showcaseReportPanel" aria-labelledby="showcaseReportTitle" hidden>
+        <h2 id="showcaseReportTitle">Showcase analytics</h2>
+        <form id="showcaseReport" class="library-tools">
+          <label>From <input type="date" name="from" required></label>
+          <label>Through <input type="date" name="to" required></label>
+          <button type="submit" data-showcase-action>Apply dates</button>
+          <button type="button" id="showcaseAnalyticsCsv" data-showcase-action>Download analytics CSV</button>
+        </form>
+        <p id="showcaseReportTotals" aria-live="polite"></p>
+      </section>
       <div class="video-workspace">
         <form id="showcaseEdit">
           <fieldset>

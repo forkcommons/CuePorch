@@ -1,7 +1,8 @@
 {% macro player(item, label, preload) -%}
 <video controls playsinline preload="{{ preload }}" controlslist="nodownload" aria-labelledby="{{ label }}"
        src="{{ item.media }}" {% if item.poster %}poster="{{ item.poster }}"{% endif %}>
-  {% for track in item.captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}" src="{{ track.url }}">{% endfor %}
+  {% for track in item.captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}"
+         src="{{ track.url }}" data-analytics-track="{{ track.key }}">{% endfor %}
 </video>
 {%- endmacro %}
 <!doctype html>

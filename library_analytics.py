@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS video_analytics_track_pair(
  caption_language TEXT NOT NULL, caption_kind TEXT NOT NULL, watched INTEGER NOT NULL,
  PRIMARY KEY(session,audio_language,audio_kind,caption_language,caption_kind));
 """
-SURFACES = ("watch", "embed")
+SURFACES = ("watch", "embed", "showcase")
 CAPTION_KINDS = ("captions", "subtitles", "captions_ai", "subtitles_ai", "none", "unknown")
 AUDIO_KINDS = ("original", *KINDS, "unknown")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")

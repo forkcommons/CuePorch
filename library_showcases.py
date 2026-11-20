@@ -1,27 +1,29 @@
 """Branded galleries with their own publication and expiring viewer access."""
 
+import csv
 from datetime import datetime, timezone
+from io import StringIO
 import json
 import math
 import re
 from urllib.parse import urlsplit
 import uuid
 
-from flask import abort, make_response, render_template, request, send_file, url_for
+from flask import Response, abort, make_response, render_template, request, send_file, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash
 
 from catalog import video_version_key
 from browser_account_security import is_loopback
+import library_analytics
 import library_details
 import library_peer_handoff
 import library_privacy as privacy
 import library_registration
 import media_bandwidth
-from library_analytics import source_origin
 from library_appearance import brand_image
 from library_interactivity import image_id, selected_ids, text_field, web_link
-from library_languages import tracks_for
+from library_languages import original_language, track_key, tracks_for
 from library_thumbnail import selected_thumbnail, thumbnail_type
 from vimeo_privacy import target_settings
 
@@ -32,6 +34,9 @@ CREATE TABLE IF NOT EXISTS video_showcase(
  settings TEXT NOT NULL, password TEXT, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS video_showcase_migration(
  source TEXT PRIMARY KEY, showcase TEXT NOT NULL, inventory TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS video_showcase_analytics(
+ session TEXT PRIMARY KEY, showcase TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS video_showcase_analytics_by_showcase ON video_showcase_analytics(showcase);
 """
 DEFAULTS = dict(
     title="Untitled showcase", description="", visibility="private", domains=[], videos=[],
@@ -85,10 +90,10 @@ def roku_visible(con, row, settings):
 
 
 def roku_origin(public_url):
-    canonical = source_origin(public_url)
+    canonical = library_analytics.source_origin(public_url)
     if canonical.startswith("https://"):
         return canonical
-    local = source_origin(request.host_url)
+    local = library_analytics.source_origin(request.host_url)
     if is_loopback(urlsplit(local).hostname) and is_loopback(request.remote_addr):
         return local
     return None
@@ -200,6 +205,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-access")
     media = URLSafeTimedSerializer(operator, salt="cueporch-showcase-media")
     registration = URLSafeTimedSerializer(operator, salt="cueporch-showcase-registration")
+    telemetry = URLSafeTimedSerializer(operator, salt="cueporch-showcase-analytics")
+    trusted_proxies = library_analytics.configured_proxies()
 
     def library():
         return {work["id"]: work for work in read_works() if work.get("asset_type", "video") == "video"}
@@ -309,6 +316,34 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             get_showcase(con, uid)
             return library_registration.export(con, "showcase", uid)
 
+    @app.get("/api/showcases/<uid>/analytics")
+    def showcase_analytics_report(uid):
+        staff()
+        first, last, start, end = library_analytics.bounds()
+        with tx() as con:
+            get_showcase(con, uid)
+            counts = library_analytics.COUNTS
+            scope = """FROM video_showcase_analytics g JOIN video_analytics_session s ON s.id=g.session
+                       WHERE g.showcase=? AND s.created>=? AND s.created<?"""
+            args = (uid, start, end)
+            totals = library_analytics.metrics(con.execute(f"SELECT {counts} {scope}", args).fetchone())
+            rows = con.execute(f"""SELECT date(s.created, 'unixepoch') AS day,{counts} {scope}
+                                   GROUP BY day ORDER BY day""", args)
+            daily = [dict(day=row["day"], **library_analytics.metrics(row)) for row in rows]
+        if request.args.get("format") == "csv":
+            output = StringIO()
+            fields = ["day", "impressions", "views", "finishes", "watched_seconds"]
+            writer = csv.DictWriter(output, fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(daily)
+            return Response(output.getvalue(), mimetype="text/csv", headers={
+                "Content-Disposition": "attachment; filename=cueporch-showcase-analytics.csv",
+                "Cache-Control": "private, no-store"})
+        response = make_response(dict(date_from=first.isoformat(), date_to=last.isoformat(), totals=totals, daily=daily))
+        response.cache_control.private = True
+        response.cache_control.no_store = True
+        return response
+
     def unlock(row):
         with tx() as con:
             return privacy.try_password(con, operator, row["id"], request.form.get("password", ""), row["password"])
@@ -346,7 +381,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     ancestors = privacy.frame_policy(values["domains"])
         if not embed:
             ancestor = request.host_url
-        origin = source_origin(ancestor)
+        origin = library_analytics.source_origin(ancestor)
         if embed and origin == "Unknown":
             abort(403)
         enrollment = request.form.get("enrollment", "")
@@ -383,6 +418,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 logo = brand_image(con, values["logo"])
                 if not form_token:
                     feature_image = brand_image(con, values["feature_image"])
+                    context = (library_analytics.request_context(trusted_proxies)
+                               if not internal and library_analytics.permitted() else None)
                     works = library()
                     for uid in values["videos"]:
                         work = works.get(uid)
@@ -396,14 +433,16 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         token = media.dumps([row["id"], row["revision"], uid, video_version_key(work),
                                              policy["revision"] if policy else None, internal, embed, origin, form_revision])
                         details = library_details.details_for(con, work)
+                        sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
                         entries.append(dict(id=uid, title=title_for(con, work),
                                             description=details.get("description", ""),
                                             media=url_for("showcase_file", token=token),
                                             download=url_for("showcase_file", token=token, download=1)
                                             if not internal and values["download"] and sharing.get("download") else None,
+                                            analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
                                             poster=url_for("showcase_file", token=token, poster=1)
                                             if selected_thumbnail(con, work) else None,
-                                            captions=[dict(language=track.get("language") or "und",
+                                            captions=[dict(language=track.get("language") or "und", key=track_key(track),
                                                            url=url_for("showcase_file", token=token, track=index))
                                                       for index, track in enumerate(tracks_for(work))]))
         selection = request.args.get("video")
@@ -432,29 +471,50 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     def showcase_frame(slug):
         return viewer(slug, True)
 
-    @app.get("/showcase-media/<token>")
-    def showcase_file(token):
+    def authorized_media(con, token):
         try:
             uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision = media.loads(token, max_age=3600)
             if internal:
                 media.loads(token, max_age=600)
         except (BadSignature, ValueError):
             abort(404)
+        row = get_showcase(con, uid)
+        values = state(row)
+        work = library().get(work_id)
+        policy = privacy.get_privacy(con, work_id)
+        if (row["revision"] != version or work_id not in values["videos"] or not work
+                or video_version_key(work) != cut or (policy["revision"] if policy else None) != privacy_revision
+                or (not internal and library_registration.active(con, "video", work_id))):
+            abort(404)
+        form = None if internal else library_registration.active(con, "showcase", uid)
+        if (form["revision"] if form else None) != form_revision:
+            abort(404)
+        allowed = content_policy(con, work, permits, values, embed, origin, internal)
+        if not allowed:
+            abort(404)
+        return uid, work, values, allowed, internal
+
+    @app.post("/showcase-observation/<sample>")
+    def showcase_analytics_sample(sample):
+        try:
+            token, session, context = telemetry.loads(sample, max_age=3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        request.max_content_length = 128 * 1024
         with tx() as con:
-            row = get_showcase(con, uid)
-            values = state(row)
-            work = library().get(work_id)
-            policy = privacy.get_privacy(con, work_id)
-            if (row["revision"] != version or work_id not in values["videos"] or not work
-                    or video_version_key(work) != cut or (policy["revision"] if policy else None) != privacy_revision
-                    or (not internal and library_registration.active(con, "video", work_id))):
+            uid, work, _, _, internal = authorized_media(con, token)
+            if internal:
                 abort(404)
-            form = None if internal else library_registration.active(con, "showcase", uid)
-            if (form["revision"] if form else None) != form_revision:
-                abort(404)
-            allowed = content_policy(con, work, permits, values, embed, origin, internal)
-            if not allowed:
-                abort(404)
+            if library_analytics.permitted():
+                library_analytics.record(con, work, session, "showcase", request.get_json(), context,
+                                         source_language=original_language(work))
+                con.execute("INSERT OR IGNORE INTO video_showcase_analytics VALUES(?,?)", (session, uid))
+        return "", 204
+
+    @app.get("/showcase-media/<token>")
+    def showcase_file(token):
+        with tx() as con:
+            _, work, values, allowed, internal = authorized_media(con, token)
             copy, sharing = allowed
             download = request.args.get("download") == "1"
             if download and (internal or not values["download"] or not sharing.get("download")
@@ -469,7 +529,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 if not 0 <= index < len(tracks):
                     abort(404)
                 digest, kind = tracks[index]["sha256"], "text/vtt"
-        return serve_file(work_id, digest, kind, download)
+        return serve_file(work["id"], digest, kind, download)
 
     def serve_file(work_id, digest, kind, download=False):
         path = root / "objects" / digest if digest else None

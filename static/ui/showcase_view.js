@@ -1,3 +1,4 @@
+import { playbackObservation } from "./playback_analytics.js";
 function copyLink(id, makeLink, confirmation) {
     const button = document.querySelector("#" + id);
     if (!button)
@@ -26,6 +27,7 @@ if (contents) {
     const description = document.querySelector("#showcasePlayingDescription");
     const download = document.querySelector("#showcaseDownload");
     let current = cards.findIndex((card) => card.hasAttribute("aria-current"));
+    const observe = items.map((item) => item.analytics ? playbackObservation(item.analytics, true) : undefined);
     copyLink("showcaseCopyVideo", () => {
         const link = galleryLink();
         link.searchParams.set("video", items[current].id);
@@ -54,17 +56,21 @@ if (contents) {
             playItem(0);
     }
     if (video) {
+        let detach = observe[current]?.(video, true);
         function playItem(index, player) {
             const item = items[index];
             if (index !== current) {
+                detach?.();
                 setCurrent(index);
                 player.poster = item.poster || "";
-                player.replaceChildren(...item.captions.map(({ language, url }) => {
+                player.replaceChildren(...item.captions.map(({ language, url, key }) => {
                     const track = document.createElement("track");
                     Object.assign(track, { kind: "captions", srclang: language, label: language, src: url });
+                    track.dataset.analyticsTrack = key;
                     return track;
                 }));
                 player.src = item.media;
+                detach = observe[index]?.(player);
             }
             else if (player.ended) {
                 player.currentTime = 0;
@@ -75,8 +81,24 @@ if (contents) {
         video.onended = () => advance((index) => playItem(index, video));
     }
     else {
+        const unsampled = new Map();
+        const visible = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting)
+                    unsampled.get(entry.target)?.();
+            }
+        });
         clips.forEach((clip, index) => {
+            if (observe[index]) {
+                unsampled.set(clip, () => {
+                    visible.unobserve(clip);
+                    unsampled.delete(clip);
+                    observe[index]?.(clip, true);
+                });
+                visible.observe(clip);
+            }
             clip.onplay = () => {
+                unsampled.get(clip)?.();
                 for (const other of clips)
                     if (other !== clip)
                         other.pause();
@@ -108,4 +130,3 @@ if (contents) {
         };
     }
 }
-export {};

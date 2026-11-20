@@ -19,6 +19,11 @@ interface Showcase {
   roku: string | null;
 }
 interface Work {id: string; title: string; asset_type: string;}
+interface ShowcaseStats {
+  date_from: string;
+  date_to: string;
+  totals: {impressions: number; views: number; finishes: number; watched_seconds: number;};
+}
 
 const identify = document.querySelector<HTMLFormElement>("#showcaseIdentify")!;
 const credential = identify.elements.namedItem("credential") as HTMLInputElement;
@@ -41,6 +46,11 @@ const searchStatus = document.querySelector<HTMLElement>("#showcaseSearchStatus"
 const searchTitle = document.querySelector<HTMLElement>("#showcaseSearchTitle")!;
 const searchAddress = document.querySelector<HTMLElement>("#showcaseSearchAddress")!;
 const searchDescription = document.querySelector<HTMLElement>("#showcaseSearchDescription")!;
+const reportPanel = document.querySelector<HTMLElement>("#showcaseReportPanel")!;
+const reportForm = document.querySelector<HTMLFormElement>("#showcaseReport")!;
+const reportFrom = reportForm.elements.namedItem("from") as HTMLInputElement;
+const reportTo = reportForm.elements.namedItem("to") as HTMLInputElement;
+const reportTotals = document.querySelector<HTMLElement>("#showcaseReportTotals")!;
 const base = document.body.dataset.publicUrl || location.origin;
 const assets = [
   {key: "logo", input: field("logo_file") as HTMLInputElement,
@@ -148,7 +158,10 @@ function visibility() {
 }
 
 function select(value: Showcase) {
-  if (current?.id !== value.id) registration.hidden = true;
+  if (current?.id !== value.id) {
+    registration.hidden = true;
+    reportPanel.hidden = true;
+  }
   current = value;
   picker.value = value.id;
   for (const [name, setting] of Object.entries(value.settings)) {
@@ -243,6 +256,40 @@ on("showcaseDelete", async () => {
   updateList();
 }, "Showcase deleted. Its videos remain in the library.");
 on("showcaseRegistration", openRegistration);
+function reportPath(filters?: URLSearchParams) {
+  return endpoint() + "/analytics" + (filters ? "?" + filters.toString() : "");
+}
+
+function reportDates() {
+  return new URLSearchParams({from: reportFrom.value, to: reportTo.value});
+}
+
+async function showReport(filters?: URLSearchParams) {
+  const stats = await request<ShowcaseStats>(reportPath(filters));
+  reportFrom.value = stats.date_from;
+  reportTo.value = stats.date_to;
+  const totals = stats.totals;
+  reportTotals.textContent = `${totals.impressions.toLocaleString()} impressions · ${totals.views.toLocaleString()} plays · `
+    + `${totals.finishes.toLocaleString()} finishes · ${totals.watched_seconds.toLocaleString()} seconds watched`;
+  reportPanel.hidden = false;
+}
+
+on("showcaseAnalytics", () => showReport());
+reportForm.onsubmit = (event) => {
+  event.preventDefault();
+  void action(() => showReport(reportDates()));
+};
+on("showcaseAnalyticsCsv", async () => {
+  const filters = reportDates();
+  filters.set("format", "csv");
+  const response = await fetchResult(reportPath(filters));
+  const url = URL.createObjectURL(await response.blob());
+  const download = document.createElement("a");
+  download.href = url;
+  download.download = "cueporch-showcase-analytics.csv";
+  download.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 on("showcasePreview", async () => {
   const value = await request<{preview: string}>(endpoint() + "/preview", "POST");
   frame.hidden = false;

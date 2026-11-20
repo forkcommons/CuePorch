@@ -20,6 +20,11 @@ const searchStatus = document.querySelector("#showcaseSearchStatus");
 const searchTitle = document.querySelector("#showcaseSearchTitle");
 const searchAddress = document.querySelector("#showcaseSearchAddress");
 const searchDescription = document.querySelector("#showcaseSearchDescription");
+const reportPanel = document.querySelector("#showcaseReportPanel");
+const reportForm = document.querySelector("#showcaseReport");
+const reportFrom = reportForm.elements.namedItem("from");
+const reportTo = reportForm.elements.namedItem("to");
+const reportTotals = document.querySelector("#showcaseReportTotals");
 const base = document.body.dataset.publicUrl || location.origin;
 const assets = [
     { key: "logo", input: field("logo_file"),
@@ -115,8 +120,10 @@ function visibility() {
     document.querySelector("#showcaseDomains").hidden = mode === "private";
 }
 function select(value) {
-    if (current?.id !== value.id)
+    if (current?.id !== value.id) {
         registration.hidden = true;
+        reportPanel.hidden = true;
+    }
     current = value;
     picker.value = value.id;
     for (const [name, setting] of Object.entries(value.settings)) {
@@ -215,6 +222,37 @@ on("showcaseDelete", async () => {
     updateList();
 }, "Showcase deleted. Its videos remain in the library.");
 on("showcaseRegistration", openRegistration);
+function reportPath(filters) {
+    return endpoint() + "/analytics" + (filters ? "?" + filters.toString() : "");
+}
+function reportDates() {
+    return new URLSearchParams({ from: reportFrom.value, to: reportTo.value });
+}
+async function showReport(filters) {
+    const stats = await request(reportPath(filters));
+    reportFrom.value = stats.date_from;
+    reportTo.value = stats.date_to;
+    const totals = stats.totals;
+    reportTotals.textContent = `${totals.impressions.toLocaleString()} impressions · ${totals.views.toLocaleString()} plays · `
+        + `${totals.finishes.toLocaleString()} finishes · ${totals.watched_seconds.toLocaleString()} seconds watched`;
+    reportPanel.hidden = false;
+}
+on("showcaseAnalytics", () => showReport());
+reportForm.onsubmit = (event) => {
+    event.preventDefault();
+    void action(() => showReport(reportDates()));
+};
+on("showcaseAnalyticsCsv", async () => {
+    const filters = reportDates();
+    filters.set("format", "csv");
+    const response = await fetchResult(reportPath(filters));
+    const url = URL.createObjectURL(await response.blob());
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = "cueporch-showcase-analytics.csv";
+    download.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 on("showcasePreview", async () => {
     const value = await request(endpoint() + "/preview", "POST");
     frame.hidden = false;

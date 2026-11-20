@@ -238,6 +238,48 @@ class ShowcaseDistribution(unittest.TestCase):
                 for url in (feed_url, second_media, watch):
                     self.assertEqual(404, requests.get(url, timeout=10).status_code)
 
+                reporting = send("POST", "/api/showcases")
+                destination = f"/api/showcases/{reporting['id']}"
+                reporting = send("PUT", destination, dict(slug="station-reporting", revision=reporting["revision"],
+                    settings=reporting["settings"] | dict(visibility="public", videos=[second, restricted])))
+                watch_report = base + reporting["watch"]
+                guest.goto(watch_report)
+                observations = [base + item["analytics"] for item in json.loads(
+                    guest.locator("#showcaseContents").text_content())]
+
+                def played_to_end(response):
+                    return ("/showcase-observation/" in response.url and response.status == 204
+                            and response.request.post_data_json.get("completed") is True)
+
+                video = guest.locator(".showcase-screen video")
+                with guest.expect_response(lambda response: response.url == observations[0] and played_to_end(response)):
+                    self.assertEqual(320, video.evaluate("async node => {node.muted = true; await node.play();return node.videoWidth}"))
+                with guest.expect_response(lambda response: response.url == observations[1] and played_to_end(response)):
+                    guest.get_by_role("button", name="Venue-only cut").click()
+                with guest.expect_response(lambda response: response.url == observations[0] and played_to_end(response)):
+                    guest.get_by_role("button", name="Artist interview").click()
+                expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
+
+                with browser.new_context(extra_http_headers={"Sec-GPC": "1"}) as opted_out:
+                    visitor = opted_out.new_page()
+                    visitor.goto(watch_report)
+                    self.assertTrue(all(row["analytics"] is None for row in json.loads(
+                        visitor.locator("#showcaseContents").text_content())))
+                    self.assertEqual(320, visitor.locator(".showcase-screen video").evaluate(
+                        "async node => {node.muted=true;await node.play();node.pause();return node.videoWidth}"))
+                totals = send("GET", destination + "/analytics")["totals"]
+                self.assertEqual((2, 2, 2), (totals["impressions"], totals["views"], totals["finishes"]))
+                self.assertGreaterEqual(totals["watched_seconds"], 1.9)
+                self.assertEqual(403, requests.get(base + destination + "/analytics", timeout=10).status_code)
+                page.goto(base + "/operator/showcases?select=" + reporting["id"])
+                page.get_by_role("button", name="Analytics", exact=True).click()
+                expect(page.locator("#showcaseReportTotals")).to_contain_text("2 impressions · 2 plays · 2 finishes")
+                with page.expect_download() as csv_download:
+                    page.get_by_role("button", name="Download analytics CSV").click()
+                self.assertIn(",2,2,2,", Path(csv_download.value.path()).read_text(encoding="utf-8"))
+                send("PUT", destination, reporting | {"settings": reporting["settings"] | {"visibility": "private"}})
+                self.assertEqual(404, requests.post(observations[0], timeout=10, json={}).status_code)
+
 
 if __name__ == "__main__":
     unittest.main()
