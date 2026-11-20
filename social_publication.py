@@ -19,6 +19,7 @@ import linkedin_upload
 import team_accounts
 from team_group_roles import EFFECTIVE_ROLE
 import vimeo_privacy
+import x_upload
 import youtube_upload
 
 
@@ -41,12 +42,13 @@ MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm", "mkv
 def metadata_for(body, provider, pages):
     title, description = body.get("title"), body.get("description", "")
     visibility, made_for_kids = body.get("visibility"), body.get("made_for_kids")
-    if provider in ("linkedin", "facebook"):
+    if provider in ("linkedin", "facebook", "x"):
         page = body.get("company")
+        text_limit = 280 if provider == "x" else 3000
         if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "\n\r\0")
-                or not isinstance(description, str) or len(description) > 3000 or "\0" in description
+                or not isinstance(description, str) or len(description) > text_limit or "\0" in description
                 or visibility != "public" or not isinstance(page, str) or page not in pages):
-            abort(400, "Check the title, post text, connected Page and public visibility.")
+            abort(400, "Check the title, post text, connected destination and public visibility.")
         return dict(title=title.strip(), description=description, company=page, visibility=visibility)
     category = body.get("category", "22")
     if (not isinstance(title, str) or not 1 <= len(title.strip()) <= 100 or any(c in title for c in "<>\n\r\0")
@@ -69,9 +71,9 @@ def transferable(con, work, visibility, provider):
         source, _ = vimeo_privacy.target_settings(work)
         if source["visibility"] != "public" and source["visibility"] != visibility:
             abort(403, "The Vimeo source privacy restricts this video to a narrower destination audience.")
-    formats = ("mp4",) if provider == "linkedin" else MIME
+    formats = ("mp4",) if provider in ("linkedin", "x") else MIME
     limits = {"linkedin": (linkedin_upload.MIN_BYTES, linkedin_upload.MAX_BYTES),
-              "facebook": (1, facebook_upload.MAX_BYTES)}
+              "facebook": (1, facebook_upload.MAX_BYTES), "x": (1, x_upload.MAX_BYTES)}
     minimum, maximum = limits.get(provider, (1, 256 * 1000**3))
     for role in ("original", "playback"):
         for file in work["files"]:
@@ -82,6 +84,8 @@ def transferable(con, work, visibility, provider):
         abort(409, "LinkedIn needs a retained MP4 between 75 KB and 500 MB.")
     if provider == "facebook":
         abort(409, "Facebook needs a retained video under 4 GB.")
+    if provider == "x":
+        abort(409, "X needs a retained MP4 up to 512 MiB.")
     abort(409, "This version needs a retained video file before it can be published.")
 
 
@@ -353,6 +357,41 @@ class FacebookPublisher(Publisher):
         self.save_session(job, session, acknowledged)
 
 
+class XPublisher(Publisher):
+    def post_next(self, job):
+        if job["final_sent"]:
+            self.unconfirmed(job, "the X account")
+            return
+        with self.tx() as con:
+            metadata = self.authorize(con, job)
+        args = self.connection, job["connection"]
+        size, offset = job["bytes"], job["offset"]
+        owner = metadata["company"]
+        if not job["session"]:
+            x_upload.account(*args, owner)
+            self.save_session(job, x_upload.start(*args, size), 0)
+            return
+        session = self.saved_session(job)
+        if time() >= session["expires"]:
+            abort(409, "X's video upload expired. Open a new publication request.")
+        if offset < size:
+            body = self.media_part(job, offset, min(x_upload.CHUNK, size - offset))
+            with self.tx() as con:
+                self.authorize(con, job)
+                con.execute("UPDATE social_publication SET probe=1 WHERE id=?", (job["id"],))
+            x_upload.send_part(*args, session, body)
+            session["segment"] += 1
+            self.save_session(job, session, offset + len(body))
+            return
+        delay = x_upload.processing(*args, session)
+        if delay:
+            session["finalized"] = True
+            self.save_session(job, session, offset, delay)
+            return
+        x_upload.account(*args, owner)
+        self.finalize_public_post(job, lambda: x_upload.post(*args, session, metadata["description"]), "the X account")
+
+
 def register(app, tx, database, root, origin, connections, read_works, title_for, operator_name,
              team_member, authorize_editor, can_edit, action, sharing_access, enforce_sharing):
     def find_work(uid):
@@ -360,7 +399,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
 
     workers = [cls(app, tx, database, root, connections[provider], find_work, sharing_access, can_edit)
                for provider, cls in (("youtube", YoutubePublisher), ("linkedin", LinkedinPublisher),
-                                     ("facebook", FacebookPublisher))]
+                                     ("facebook", FacebookPublisher), ("x", XPublisher))]
 
     def close():
         for worker in workers:
@@ -375,7 +414,7 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         return connection
 
     def pages_for(con, connection):
-        if connection.config.key == "facebook":
+        if connection.config.key in ("facebook", "x"):
             return {page: row["name"] for page, row in connection.pages(con).items()}
         if connection.config.key == "linkedin" and connection.company:
             return {connection.company: connection.company}
@@ -416,6 +455,8 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
                     link = linkedin_upload.link(remote)
                 elif provider == "facebook":
                     link = facebook_upload.link(metadata["company"], remote)
+                elif provider == "x":
+                    link = x_upload.link(remote)
                 else:
                     link = f"https://www.youtube.com/watch?v={remote}"
             jobs.append(dict(id=job["id"], state=state, sent=job["offset"], bytes=job["bytes"], company=metadata.get("company"),
@@ -425,10 +466,12 @@ def register(app, tx, database, root, origin, connections, read_works, title_for
         policy = sharing_access(con)
         modes = [mode for mode in youtube_upload.PRIVACY if mode in policy["modes"]]
         allowed = policy["outbound"] and bool(modes if provider == "youtube" else "public" in modes)
+        pages = pages_for(con, connection) if allowed else {}
         return dict(cut=video_version_key(work), title=title_for(con, work)[:100],
                     configured=connection.configured, connected=bool(connection.connection(con)), jobs=jobs,
-                    allowed=allowed, modes=modes, company=getattr(connection, "company", None) if allowed else None,
-                    pages=[dict(id=page, name=name) for page, name in pages_for(con, connection).items()] if allowed else [])
+                    allowed=allowed, modes=modes,
+                    company=next(iter(pages), None) if provider in ("linkedin", "x") else None,
+                    pages=[dict(id=page, name=name) for page, name in pages.items()])
 
     @app.route("/api/library/work/<uuid:work>/social/<provider>", methods=("GET", "POST"))
     def publication(work, provider):

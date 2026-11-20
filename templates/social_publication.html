@@ -21,16 +21,19 @@
   <form id="socialForm" method="post" hidden>
     <label>Title <input name="title" maxlength="100" required></label>
     {% if provider != "youtube" %}
-    <label>Post text <textarea name="description" maxlength="3000" rows="4"></textarea></label>
+    <label>Post text <textarea name="description" maxlength="{{ 280 if provider == 'x' else 3000 }}" rows="4"></textarea></label>
     {% if provider == "linkedin" %}
     <p>Company Page <output id="socialCompany"></output></p>
     <label><input type="checkbox" name="publicPost" required> Publish a public post on this Company Page</label>
-    {% else %}
+    {% elif provider == "facebook" %}
     <label for="socialPage">Facebook Page</label>
     <select name="company" id="socialPage" required></select>
     <label><input type="checkbox" name="publicPost" required> Publish a public video on this Facebook Page</label>
+    {% else %}
+    <p>Posting as <output id="socialCompany"></output></p>
+    <label><input type="checkbox" name="publicPost" required> Publish a public video on X</label>
     {% endif %}
-    <button>{{ "Post to LinkedIn" if provider == "linkedin" else "Post to Facebook" }}</button>
+    <button>Post to {{ {"linkedin": "LinkedIn", "facebook": "Facebook", "x": "X"}[provider] }}</button>
     {% else %}
     <label>Description <textarea name="description" maxlength="5000" rows="4"></textarea></label>
     <label>Visibility on YouTube

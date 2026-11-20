@@ -1174,7 +1174,7 @@ async function shareDialog(work: Work, copy?: "watch" | "embed") {
   const info = await getWorkInfo(work);
   openWorkDialog("Share " + info.title);
   if (!work.asset_type || work.asset_type === "video") {
-    for (const [label, destination] of [["YouTube", "youtube"], ["LinkedIn", "linkedin"], ["Facebook", "facebook"]]) {
+    for (const [label, destination] of [["YouTube", "youtube"], ["LinkedIn", "linkedin"], ["Facebook", "facebook"], ["X", "x"]]) {
       const social = document.createElement("a");
       social.href = `/operator/videos/${work.id}/social?destination=${destination}`;
       social.textContent = `Publish to ${label}`;

@@ -23,6 +23,7 @@ import mail_relay
 import social_publication
 from team_accounts import MANAGERS
 import webex_recordings
+import x_upload
 import zoom_recordings
 import youtube_upload
 from library_analytics import source_origin
@@ -294,7 +295,8 @@ def register(app, tx, staff, operator, origin, import_video, database):
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
-    publishing = {item.config.key: item for item in (youtube, linkedin, facebook)}
+    x_account = x_upload.AccountConnection(tx, operator)
+    publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account)}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex)} | publishing
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(

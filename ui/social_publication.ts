@@ -63,7 +63,7 @@ function render(data: Publication, fresh = false) {
     cut = data.cut;
     company = data.company;
     if (companyLabel) {
-      companyLabel.value = company || "";
+      companyLabel.value = data.pages.find(page => page.id === company)?.name || "";
     }
     if (pageSelector) {
       pageSelector.replaceChildren(new Option("Choose a Page", ""), ...data.pages.map(page => new Option(page.name, page.id)));
