@@ -1,11 +1,12 @@
-type Step = "ai_details" | "ai_chapters";
+type Step = "ai_details" | "ai_chapters" | "ai_highlights";
 interface GeneratedDetails {title: string; description: string; tags: string[]}
 interface Chapter {timecode: number; title: string}
+interface Reel {work: string; title: string; duration: number}
 interface Job {
-  id: string; state: string; result: GeneratedDetails | {chapters: Chapter[]} | null; error: string | null;
+  id: string; state: string; result: GeneratedDetails | {chapters: Chapter[]} | Reel | null; error: string | null;
 }
 interface Report {
-  version: string; tracks: string[]; configured: boolean;
+  version: string; tracks: string[]; original_language: string; configured: boolean;
   jobs: Partial<Record<Step, Job>>; restrictions: Record<Step, string | null>;
 }
 type Request = <T>(route: string, method?: string, body?: object) => Promise<T>;
@@ -39,6 +40,7 @@ export function videoAIDrafts(call: Request, updateDetails: (details: GeneratedD
     const selected = track.value;
     track.replaceChildren(...next.tracks.map(language => new Option(language, language)));
     if (next.tracks.includes(selected)) track.value = selected;
+    else if (next.tracks.includes(next.original_language)) track.value = next.original_language;
     track.disabled = next.tracks.length === 0;
     notice.textContent = !next.configured ? "Configure a local Ollama model to generate drafts."
       : !next.tracks.length ? "Add a saved subtitle track in Languages and subtitles." : "";
@@ -50,6 +52,13 @@ export function videoAIDrafts(call: Request, updateDetails: (details: GeneratedD
       status.textContent = restriction || (job ? job.error || messages[job.state] || "" : "");
       result.hidden = job?.state !== "draft";
       result.disabled = Boolean(restriction);
+      if (step === "ai_highlights" && job?.state === "saved" && job.result && "work" in job.result) {
+        const path = "/operator/videos/" + encodeURIComponent(job.result.work);
+        result.querySelector<HTMLAnchorElement>("[data-reel-preview]")!.href = path;
+        result.querySelector<HTMLAnchorElement>("[data-reel-editor]")!.href = path + "/timeline";
+        result.hidden = false;
+        status.textContent = "Private highlight reel saved.";
+      }
       if (job?.state === "draft" && job.result && result.dataset.draft !== job.id) {
         if ("chapters" in job.result) {
           const list = form.querySelector<HTMLElement>("[data-chapters]")!;
@@ -79,7 +88,7 @@ export function videoAIDrafts(call: Request, updateDetails: (details: GeneratedD
             row.append(legend, startLabel, titleLabel, remove);
             return row;
           }));
-        } else {
+        } else if ("description" in job.result) {
           (form.elements.namedItem("title") as HTMLInputElement).value = job.result.title;
           (form.elements.namedItem("description") as HTMLTextAreaElement).value = job.result.description;
           (form.elements.namedItem("tags") as HTMLTextAreaElement).value = job.result.tags.join("\n");
@@ -87,7 +96,7 @@ export function videoAIDrafts(call: Request, updateDetails: (details: GeneratedD
         result.dataset.draft = job.id;
       }
       if (step === "ai_details" && prior && prior.state !== "saved" && job?.state === "saved"
-          && job.result && "title" in job.result) updateDetails(job.result);
+          && job.result && "description" in job.result) updateDetails(job.result);
     }
     panel.hidden = false;
     if (Object.values(next.jobs).some(job => active.includes(job.state))) {
@@ -105,10 +114,12 @@ export function videoAIDrafts(call: Request, updateDetails: (details: GeneratedD
 
   for (const {form, step, run, status} of tools) {
     run.onclick = async () => {
+      if (step === "ai_highlights" && !form.reportValidity()) return;
       run.disabled = true;
       try {
         display(await call<Report>("/ai-drafts", "POST", {
           version: state.version, step, source_language: track.value, apply: auto.checked,
+          ...(step === "ai_highlights" ? {prompt: new FormData(form).get("prompt")} : {}),
         }));
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);

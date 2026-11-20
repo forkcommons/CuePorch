@@ -42,6 +42,10 @@ class StudioScripts(unittest.TestCase):
             model_calls = []
             mock = Flask("studio-script-model")
 
+            @mock.get("/api/tags")
+            def models():
+                return dict(models=[dict(model="studio-script-fixture:latest")])
+
             @mock.post("/api/generate")
             def generate_fixture():
                 body = request.get_json()

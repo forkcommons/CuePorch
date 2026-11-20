@@ -9,7 +9,7 @@ from pathlib import Path
 from time import monotonic
 
 from cueporch import checksum
-from local_model import loopback_origin
+from local_model import ModelError, local_model_name, loopback_origin, require_local_model
 
 
 class CaptionError(ValueError):
@@ -19,9 +19,17 @@ class CaptionError(ValueError):
 TRANSLATE = """
 import json
 import sys
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener, install_opener
 
 from textflowkit.core.translate import get_translator
 
+
+class RefuseRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+install_opener(build_opener(ProxyHandler({}), RefuseRedirect()))
 request = json.loads(sys.stdin.buffer.read())
 result = get_translator().translate(request["texts"], request["language"])
 sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
@@ -31,7 +39,7 @@ sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
 def translation_runtime():
     env = dict(os.environ)
     model = env.get("TEXTFLOWKIT_TRANSLATE_MODEL", "").strip()
-    if (not model or model.casefold().endswith(":cloud")
+    if (not local_model_name(model)
             or not loopback_origin(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))):
         return None
     python = env.get("CUEPORCH_TEXTFLOWKIT_PYTHON")
@@ -46,7 +54,6 @@ def translation_runtime():
         return None
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
-    env["NO_PROXY"] = "localhost,127.0.0.1,::1"
     return [str(python), "-c", TRANSLATE], env
 
 
@@ -55,6 +62,11 @@ def translate_cues(cues, language, stopping=None):
     if runtime is None:
         raise CaptionError("Configure a TextFlowKit runtime and local translation model first.")
     args, env = runtime
+    origin = loopback_origin(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))
+    try:
+        require_local_model(origin, env["TEXTFLOWKIT_TRANSLATE_MODEL"].strip())
+    except ModelError as error:
+        raise CaptionError(str(error)) from error
     body = json.dumps(dict(texts=[cue["text"] for cue in cues], language=language)).encode("utf-8")
     try:
         with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as result:

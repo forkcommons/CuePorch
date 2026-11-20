@@ -5,6 +5,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -21,8 +22,10 @@ from werkzeug.serving import make_server
 from browser import chromium
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import caption_adapter
 from cueporch import import_collection
 from institution import create_app
+import local_model
 
 
 class SubtitleTranslation(unittest.TestCase):
@@ -55,6 +58,7 @@ class SubtitleTranslation(unittest.TestCase):
             mock = Flask("local-translation-model")
             calls = []
             draft_calls = []
+            generation_requests = []
             control = {"available": True}
             model_started, release_model = Event(), Event()
             cleanup.callback(release_model.set)
@@ -63,9 +67,18 @@ class SubtitleTranslation(unittest.TestCase):
             responses.update({"es-mx": responses["es"], "fr-ca": responses["fr"],
                               "es-ar": responses["es"], "es-cl": responses["es"]})
 
+            @mock.get("/api/tags")
+            def models():
+                return dict(models=[
+                    dict(name="local-editorial-fixture:latest"),
+                    dict(model="local-translation-fixture:latest"),
+                    dict(model="regional-model:latest", remote_model="example:cloud", remote_host="https://example.invalid"),
+                ])
+
             @mock.post("/api/generate")
             def complete():
                 payload = request.get_json()
+                generation_requests.append(payload["model"])
                 if "format" in payload:
                     self.assertEqual((payload["model"], payload["stream"]), ("local-editorial-fixture", False))
                     transcript = json.loads(payload["prompt"].split("\nTranscript:\n", 1)[1])
@@ -79,6 +92,13 @@ class SubtitleTranslation(unittest.TestCase):
                             result = dict(answer="La sesión pública está comenzando.", cues=[2])
                         else:
                             result = dict(answer="The Council is opening the public session.", cues=[2])
+                    elif "clips" in fields:
+                        highlight = json.loads(payload["prompt"].split("\nHighlight request:\n", 1)[1].split("\nTranscript:\n", 1)[0])
+                        draft_calls.append(highlight)
+                        self.assertEqual(transcript[1]["start"], 1)
+                        result = {"clips": [{"first": 2, "last": 2}, {"first": 1, "last": 1}]}
+                        if highlight == "Return invalid cues.":
+                            result = {"clips": [{"first": 2, "last": 20}]}
                     elif "chapters" in fields:
                         draft_calls.append("chapters")
                         result = {"chapters": [{"cue": 1, "title": "Welcome"}, {"cue": 2, "title": "Public session"}]}
@@ -106,6 +126,16 @@ class SubtitleTranslation(unittest.TestCase):
                 "CUEPORCH_OLLAMA_HOST": mock_origin,
                 "CUEPORCH_OLLAMA_MODEL": "local-editorial-fixture",
             }))
+            with patch.dict(os.environ, {"CUEPORCH_OLLAMA_MODEL": "regional-model",
+                                         "TEXTFLOWKIT_TRANSLATE_MODEL": "regional-model"}):
+                with self.assertRaisesRegex(local_model.ModelError, "cloud alias"):
+                    local_model.generate("Private fixture transcript", {})
+                with self.assertRaisesRegex(caption_adapter.CaptionError, "cloud alias"):
+                    caption_adapter.translate_cues([{"text": "Private fixture transcript"}], "es")
+            with patch.dict(os.environ, {"CUEPORCH_OLLAMA_MODEL": "regional:1017-cloud"}):
+                self.assertIsNone(local_model.runtime())
+            self.assertEqual(generation_requests, [])
+            print("Ollama inventory: renamed cloud alias rejected before generation and translation.")
             for service in ("library_worker", "review_push"):
                 cleanup.enter_context(patch(f"institution.{service}.start"))
             operator = secrets.token_urlsafe(32)
@@ -194,6 +224,7 @@ class SubtitleTranslation(unittest.TestCase):
                 self.verify_batches(page, origin, headers, work, nested, outside, calls, subtitles_path)
                 self.verify_ai_policy(browser, page, origin, headers, work, calls, model_started, release_model)
                 self.verify_video_drafts(page, viewer, origin, headers, work, draft_calls)
+                self.verify_highlights(browser, page, origin, headers, work, draft_calls)
                 self.verify_video_questions(cleanup, page, viewer, origin, headers, work)
                 browser.close()
 
@@ -454,6 +485,54 @@ class SubtitleTranslation(unittest.TestCase):
         self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_details"], ["superseded", "saved"])
         self.assertEqual([row["status"] for row in rows if row["workflow"] == "ai_chapters"], ["saved"])
         print("Video draft verification: automatic details, stale-edit protection, persisted chapter draft and decoded chapter seek.")
+
+    def verify_highlights(self, browser, page, origin, headers, work, calls):
+        source = origin + f"/api/library/work/{work}"
+        approvals = origin + "/api/policy/ai_highlights"
+        api = page.request
+        self.assertFalse(api.get(origin + "/api/policy", headers=headers).json()["ai_highlights"])
+        expect(page.get_by_label("Source subtitle track")).to_have_value("en")
+        self.assertTrue(api.put(approvals, headers=headers, data={"required": True}).ok)
+        reel = page.locator('[data-ai-step="ai_highlights"]')
+        description = reel.get_by_label("Describe the highlight reel")
+        create = reel.get_by_role("button", name="Create private highlight reel")
+        description.fill("Open with the public session, then replay the welcome.")
+        take_count = len(calls)
+        create.click()
+        expect(reel.get_by_role("status")).to_have_text("Waiting for operator approval.")
+        self.assertEqual(len(calls), take_count)
+        self.assertTrue(api.put(approvals, headers=headers, data={"required": False}).ok)
+        expect(reel.get_by_role("status")).to_have_text("Private highlight reel saved.", timeout=25000)
+        self.assertEqual(calls[-1], "Open with the public session, then replay the welcome.")
+        report = api.get(source + "/ai-drafts", headers=headers).json()["jobs"]["ai_highlights"]
+        self.assertEqual(report["state"], "saved")
+        target = report["result"]["work"]
+        self.assertNotEqual(target, work)
+        self.assertAlmostEqual(report["result"]["duration"], 1.7, delta=0.12)
+        self.assertEqual(api.get(source + "/details", headers=headers).json()["title"], "Approved Council record")
+        self.assertEqual(api.get(origin + f"/watch/work/{target}").status, 404)
+        result = api.get(origin + f"/api/library/work/{target}/languages/en", headers=headers).json()
+        self.assertEqual([cue["text"] for cue in result["cues"]],
+                         ["The public session starts now.", "Welcome to the Council. Today is our regular session."])
+        self.assertEqual([cue["start"] for cue in result["cues"]], [0, 900])
+
+        preview = browser.new_page()
+        preview.add_init_script("sessionStorage.setItem('cueporchOperator', " +
+                                json.dumps(headers["Authorization"].removeprefix("Bearer ")) + ");")
+        preview.goto(origin + reel.get_by_role("link", name="Preview private reel").get_attribute("href"))
+        player = preview.locator("#workspacePreview")
+        expect(player).to_be_visible()
+        expect(player).to_have_attribute("src", re.compile(r"^/library-media/"))
+        self.assertEqual(player.evaluate("async video => {video.muted=true; await video.play(); return video.videoWidth;}"), 1280)
+        expect(reel.get_by_role("link", name="Open in Timeline editor")).to_have_attribute("href", f"/operator/videos/{target}/timeline")
+        preview.close()
+        description.fill("Return invalid cues.")
+        create.click()
+        expect(reel.get_by_role("status")).to_have_text(
+            "The local model selected cues outside the source transcript.", timeout=15000)
+        failed = api.get(source + "/ai-drafts", headers=headers).json()["jobs"]["ai_highlights"]
+        self.assertEqual((failed["state"], failed["result"]), ("failed", None))
+        print("Highlights: withheld model, private separate reel, decoded video, retimed cues and malformed selection passed.")
 
     def verify_video_questions(self, cleanup, operator, viewer, origin, headers, work):
         api = operator.request

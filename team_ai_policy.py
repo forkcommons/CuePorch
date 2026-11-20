@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS team_ai_policy(
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision TEXT NOT NULL, settings TEXT NOT NULL);
 """
 FEATURES = {"caption": "Generate captions", "translation": "Translate subtitles",
-            "ai_details": "Generate video details", "ai_chapters": "Generate chapters", "ai_script": "Generate scripts"}
+            "ai_details": "Generate video details", "ai_chapters": "Generate chapters",
+            "ai_script": "Generate scripts", "ai_highlights": "Generate highlights"}
 DEFAULTS = {
     "features": {key: {"enabled": True, "administrators": True} for key in FEATURES},
     "dictionary": [],

@@ -26,6 +26,8 @@ export function videoAIDrafts(call, updateDetails) {
         track.replaceChildren(...next.tracks.map(language => new Option(language, language)));
         if (next.tracks.includes(selected))
             track.value = selected;
+        else if (next.tracks.includes(next.original_language))
+            track.value = next.original_language;
         track.disabled = next.tracks.length === 0;
         notice.textContent = !next.configured ? "Configure a local Ollama model to generate drafts."
             : !next.tracks.length ? "Add a saved subtitle track in Languages and subtitles." : "";
@@ -37,6 +39,13 @@ export function videoAIDrafts(call, updateDetails) {
             status.textContent = restriction || (job ? job.error || messages[job.state] || "" : "");
             result.hidden = job?.state !== "draft";
             result.disabled = Boolean(restriction);
+            if (step === "ai_highlights" && job?.state === "saved" && job.result && "work" in job.result) {
+                const path = "/operator/videos/" + encodeURIComponent(job.result.work);
+                result.querySelector("[data-reel-preview]").href = path;
+                result.querySelector("[data-reel-editor]").href = path + "/timeline";
+                result.hidden = false;
+                status.textContent = "Private highlight reel saved.";
+            }
             if (job?.state === "draft" && job.result && result.dataset.draft !== job.id) {
                 if ("chapters" in job.result) {
                     const list = form.querySelector("[data-chapters]");
@@ -67,7 +76,7 @@ export function videoAIDrafts(call, updateDetails) {
                         return row;
                     }));
                 }
-                else {
+                else if ("description" in job.result) {
                     form.elements.namedItem("title").value = job.result.title;
                     form.elements.namedItem("description").value = job.result.description;
                     form.elements.namedItem("tags").value = job.result.tags.join("\n");
@@ -75,7 +84,7 @@ export function videoAIDrafts(call, updateDetails) {
                 result.dataset.draft = job.id;
             }
             if (step === "ai_details" && prior && prior.state !== "saved" && job?.state === "saved"
-                && job.result && "title" in job.result)
+                && job.result && "description" in job.result)
                 updateDetails(job.result);
         }
         panel.hidden = false;
@@ -94,10 +103,13 @@ export function videoAIDrafts(call, updateDetails) {
     }
     for (const { form, step, run, status } of tools) {
         run.onclick = async () => {
+            if (step === "ai_highlights" && !form.reportValidity())
+                return;
             run.disabled = true;
             try {
                 display(await call("/ai-drafts", "POST", {
                     version: state.version, step, source_language: track.value, apply: auto.checked,
+                    ...(step === "ai_highlights" ? { prompt: new FormData(form).get("prompt") } : {}),
                 }));
             }
             catch (error) {

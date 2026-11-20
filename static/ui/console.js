@@ -4,6 +4,7 @@ const load = document.querySelector("button#load");
 const settings = document.querySelector("div#settings");
 const policyLabels = {
     public_comments: "public comments", ai_details: "AI video details", ai_chapters: "AI chapters", ai_script: "AI scripts",
+    ai_highlights: "AI highlights",
 };
 const queue = document.querySelector("div#queue");
 const result = document.querySelector("p#result");

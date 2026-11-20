@@ -199,6 +199,7 @@ def create_app(root, database, operator, institution, simulation=None):
         team_accounts.initialize_permissions(db)
         team_sessions.initialize(db)
         library_caption_jobs.initialize(db)
+        library_ai_drafts.initialize(db)
         workspace_updates.initialize(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()

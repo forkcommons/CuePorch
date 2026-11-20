@@ -127,6 +127,17 @@
           <button type="submit">Save suggested chapters</button>
         </fieldset>
       </form>
+      <form data-ai-step="ai_highlights">
+        <label for="highlightPrompt">Describe the highlight reel</label>
+        <textarea id="highlightPrompt" name="prompt" maxlength="1200" rows="3" required></textarea>
+        <button type="button" data-generate>Create private highlight reel</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Highlight reel</legend>
+          <a data-reel-preview>Preview private reel</a>
+          <a data-reel-editor>Open in Timeline editor</a>
+        </fieldset>
+      </form>
     </section>
     <section aria-labelledby="factsTitle">
       <h2 id="factsTitle">Stored video</h2>
