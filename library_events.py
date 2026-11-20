@@ -373,6 +373,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
 
     def stop():
+        app.extensions["account_reset_delivery"].stop()
         outputs.close()
         preview_outputs.close()
         programs.close()

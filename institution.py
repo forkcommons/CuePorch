@@ -38,6 +38,7 @@ from waitress import serve
 from cueporch import dump, verify
 import analytics_reports
 import account_email
+import account_recovery
 import account_totp
 import audience_accounts
 import audience_comments
@@ -147,6 +148,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + audience_accounts.SCHEMA
             + account_totp.SCHEMA
             + account_email.SCHEMA
+            + account_recovery.SCHEMA
             + team_accounts.SCHEMA
             + team_branding.SCHEMA
             + team_brand_kits.SCHEMA
@@ -174,6 +176,7 @@ def create_app(root, database, operator, institution, simulation=None):
         team_accounts.initialize_permissions(db)
         workspace_updates.initialize(db)
     app = Flask(__name__)
+    app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536
     app.config["WORKSPACE_COOKIE_SCOPE"] = hmac.digest(
         operator.encode(), b"CuePorch workspace cookie", "sha256",

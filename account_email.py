@@ -44,6 +44,7 @@ class EmailVerification:
     def forget(self, con, account):
         con.execute("DELETE FROM account_verified_email WHERE scope=? AND account=?", (self.scope, account))
         con.execute("DELETE FROM account_email_verification WHERE scope=? AND account=?", (self.scope, account))
+        con.execute("DELETE FROM account_password_reset WHERE scope=? AND account=?", (self.scope, account))
 
     def proof(self, revision, code):
         return hmac.digest(self.key, (revision + ":" + code).encode(), "sha256")

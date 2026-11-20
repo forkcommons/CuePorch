@@ -14,7 +14,8 @@ import sqlite3
 import ssl
 import sys
 import tempfile
-from threading import Thread
+from threading import Event, Thread
+from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -23,6 +24,7 @@ from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
 from browser import chromium
+from installed_authenticator import app_code
 from installed_simulcast import tls_certificate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -55,6 +57,7 @@ class Relay(StreamRequestHandler):
                 while (line := self.rfile.readline()) not in (b"", b".\r\n"):
                     lines.append(line[1:] if line.startswith(b"..") else line)
                 self.server.deliveries.append(BytesParser(policy=policy.default).parsebytes(b"".join(lines)))
+                self.server.delivered.set()
                 reply = b"250 message accepted"
             elif operation == b"quit":
                 self.wfile.write(b"221 closed\r\n")
@@ -71,6 +74,101 @@ class Relay(StreamRequestHandler):
 
 
 class InvitationDelivery(unittest.TestCase):
+    def verify_password_recovery(self, browser, base, relay, db, live_account, scope, address, password):
+        prefix = "/team" if scope == "team" else "/account"
+        header = {"X-CuePorch-" + scope.capitalize(): "1"}
+        api = f"{base}/api/{scope}"
+        other_scope = "viewer" if scope == "team" else "team"
+        account = api + "/account"
+        recovery = api + "/password-recovery"
+        credentials = dict(email=address, password=password)
+        old = live_account.request
+        recovery_codes = []
+        if scope == "team":
+            setup = old.post(api + "/authenticator", headers=header, data={"password": password}).json()
+            enrolled = old.put(api + "/authenticator", headers=header, data={
+                "setup_ticket": setup["setup_ticket"], "code": app_code(setup["setup_key"]),
+            })
+            self.assertTrue(enrolled.ok)
+            recovery_codes = enrolled.json()["recovery_codes"]
+
+        with browser.new_context() as fresh:
+            page = fresh.new_page()
+            page.goto(base + prefix)
+            page.get_by_role("link", name="Forgot your password?").click()
+            email = page.get_by_label("Email")
+            send = page.get_by_role("button", name="Send reset link")
+            unknown = fresh.request.post(recovery, headers=header, data={"email": "unused@example.test"}, timeout=8000)
+            self.assertEqual(unknown.status, 202)
+            self.assertEqual(unknown.json(), {"accepted": True})
+            status = page.locator("#passwordRecoveryStatus")
+            message = "If this address belongs to a verified account, CuePorch will send a reset link."
+
+            def request_link():
+                before = len(relay.deliveries)
+                relay.delivered.clear()
+                email.fill(address)
+                with page.expect_response(lambda response: response.url == recovery and response.request.method == "POST", timeout=8000) as accepted:
+                    send.click()
+                self.assertEqual(accepted.value.status, 202)
+                expect(status).to_have_text(message)
+                self.assertTrue(relay.delivered.wait(8), "No reset message reached the local relay.")
+                self.assertEqual(len(relay.deliveries), before + 1)
+                delivered = relay.deliveries[-1]
+                self.assertEqual(delivered["To"], address)
+                url = next(line for line in delivered.get_content().splitlines() if line.startswith("https://"))
+                parsed = urlsplit(url)
+                self.assertEqual((parsed.netloc, parsed.path), ("station.example.test", prefix + "/reset"))
+                deadline = monotonic() + 3
+                while monotonic() < deadline:
+                    with closing(sqlite3.connect(db)) as con:
+                        stored = con.execute("""SELECT token_hash,delivered FROM account_password_reset
+                                                WHERE scope=? AND address=?""", (scope, address)).fetchone()
+                    if stored and stored[1]:
+                        self.assertNotEqual(stored[0], parsed.fragment)
+                        return parsed
+                    sleep(0.02)
+                self.fail("The reset message arrived but was not marked delivered.")
+
+            expired = request_link()
+            duplicate = fresh.request.post(recovery, headers=header, data={"email": address}, timeout=8000)
+            self.assertEqual((duplicate.status, duplicate.json()), (unknown.status, unknown.json()))
+            changed = f"Rehearsed {scope} password after recovery!"
+            with closing(sqlite3.connect(db)) as con, con:
+                con.execute("UPDATE account_password_reset SET expires=0 WHERE scope=?", (scope,))
+            attempt = dict(reset_token=expired.fragment, password=changed)
+            self.assertEqual(fresh.request.put(recovery, headers=header, data=attempt).status, 404)
+            parsed = request_link()
+            attempt["reset_token"] = parsed.fragment
+            self.assertEqual(fresh.request.put(f"{base}/api/{other_scope}/password-recovery",
+                             headers={"X-CuePorch-" + other_scope.capitalize(): "1"}, data=attempt).status, 404)
+            page = fresh.new_page()
+            local = page.goto(base + parsed.path + "#" + parsed.fragment)
+            self.assertEqual(local.headers["referrer-policy"], "no-referrer")
+            expect(page).to_have_url(base + parsed.path)
+            status = page.locator("#passwordRecoveryStatus")
+            page.get_by_label("New password", exact=True).fill(changed)
+            page.get_by_label("Confirm new password", exact=True).fill(changed)
+            confirm = page.get_by_role("button", name="Change password")
+            confirm.click()
+            if recovery_codes:
+                factor = page.get_by_label("Authenticator or recovery code")
+                expect(factor).to_be_visible()
+                self.assertTrue(old.get(account).ok)
+                factor.fill(recovery_codes[0])
+                confirm.click()
+            expect(status).to_have_text("Password changed. Return to sign in.")
+            self.assertEqual(old.get(account).status, 401)
+            self.assertEqual(fresh.request.get(account).status, 401)
+            self.assertEqual(fresh.request.put(recovery, headers=header, data=attempt).status, 404)
+            self.assertEqual(old.post(api + "/session", headers=header, data=credentials).status, 401)
+            credentials["password"] = changed
+            if recovery_codes:
+                self.assertEqual(old.post(api + "/session", headers=header, data=credentials).status, 428)
+                credentials["code"] = recovery_codes[1]
+            self.assertTrue(old.post(api + "/session", headers=header, data=credentials).ok)
+            return changed
+
     def verify_account_email(self, browser, base, relay, db, operator):
         address = "recipient@example.test"
         credentials = "Rehearsal passphrase"
@@ -141,6 +239,10 @@ class InvitationDelivery(unittest.TestCase):
             expect(email_status).to_have_text("Email verified.")
             self.assertEqual(browser_scope.request.put(mailbox, headers=headers, data={"code": new_code}).status, 422)
 
+            credentials = self.verify_password_recovery(browser, base, relay, db, browser_scope, "viewer",
+                                                        address, credentials)
+            self.verify_password_recovery(browser, base, relay, db, browser_scope, "team", address,
+                                          "Rehearsal passphrase")
             changed = browser_scope.request.put(base + "/api/viewer/account", headers=headers, data=dict(
                 email="fail@example.test", name="Local viewer", current_password=credentials,
             ))
@@ -163,6 +265,7 @@ class InvitationDelivery(unittest.TestCase):
             relay.tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             relay.tls.load_cert_chain(cert, key)
             relay.deliveries = []
+            relay.delivered = Event()
             listener = Thread(target=relay.serve_forever, daemon=True)
             listener.start()
             cleanup.callback(listener.join)

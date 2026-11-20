@@ -13,6 +13,7 @@ from flask import Response, abort, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import account_email
+import account_recovery
 import account_totp
 import creator_profiles
 import library_analytics
@@ -244,6 +245,19 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
         lambda con, actor: note(con, actor_id(actor), "email_verified", actor["id"]),
     )
 
+    def reset_password(con, uid, encoded):
+        con.execute("UPDATE team_member SET password_hash=? WHERE id=? AND removed IS NULL", (encoded, uid))
+        con.execute("DELETE FROM team_session WHERE member=?", (uid,))
+        note(con, "team:" + uid, "password_recovered", uid)
+
+    account_recovery.register(
+        app, tx, "team", origin, email_security, lambda: secure_site(origin), mutation,
+        lambda con, address: con.execute(
+            "SELECT id,email,password_hash FROM team_member WHERE email=? AND removed IS NULL", (address,),
+        ).fetchone(),
+        limit, authenticator, reset_password,
+    )
+
     def eligible_works(con, ids=None):
         return {work["id"]: work for work in read_works() if (ids is None or work["id"] in ids)
                 and playback(work) and grant_available(con, work["id"])}
@@ -285,7 +299,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     @app.get("/team")
     def team_sign_in_page():
         secure_site(origin)
-        return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=False))
+        return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=False,
+                                       can_recover=bool(email_security.config)))
 
     @app.get("/team/members")
     def team_members_page():

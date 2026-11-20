@@ -19,6 +19,7 @@
           <label>Password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
           {% include "sign_in_factor.html" %}
           <button type="submit">Sign in</button>
+          {% if can_recover %}<a href="{{ url_for('viewer_password_reset') }}">Forgot your password?</a>{% endif %}
         </form>
       </section>
       <section aria-labelledby="viewerJoinHeading">

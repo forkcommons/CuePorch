@@ -34,6 +34,8 @@ In **Viewer account**, you can change your display name, pronouns or sign-in ema
 
 When account mail is configured, choose **Send verification code** in Account security. Enter the eight-digit code from your email within ten minutes. Changing a viewer account's email clears verification so you can verify the new address.
 
+Use **Forgot your password?** on the Viewer or Team sign-in page. CuePorch sends a short-lived reset link to a verified address. An account with an authenticator also requires a current app code or an unused recovery code. Changing the password through the link signs out every session for that account.
+
 Use **Viewing preferences** to show everything, hide mature videos, or hide selected descriptors and unrated videos. The setting follows your account and applies to Explore, search, Staff Picks and your Feed. A direct link to a filtered public video gives you the option to show it. The video's publishing and registration rules still apply.
 
 On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.

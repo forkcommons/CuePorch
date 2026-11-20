@@ -12,6 +12,7 @@ from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import account_email
+import account_recovery
 import account_totp
 import audience_comments
 import audience_library
@@ -145,11 +146,22 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     email_security = account_email.register(app, tx, "viewer", operator, public_origin, scheme, mutation,
                                             security_account, limit)
 
+    def reset_password(con, uid, encoded):
+        con.execute("UPDATE audience_account SET password_hash=? WHERE id=?", (encoded, uid))
+        con.execute("DELETE FROM audience_session WHERE account=?", (uid,))
+
+    account_recovery.register(
+        app, tx, "viewer", public_origin, email_security, scheme, mutation,
+        lambda con, address: con.execute("SELECT * FROM audience_account WHERE email=?", (address,)).fetchone(),
+        limit, authenticator, reset_password,
+    )
+
     @app.get("/account")
     def viewer_account_page():
         scheme()
         destination = request.args.get("next", "")
         return private(render_template("viewer_account.html", content_choices=content_rating.PREFERENCE_CHOICES,
+                                       can_recover=bool(email_security.config),
                                        destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else ""))
 
     @app.route("/api/viewer/preferences", methods=("GET", "PUT"))
@@ -257,8 +269,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         with tx() as con:
             row = current(con, session)
             same_password(row, previous_hash)
-            con.execute("UPDATE audience_account SET password_hash=? WHERE id=?", (encoded, row["id"]))
-            con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
+            reset_password(con, row["id"], encoded)
             token = issue(con, row["id"], None)
         return cookie(private("", 204), secure, token)
 
