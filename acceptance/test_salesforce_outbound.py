@@ -59,6 +59,20 @@ class Provider:
 
             raise AssertionError(f"unexpected GET {url}")
 
+        if method == "PATCH":
+            before_send()
+            assert path == f"sobjects/{delivery.REGISTRANT}/{REGISTRANT_KEY}", path
+            record = next(record for (name, _), record in self.objects.items() if name == delivery.REGISTRANT)
+            record.update(kwargs["json"])
+            self.writes.append("PATCH")
+            if "PATCH" in self.lost:
+                self.lost.remove("PATCH")
+                raise BadGateway("lost response")
+            resp = _resp({})
+            resp.status_code = 204
+            resp._content_consumed = True
+            return resp
+
         if method == "POST":
             before_send()
             match = re.fullmatch(r"sobjects/([^/]+)", path)
@@ -103,12 +117,12 @@ class Provider:
 
 class TestSalesforceOutbound(unittest.TestCase):
 
-    def publish(self, provider, before_write=lambda: None):
+    def publish(self, provider, before_write=lambda: None, kind="webinar"):
         return delivery.publish_registration(
             provider,
             REVISION,
             campaign=CAMPAIGN,
-            kind="webinar",
+            kind=kind,
             title="Documentary",
             source_ref="station/event/123",
             registrant="viewer-1",
@@ -154,6 +168,119 @@ class TestSalesforceOutbound(unittest.TestCase):
         registrant = next(value for (name, key), value in provider.objects.items() if name == delivery.REGISTRANT)
         assert registrant["Contact__c"] == CONTACT
         assert registrant["Lead__c"] is None
+
+    def report(self, provider, before_write=lambda: None, kind="webinar", **fields):
+        return delivery.publish_engagement(
+            provider,
+            REVISION,
+            campaign=CAMPAIGN,
+            kind=kind,
+            source_ref="station/event/123",
+            registrant="viewer-1",
+            address=EMAIL,
+            before_write=before_write,
+            **fields,
+        )
+
+    def test_engagement_recovers_lost_reply_and_preserves_progress(self):
+        provider = Provider()
+        self.assertEqual(self.publish(provider), "sent")
+        provider.lost = {"PATCH"}
+
+        self.assertEqual(
+            self.report(
+                provider,
+                status="Attended Live",
+                watch_percent=65,
+            ),
+            "sent",
+        )
+        record = next(
+            value
+            for (name, _), value in provider.objects.items()
+            if name == delivery.REGISTRANT
+        )
+        self.assertEqual(record["Status__c"], "Attended Live")
+        self.assertEqual(record["Watch_Percent__c"], 65)
+        self.assertEqual(provider.writes.count("PATCH"), 1)
+
+        self.report(
+            provider,
+            status="No Show",
+            watch_percent=20,
+        )
+        self.assertEqual(record["Status__c"], "Attended Live")
+        self.assertEqual(record["Watch_Percent__c"], 65)
+        self.assertEqual(provider.writes.count("PATCH"), 1)
+
+    def test_video_report(self):
+        from werkzeug.exceptions import UnprocessableEntity
+
+        provider = Provider()
+        self.assertEqual(self.publish(provider, kind="video"), "sent")
+        self.assertEqual(
+            self.report(
+                provider,
+                kind="video",
+                video_views=4,
+                watch_percent=75,
+            ),
+            "sent",
+        )
+        record = next(
+            value
+            for (name, _), value in provider.objects.items()
+            if name == delivery.REGISTRANT
+        )
+        self.assertEqual(record["Video_Views__c"], 4)
+        self.assertEqual(record["Watch_Percent__c"], 75)
+
+        with self.assertRaises(UnprocessableEntity):
+            self.report(provider, kind="video", status="Attended Live")
+
+    def test_report_respects_scope_and_refuses_missing_record(self):
+        from werkzeug.exceptions import Forbidden, NotFound
+        provider = Provider()
+        self.publish(provider)
+        provider.rows['Lead'][0]['HasOptedOutOfEmail'] = True
+        self.assertEqual(self.report(provider, watch_percent=50), 'skipped')
+        provider.rows['Lead'][0]['HasOptedOutOfEmail'] = False
+
+        def cancel():
+            raise Forbidden
+
+        with self.assertRaises(Forbidden):
+            self.report(provider, watch_percent=50, before_write=cancel)
+
+        record_key = next(key for key in provider.objects if key[0] == delivery.REGISTRANT)
+        provider.objects[record_key]['Media__c'] = CONTACT
+        with self.assertRaises(BadGateway):
+            self.report(provider, watch_percent=50)
+        del provider.objects[record_key]
+        with self.assertRaises(NotFound):
+            self.report(provider, watch_percent=50)
+        self.assertNotIn('PATCH', provider.writes)
+
+    def test_engagement_preflight_requires_fields(self):
+        from unittest.mock import patch
+        from werkzeug.exceptions import Conflict
+
+        metadata = {
+            'updateable': True,
+            'fields': [
+                {'name': 'Status__c', 'updateable': True},
+                {'name': 'Watch_Percent__c', 'updateable': True},
+            ],
+        }
+        with patch.object(delivery.salesforce_crm, '_get', return_value=metadata):
+            delivery.validate_engagement_installation(Provider(), REVISION, kind='webinar')
+            with self.assertRaises(Conflict) as missing:
+                delivery.validate_engagement_installation(Provider(), REVISION, kind='video')
+            self.assertIn('Video_Views__c', str(missing.exception))
+
+            metadata['updateable'] = False
+            with self.assertRaises(Conflict):
+                delivery.validate_engagement_installation(Provider(), REVISION, kind='webinar')
 
     def test_ambiguous_email(self):
         provider = Provider()

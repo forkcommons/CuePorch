@@ -63,4 +63,20 @@
         <type>DateTime</type>
         <required>true</required>
     </fields>
+    <fields>
+        <fullName>Watch_Percent__c</fullName>
+        <label>Watch Percent</label>
+        <precision>3</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+    </fields>
+    <fields>
+        <fullName>Video_Views__c</fullName>
+        <label>Video Views</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+    </fields>
 </CustomObject>

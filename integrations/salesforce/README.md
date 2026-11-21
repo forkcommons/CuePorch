@@ -22,3 +22,9 @@ In the webinar's attendee panel or the video's registration editor, load Salesfo
 Delivery runs automatically by default. Operators can require approval under the contact delivery policy. Refresh Salesforce delivery status in the attendee panel to see waiting and sent counts. Stopping delivery or disconnecting Salesforce cancels pending deliveries. Records already sent remain subject to the Salesforce organization's retention settings.
 
 The source tests use simulated Salesforce responses. Verification in a Salesforce organization and on the shipping packages is pending. Engagement reporting remains in development.
+
+## Engagement reporting
+
+CuePorch's Salesforce metadata defines whole-number watch percentages and video view counts on the Registrant record. The reporting adapter verifies the campaign, media, and Lead or Contact before updating an existing Registrant. It checks the saved values after an update and preserves higher viewing totals, confirmed live attendance, and custom Salesforce statuses. [Salesforce record operations](https://developer.salesforce.com/docs/platform/api-rest/guide/resources-list.html)
+
+The published Vimeo workflow also includes webinar completion-based delivery, daily video reporting, attendance status, and related records for Q&A, poll answers, registration answers, and hidden campaign parameters. CuePorch still needs to connect its consented viewer activity and reporting schedule to this adapter and show the related records in Salesforce. [Vimeo Salesforce workflow](https://help.vimeo.com/hc/en-us/articles/32200480938001-About-the-Salesforce-Sales-Cloud-integration-with-Vimeo)
