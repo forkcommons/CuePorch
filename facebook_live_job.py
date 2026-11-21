@@ -105,8 +105,9 @@ def start(app, tx, prepare):
     return stop
 
 
-def provision(tx, check, create, save, event, opens, page, revision, *, claim_auto=None):
+def provision(tx, check, create, save, event, opens, page, revision, *, claim_auto=None, replace=None):
     key = (event, opens, page)
+    replacing = False
     with tx() as con:
         check(con)
         prior = con.execute("SELECT * FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key).fetchone()
@@ -116,12 +117,21 @@ def provision(tx, check, create, save, event, opens, page, revision, *, claim_au
             if prior["state"] != "prepared":
                 return {"state": "unconfirmed"}, 202
             destination = prior["destination"]
-            if not con.execute("SELECT 1 FROM live_simulcast_destination WHERE id=?", (destination,)).fetchone():
-                abort(409, "This broadcast was removed. Check its status in Facebook Live Producer.")
-            return {"state": "prepared", "id": destination}, 200
-        if claim_auto is not None and not claim_auto(con):
-            return {"state": "canceled"}, 200
-        con.execute("INSERT INTO facebook_live_creation VALUES(?,?,?,?,'sending',NULL)", (*key, revision))
+            if replace is not None and destination == replace and con.execute(
+                    "SELECT 1 FROM live_simulcast_destination WHERE id=? AND enabled=0",
+                    (destination,)).fetchone():
+                con.execute("""UPDATE facebook_live_creation SET state='sending'
+                    WHERE event=? AND opens=? AND page=? AND state='prepared' AND destination=?""",
+                    (*key, destination))
+                replacing = True
+            else:
+                if not con.execute("SELECT 1 FROM live_simulcast_destination WHERE id=?", (destination,)).fetchone():
+                    abort(409, "This broadcast was removed. Check its status in Facebook Live Producer.")
+                return {"state": "prepared", "id": destination}, 200
+        if not replacing:
+            if claim_auto is not None and not claim_auto(con):
+                return {"state": "canceled"}, 200
+            con.execute("INSERT INTO facebook_live_creation VALUES(?,?,?,?,'sending',NULL)", (*key, revision))
 
     try:
         target = create()
@@ -132,12 +142,24 @@ def provision(tx, check, create, save, event, opens, page, revision, *, claim_au
     except HTTPException as error:
         if error.code is not None and 400 <= error.code < 500:
             with tx() as con:
-                con.execute("DELETE FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key)
+                if replacing:
+                    con.execute("""UPDATE facebook_live_creation SET state='prepared'
+                        WHERE event=? AND opens=? AND page=? AND state='sending' AND destination=?""",
+                        (*key, replace))
+                else:
+                    con.execute("DELETE FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key)
         raise
 
     with tx() as con:
         check(con)
+        if replacing:
+            con.execute("DELETE FROM live_simulcast_destination WHERE id=? AND enabled=0", (replace,))
         destination = save(con, target)
-        con.execute("UPDATE facebook_live_creation SET state='prepared',destination=? WHERE event=? AND opens=? AND page=?",
-                    (destination, *key))
+        if replacing:
+            con.execute("""UPDATE facebook_live_creation SET state='prepared',destination=?
+                WHERE event=? AND opens=? AND page=? AND state='sending' AND destination=?""",
+                (destination, *key, replace))
+        else:
+            con.execute("UPDATE facebook_live_creation SET state='prepared',destination=? WHERE event=? AND opens=? AND page=?",
+                        (destination, *key))
     return {"state": "prepared", "id": destination}, 201

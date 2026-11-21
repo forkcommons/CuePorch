@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import facebook_upload as facebook
 import facebook_live
 import facebook_live_job
+import event_simulcast
 from institution import create_app
 import social_publication
 
@@ -171,8 +172,10 @@ class FacebookPublication(unittest.TestCase):
                 if page_id == "707":
                     authenticated("fixture-long")
                     profile_writes.append(request.get_json())
-                    return dict(id=str(1706 + len(profile_writes)),
-                                secure_stream_url=facebook_live.INGEST_SERVER + "/" + PROFILE_STREAM_KEY)
+                    count = len(profile_writes)
+                    key = PROFILE_STREAM_KEY + ("" if count == 1 else f"&replacement={count - 1}")
+                    return dict(id=str(1706 + count),
+                                secure_stream_url=facebook_live.INGEST_SERVER + "/" + key)
                 assert page_id in {"101", "202"}
                 authenticated("fixture-station" if page_id == "101" else "fixture-arts")
                 body = request.get_json()
@@ -191,6 +194,28 @@ class FacebookPublication(unittest.TestCase):
                 if page_id == "202":
                     return {"error": "fixture missing confirmation"}, 503
                 return dict(id="901", secure_stream_url="rtmps://live-api-s.facebook.com:443/rtmp/fixture-facebook-live-secret")
+
+            profile_live_status = {}
+            profile_end_calls = []
+            profile_end_attempts = []
+            profile_end_fail = [False]
+
+            @remote.get("/graph/<video_id>")
+            def profile_live_status_get(video_id):
+                authenticated("fixture-long")
+                assert request.args.get("fields") == "status"
+                return dict(status=profile_live_status.get(video_id, "LIVE"))
+
+            @remote.post("/graph/<video_id>")
+            def profile_live_end(video_id):
+                authenticated("fixture-long")
+                assert request.get_json() == {"end_live_video": True}
+                profile_end_attempts.append(video_id)
+                if profile_end_fail[0]:
+                    return dict(error="unavailable"), 503
+                profile_end_calls.append(video_id)
+                profile_live_status[video_id] = "LIVE_STOPPED"
+                return dict(success=True)
 
             @remote.post("/media/<page_id>/videos")
             def transfer(page_id):
@@ -469,7 +494,9 @@ class FacebookPublication(unittest.TestCase):
                 facebook_pages.select_option("101")
                 stop_series = page.get_by_role("button", name="Stop automatic starts for future dates", exact=True)
                 expect(stop_series).to_be_enabled()
-                stop_series.click()
+                with page.expect_response(lambda r: r.request.method == "DELETE" and r.url == auto_path) as stopped:
+                    stop_series.click()
+                self.assertEqual(200, stopped.value.status)
                 expect(stop_series).to_be_disabled()
                 self.assertEqual({"state": "idle", "series": False},
                                  api.get(last_path + "/facebook/auto?page=101", headers=auth).json())
@@ -583,6 +610,62 @@ class FacebookPublication(unittest.TestCase):
                 self.assertNotIn(PROFILE_SIGNATURE.encode(), Path(database).read_bytes())
                 check_destination_rtmps(root, database, inherited_profile[0]["id"], operator, facebook_live.INGEST_SERVER,
                                         PROFILE_STREAM_KEY)
+                old_destination_id = inherited_profile[0]["id"]
+                old_write_count = len(profile_writes)
+                old_video_id = str(1706 + old_write_count)
+                destination_path = inherited_path + "/" + old_destination_id
+                inherited_opens = int(inherited_profile[0]["opens"])
+
+                class InheritedNow(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return datetime.fromtimestamp(inherited_opens + 1, tz=timezone.utc)
+
+                with patch.object(event_simulcast, "datetime", InheritedNow):
+                    profile_end_fail[0] = True
+                    blocked = api.put(destination_path, headers=auth, data={"enabled": False})
+                    self.assertEqual(409, blocked.status, blocked.text())
+                    self.assertEqual([old_video_id], profile_end_attempts)
+                    self.assertEqual([], profile_end_calls)
+                    self.assertEqual("LIVE", profile_live_status.get(old_video_id, "LIVE"))
+                    self.assertEqual(old_write_count, len(profile_writes))
+                    stopped_roster = api.get(inherited_path, headers=auth).json()["destinations"]
+                    self.assertFalse(next(item for item in stopped_roster if item["id"] == old_destination_id)["enabled"])
+                    blocked_on = api.put(destination_path, headers=auth, data={"enabled": True})
+                    self.assertEqual(409, blocked_on.status, blocked_on.text())
+                    self.assertEqual([old_video_id, old_video_id], profile_end_attempts)
+                    self.assertEqual([], profile_end_calls)
+                    profile_end_fail[0] = False
+                    off = api.put(destination_path, headers=auth, data={"enabled": False})
+                    self.assertEqual(204, off.status, off.text())
+                    self.assertEqual([old_video_id], profile_end_calls)
+                    self.assertEqual("LIVE_STOPPED", profile_live_status[old_video_id])
+
+                    on = api.put(destination_path, headers=auth, data={"enabled": True})
+                    self.assertEqual(204, on.status, on.text())
+
+                    stale = api.put(destination_path, headers=auth, data={"enabled": True})
+                    self.assertEqual(404, stale.status, stale.text())
+
+                replacement = [item for item in api.get(inherited_path, headers=auth).json()["destinations"]
+                               if item["provider"] == "facebook-profile-live"]
+                self.assertEqual(1, len(replacement))
+                self.assertNotEqual(old_destination_id, replacement[0]["id"])
+                self.assertTrue(replacement[0]["enabled"])
+                self.assertEqual([old_video_id], profile_end_calls)
+
+                self.assertEqual(old_write_count + 1, len(profile_writes))
+                self.assertEqual(profile_writes[-2], profile_writes[-1])
+                inherited_auto = api.get(inherited_path + "/facebook-profile/auto?page=707", headers=auth)
+                self.assertEqual(200, inherited_auto.status, inherited_auto.text())
+                inherited_auto_json = inherited_auto.json()
+                self.assertEqual("ALL_FRIENDS", inherited_auto_json["privacy"])
+                self.assertTrue(inherited_auto_json["series"])
+
+                new_key = PROFILE_STREAM_KEY + f"&replacement={len(profile_writes) - 1}"
+                check_destination_rtmps(root, database, replacement[0]["id"], operator,
+                                        facebook_live.INGEST_SERVER, new_key)
+
                 stop_profile = api.delete(inherited_path + "/facebook-profile/auto", headers=auth,
                                           data={"page": "707", "series": True})
                 self.assertEqual(200, stop_profile.status, stop_profile.text())
@@ -638,6 +721,25 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(profile_write_count, len(profile_writes))
                 self.assertEqual("SELF", api.get(last_path + "/facebook-profile/auto?page=707",
                                                   headers=auth).json()["privacy"])
+
+                class LastNow(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return datetime.fromtimestamp(last_opens + 1, tz=timezone.utc)
+
+                with closing(sqlite3.connect(database)) as db:
+                    db.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                               (created["id"], last_opens))
+                    db.commit()
+                profile_path = last_path + "/" + manual_profile.json()["id"]
+                with patch.object(event_simulcast, "datetime", LastNow):
+                    disabled = api.put(profile_path, headers=auth, data={"enabled": False})
+                    self.assertEqual(204, disabled.status, disabled.text())
+                    enabled = api.put(profile_path, headers=auth, data={"enabled": True})
+                    self.assertEqual(204, enabled.status, enabled.text())
+                self.assertEqual("UNPUBLISHED", profile_writes[-1]["status"])
+                self.assertNotIn("event_params", profile_writes[-1])
+                self.assertEqual({"value": "SELF"}, profile_writes[-1]["privacy"])
 
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Facebook Profile Live", exact=True).click()
