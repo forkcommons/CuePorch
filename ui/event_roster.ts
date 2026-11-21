@@ -12,7 +12,7 @@ interface Roster {
   page_size: number;
 }
 
-const sourceNames: Record<string, string> = {form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot",
+const sourceNames: Record<string, string> = {form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot", "hubspot-scheduled": "HubSpot automatic refresh",
   "retained-link": "Retained join link"};
 
 function watchTime(seconds?: number) {

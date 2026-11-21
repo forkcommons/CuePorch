@@ -87,7 +87,7 @@ def message(origin, row, definition, signer, replay, unlisted_key):
 
 
 def next_job(con, now):
-    return con.execute("""SELECT j.*,l.event,l.opens,l.expires,l.revoked,l.event_revision,l.form_revision,r.email,
+    return con.execute("""SELECT j.*,l.event,l.opens,l.expires,CASE WHEN l.revoked=1 OR EXISTS(SELECT 1 FROM live_event_hubspot_member m WHERE m.link=l.id AND m.removed=1) THEN 1 ELSE 0 END AS revoked,l.event_revision,l.form_revision,r.email,
                        e.slug,e.revision AS current_revision,e.settings AS event_settings,e.publication,
                        f.revision AS current_form,o.delivery,a.status AS approval,x.link_key
                        FROM live_event_mail_job j JOIN live_attendance_link l ON l.id=j.link

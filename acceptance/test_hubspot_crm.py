@@ -197,6 +197,7 @@ class Provider:
 
         self.pause_batch = False
         self.throttle_once = False
+        self.segment_empty = False
         self.batch_waiting = Event()
         self.batch_release = Event()
 
@@ -307,6 +308,7 @@ class Provider:
                     "list": {
                         "listId": "20",
                         "objectTypeId": "0-1",
+                        "processingType": "DYNAMIC",
                         "processingStatus": "COMPLETE",
                     }
                 },
@@ -315,6 +317,8 @@ class Provider:
 
         if path == "/crm/lists/2026-09/20/memberships":
             assert method == "GET"
+            if self.segment_empty:
+                return self.response({"results": []})
             params = kwargs.get("params") or {}
             assert params.get("limit") == 100
             if params.get("after") == "2":
@@ -542,7 +546,7 @@ class HubSpotCRM(unittest.TestCase):
                 "repeat": "days",
                 "count": 2,
                 "start": start.strftime("%Y-%m-%dT%H:%M"),
-                "end": (start + timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M"),
+                "end": (start + timedelta(minutes=50)).strftime("%Y-%m-%dT%H:%M"),
             },
         }
         r = page.context.request.post(
@@ -852,6 +856,10 @@ class HubSpotCRM(unittest.TestCase):
         assert refreshed["last_result"]["existing"] == 2
         assert refreshed["last_result"]["occurrence"] == occurrence_id
 
+        self.verify_active_segment(
+            page, auth, sync_url, database, fixture, refreshed, wait_for_receipt
+        )
+
         page.get_by_role("button", name="Stop automatic refresh").click()
         expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text(
             "Automatic refresh is off"
@@ -862,6 +870,97 @@ class HubSpotCRM(unittest.TestCase):
         assert disabled["state"] == "off"
 
         self.verify_canceled(page, auth, sync_url, database, fixture)
+
+    def verify_active_segment(
+        self, page, auth, sync_url, database, fixture, receipt, wait_for_receipt
+    ):
+        from contextlib import closing
+        import event_attendance
+
+        roster_url = (
+            sync_url.removesuffix("/registration/hubspot/sync") + "/registrants"
+        )
+
+        response = page.request.post(
+            roster_url,
+            headers=auth,
+            data={"email": "TWO@example.invalid", "first_name": "Second"},
+        )
+        expect(response).to_be_ok()
+
+        link_sql = (
+            "SELECT l.* FROM live_attendance_link l "
+            "JOIN live_event_hubspot_member m ON m.link = l.id "
+            "WHERE m.contact_id = '1' AND m.event = l.event"
+        )
+
+        with closing(sqlite3.connect(database)) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(link_sql).fetchone()
+            assert row is not None, "expected attendance link for contact_id=1"
+            link = dict(row)
+            active_now = event_attendance.active(
+                con,
+                link["id"],
+                [
+                    link["event"],
+                    link["event_revision"],
+                    link["opens"],
+                    link["form_revision"],
+                    False,
+                ],
+            )
+            assert active_now is True, "link for contact_id=1 should be active"
+
+        def check_active(expected):
+            with closing(sqlite3.connect(database)) as con:
+                con.row_factory = sqlite3.Row
+                row = con.execute(link_sql).fetchone()
+                assert row is not None, "stored attendance link row is missing"
+                assert row["id"] == link["id"]
+                active_now = event_attendance.active(
+                    con,
+                    row["id"],
+                    [
+                        row["event"],
+                        row["event_revision"],
+                        row["opens"],
+                        row["form_revision"],
+                        False,
+                    ],
+                )
+                assert active_now is expected, f"expected link active={expected}"
+
+        def roster_emails():
+            payload = page.request.get(roster_url, headers=auth).json()
+            assert "attendees" in payload
+            return sorted(item["email"].casefold() for item in payload["attendees"])
+
+        fixture.segment_empty = True
+        self.restart(receipt["next_at"])
+        removed = wait_for_receipt(
+            lambda value: (value.get("last_result") or {}).get("removed") == 1
+        )
+
+        page.get_by_role("button", name="Refresh sync status").click()
+        expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text(
+            "1 filtered out"
+        )
+
+        assert roster_emails() == ["two@example.invalid"]
+        check_active(False)
+
+        fixture.segment_empty = False
+        self.restart(removed["next_at"])
+        wait_for_receipt(
+            lambda value: (value.get("last_result") or {}).get("restored") == 1
+        )
+
+        page.get_by_role("button", name="Refresh sync status").click()
+        expect(page.locator("#eventHubSpotSyncStatus")).to_contain_text("1 restored")
+
+        assert roster_emails() == ["one@example.invalid", "two@example.invalid"]
+        check_active(True)
 
     def verify_canceled(self, page, auth, sync_url, database, fixture):
         from filelock import FileLock

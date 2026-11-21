@@ -104,7 +104,7 @@ def segments(connection, revision, after=""):
     return {"segments": out, "after": cursor(data)}
 
 
-def member_ids(connection, revision, list_id):
+def segment_membership(connection, revision, list_id):
     from registration_csv import MAX_ATTENDEES
 
     if not segment_id(list_id):
@@ -138,14 +138,14 @@ def member_ids(connection, revision, list_id):
             abort(413, "Too many attendees")
         after = cursor(data)
         if after is None:
-            return list(collected)
+            return list(collected), list_wrapper.get("processingType")
         if after in seen_cursors:
             abort(502, "Repeated membership cursor")
         seen_cursors.add(after)
     abort(502, "Too many membership pages")
 
 
-def contacts(connection, revision, list_id):
+def contacts(connection, revision, list_id, *, include_membership=False):
     from library_registration import EMAIL
 
     def clean_email(value):
@@ -166,7 +166,9 @@ def contacts(connection, revision, list_id):
         s = value.strip()
         return s if len(s) <= 80 else ""
 
-    ids = list(member_ids(connection, revision, list_id))
+    ids, processing_type = segment_membership(connection, revision, list_id)
+    if include_membership and processing_type not in ("DYNAMIC", "MANUAL", "SNAPSHOT"):
+        abort(502)
     url = ORIGIN + "/crm/objects/2026-09/contacts/batch/read"
     properties = ["email", "firstname", "lastname"]
 
@@ -226,7 +228,11 @@ def contacts(connection, revision, list_id):
                     "last_name": clean_name(props.get("lastname")),
                 }
             )
+            if include_membership:
+                output[-1]["contact_id"] = cid
 
+    if include_membership:
+        return output, skipped, {"ids": ids, "active": processing_type == "DYNAMIC"}
     return output, skipped
 
 

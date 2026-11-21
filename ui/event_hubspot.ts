@@ -10,6 +10,8 @@ interface ImportResponse {
   existing: number;
   duplicates: number;
   skipped: number;
+  removed?: number;
+  restored?: number;
 }
 
 type SyncReceipt = {
@@ -306,6 +308,8 @@ const parts: string[] = [stateLabels[receipt.state] ?? receipt.state];
         parts.push(
           `${result.added} added, ${result.existing} already registered, ${result.duplicates} duplicates, ${result.skipped} skipped`,
         );
+        if (result.removed) parts.push(`${result.removed} filtered out`);
+        if (result.restored) parts.push(`${result.restored} restored`);
       }
       if (receipt.problem) parts.push(receipt.problem);
       syncStatus.textContent = parts.join(" · ");

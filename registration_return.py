@@ -40,7 +40,7 @@ class SignOn:
     def recipient(self, con, kind, subject, occurrence, address_key, form):
         if kind == "event":
             row = con.execute(
-                "SELECT email,answers FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?",
+                "SELECT email,answers FROM live_event_active_registrant WHERE event=? AND opens=? AND email_key=?",
                 (subject, occurrence, address_key),
             ).fetchone()
         else:

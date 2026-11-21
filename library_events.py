@@ -768,8 +768,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} attendees")
         return private(dict(added=added, existing=len(contacts) - added, duplicates=len(rows) - len(contacts), occurrence=opens))
 
-    def enroll_hubspot_contacts(con, row, slot, form, contacts):
-        added = existing = duplicates = 0
+    def enroll_hubspot_contacts(con, row, slot, form, contacts, *, job=None):
+        added = 0
+        existing = 0
+        duplicates = 0
         seen = set()
         for contact in contacts:
             email = (contact.get("email") or "").strip()
@@ -778,13 +780,40 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 duplicates += 1
                 continue
             seen.add(key)
-            hit = con.execute("SELECT 1 FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?", (row["id"], slot["id"], key)).fetchone()
+            if job:
+                tracked = con.execute(
+                    "SELECT 1 FROM live_event_hubspot_member WHERE event=? AND opens=? AND connection=? AND segment=? AND contact_id=?",
+                    (job["event"], job["opens"], job["connection"], job["segment"], contact["contact_id"]),
+                ).fetchone()
+                if tracked:
+                    existing += 1
+                    continue
+            hit = con.execute(
+                "SELECT id FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?",
+                (row["id"], slot["id"], key),
+            ).fetchone()
             if hit:
                 existing += 1
                 continue
-            fields = dict(email=email, first_name=contact.get("first_name"), last_name=contact.get("last_name"))
-            _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source="hubspot")
-            added += int(enrolled)
+            fields = {
+                "email": email,
+                "first_name": contact.get("first_name", ""),
+                "last_name": contact.get("last_name", ""),
+            }
+            attendee, _, enrolled = enroll_attendee(
+                con, row, slot, form, fields,
+                source="hubspot-scheduled" if job else "hubspot",
+            )
+            if enrolled:
+                added += 1
+            if enrolled and job:
+                registrant = con.execute(
+                    "SELECT id FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?",
+                    (row["id"], slot["id"], key),
+                ).fetchone()
+                event_hubspot_sync.track_member(
+                    con, job, contact["contact_id"], registrant["id"], attendee["id"]
+                )
         return dict(added=added, existing=existing, duplicates=duplicates)
 
     @app.post("/api/live-events/<uid>/<int:opens>/registration/hubspot")
@@ -818,9 +847,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return row, slot, form
 
 
-    def apply_hubspot_plan(con, job, contacts, skipped):
+    def apply_hubspot_plan(con, job, contacts, skipped, membership):
         row, slot, form = validate_hubspot_plan(con, job)
-        result = enroll_hubspot_contacts(con, row, slot, form, contacts)
+        active = membership["active"]
+        removed, restored = event_hubspot_sync.reconcile_members(con, job, membership["ids"]) if active else (0, 0)
+        result = enroll_hubspot_contacts(con, row, slot, form, contacts, job=job if active else None)
         if result.get("added"):
             note(
                 con,
@@ -829,7 +860,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 job["event"],
                 f"{job['opens']}, {len(contacts)} HubSpot contacts",
             )
-        return dict(result, skipped=skipped, occurrence=job["opens"])
+        return dict(result, skipped=skipped, occurrence=job["opens"], removed=removed, restored=restored)
 
     @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/sync", methods=["GET", "PUT", "DELETE"])
     def schedule_hubspot_registration(uid, opens):

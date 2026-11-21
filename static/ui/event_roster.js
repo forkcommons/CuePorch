@@ -1,5 +1,5 @@
 import { setupHubSpot } from "./event_hubspot.js";
-const sourceNames = { form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot",
+const sourceNames = { form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot", "hubspot-scheduled": "HubSpot automatic refresh",
     "retained-link": "Retained join link" };
 function watchTime(seconds) {
     if (seconds === undefined)

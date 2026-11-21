@@ -50,6 +50,10 @@ def record(con, uid, opens, address, answers, source):
     elif source != "form" and (found["email"] != address or json.loads(found["answers"]) != answers):
         con.execute("UPDATE live_event_registrant SET email=?,answers=? WHERE id=?", (address, encoded, found["id"]))
         event_webhooks.enqueue(con, "registration-updated", uid, opens, uuid.uuid4().hex, dict(registrant=found["id"]))
+    if source != "hubspot-scheduled":
+        cur = con.execute("DELETE FROM live_event_hubspot_member WHERE registrant=?", (found["id"],))
+        if cur.rowcount:
+            con.execute("UPDATE live_event_registrant SET source=? WHERE id=?", (source, found["id"]))
     return found["id"], False
 
 
@@ -90,7 +94,7 @@ def describe(row, con=None):
 
 
 def rows(con, uid, opens, filter_text="", offset=0, limit=-1):
-    return con.execute("""SELECT id,opens,email,registered,source,answers FROM live_event_registrant
+    return con.execute("""SELECT id,opens,email,registered,source,answers FROM live_event_active_registrant
                        WHERE event=? AND opens=? AND instr(email_key,?)>0 ORDER BY registered DESC,id LIMIT ? OFFSET ?""",
                        (uid, opens, filter_text, limit, offset))
 
@@ -126,7 +130,7 @@ def register(app, tx, staff, read, selected_open):
         with tx() as con:
             _, event = read(con, uid)
             selected_open(event, opens)
-            matching = con.execute("""SELECT count(*) FROM live_event_registrant WHERE event=? AND opens=?
+            matching = con.execute("""SELECT count(*) FROM live_event_active_registrant WHERE event=? AND opens=?
                                       AND instr(email_key,?)>0""", (uid, opens, search)).fetchone()[0]
             attendees = [describe(row, con) for row in rows(con, uid, opens, search, offset, PAGE)]
         return private(dict(occurrence=opens, attendees=attendees, total=matching, offset=offset, page_size=PAGE))

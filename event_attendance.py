@@ -32,7 +32,8 @@ def active(con, uid, scope):
         """SELECT 1 FROM live_attendance_link l JOIN viewer_registrant r ON r.kind='event'
            AND r.subject=l.event AND r.email_key=l.email_key
            WHERE l.id=? AND l.event=? AND l.opens=? AND l.event_revision=? AND l.form_revision=?
-             AND l.revoked=0 AND l.expires>?""",
+             AND l.revoked=0 AND l.expires>?
+        AND NOT EXISTS(SELECT 1 FROM live_event_hubspot_member m WHERE m.link=l.id AND m.removed=1)""",
         (uid, event, opens, revision, form_revision, int(time())),
     ).fetchone() is not None
 

@@ -242,6 +242,10 @@ export function setupHubSpot(request, refreshRoster) {
             if (receipt.last_result) {
                 const result = receipt.last_result;
                 parts.push(`${result.added} added, ${result.existing} already registered, ${result.duplicates} duplicates, ${result.skipped} skipped`);
+                if (result.removed)
+                    parts.push(`${result.removed} filtered out`);
+                if (result.restored)
+                    parts.push(`${result.restored} restored`);
             }
             if (receipt.problem)
                 parts.push(receipt.problem);

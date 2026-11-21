@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -218,8 +219,8 @@ def run_one(tx, connection, validate, apply, stop, clock):
         if stop.is_set():
             return False
 
-        contacts, skipped = hubspot_crm.contacts(
-            connection, job["connection"], job["segment"]
+        contacts, skipped, membership = hubspot_crm.contacts(
+            connection, job["connection"], job["segment"], include_membership=True
         )
 
         with tx() as con:
@@ -243,7 +244,7 @@ def run_one(tx, connection, validate, apply, stop, clock):
 
             connection.authorize(con, job["connection"])
 
-            result = apply(con, job, contacts, skipped)
+            result = apply(con, job, contacts, skipped, membership)
             finish(con, job, now, result)
             return True
     except HTTPException as exc:
@@ -305,3 +306,58 @@ def disconnect(con):
         "UPDATE live_event_hubspot_sync SET due=NULL,state='problem',problem=?,generation=lower(hex(randomblob(16))) WHERE due IS NOT NULL",
         ("HubSpot was disconnected. Reconnect and enable synchronization again.",),
     )
+
+
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS live_event_hubspot_member (
+    registrant TEXT PRIMARY KEY,
+    link TEXT UNIQUE NOT NULL,
+    event TEXT NOT NULL,
+    opens INTEGER NOT NULL,
+    connection TEXT NOT NULL,
+    segment TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    removed INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(event, opens, connection, segment, contact_id)
+);
+CREATE VIEW IF NOT EXISTS live_event_active_registrant AS
+SELECT r.* FROM live_event_registrant r
+WHERE NOT EXISTS (
+    SELECT 1 FROM live_event_hubspot_member m
+    WHERE m.registrant = r.id AND m.removed = 1
+);
+"""
+
+
+def track_member(con, job, contact_id, registrant, link):
+    con.execute(
+        "INSERT OR IGNORE INTO live_event_hubspot_member "
+        "(registrant, link, event, opens, connection, segment, contact_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            registrant,
+            link,
+            job["event"],
+            job["opens"],
+            job["connection"],
+            job["segment"],
+            contact_id,
+        ),
+    )
+
+
+def reconcile_members(con, job, ids):
+    j = json.dumps(ids)
+    removed = con.execute(
+        "UPDATE live_event_hubspot_member SET removed=1 "
+        "WHERE removed=0 AND event=? AND opens=? AND connection=? AND segment=? "
+        "AND contact_id NOT IN (SELECT value FROM json_each(?))",
+        (job["event"], job["opens"], job["connection"], job["segment"], j),
+    ).rowcount
+    restored = con.execute(
+        "UPDATE live_event_hubspot_member SET removed=0 "
+        "WHERE removed=1 AND event=? AND opens=? AND connection=? AND segment=? "
+        "AND contact_id IN (SELECT value FROM json_each(?))",
+        (job["event"], job["opens"], job["connection"], job["segment"], j),
+    ).rowcount
+    return removed, restored
