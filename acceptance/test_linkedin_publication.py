@@ -729,7 +729,7 @@ class LinkedInPublication(unittest.TestCase):
                 def live_rows(opens):
                     with closing(sqlite3.connect(database)) as db:
                         return db.execute(
-                            "SELECT company,video,state FROM linkedin_live_creation "
+                            "SELECT company,video,state,post FROM linkedin_live_creation "
                             "WHERE event=? AND opens=? ORDER BY company",
                             (data["id"], opens),
                         ).fetchall()
@@ -743,6 +743,27 @@ class LinkedInPublication(unittest.TestCase):
                         sleep(.05)
                 self.assertEqual(["1113", "5501"], [row[1] for row in rows])
                 self.assertTrue(live_rows(first["id"]))
+
+                announced_url = f"{path}/{later['id']}/destinations/linkedin/series"
+
+                def announced_due():
+                    with closing(sqlite3.connect(database)) as db:
+                        db.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                                   (data["id"], later["id"]))
+                        return [name for event_id, opens, name in linkedin_live_job.due_auto(db, later["id"])
+                                if (event_id, opens) == (data["id"], later["id"])]
+
+                self.assertEqual([company["company"]], announced_due())
+                before = live_rows(later["id"])
+                self.assertEqual(2, len(before))
+                self.assertEqual(200, api.delete(announced_url, headers=auth, data={"date": True}).status)
+                self.assertTrue(api.get(announced_url, headers=auth).json()["skipped"])
+                self.assertEqual([], announced_due())
+                restored = api.put(announced_url, headers=auth, data={"date": True})
+                self.assertEqual(200, restored.status, restored.text())
+                self.assertEqual([company["company"]], announced_due())
+                self.assertFalse(api.get(announced_url, headers=auth).json()["skipped"])
+                self.assertEqual(before, live_rows(later["id"]))  # same post id, no new write
 
                 before = live_rows(skipped_date["id"])
                 company_url = f"{path}/{skipped_date['id']}/destinations/linkedin/series"

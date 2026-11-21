@@ -52,6 +52,8 @@ def due_auto(con, now):
           AND g.provider=CASE WHEN c.company LIKE 'member:%' THEN 'linkedin-member-live' ELSE 'linkedin-live' END
         LEFT JOIN linkedin_live_ingest i ON i.event=c.event AND i.opens=c.opens AND i.company=c.company
         WHERE c.state='scheduled' AND a.state='queued' AND i.event IS NULL
+        AND NOT EXISTS (SELECT 1 FROM live_destination_series_skip s
+                        WHERE s.event=c.event AND s.opens=c.opens AND s.owner=c.company AND s.provider=g.provider)
         AND c.opens BETWEEN ? AND ? ORDER BY c.opens""", (now - 7200, now)).fetchall()
 
 
