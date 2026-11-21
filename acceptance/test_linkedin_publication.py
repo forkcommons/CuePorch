@@ -31,6 +31,7 @@ import event_simulcast
 import linkedin_live
 import linkedin_live_job
 import linkedin_upload as linkedin
+import live_destination_series
 import social_publication
 from workspace_oauth import provider_request
 
@@ -68,6 +69,7 @@ class LinkedInPublication(unittest.TestCase):
             member_owner = "urn:li:person:FixtureMember1"
             member_asset = "urn:li:digitalmediaAsset:Member5500"
             member_writes = []
+            member_scheduled_starts = []
             page_offsets = []
             scheduled_videos = []
             announcement_writes = []
@@ -98,6 +100,7 @@ class LinkedInPublication(unittest.TestCase):
                 token_url=origin + "/oauth/token",
             ), API=origin + "/rest", V2_API=origin + "/v2"))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
+            cleanup.enter_context(patch.object(live_destination_series, "SCAN_INTERVAL", 0.2))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_LINKEDIN_CLIENT_ID": "cueporch",
                 "CUEPORCH_LINKEDIN_CLIENT_SECRET": "fixture-secret", "CUEPORCH_LINKEDIN_COMPANY_ID": "12345",
@@ -220,7 +223,8 @@ class LinkedInPublication(unittest.TestCase):
                     assert request.json["author"] == {"member": member_owner}
                     assert request.json["scheduledAt"] > int(time() * 1000)
                     member_writes.append("schedule")
-                    return "", 201, {"x-restli-id": "5500"}
+                    member_scheduled_starts.append(request.json["scheduledAt"])
+                    return "", 201, {"x-restli-id": str(5499 + len(member_scheduled_starts))}
                 assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
                 assert request.headers["X-Restli-Protocol-Version"] == "2.0.0"
                 incoming = request.json
@@ -236,9 +240,9 @@ class LinkedInPublication(unittest.TestCase):
                     body = request.json
                     assert body["author"] == member_owner
                     media = body["specificContent"]["com.linkedin.ugc.ShareContent"]["media"]
-                    assert media == [{"media": "urn:li:liveVideo:5500", "status": "READY"}]
+                    assert media == [{"media": f"urn:li:liveVideo:{5499 + len(member_scheduled_starts)}", "status": "READY"}]
                     member_writes.append("announce")
-                    return "", 201, {"x-restli-id": "urn:li:ugcPost:5555"}
+                    return "", 201, {"x-restli-id": f"urn:li:ugcPost:{5554 + member_writes.count('announce')}"}
                 assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
                 assert request.headers["X-Restli-Protocol-Version"] == "2.0.0"
                 video = f"urn:li:liveVideo:{1110 + len(scheduled_videos)}"
@@ -479,13 +483,13 @@ class LinkedInPublication(unittest.TestCase):
                 starts = (datetime.now(timezone.utc) + timedelta(minutes=8)).replace(second=0, microsecond=0)
                 event = dict(title="LinkedIn Live rehearsal", slug="linkedin-live-rehearsal", visibility="public",
                              type="live", latency="standard", save_replay=False,
-                             schedule=dict(timezone="UTC", repeat="days", count=2,
+                             schedule=dict(timezone="UTC", repeat="days", count=4,
                                            start=starts.strftime("%Y-%m-%dT%H:%M"),
                                            end=(starts + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")))
                 created = api.post(base + "/api/live-events", headers=auth, data=event)
                 self.assertTrue(created.ok, created.text())
                 data = created.json()
-                first, next_date = data["occurrences"]
+                first, next_date, later, skipped_date = data["occurrences"]
                 path = base + f"/api/live-events/{data['id']}"
                 schedule_path = f"{path}/{first['id']}/destinations/linkedin/schedule"
                 next_path = f"{path}/{next_date['id']}/destinations/linkedin/schedule"
@@ -681,6 +685,7 @@ class LinkedInPublication(unittest.TestCase):
                 page.get_by_text("Simulcast destinations", exact=True).click()
                 page.get_by_role("combobox", name="LinkedIn account", exact=True).select_option("member")
                 page.get_by_role("button", name="Load LinkedIn profile", exact=True).click()
+                expect(page.get_by_role("checkbox", name="Create LinkedIn broadcasts for future dates")).to_be_checked()
                 page.get_by_role("checkbox", name="Prepare LinkedIn delivery automatically").uncheck()
                 page.get_by_role("button", name="Schedule and announce on LinkedIn", exact=True).click()
                 expect(page.locator("#linkedinLivePost")).to_have_attribute(
@@ -713,6 +718,39 @@ class LinkedInPublication(unittest.TestCase):
                     sleep(.05)
                 self.assertEqual(["schedule", "announce", "register", "bind", "end"], member_writes)
                 self.assertEqual([asset], ends)
+                real_due = live_destination_series.due
+                clock = datetime.fromisoformat(later["start"]) - timedelta(minutes=10)
+
+                def live_rows(opens):
+                    with closing(sqlite3.connect(database)) as db:
+                        return db.execute(
+                            "SELECT company,video,state FROM linkedin_live_creation "
+                            "WHERE event=? AND opens=? ORDER BY company",
+                            (data["id"], opens),
+                        ).fetchall()
+
+                with patch.object(live_destination_series, "due", lambda con, _: real_due(con, clock)):
+                    deadline = monotonic() + 8
+                    while monotonic() < deadline:
+                        rows = live_rows(later["id"])
+                        if len(rows) == 2 and all(row[2] == "scheduled" for row in rows):
+                            break
+                        sleep(.05)
+                self.assertEqual(["1113", "5501"], [row[1] for row in rows])
+                self.assertTrue(live_rows(first["id"]))
+
+                before = live_rows(skipped_date["id"])
+                skipped = api.delete(f"{path}/{skipped_date['id']}/destinations/linkedin/series",
+                                   headers=auth, data={"date": True})
+                self.assertEqual(200, skipped.status, skipped.text())
+                stopped = api.delete(f"{path}/{skipped_date['id']}/destinations/linkedin-member/series",
+                                   headers=auth, data={"date": False})
+                self.assertEqual(200, stopped.status, stopped.text())
+                with closing(sqlite3.connect(database)) as db:
+                    db.row_factory = sqlite3.Row
+                    future_window = datetime.fromisoformat(skipped_date["start"]) - timedelta(minutes=10)
+                    self.assertEqual([], list(real_due(db, future_window)))
+                self.assertEqual(before, live_rows(skipped_date["id"]))
                 page.goto(base + "/operator/integrations")
                 member_id[0] = {"invalid": 1}
                 self.assertEqual(502, api.get(profile_path, headers=auth).status)
