@@ -17,4 +17,8 @@ The Salesforce account used by CuePorch needs API access and permission to read 
 
 CuePorch reads a Contact or unconverted Lead by exact email. It leaves existing person records intact, skips opted-out records, and stops a delivery when an email matches multiple people. If it needs to create a Lead, the unique CuePorch Email Key prevents duplicate writes from a repeated delivery. The Media and Registrant records also have unique external keys. CuePorch reads the saved record by key after an uncertain response and preserves a status that has already progressed beyond registration. [Salesforce external ID readback](https://developer.salesforce.com/docs/platform/api-rest/guide/resources-sobject-upsert-get.html)
 
-The outbound adapter and its metadata are in development. The source tests use a simulated Salesforce API. Webinar and video delivery from the CuePorch interface still need to be exercised with the adapter, and the metadata needs deployment verification in a Salesforce org.
+In the webinar's attendee panel, load Salesforce campaigns, select the destination campaign, and enable Salesforce delivery. The company value applies when CuePorch needs to create a Lead. CuePorch checks that the required metadata and permissions are present before enabling delivery. Viewers can register without sharing their email address, name, and registration time with Salesforce.
+
+Delivery runs automatically by default. Operators can require approval under the contact delivery policy. Refresh Salesforce delivery status in the attendee panel to see waiting and sent counts. Stopping delivery or disconnecting Salesforce cancels pending deliveries. Records already sent remain subject to the Salesforce organization's retention settings.
+
+The source tests use simulated Salesforce responses. Verification in a Salesforce organization and on the shipping packages is pending. Video registration delivery and engagement reporting remain in development.

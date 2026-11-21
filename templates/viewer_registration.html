@@ -98,6 +98,12 @@
             Also share my webinar attendance, live and replay watch time, named questions, upvoted questions and poll responses with the organizer in Mailchimp.
         </label>
     {% endif %}
+    {% if salesforce_consent %}
+    <label>
+      <input type="checkbox" name="salesforce_consent" value="{{ salesforce_consent }}">
+      Share my name, email address and registration time with the organizer in Salesforce Sales Cloud.
+    </label>
+    {% endif %}
     {% if marketo_consent %}
     <label>
       <input type='checkbox' name='marketo_consent' value='{{ marketo_consent }}'>

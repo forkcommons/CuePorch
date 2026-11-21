@@ -157,3 +157,29 @@ def publish_registration(connection, revision, *, campaign, kind, title,
     ensure_record(connection, revision, REGISTRANT, registrar_key, fields,
                   expected, before_write)
     return "sent"
+
+def validate_installation(connection, revision):
+    expected = (
+        ("Lead", LEAD_KEY, (LEAD_KEY, "Email", "Company", "LastName", "FirstName")),
+        (MEDIA, EXTERNAL_KEY, (EXTERNAL_KEY, "Name", "Campaign__c", "Kind__c")),
+        (REGISTRANT, EXTERNAL_KEY, (EXTERNAL_KEY, "Media__c", "Lead__c", "Contact__c", "Status__c", "Registered_At__c")),
+    )
+    for object_name, unique_key, required_fields in expected:
+        try:
+            result = salesforce_crm._get(connection, revision, "/sobjects/" + object_name + "/describe")
+        except NotFound:
+            abort(409, "Deploy the CuePorch Salesforce metadata before enabling registration delivery.")
+        if not isinstance(result, dict) or result.get("createable") is not True or not isinstance(result.get("fields"), list):
+            abort(409, f"Salesforce {object_name} metadata is missing create permission or configuration.")
+        by_name = {}
+        for field in result["fields"]:
+            if not isinstance(field, dict) or not isinstance(field.get("name"), str):
+                abort(502, f"Salesforce {object_name} field metadata is malformed.")
+            by_name[field["name"]] = field
+        for field_name in required_fields:
+            field = by_name.get(field_name)
+            if not field or field.get("createable") is not True:
+                abort(409, f"Salesforce {object_name}.{field_name} must be createable and configured for registration delivery.")
+        unique = by_name.get(unique_key)
+        if not unique or unique.get("externalId") is not True or unique.get("unique") is not True:
+            abort(409, f"Salesforce {object_name}.{unique_key} must be an external ID and unique. Update the CuePorch Salesforce metadata before enabling registration delivery.")

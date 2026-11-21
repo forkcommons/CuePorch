@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS live_event_contact_delivery (
 );
 CREATE INDEX IF NOT EXISTS live_event_contact_delivery_pending_due
     ON live_event_contact_delivery (state, due);
+CREATE TABLE IF NOT EXISTS live_event_salesforce_payload (delivery TEXT PRIMARY KEY, answers TEXT NOT NULL);
 """
 
 STEP = "event_contact_sync"
@@ -117,6 +118,12 @@ def disable(con, provider, event, opens):
         """,
         params,
     )
+    if provider == "salesforce":
+        con.execute(
+            "DELETE FROM live_event_salesforce_payload WHERE delivery IN ("
+            "SELECT id FROM live_event_contact_delivery WHERE provider=? AND event=? AND opens=?)",
+            params,
+        )
     con.execute(
         "DELETE FROM live_event_contact_plan WHERE provider=? AND event=? AND opens=?",
         params,
@@ -195,11 +202,19 @@ def scope(con, job, provider_revision, now, validate, stop):
     ):
         abort(409)
 
-    registrant = con.execute(
-        "SELECT email, answers FROM live_event_registrant "
-        "WHERE id=? AND event=? AND opens=? AND source='form'",
-        (job["registrant"], job["event"], job["opens"]),
-    ).fetchone()
+    if job["provider"] == "salesforce":
+        registrant = con.execute(
+            "SELECT r.email, p.answers FROM live_event_registrant r "
+            "JOIN live_event_salesforce_payload p ON p.delivery=? "
+            "WHERE r.id=? AND r.event=? AND r.opens=?",
+            (job["id"], job["registrant"], job["event"], job["opens"]),
+        ).fetchone()
+    else:
+        registrant = con.execute(
+            "SELECT email, answers FROM live_event_registrant "
+            "WHERE id=? AND event=? AND opens=? AND source='form'",
+            (job["registrant"], job["event"], job["opens"]),
+        ).fetchone()
     if registrant is None:
         abort(409)
 
@@ -276,7 +291,7 @@ def deliver_marketo(tx, job, connection, revision, validate, stop, clock):
     return "sent"
 
 
-def run_job(tx, select, deliver, finish, stop, clock):
+def run_job(tx, select, deliver, finish, stop, clock, *, retry_ambiguous=False):
     from werkzeug.exceptions import HTTPException
 
     if stop.is_set():
@@ -295,6 +310,9 @@ def run_job(tx, select, deliver, finish, stop, clock):
         if code == 429 and attempts < 5:
             state = "queued"
             due = int(clock()) + max(15, getattr(exc, "retry_after", None) or 0)
+        elif retry_ambiguous and code in (502, 503, 504) and attempts < 5:
+            state = "queued"
+            due = int(clock()) + 15 * 2 ** (attempts - 1)
         elif code in (409, 404):
             state = "canceled"
         elif code in (502, 503, 504):
@@ -315,6 +333,8 @@ def _run_one(tx, provider, deliver, stop, clock):
             "WHERE id=? AND state='queued'",
             (state, due, attempts, job_id),
         )
+        if provider == "salesforce" and state != "queued":
+            con.execute("DELETE FROM live_event_salesforce_payload WHERE delivery=?", (job_id,))
     return run_job(
         tx,
         lambda con, ts: next_job(con, provider, ts),
@@ -322,6 +342,7 @@ def _run_one(tx, provider, deliver, stop, clock):
         finish,
         stop,
         clock,
+        retry_ambiguous=provider == "salesforce",
     )
 
 
@@ -423,6 +444,9 @@ def receipt(con, provider, event, opens, revision):
             (provider, event, opens, plan["generation"]),
         ).fetchall()
         result["states"] = {r[0]: r[1] for r in rows}
+    if enabled and provider == "salesforce":
+        result.update(json.loads(plan["destination"]))
+        return result
     if enabled and provider == "mailchimp":
         destination = json.loads(plan["destination"])
         result["audience"] = destination["audience"]

@@ -242,7 +242,7 @@ class MarketoBrowser(unittest.TestCase):
         r = poll(lambda j: j.get("last_at") == retry_at)
         assert r["last_result"]["added"] == 1 and r["last_result"]["existing"] == 1
 
-        page.get_by_role("button", name="Refresh import status", exact=True).click()
+        panel.get_by_role("button", name="Refresh import status", exact=True).click()
         expect(
             page.locator("#eventRosterRows").get_by_text(
                 "scheduled@example.test", exact=True

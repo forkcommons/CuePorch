@@ -13,6 +13,11 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   const refresh = $<HTMLButtonElement>("#sfImportRefresh");
   const select = $<HTMLSelectElement>("#sfCampaign");
   const status = $<HTMLElement>("#sfImportStatus");
+  const company = $<HTMLInputElement>("#sfLeadCompany");
+  const send = $<HTMLButtonElement>("#sfOutboundEnable");
+  const cancelSend = $<HTMLButtonElement>("#sfOutboundStop");
+  const readSend = $<HTMLButtonElement>("#sfOutboundRefresh");
+  const sendStatus = $<HTMLElement>("#sfOutboundStatus");
 
   let base = "";
   let generation = 0;
@@ -21,6 +26,9 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   let receipt: Receipt | undefined;
   const importPath = () => base + "/registration/salesforce";
   const syncPath = () => importPath() + "/sync";
+  let outbound: { available: boolean; enabled: boolean; state: string; campaign?: string; company?: string; states: Record<string, number> } | undefined;
+  type OutboundReceipt = NonNullable<typeof outbound>;
+  const outboundPath = () => importPath() + "/outbound";
 
   function updateControls() {
     const locked = busy || receipt?.available !== true;
@@ -33,6 +41,11 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     stop.disabled = busy;
     more.hidden = cursor === null;
     stop.hidden = !receipt || receipt.state === "off";
+    send.disabled = busy || outbound?.available !== true || !select.value || !company.value.trim();
+    company.disabled = busy || outbound?.available !== true;
+    cancelSend.disabled = busy;
+    cancelSend.hidden = !(outbound?.enabled || outbound?.state === "stale");
+    readSend.disabled = busy;
   }
 
   function resultText(r: ImportResult) {
@@ -60,7 +73,29 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     updateControls();
   }
 
-  async function run(task: (ticket: number) => Promise<void>) {
+  function renderOutbound(r: OutboundReceipt) {
+    outbound = r;
+    company.value = r.company ?? "Individual";
+    const p: string[] = [];
+    if (!r.available) {
+      p.push("Salesforce delivery unavailable.");
+    } else if (r.state === "off") {
+      p.push("Off.");
+    } else {
+      if (r.enabled) p.push("Connected.");
+      else p.push(`State: ${r.state}.`);
+      const savedId = r.campaign || "";
+      const opt = savedId ? Array.from(select.options).find(o => o.value === savedId) : undefined;
+      const campaignName = opt ? (opt.textContent ?? savedId) : savedId;
+      if (campaignName) p.push(`Campaign: ${campaignName}.`);
+      const entries = Object.entries(r.states ?? {});
+      p.push(entries.length ? `Counts: ${entries.map(([k, v]) => `${k} ${v}`).join(", ")}.` : "No deliveries yet.");
+    }
+    sendStatus.textContent = p.join(" ");
+    updateControls();
+  }
+
+  async function run(task: (ticket: number) => Promise<void>, errors = status) {
     if (!base || busy) return;
     const ticket = generation;
     busy = true;
@@ -68,7 +103,7 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     try {
       await task(ticket);
     } catch (err) {
-      if (ticket === generation) status.textContent = err instanceof Error ? err.message : String(err);
+      if (ticket === generation) errors.textContent = err instanceof Error ? err.message : String(err);
     } finally {
       if (ticket === generation) {
         busy = false;
@@ -81,7 +116,7 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
 
   async function loadCampaigns(ticket: number, reset: boolean): Promise<void> {
     if (!reset && cursor === null) return;
-    const saved = select.value || receipt?.campaign || "";
+    const saved = select.value || receipt?.campaign || outbound?.campaign || "";
     if (reset) { select.replaceChildren(PH()); cursor = null; }
     const path = "/api/integrations/salesforce/campaigns" +
       (!reset && cursor ? `?cursor=${encodeURIComponent(cursor)}` : "");
@@ -99,6 +134,25 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   load.addEventListener("click", () => run(t => loadCampaigns(t, true)));
   more.addEventListener("click", () => run(t => loadCampaigns(t, false)));
   select.addEventListener("change", updateControls);
+  company.addEventListener("input", updateControls);
+
+  send.addEventListener("click", () => run(async (t) => {
+    const r = await request<OutboundReceipt>(outboundPath(), "PUT", { campaign: select.value, company: company.value.trim() }, true);
+    if (t !== generation) return;
+    renderOutbound(r);
+  }, sendStatus));
+
+  cancelSend.addEventListener("click", () => run(async (t) => {
+    const r = await request<OutboundReceipt>(outboundPath(), "DELETE", {}, true);
+    if (t !== generation) return;
+    renderOutbound(r);
+  }, sendStatus));
+
+  readSend.addEventListener("click", () => run(async (t) => {
+    const r = await request<OutboundReceipt>(outboundPath());
+    if (t !== generation) return;
+    renderOutbound(r);
+  }, sendStatus));
 
   importNow.addEventListener("click", () => run(async (t) => {
     const r = await request<ImportResult>(importPath(), "POST", { campaign: select.value }, true);
@@ -129,13 +183,28 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     base = target;
     generation++;
     busy = false; cursor = null; receipt = undefined;
+    outbound = undefined;
     select.replaceChildren(PH());
     status.textContent = "";
+    sendStatus.textContent = "";
+    company.value = "Individual";
     updateControls();
     run(async (t) => {
-      const r = await request<Receipt>(syncPath());
+      const [syncRes, outboundRes] = await Promise.allSettled([
+        request<Receipt>(syncPath()),
+        request<OutboundReceipt>(outboundPath()),
+      ]);
       if (t !== generation) return;
-      renderReceipt(r);
+      if (syncRes.status === "fulfilled") {
+        renderReceipt(syncRes.value);
+      } else {
+        status.textContent = syncRes.reason instanceof Error ? syncRes.reason.message : String(syncRes.reason);
+      }
+      if (outboundRes.status === "fulfilled") {
+        renderOutbound(outboundRes.value);
+      } else {
+        sendStatus.textContent = outboundRes.reason instanceof Error ? outboundRes.reason.message : String(outboundRes.reason);
+      }
     });
   };
 }

@@ -31,6 +31,7 @@ import event_captions
 import event_engagement
 import event_hubspot_sync
 import event_salesforce_sync
+import event_salesforce_registration
 import salesforce_crm
 import event_hubspot_outbound
 import event_contact_delivery
@@ -520,6 +521,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         stop_mailchimp()
         stop_marketo_sync()
         stop_salesforce_sync()
+        stop_salesforce_outbound()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -1328,6 +1330,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     stop_salesforce_sync = event_hubspot_sync.start(
         app, tx, database, salesforce, validate_hubspot_plan, apply_salesforce_sync,
         provider="salesforce", fetch=fetch_salesforce_sync,
+    ) if salesforce.configured else lambda: None
+
+    event_salesforce_registration.register_routes(
+        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake)
+    stop_salesforce_outbound = event_salesforce_registration.start(
+        app, tx, database, salesforce, validate_hubspot_plan
     ) if salesforce.configured else lambda: None
 
     stop_hubspot_outbound = event_hubspot_outbound.start(
@@ -2190,6 +2198,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
+            salesforce_plan = None
+            salesforce_consent = ""
             mailchimp_consent = ""
             mailchimp_engagement_consent = ""
             mailchimp_plan = None
@@ -2199,6 +2209,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 and (not delivery or delivery["delivery"] != "replay")
                 and event["visibility"] in event_mail.WATCHABLE
             ):
+                salesforce_plan = event_salesforce_registration.offer(
+                    con, salesforce, row, shown, form, int(now.timestamp()))
+                if salesforce_plan:
+                    salesforce_scope = ["salesforce-outbound", scope, salesforce_plan["generation"]]
+                    salesforce_consent = forms.dumps(salesforce_scope)
                 current = mailchimp.connection(con)
                 candidate = event_contact_delivery.get(con, "mailchimp", row["id"], shown["id"])
                 if (
@@ -2261,6 +2276,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     def remember(email, answers):
                         nonlocal sharing
                         registrant, created = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
+                        if (salesforce_plan
+                                and valid_ticket(forms, request.form.get("salesforce_consent", ""), salesforce_scope, 1200)):
+                            event_salesforce_registration.enqueue(con, action, salesforce_plan, registrant, answers, int(now.timestamp()))
                         if (created and contact_plan
                                 and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
                             event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
@@ -2424,6 +2442,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
+                                     salesforce_consent=salesforce_consent,
                                      marketo_consent=marketo_consent,
                                      mailchimp_consent=mailchimp_consent,
                                      mailchimp_engagement_consent=mailchimp_engagement_consent,

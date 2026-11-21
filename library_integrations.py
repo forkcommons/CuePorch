@@ -18,6 +18,7 @@ from browser_account_security import json_mutation, private, same_origin, secure
 from intake_watch import CursorReset, Watch, changed_since
 import editor_exports
 import event_hubspot_sync
+import event_salesforce_registration
 import event_hubspot_outbound
 import event_mailchimp_registration
 import facebook_upload
@@ -544,7 +545,9 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         elif provider == "keap":
             cleanup = lambda con: library_list_registration.disconnect(con, provider=library_list_registration.KEAP)
         elif provider == "salesforce":
-            cleanup = lambda con: event_hubspot_sync.disconnect(con, provider="salesforce")
+            def cleanup(con):
+                event_hubspot_sync.disconnect(con, provider="salesforce")
+                event_salesforce_registration.disconnect(con)
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)

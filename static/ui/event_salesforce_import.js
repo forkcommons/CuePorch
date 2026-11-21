@@ -8,6 +8,11 @@ export function setupSalesforceImport(request, onRosterChanged) {
     const refresh = $("#sfImportRefresh");
     const select = $("#sfCampaign");
     const status = $("#sfImportStatus");
+    const company = $("#sfLeadCompany");
+    const send = $("#sfOutboundEnable");
+    const cancelSend = $("#sfOutboundStop");
+    const readSend = $("#sfOutboundRefresh");
+    const sendStatus = $("#sfOutboundStatus");
     let base = "";
     let generation = 0;
     let busy = false;
@@ -15,6 +20,8 @@ export function setupSalesforceImport(request, onRosterChanged) {
     let receipt;
     const importPath = () => base + "/registration/salesforce";
     const syncPath = () => importPath() + "/sync";
+    let outbound;
+    const outboundPath = () => importPath() + "/outbound";
     function updateControls() {
         const locked = busy || receipt?.available !== true;
         load.disabled = locked;
@@ -26,6 +33,11 @@ export function setupSalesforceImport(request, onRosterChanged) {
         stop.disabled = busy;
         more.hidden = cursor === null;
         stop.hidden = !receipt || receipt.state === "off";
+        send.disabled = busy || outbound?.available !== true || !select.value || !company.value.trim();
+        company.disabled = busy || outbound?.available !== true;
+        cancelSend.disabled = busy;
+        cancelSend.hidden = !(outbound?.enabled || outbound?.state === "stale");
+        readSend.disabled = busy;
     }
     function resultText(r) {
         return `Added ${r.added}. Already registered ${r.existing}. Duplicates ${r.duplicates}. Skipped ${r.skipped}.`;
@@ -61,7 +73,33 @@ export function setupSalesforceImport(request, onRosterChanged) {
         status.textContent = p.join(" ");
         updateControls();
     }
-    async function run(task) {
+    function renderOutbound(r) {
+        outbound = r;
+        company.value = r.company ?? "Individual";
+        const p = [];
+        if (!r.available) {
+            p.push("Salesforce delivery unavailable.");
+        }
+        else if (r.state === "off") {
+            p.push("Off.");
+        }
+        else {
+            if (r.enabled)
+                p.push("Connected.");
+            else
+                p.push(`State: ${r.state}.`);
+            const savedId = r.campaign || "";
+            const opt = savedId ? Array.from(select.options).find(o => o.value === savedId) : undefined;
+            const campaignName = opt ? (opt.textContent ?? savedId) : savedId;
+            if (campaignName)
+                p.push(`Campaign: ${campaignName}.`);
+            const entries = Object.entries(r.states ?? {});
+            p.push(entries.length ? `Counts: ${entries.map(([k, v]) => `${k} ${v}`).join(", ")}.` : "No deliveries yet.");
+        }
+        sendStatus.textContent = p.join(" ");
+        updateControls();
+    }
+    async function run(task, errors = status) {
         if (!base || busy)
             return;
         const ticket = generation;
@@ -72,7 +110,7 @@ export function setupSalesforceImport(request, onRosterChanged) {
         }
         catch (err) {
             if (ticket === generation)
-                status.textContent = err instanceof Error ? err.message : String(err);
+                errors.textContent = err instanceof Error ? err.message : String(err);
         }
         finally {
             if (ticket === generation) {
@@ -85,7 +123,7 @@ export function setupSalesforceImport(request, onRosterChanged) {
     async function loadCampaigns(ticket, reset) {
         if (!reset && cursor === null)
             return;
-        const saved = select.value || receipt?.campaign || "";
+        const saved = select.value || receipt?.campaign || outbound?.campaign || "";
         if (reset) {
             select.replaceChildren(PH());
             cursor = null;
@@ -110,6 +148,25 @@ export function setupSalesforceImport(request, onRosterChanged) {
     load.addEventListener("click", () => run(t => loadCampaigns(t, true)));
     more.addEventListener("click", () => run(t => loadCampaigns(t, false)));
     select.addEventListener("change", updateControls);
+    company.addEventListener("input", updateControls);
+    send.addEventListener("click", () => run(async (t) => {
+        const r = await request(outboundPath(), "PUT", { campaign: select.value, company: company.value.trim() }, true);
+        if (t !== generation)
+            return;
+        renderOutbound(r);
+    }, sendStatus));
+    cancelSend.addEventListener("click", () => run(async (t) => {
+        const r = await request(outboundPath(), "DELETE", {}, true);
+        if (t !== generation)
+            return;
+        renderOutbound(r);
+    }, sendStatus));
+    readSend.addEventListener("click", () => run(async (t) => {
+        const r = await request(outboundPath());
+        if (t !== generation)
+            return;
+        renderOutbound(r);
+    }, sendStatus));
     importNow.addEventListener("click", () => run(async (t) => {
         const r = await request(importPath(), "POST", { campaign: select.value }, true);
         if (t !== generation)
@@ -142,14 +199,31 @@ export function setupSalesforceImport(request, onRosterChanged) {
         busy = false;
         cursor = null;
         receipt = undefined;
+        outbound = undefined;
         select.replaceChildren(PH());
         status.textContent = "";
+        sendStatus.textContent = "";
+        company.value = "Individual";
         updateControls();
         run(async (t) => {
-            const r = await request(syncPath());
+            const [syncRes, outboundRes] = await Promise.allSettled([
+                request(syncPath()),
+                request(outboundPath()),
+            ]);
             if (t !== generation)
                 return;
-            renderReceipt(r);
+            if (syncRes.status === "fulfilled") {
+                renderReceipt(syncRes.value);
+            }
+            else {
+                status.textContent = syncRes.reason instanceof Error ? syncRes.reason.message : String(syncRes.reason);
+            }
+            if (outboundRes.status === "fulfilled") {
+                renderOutbound(outboundRes.value);
+            }
+            else {
+                sendStatus.textContent = outboundRes.reason instanceof Error ? outboundRes.reason.message : String(outboundRes.reason);
+            }
         });
     };
 }

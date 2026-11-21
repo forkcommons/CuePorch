@@ -228,6 +228,14 @@
           <button type="button" id="sfImportStop" hidden>Stop automatic import</button>
           <button type="button" id="sfImportRefresh">Refresh import status</button>
           <p role="status" id="sfImportStatus"></p>
+            <h4>Send registrations to Salesforce</h4>
+            <label>Company for new Salesforce leads
+              <input type="text" id="sfLeadCompany" value="Individual" maxlength="255">
+            </label>
+            <button type="button" id="sfOutboundEnable" disabled>Enable Salesforce delivery</button>
+            <button type="button" id="sfOutboundStop" hidden>Stop Salesforce delivery</button>
+            <button type="button" id="sfOutboundRefresh">Refresh Salesforce delivery status</button>
+            <p role="status" id="sfOutboundStatus"></p>
         </fieldset>
         <fieldset id="eventMarketoImportPanel" hidden>
           <legend>Import attendees from Marketo</legend>
