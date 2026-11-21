@@ -194,7 +194,7 @@ function render() {
           library.href = personal ? "/team" : "/operator/library";
           library.textContent = "Choose a video in Library";
           card.append(library);
-        } else card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
+        } else if (item.id !== "mailchimp") card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {
         const result = await api<{provider_revoked: boolean}>(pathFor(item, "disconnect"), {});

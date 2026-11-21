@@ -85,6 +85,7 @@ import library_timeline
 import library_trash
 import library_upload
 import hubspot_crm
+import mailchimp_crm
 import marketo_crm
 import event_hubspot_outbound
 import event_contact_delivery
@@ -1391,6 +1392,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
+    mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
     marketo = marketo_crm.configured_connection()
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
@@ -1410,7 +1412,7 @@ def create_app(root, database, operator, institution, simulation=None):
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
-                                               sharing_access, hubspot, marketo=marketo)
+                                               sharing_access, hubspot, mailchimp, marketo=marketo)
     app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner, hubspot_origins=hubspot_origins)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,

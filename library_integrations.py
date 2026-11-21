@@ -22,6 +22,7 @@ import event_hubspot_outbound
 import facebook_upload
 import google_meet_recordings
 import hubspot_crm
+import mailchimp_crm
 import marketo_crm
 import linkedin_upload
 import mail_relay
@@ -279,7 +280,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, *, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -307,7 +308,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot)} | outbound
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp)} | outbound
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -433,11 +434,12 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category=("Marketing" if item.config.key == "hubspot" else
+                category=("Marketing" if item.config.key in ("hubspot", "mailchimp") else
                           "Commerce" if item.config.key == "shopify" else
                           "Social publishing" if item.config.key in outbound else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
                 description=("Import a contact segment into a webinar occurrence." if item.config.key == "hubspot" else
+                             "Connect a Mailchimp account for registration sync." if item.config.key == "mailchimp" else
                              "Add a Library video to a Shopify product's media."
                              if item.config.key == "shopify" else
                              "Upload a native video from the Library to your channel."
@@ -541,6 +543,32 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             hubspot.authorize(con, revision)
         return private(dict(subscriptions=result))
+
+    def mailchimp_offset():
+        offset = request.args.get("offset", "0")
+        if not re.fullmatch(r"[0-9]{1,9}", offset):
+            abort(400)
+        return int(offset)
+
+    @app.get("/api/integrations/mailchimp/audiences")
+    def mailchimp_audiences():
+        read_api()
+        revision = mailchimp.revision()
+        result = mailchimp_crm.audiences(mailchimp, revision, mailchimp_offset())
+        with tx() as con:
+            mailchimp.authorize(con, revision)
+        return private(result)
+
+    @app.get("/api/integrations/mailchimp/audiences/<list_id>/fields")
+    def mailchimp_fields(list_id):
+        read_api()
+        offset = mailchimp_offset()
+        revision = mailchimp.revision()
+        audience = mailchimp_crm.audience(mailchimp, revision, list_id)
+        result = mailchimp_crm.merge_fields(mailchimp, revision, list_id, offset)
+        with tx() as con:
+            mailchimp.authorize(con, revision)
+        return private(dict(result, audience=audience))
 
     @app.get("/api/integrations/marketo/programs")
     def marketo_programs():

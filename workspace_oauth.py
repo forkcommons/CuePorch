@@ -63,6 +63,7 @@ class Config:
     authorize_scope: bool = True
     refresh_optional: bool = False
     implicit_bearer: bool = False
+    nonexpiring_access: bool = False
 
 
 def provider_request(method, url, **kwargs):
@@ -162,14 +163,15 @@ class Connection:
         scope = data.get("scope", self.config.scope)
         valid_refresh = (isinstance(refresh, str) and 1 <= len(refresh) <= 4096
                          or refresh is None and self.config.refresh_optional)
+        nonexpiring = self.config.nonexpiring_access and (expires is None or (type(expires) is int and expires == 0))
         token_type = data.get("token_type", "Bearer" if self.config.implicit_bearer else "")
         if not (isinstance(access, str) and 1 <= len(access) <= 4096 and access.isascii()
                 and access.isprintable() and valid_refresh
-                and type(expires) is int and 1 <= expires <= 90 * 86400
+                and (nonexpiring or (type(expires) is int and 1 <= expires <= 90 * 86400))
                 and isinstance(scope, str) and set(self.config.scope.split()) <= set(scope.split())
                 and str(token_type).casefold() == "bearer"):
             abort(502, "The provider did not grant the access requested for this integration.")
-        return dict(access=access, refresh=refresh, expires=int(time.time()) + expires)
+        return dict(access=access, refresh=refresh, expires=None if nonexpiring else int(time.time()) + expires)
 
     def client_fields(self):
         fields = {"client_id": self.client}
@@ -287,7 +289,7 @@ class Connection:
             try:
                 saved = self.tokens(row)
                 if self.config.revoke_style != "refresh-form":
-                    if saved["expires"] <= time.time() + 30:
+                    if saved["expires"] is not None and saved["expires"] <= time.time() + 30:
                         saved = self.refresh(saved)
                     if self.config.revoke_style == "access-bearer":
                         fields = dict(headers={"Authorization": "Bearer " + saved["access"]})
@@ -304,7 +306,8 @@ class Connection:
         with self.lock:
             with self.tx() as con:
                 saved = self.tokens(self.authorize(con, revision))
-            if saved["expires"] > time.time() + 30 and saved["access"] != rejected:
+            if ((saved["expires"] is None or saved["expires"] > time.time() + 30)
+                    and saved["access"] != rejected):
                 return saved["access"]
             if not saved["refresh"]:
                 abort(409, "Authorization expired or was withdrawn. Reconnect this integration to continue.")
