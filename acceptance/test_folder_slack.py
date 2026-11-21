@@ -240,8 +240,107 @@ class FolderSlack(unittest.TestCase):
                 with closing(sqlite3.connect(database)) as connection:
                     self.assertEqual(0, connection.execute("SELECT count(*) FROM folder_slack_notice").fetchone()[0])
                 self.assertEqual(9, len(delivered))
-        print("Slack browser OAuth, scoped notices, 429 retry, private link, nested Spanish notices for editing,"
-              " privacy and showcase, pause, deletion and disconnect passed.")
+                self.check_contributor_access(browser, base, callback, api, auth, watched, child, others)
+        print("Slack browser OAuth, scoped contributor grants and revoke, 429 retry, private links,"
+              " nested Spanish notices, pause, deletion and disconnect passed.")
+
+    def check_contributor_access(self, browser, base, callback, operator, auth, parent, child, unrelated):
+        team_write = {"X-CuePorch-Team": "1"}
+        session_header = {"Authorization": "Bearer team-session"}
+        slack_write = session_header | {"X-CuePorch-Slack": "1"}
+        folders_url = base + "/api/team/slack-folders"
+
+        def join(context, role):
+            invited = operator.post(base + "/api/team/invitations", headers=auth | team_write,
+                                    data={"email": role + "@example.org", "role": role})
+            self.assertEqual(201, invited.status, invited.text())
+            joined = context.request.post(base + "/api/team/join", headers=team_write, data={
+                "invitation": urlsplit(invited.json()["path"]).fragment,
+                "name": role, "password": "CuePorch team rehearsal password!",
+            })
+            self.assertEqual(201, joined.status, joined.text())
+            return joined.json()["id"]
+
+        def grant(account, folder, permission):
+            path = f"{base}/api/team/members/{account}/folders/{folder}"
+            if permission:
+                changed = operator.put(path, headers=auth | team_write, data={"permission": permission})
+            else:
+                changed = operator.delete(path, headers=auth | team_write, data={})
+            self.assertEqual(204, changed.status, changed.text())
+
+        def settings(folder):
+            return f"{base}/api/library/folders/{folder}/slack"
+
+        def start(context, folder, revision=None):
+            response = context.request.post(settings(folder) + "/connect", headers=slack_write,
+                                            data={"revision": revision, "topics": ["upload"]})
+            self.assertTrue(response.ok, response.text())
+            return parse_qs(urlsplit(response.json()["authorization_url"]).query)["state"][0]
+
+        with (
+            browser.new_context(ignore_https_errors=True) as editor,
+            browser.new_context(ignore_https_errors=True) as viewer,
+            browser.new_context(ignore_https_errors=True) as manager,
+            browser.new_context(ignore_https_errors=True) as group_editor,
+        ):
+            editor_id = join(editor, "contributor")
+            viewer_id = join(viewer, "viewer")
+            join(manager, "admin")
+            group_editor_id = join(group_editor, "contributor_plus")
+            grant(editor_id, parent, "edit")
+            grant(editor_id, unrelated, "view")
+            grant(viewer_id, parent, "edit")
+            group = operator.post(base + "/api/team/groups", headers=auth | team_write, data={
+                "name": "Other editors", "members": [group_editor_id],
+                "folders": [unrelated], "edit_folders": [unrelated],
+            })
+            self.assertEqual(201, group.status, group.text())
+
+            choices = editor.request.get(folders_url, headers=session_header)
+            self.assertEqual(200, choices.status, choices.text())
+            self.assertEqual({parent, child}, {folder["id"] for folder in choices.json()["folders"]})
+            self.assertEqual(
+                [unrelated], [folder["id"] for folder in
+                              group_editor.request.get(folders_url, headers=session_header).json()["folders"]],
+            )
+            self.assertEqual(403, editor.request.get(settings(unrelated), headers=session_header).status)
+            self.assertEqual(403, editor.request.get(settings(parent)).status)
+            self.assertEqual(403, viewer.request.get(folders_url, headers=session_header).status)
+            self.assertEqual(403, viewer.request.get(settings(parent), headers=session_header).status)
+            self.assertEqual(403, group_editor.request.delete(settings(parent),
+                             headers=slack_write, data={"revision": None}).status)
+            self.assertTrue(manager.request.get(settings(unrelated), headers=session_header).ok)
+
+            page = editor.new_page()
+            page.goto(base + "/team")
+            page.get_by_label("Folder", exact=True).select_option(value=child)
+            page.get_by_role("button", name="Slack notifications").click()
+            dialog = page.get_by_role("dialog", name="Slack notifications for Festival edits / Rough cuts")
+            expect(dialog).to_be_visible()
+            expect(dialog.get_by_role("button", name="Choose channel in Slack")).to_be_visible()
+            dialog.get_by_role("button", name="Choose channel in Slack").click()
+            expect(dialog.get_by_role("status")).to_have_text("Slack channel connected.", timeout=15000)
+            expect(dialog.get_by_text("Connected channel #festival.", exact=False)).to_be_visible()
+            self.assertEqual("/team", urlsplit(page.url).path)
+            self.assertFalse(urlsplit(page.url).query)
+            before = editor.request.get(settings(child), headers=session_header).json()
+            self.assertEqual("#festival", before["channel"])
+
+            admin_state = start(manager, unrelated)
+            editor_state = start(editor, child, before["revision"])
+            grant(editor_id, parent, None)
+            denied = editor.request.get(callback, params={"state": editor_state, "code": "fixture-code"})
+            self.assertEqual(403, denied.status, denied.text())
+            self.assertEqual(403, editor.request.get(settings(child), headers=session_header).status)
+            self.assertEqual(before["revision"], operator.get(settings(child), headers=auth).json()["revision"])
+            success = manager.request.get(callback, params={"state": admin_state, "code": "fixture-code"},
+                                          max_redirects=0)
+            self.assertEqual(303, success.status, success.text())
+            self.assertEqual("#festival", manager.request.get(settings(unrelated), headers=session_header).json()["channel"])
+            page.reload()
+            expect(page.get_by_label("Folder", exact=True)).not_to_be_visible()
+
 
 
 if __name__ == "__main__":

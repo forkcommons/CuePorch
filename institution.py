@@ -1485,7 +1485,45 @@ def create_app(root, database, operator, institution, simulation=None):
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)
-    app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
+    def folder_slack_access(con, folder):
+        member = team_member(con)
+        if member:
+            if member["role"] in team_accounts.MANAGERS:
+                return member["id"], False
+            if member["role"] in team_accounts.CONTRIBUTORS and any(
+                row["id"] == folder for row in team_accounts.editable_folders(con, member["id"])
+            ):
+                return member["id"], True
+        elif operator_name(con):
+            return None, False
+        abort(403)
+
+    def folder_slack_membership(con):
+        return team_accounts.current(con, secure_site(team_origin))
+
+    def folder_slack_authorize(con, context):
+        if not context.get("member"):
+            return
+        member = folder_slack_membership(con)
+        if not member or member["id"] != context["member"]:
+            abort(403)
+        if member["role"] in team_accounts.MANAGERS:
+            return
+        if member["role"] not in team_accounts.CONTRIBUTORS or not any(
+            row["id"] == context["folder"] for row in team_accounts.editable_folders(con, member["id"])
+        ):
+            abort(403)
+
+    def folder_slack_contributor_folders(con):
+        member = team_member(con)
+        if not member or member["role"] not in team_accounts.CONTRIBUTORS:
+            abort(403)
+        return team_accounts.editable_folders(con, member["id"])
+
+    app.extensions["stop_folder_slack"] = folder_slack.register(
+        app, tx, team_origin, operator, database, folder_slack_access,
+        folder_slack_membership, folder_slack_authorize, folder_slack_contributor_folders,
+    )
     vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,

@@ -98,9 +98,10 @@ def options_from(body, row):
 
 
 class ChannelConsent(Connection):
-    def __init__(self, tx, operator, webhook_cipher):
+    def __init__(self, tx, operator, webhook_cipher, authorize_member):
         super().__init__(OAUTH, tx, operator)
         self.webhook_cipher = webhook_cipher
+        self.authorize_member = authorize_member
 
     def exchange(self, fields, previous_refresh=None):
         with provider_request("POST", self.config.token_url, data=fields | self.client_fields()) as response:
@@ -117,6 +118,7 @@ class ChannelConsent(Connection):
         return address, channel
 
     def save_authorization(self, con, tokens, context):
+        self.authorize_member(con, context)
         row = current_settings(con, context["folder"])
         check_revision(row, context["revision"])
         address, channel = tokens
@@ -124,7 +126,8 @@ class ChannelConsent(Connection):
         save(con, context["folder"], self.webhook_cipher.encrypt(address.encode("ascii")), options, channel)
 
     def return_path(self, result, context):
-        return "/operator/library?" + urlencode(dict(folder=context["folder"], slack=result))
+        path = "/team" if context.get("contributor") else "/operator/library"
+        return path + "?" + urlencode(dict(folder=context["folder"], slack=result))
 
 
 def send(cipher, job, origin):
@@ -180,10 +183,10 @@ def deliver_next(tx, cipher, origin):
     return True
 
 
-def register(app, tx, origin, staff, operator, database):
+def register(app, tx, origin, operator, database, access, membership, authorize_member, contributor_folders):
     configured = origin.startswith("https://")
     cipher = Fernet(base64.urlsafe_b64encode(hmac.digest(operator.encode(), b"CuePorch Slack webhooks", "sha256")))
-    consent = ChannelConsent(tx, operator, cipher)
+    consent = ChannelConsent(tx, operator, cipher, authorize_member)
     lock = FileLock(str(database.with_suffix(".slack.lock")), timeout=0)
     stop, wake = Event(), Event()
 
@@ -212,37 +215,45 @@ def register(app, tx, origin, staff, operator, database):
             thread.join(10)
 
     def clear_consent(con, folder):
-        con.execute("""DELETE FROM workspace_integration_attempt WHERE provider='slack'
+        con.execute("""DELETE FROM workspace_integration_attempt WHERE (provider='slack' OR provider LIKE 'slack:%')
                        AND json_extract(context,'$.folder')=?""", (folder,))
 
     @app.post("/api/library/folders/<folder>/slack/connect")
     def connect_channel(folder):
-        staff()
         secure = secure_site(origin)
         if not configured or not secure or source_origin("https://" + request.host) != origin:
             abort(409, "Use the configured workspace HTTPS address to connect Slack.")
         body = json_mutation(secure, "X-CuePorch-Slack")
         revision = body.get("revision")
         with tx() as con:
+            member, contributor = access(con, folder)
             row = current_settings(con, folder)
             check_revision(row, revision)
             options = options_from(body, row)
-        return consent.prepare(secure, origin, dict(folder=folder, revision=revision, options=options))
+        return consent.for_member(member).prepare(
+            secure, origin, dict(folder=folder, revision=revision, options=options,
+                                 member=member, contributor=contributor),
+        )
 
     @app.get(consent.callback)
     def slack_callback():
         secure = secure_site(origin)
         if not configured or not secure or source_origin("https://" + request.host) != origin:
             abort(403, "Use the configured workspace HTTPS address to connect Slack.")
-        return consent.complete(secure, origin)
+        with tx() as con:
+            member = membership(con)
+            connection = consent.for_member(member["id"]) if member else consent
+            if not connection.started(con, request.args.get("state", "")):
+                connection = consent
+        return connection.complete(secure, origin)
 
     @app.route("/api/library/folders/<folder>/slack", methods=("GET", "PUT", "DELETE"))
     def slack_settings(folder):
-        staff()
         secure = secure_site(origin)
         same_origin(secure)
         body = json_mutation(secure, "X-CuePorch-Slack") if request.method in ("PUT", "DELETE") else None
         with tx() as con:
+            access(con, folder)
             row = current_settings(con, folder)
             if body is not None:
                 if not configured or not secure:
@@ -267,5 +278,10 @@ def register(app, tx, origin, staff, operator, database):
                             enabled=bool(row["enabled"]) if row else True, recursive=bool(row["recursive"]) if row else False,
                             language=row["language"] if row else "en",
                             topics=json.loads(row["topics"]) if row else [], deliveries=[dict(item) for item in receipts]))
+
+    @app.get("/api/team/slack-folders")
+    def slack_folders():
+        with tx() as con:
+            return private(dict(folders=contributor_folders(con)))
 
     return close

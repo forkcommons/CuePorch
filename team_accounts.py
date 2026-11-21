@@ -171,8 +171,7 @@ def visible_folders(con):
     ) SELECT id,title FROM paths ORDER BY title COLLATE NOCASE,id""").fetchall()
 
 
-def inherited_works(con, member, required="view"):
-    rows = con.execute("""WITH RECURSIVE roots(id) AS (
+_GRANTED_FOLDERS = """roots(id) AS (
         SELECT folder FROM team_folder_grant WHERE member=? AND (?='view' OR permission='edit')
         UNION
         SELECT f.folder FROM team_group_folder f JOIN team_group_member m ON m.team_group=f.team_group
@@ -184,9 +183,24 @@ def inherited_works(con, member, required="view"):
         UNION
         SELECT f.id FROM library_folder f JOIN granted g ON f.parent=g.id
         WHERE NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='folder' AND d.item=f.id)
-    ) SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder""",
-        (member, required, member, required))
+    )"""
+
+
+def inherited_works(con, member, required="view"):
+    rows = con.execute(
+        "WITH RECURSIVE " + _GRANTED_FOLDERS
+        + " SELECT p.work FROM library_placement p JOIN granted g ON g.id=p.folder",
+        (member, required, member, required),
+    )
     return {row[0] for row in rows}
+
+
+def editable_folders(con, member):
+    granted = {row[0] for row in con.execute(
+        "WITH RECURSIVE " + _GRANTED_FOLDERS + " SELECT id FROM granted",
+        (member, "edit", member, "edit"),
+    )}
+    return [dict(row) for row in visible_folders(con) if row["id"] in granted]
 
 
 def group_selection(values, available, label):

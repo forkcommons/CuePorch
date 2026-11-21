@@ -1,3 +1,4 @@
+import { editFolderSlack } from "./folder_slack.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { checked, roleLabels, sessionMarker, teamRequest } from "./team_api.js";
 import { requestSignInCode, resetSignInCode, signInValues } from "./sign_in_factor.js";
@@ -9,6 +10,74 @@ const library = document.querySelector("#teamLibrary");
 const upload = document.querySelector("#teamUpload");
 const search = document.querySelector("#teamSearch");
 const clearSearch = document.querySelector("#clearTeamSearch");
+const slackForm = document.querySelector("#teamSlackFolder");
+const slackFolder = slackForm?.querySelector("select");
+const slackDialog = document.querySelector("#teamSlackDialog");
+const slackHeading = document.querySelector("#teamSlackHeading");
+const slackBody = document.querySelector("#teamSlackBody");
+const slackStatus = document.querySelector("#teamSlackDialogStatus");
+let managesFolderSlack = false;
+async function openTeamSlack() {
+    const option = slackFolder?.selectedOptions[0];
+    if (!option?.value || !slackDialog || !slackHeading || !slackBody || !slackStatus)
+        return;
+    await editFolderSlack({ id: option.value, name: option.text }, {
+        request: (path, method = "GET", body, headers) => fetch(path, {
+            method, headers: {
+                Authorization: `Bearer ${sessionMarker}`,
+                ...(body ? { "Content-Type": "application/json" } : {}),
+                ...headers,
+            },
+            body: body ? JSON.stringify(body) : undefined,
+        }),
+        checked,
+        openDialog: title => {
+            slackHeading.textContent = title;
+            slackStatus.textContent = "";
+            slackBody.replaceChildren();
+            if (!slackDialog.open)
+                slackDialog.showModal();
+            return slackBody;
+        },
+        status: slackStatus,
+    });
+}
+async function showSlackFolders(requestId) {
+    if (!managesFolderSlack || !slackForm || !slackFolder)
+        return;
+    const response = await teamRequest("slack-folders", "GET", {}, sessionMarker);
+    if (requestId !== libraryRequest || !managesFolderSlack)
+        return;
+    if (response.status === 401 || response.status === 403) {
+        slackForm.hidden = true;
+        slackFolder.replaceChildren();
+        slackDialog?.close();
+        return;
+    }
+    const { folders } = await (await checked(response)).json();
+    if (requestId !== libraryRequest || !managesFolderSlack)
+        return;
+    const previous = slackFolder.value;
+    slackFolder.replaceChildren(...folders.map(folder => new Option(folder.title, folder.id)));
+    if (folders.some(folder => folder.id === previous))
+        slackFolder.value = previous;
+    slackForm.hidden = folders.length === 0;
+    const address = new URL(location.href);
+    const result = address.searchParams.get("slack");
+    if (result !== "connected" && result !== "cancelled")
+        return;
+    const folder = address.searchParams.get("folder");
+    address.searchParams.delete("slack");
+    address.searchParams.delete("folder");
+    history.replaceState(null, "", address);
+    if (!folders.some(option => option.id === folder))
+        return;
+    slackFolder.value = folder;
+    await openTeamSlack();
+    if (slackStatus)
+        slackStatus.textContent = result === "connected"
+            ? "Slack channel connected." : "Slack channel selection was canceled.";
+}
 let uploadId = "";
 let libraryQuery = "";
 let libraryRequest = 0;
@@ -53,6 +122,12 @@ function reveal(member) {
     }
     else
         clearOperatorMarker();
+    managesFolderSlack = member?.role === "contributor" || member?.role === "contributor_plus";
+    if (!managesFolderSlack && slackForm) {
+        slackForm.hidden = true;
+        slackFolder?.replaceChildren();
+        slackDialog?.close();
+    }
     resetSignInCode(signIn);
 }
 function clearOperatorMarker() {
@@ -98,6 +173,7 @@ async function showVideos() {
         item.append(link);
         list.append(item);
     }
+    await showSlackFolders(requestId);
 }
 if (join) {
     const invitation = location.hash.slice(1);
@@ -116,6 +192,11 @@ if (join) {
     };
 }
 else if (signIn && upload && search && clearSearch) {
+    if (slackForm)
+        slackForm.onsubmit = event => {
+            event.preventDefault();
+            void task(openTeamSlack, slackForm);
+        };
     const searchInput = search.querySelector("[name=q]");
     search.onsubmit = event => {
         event.preventDefault();
