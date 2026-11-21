@@ -34,7 +34,23 @@ from institution import create_app
 import social_publication
 
 
+PROFILE_STREAM_KEY = "fixture-facebook-profile-key?s_bl=1&s_vt=api-s&a=cue-fixture%2Bsignature"
+PROFILE_SIGNATURE = "s_bl=1&s_vt=api-s&a=cue-fixture%2Bsignature"
 class FacebookPublication(unittest.TestCase):
+    def test_rejects_untrusted_secure_rtmps_response_urls(self):
+        base = facebook_live.INGEST_SERVER + "/fixture-facebook-profile-key"
+        bad_urls = (
+            base.replace(facebook_live.INGEST_SERVER, "rtmps://evil.example"),
+            base.replace("://", "://user:pass@", 1),
+            base.replace(":443", ":444", 1),
+            base + "#fragment",
+            base + "?key=%zz",
+            base + "?key=a b",
+            base + "?",
+        )
+        for url in bad_urls:
+            with self.assertRaises(facebook_live.FacebookLiveUnconfirmed):
+                facebook_live.parse_ingest(url)
     def test_selected_page_posts_after_restart_and_recovers_from_rate_limit(self):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory()))
@@ -155,7 +171,8 @@ class FacebookPublication(unittest.TestCase):
                 if page_id == "707":
                     authenticated("fixture-long")
                     profile_writes.append(request.get_json())
-                    return dict(id=str(1706 + len(profile_writes)), secure_stream_url=facebook_live.INGEST_SERVER + "/fixture-facebook-profile-key")
+                    return dict(id=str(1706 + len(profile_writes)),
+                                secure_stream_url=facebook_live.INGEST_SERVER + "/" + PROFILE_STREAM_KEY)
                 assert page_id in {"101", "202"}
                 authenticated("fixture-station" if page_id == "101" else "fixture-arts")
                 body = request.get_json()
@@ -522,8 +539,11 @@ class FacebookPublication(unittest.TestCase):
                                                data={"page": "707", "privacy": "INVALID"}).status)
                 self.assertEqual([], api.get(skipped_path, headers=auth).json()["destinations"])
                 self.assertEqual(1, len(inherited_profile))
+                self.assertNotIn(PROFILE_SIGNATURE, inherited_auto.text())
+                self.assertNotIn(PROFILE_SIGNATURE, page.content())
+                self.assertNotIn(PROFILE_SIGNATURE.encode(), Path(database).read_bytes())
                 check_destination_rtmps(root, database, inherited_profile[0]["id"], operator, facebook_live.INGEST_SERVER,
-                                        "fixture-facebook-profile-key")
+                                        PROFILE_STREAM_KEY)
                 stop_profile = api.delete(inherited_path + "/facebook-profile/auto", headers=auth,
                                           data={"page": "707", "series": True})
                 self.assertEqual(200, stop_profile.status, stop_profile.text())
