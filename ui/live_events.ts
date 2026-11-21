@@ -64,7 +64,7 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   logo: string | null; logo_image: string | null; byline: string;
   show_live_badge: boolean; show_viewers: boolean;
 }
-interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null; provider?: string | null; preset?: string | null; provider_phase?: string | null;}
+interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null; provider?: string | null; preset?: string | null; provider_phase?: string | null; reusable?: boolean;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface YouTubeBroadcast {id: string; title: string; channel: string; starts: string; privacy: string;}
 interface YouTubeBroadcasts {items: YouTubeBroadcast[]; next: string | null;}
@@ -994,7 +994,8 @@ async function refreshDestinations(result?: Destinations) {
       : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
     const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
       ? item.provider_phase : item.state;
-    row.textContent = `${item.name}${scope} · ${item.server} · ${labels[state] || state}`;
+    const reusable = item.reusable;
+    row.textContent = `${item.name}${reusable ? " · Reusable" : ""}${reusable ? ` · This date ${item.enabled ? "on" : "off"}` : ""}${scope} · ${item.server} · ${labels[state] || state}`;
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -1007,8 +1008,8 @@ async function refreshDestinations(result?: Destinations) {
     });
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove ${item.name}`);
+    remove.textContent = reusable ? "Stop reusing key" : "Remove";
+    remove.setAttribute("aria-label", reusable ? `Stop reusing key for ${item.name}` : `Remove ${item.name}`);
     remove.onclick = () => void action(async () => {
       await request(mediaPath(`destinations/${item.id}`), "DELETE");
       await refreshDestinations();
@@ -1326,7 +1327,8 @@ destinationForm.onsubmit = event => {
   const values = new FormData(destinationForm);
   void action(async () => {
     const data = {name: values.get("name"), server: values.get("server"),
-      key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset")};
+      key: values.get("key"), enabled: values.has("enabled"), reusable: values.has("reusable"),
+      preset: values.get("preset")};
     const result = await request<Destinations>(mediaPath("destinations"), "POST", data);
     destinationForm.reset();
     await refreshDestinations(result);
@@ -1336,15 +1338,25 @@ const presetSelect = destinationForm.elements.namedItem("preset") as HTMLSelectE
 const patreonDestinationHelp = element<HTMLParagraphElement>("patreonDestinationHelp");
 const socialDestinationHelp = element<HTMLParagraphElement>("socialDestinationHelp");
 const ottDestinationHelp = element<HTMLParagraphElement>("ottDestinationHelp");
+const reusableInput = destinationForm.elements.namedItem("reusable") as HTMLInputElement;
+const reusableLabel = element<HTMLLabelElement>("destinationReusableLabel");
+const reusableHelp = element<HTMLParagraphElement>("destinationReusableHelp");
 function syncPresetHelp() {
   const preset = presetSelect.value;
   patreonDestinationHelp.hidden = preset !== "patreon";
   socialDestinationHelp.hidden = !["instagram", "tiktok", "x", "linkedin"].includes(preset);
   ottDestinationHelp.hidden = preset !== "vimeo-ott";
 }
-presetSelect.addEventListener("change", syncPresetHelp);
-destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+function syncReusable() {
+  const hide = presetSelect.value === "custom" || !active || active.event.event.schedule.repeat === "none";
+  reusableLabel.hidden = reusableHelp.hidden = hide;
+  reusableInput.disabled = hide;
+  if (hide) reusableInput.checked = false;
+}
+presetSelect.addEventListener("change", () => { syncPresetHelp(); syncReusable(); });
+destinationForm.addEventListener("reset", () => queueMicrotask(() => { syncPresetHelp(); syncReusable(); }));
 syncPresetHelp();
+syncReusable();
 window.setInterval(() => {
   if (destinations.open && !document.hidden && !pending) {
     void refreshDestinations().catch(() => {});
