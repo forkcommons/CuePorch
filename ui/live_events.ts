@@ -64,8 +64,10 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   logo: string | null; logo_image: string | null; byline: string;
   show_live_badge: boolean; show_viewers: boolean;
 }
-interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null;}
+interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null; provider?: string | null;}
 interface Destinations {available: boolean; destinations: Destination[];}
+interface YouTubeBroadcast {id: string; title: string; channel: string; starts: string; privacy: string;}
+interface YouTubeBroadcasts {items: YouTubeBroadcast[]; next: string | null;}
 interface SrtListener {
   server: string; passphrase: string; key_bytes: number; preview: boolean;
   backup_server?: string; backup_passphrase?: string;
@@ -141,6 +143,13 @@ const destinations = element<HTMLDetailsElement>("eventDestinations");
 const destinationList = element("destinationList");
 const destinationForm = element<HTMLFormElement>("addDestination");
 const destinationStatus = element("destinationStatus");
+const youtubePanel = element("youtubeBroadcasts");
+const youtubeList = element<HTMLSelectElement>("youtubeBroadcastList");
+const youtubeStatus = element("youtubeBroadcastStatus");
+const youtubeMore = button("youtubeBroadcastsMore");
+const youtubeForm = element<HTMLFormElement>("addYouTubeDestination");
+const youtubeSubmit = button("addYouTubeDestinationButton");
+let youtubeNext: string | null = null;
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const backupKey = input("backupEncoderKey");
@@ -359,6 +368,12 @@ function choose(event: LiveEvent, instance: Occurrence) {
   destinationForm.reset();
   destinationList.replaceChildren();
   destinationStatus.textContent = "";
+  youtubePanel.hidden = true;
+  youtubeList.replaceChildren();
+  youtubeNext = null;
+  youtubeMore.hidden = true;
+  youtubeStatus.textContent = "";
+  youtubeSubmit.disabled = true;
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -881,19 +896,22 @@ async function refreshDestinations(result?: Destinations) {
   result = result || await request<Destinations>(mediaPath("destinations"));
   if (selection !== active) return;
   destinationForm.hidden = !result.available;
+  youtubePanel.hidden = !result.available;
   destinationStatus.textContent = result.available ? "" : "Destinations require an event open to the public without registration.";
   const labels: Record<string, string> = {
     waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
-    retrying: "Reconnecting", disabled: "Off",
+    retrying: "Reconnecting", disabled: "Off", disconnected: "Disconnected",
   };
   destinationList.replaceChildren(...result.destinations.map(item => {
     const row = document.createElement("li");
-    row.textContent = `${item.name}${item.opens !== null ? " · Patreon Live for this date" : ""} · ${item.server} · ${labels[item.state] || item.state}`;
+    const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
+      : item.opens !== null ? " · Patreon Live for this date" : "";
+    row.textContent = `${item.name}${scope} · ${item.server} · ${labels[item.state] || item.state}`;
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = item.enabled ? "Turn off" : "Turn on";
     control.setAttribute("aria-label", `Turn ${item.enabled ? "off" : "on"} ${item.name}`);
-    control.disabled = !item.enabled && !result!.available;
+    control.disabled = item.state === "disconnected" || (!item.enabled && !result!.available);
     control.onclick = () => void action(async () => {
       await request(mediaPath(`destinations/${item.id}`), "PUT", {enabled: !item.enabled});
       await refreshDestinations();
@@ -913,6 +931,40 @@ async function refreshDestinations(result?: Destinations) {
 
 destinations.ontoggle = () => { if (destinations.open) void action(() => refreshDestinations()); };
 button("refreshDestinations").onclick = () => void action(() => refreshDestinations());
+async function loadYouTubeBroadcasts(more = false) {
+  if (!active) return;
+  const selection = active;
+  youtubeStatus.textContent = "Loading YouTube broadcasts…";
+  try {
+    const path = more && youtubeNext ? `${mediaPath("destinations/youtube")}?cursor=${encodeURIComponent(youtubeNext)}` : mediaPath("destinations/youtube");
+    const result = await request<YouTubeBroadcasts>(path);
+    if (selection !== active) return;
+    if (!more) youtubeList.replaceChildren();
+    for (const item of result.items) {
+      const option = new Option(`${item.title} · ${new Date(item.starts).toLocaleString()} · ${item.privacy}`, item.id);
+      option.dataset.channel = item.channel;
+      youtubeList.append(option);
+    }
+    youtubeNext = result.next;
+    youtubeMore.hidden = !youtubeNext;
+    youtubeSubmit.disabled = !youtubeList.options.length;
+    youtubeStatus.textContent = result.items.length ? "" : "No scheduled YouTube broadcasts found.";
+  } catch (error) {
+    if (selection === active) youtubeStatus.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+button("loadYoutubeBroadcasts").onclick = () => void action(() => loadYouTubeBroadcasts());
+youtubeMore.onclick = () => void action(() => loadYouTubeBroadcasts(true));
+youtubeForm.onsubmit = event => {
+  event.preventDefault();
+  const selected = youtubeList.selectedOptions[0];
+  if (!selected?.dataset.channel) return;
+  void action(async () => {
+    await request<{id:string}>(mediaPath("destinations/youtube"), "POST", {broadcast: selected.value, channel: selected.dataset.channel});
+    youtubeStatus.textContent = "YouTube destination added.";
+    await refreshDestinations();
+  });
+};
 destinationForm.onsubmit = event => {
   event.preventDefault();
   const values = new FormData(destinationForm);

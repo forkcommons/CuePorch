@@ -21,21 +21,31 @@ import requests
 from event_audio import MASTER_MAX, SEGMENT_MAX, released_fragments, released_variant, selected_variant
 from event_capture import EncoderProgress
 from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
+from browser_account_security import private
 import event_peer
+import youtube_live
 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_simulcast_destination(
  id TEXT PRIMARY KEY, event TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE,
  server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL, opens INTEGER,
+ provider TEXT, revision TEXT, remote TEXT, stream TEXT,
  UNIQUE(event,name));
 """
 
 
 def migrate(con):
     columns = {row[1] for row in con.execute("PRAGMA table_info(live_simulcast_destination)")}
-    if "opens" not in columns:
-        con.execute("ALTER TABLE live_simulcast_destination ADD COLUMN opens INTEGER")
+    for column, definition in (
+        ("opens", "INTEGER"),
+        ("provider", "TEXT"),
+        ("revision", "TEXT"),
+        ("remote", "TEXT"),
+        ("stream", "TEXT"),
+    ):
+        if column not in columns:
+            con.execute(f"ALTER TABLE live_simulcast_destination ADD COLUMN {column} {definition}")
 
 
 MAX_DESTINATIONS = 20
@@ -455,7 +465,78 @@ class Simulcast:
             job.thread.join(timeout=15)
 
 
-def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing):
+def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection):
+    def _require_provider_connection():
+        if not youtube_live_connection.revision():
+            abort(409, "Connect YouTube Live before using YouTube Live destinations.")
+
+    def _provider_name(con, uid, title, broadcast):
+        base = (title or "YouTube Live").strip()[:80] or "YouTube Live"
+        names = {
+            row["name"].casefold()
+            for row in con.execute("SELECT name FROM live_simulcast_destination WHERE event=?", (uid,))
+        }
+        if base.casefold() not in names:
+            return base
+        suffix = "-" + digest(b"youtube-live", broadcast.encode(), "sha256").hex()[:6]
+        candidate = base[:80 - len(suffix)] + suffix
+        if candidate.casefold() in names:
+            abort(409, "Choose a different destination name.")
+        return candidate
+
+    def _used_provider_destination(con, remote, stream):
+        if not remote and not stream:
+            return False
+        return con.execute(
+            "SELECT 1 FROM live_simulcast_destination"
+            " WHERE provider='youtube-live' AND (remote=? OR stream=?) LIMIT 1",
+            (remote, stream),
+        ).fetchone() is not None
+
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube", methods=["GET", "POST"])
+    def youtube_destination(uid, opens):
+        staff()
+        with tx() as con:
+            enforce_sharing(con, feature="outbound")
+            if not event_access(con, uid, opens):
+                abort(409, "Destinations require a public event without audience registration.")
+        revision = youtube_live_connection.revision()
+        if request.method == "GET":
+            return private(youtube_live.broadcasts(
+                youtube_live_connection, revision, request.args.get("cursor"),
+            ))
+        data = request.get_json()
+        if not isinstance(data, dict):
+            abort(422, "Choose a YouTube Live broadcast.")
+        broadcast, channel = data.get("broadcast"), data.get("channel")
+        bound = youtube_live.bound_target(youtube_live_connection, revision, broadcast, channel)
+        staff()
+        with tx() as con:
+            enforce_sharing(con, feature="outbound")
+            if not event_access(con, uid, opens):
+                abort(409, "This occurrence no longer allows simulcasting.")
+            latest = youtube_live_connection.connection(con)
+            if not latest or latest["revision"] != revision:
+                abort(409, "The YouTube Live connection changed. Reload destinations.")
+            count = con.execute(
+                "SELECT COUNT(*) FROM live_simulcast_destination WHERE event=? AND opens=? AND provider='youtube-live'",
+                (uid, opens),
+            ).fetchone()[0]
+            if count >= 10:
+                abort(409, "An occurrence supports up to 10 connected destinations.")
+            if _used_provider_destination(con, broadcast, bound["stream"]):
+                abort(409, "This broadcast or its stream is already assigned to an occurrence.")
+            name = _provider_name(con, uid, bound["title"], broadcast)
+            uid_destination = uuid.uuid4().hex
+            con.execute(
+                "INSERT INTO live_simulcast_destination"
+                "(id,event,name,server,secret,enabled,opens,provider,revision,remote,stream)"
+                " VALUES(?,?,?,?,?,1,?,'youtube-live',?,?,?)",
+                (uid_destination, uid, name, bound["server"], outputs.cipher.encrypt(bound["key"].encode()),
+                 opens, revision, broadcast, bound["stream"]),
+            )
+        return private(dict(id=uid_destination), 201)
+
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
     def event_destinations(uid, opens):
         staff()
@@ -472,21 +553,42 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     abort(422, "Enter a destination.")
                 name, server, key, enabled = target(body)
                 scope = destination_scope(body, server, opens)
-                rows = con.execute("SELECT name FROM live_simulcast_destination WHERE event=?", (uid,)).fetchall()
-                if len(rows) >= MAX_DESTINATIONS:
+                custom_rows = con.execute(
+                    "SELECT name FROM live_simulcast_destination WHERE event=? AND provider IS NULL",
+                    (uid,),
+                ).fetchall()
+                if len(custom_rows) >= MAX_DESTINATIONS:
                     abort(409, "An event supports up to 20 custom destinations.")
-                if any(row["name"].casefold() == name.casefold() for row in rows):
+                all_rows = con.execute(
+                    "SELECT name FROM live_simulcast_destination WHERE event=?",
+                    (uid,),
+                ).fetchall()
+                if any(row["name"].casefold() == name.casefold() for row in all_rows):
                     abort(409, "Choose a different destination name.")
-                con.execute("INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens)"
-                            " VALUES(?,?,?,?,?,?,?)",
-                            (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()), enabled, scope))
+                con.execute(
+                    "INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()), enabled, scope),
+                )
             rows = con.execute(
-                "SELECT id,name,server,enabled,opens FROM live_simulcast_destination"
+                "SELECT id,name,server,enabled,opens,provider,revision FROM live_simulcast_destination"
                 " WHERE event=? AND (opens IS NULL OR opens=?) ORDER BY name",
-                (uid, opens)).fetchall()
-        return dict(available=available, destinations=[
-            dict(row) | {"state": outputs.state(uid, opens, row["id"]) if row["enabled"] else "disabled"} for row in rows
-        ])
+                (uid, opens),
+            ).fetchall()
+            connection = youtube_live_connection.connection(con)
+            active_revision = connection["revision"] if connection else None
+        destinations = []
+        for row in rows:
+            item = dict(row)
+            revision = item.pop("revision")
+            if item["provider"] == "youtube-live" and revision != active_revision:
+                item["state"] = "disconnected"
+            elif item["enabled"]:
+                item["state"] = outputs.state(uid, opens, row["id"])
+            else:
+                item["state"] = "disabled"
+            destinations.append(item)
+        return dict(available=available, destinations=destinations)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/<destination>", methods=["PUT", "DELETE"])
     def event_destination(uid, opens, destination):
@@ -494,8 +596,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         with tx() as con:
             available = event_access(con, uid, opens)
             saved = con.execute(
-                "SELECT id FROM live_simulcast_destination WHERE id=? AND event=? AND (opens IS NULL OR opens=?)",
-                (destination, uid, opens)).fetchone()
+                "SELECT id,provider,revision FROM live_simulcast_destination"
+                " WHERE id=? AND event=? AND (opens IS NULL OR opens=?)",
+                (destination, uid, opens),
+            ).fetchone()
             if not saved:
                 abort(404)
             if request.method == "DELETE":
@@ -506,7 +610,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     abort(422, "Set whether this destination is enabled.")
                 if body["enabled"]:
                     enforce_sharing(con, feature="outbound")
-                if body["enabled"] and not available:
-                    abort(409, "Destinations require a public event without audience registration.")
-                con.execute("UPDATE live_simulcast_destination SET enabled=? WHERE id=?", (body["enabled"], destination))
+                    if not available:
+                        abort(409, "Destinations require a public event without audience registration.")
+                    if saved["provider"] == "youtube-live":
+                        connection = youtube_live_connection.connection(con)
+                        if not connection or connection["revision"] != saved["revision"]:
+                            abort(409, "Reconnect YouTube Live to enable this destination.")
+                con.execute(
+                    "UPDATE live_simulcast_destination SET enabled=? WHERE id=?",
+                    (body["enabled"], destination),
+                )
         return "", 204
