@@ -1968,10 +1968,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     abort(422, "Choose a language for the interpreter.")
                 name = text_field(body.get("name"), "an interpreter name", 50, True)
                 deadline = datetime.fromisoformat(shift["end"]).timestamp()
-                parent = studio.rtmp_room(uid, opens)
+                parent = studio.interpreter_room(uid, opens)
                 if (not rtmp_config or not parent or not target or target["delivery"] != "ready"
                         or deadline <= datetime.now(timezone.utc).timestamp()):
-                    abort(409, "Prepare low-latency RTMP for this occurrence before adding an interpreter.")
+                    abort(409, "Prepare low-latency RTMP or SRT for this occurrence before adding an interpreter.")
                 return private(interpreters.prepare(uid, opens, parent, rtmp_config, name, language, deadline).credentials())
         except Timeout:
             abort(409, "Another operation is preparing this event.")
