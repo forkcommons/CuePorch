@@ -2,6 +2,8 @@ import re
 from urllib.parse import parse_qsl, urlsplit
 
 from flask import abort
+
+from browser_account_security import email_key
 from workspace_oauth import check_provider, response_object, Config
 
 OAUTH = Config(
@@ -138,3 +140,141 @@ def contact_list(connection, revision, value):
         abort(422)
 
     return {"id": item["id"], "name": item["name"]}
+
+
+def _contact(row, email):
+    if not isinstance(row, dict):
+        abort(502)
+
+    cid = row.get("contact_id")
+    if not list_id(cid):
+        abort(502)
+
+    ea = row.get("email_address")
+    if not isinstance(ea, dict):
+        abort(502)
+
+    address = ea.get("address")
+    if not isinstance(address, str):
+        abort(502)
+    if address.strip().casefold() != email.strip().casefold():
+        abort(502)
+
+    perm, conf = ea.get("permission_to_send"), ea.get("confirm_status")
+    if not isinstance(perm, str):
+        abort(502)
+    if conf is not None and not isinstance(conf, str):
+        abort(502)
+
+    m = row.get("list_memberships", [])
+    if not isinstance(m, list):
+        abort(502)
+    if len(m) > 50:
+        abort(502)
+    if not all(list_id(x) for x in m):
+        abort(502)
+
+    return {
+        "id": cid.lower(),
+        "memberships": {x.lower() for x in m},
+        "eligible": perm in ("explicit", "implicit") and conf in (None, "off", "confirmed"),
+        "pending": perm == "pending_confirmation" or conf == "pending"
+    }
+
+
+def read_contact(connection, revision, email):
+    normalized = email_key(email)
+    params = {"email": normalized, "status": "all", "include": "list_memberships", "limit": 2}
+    data = _get(connection, revision, "/contacts", params=params)
+    if not isinstance(data, dict):
+        abort(502)
+    contacts = data.get("contacts")
+    if not isinstance(contacts, list) or len(contacts) > 1:
+        abort(502)
+    links = data.get("_links", {})
+    if not isinstance(links, dict) or links.get("next"):
+        abort(502)
+    return _contact(contacts[0], normalized) if contacts else None
+
+
+def _create_contact(connection, revision, list_id_value, email, first, last, before_send):
+    body = {
+        "email_address": {"address": email, "permission_to_send": "explicit"},
+        "first_name": first,
+        "last_name": last,
+        "create_source": "Contact",
+        "list_memberships": [list_id_value],
+    }
+
+    with connection.api(
+        revision,
+        "POST",
+        API_BASE + "/contacts",
+        json=body,
+        before_send=before_send,
+    ) as response:
+        if response.status_code == 409:
+            return None
+        if response.status_code in (200, 201):
+            return _contact(response_object(response), email)
+        check_provider(response)
+
+
+def _add_contact_to_list(connection, revision, contact_id, list_id_value, before_send):
+    body = {"source": {"contact_ids": [contact_id]}, "list_ids": [list_id_value]}
+
+    with connection.api(
+        revision,
+        "POST",
+        API_BASE + "/activities/add_list_memberships",
+        json=body,
+        before_send=before_send,
+    ) as response:
+        if response.status_code in (200, 201, 202):
+            data = response_object(response)
+            activity_id = data.get("activity_id")
+            if list_id(activity_id):
+                return activity_id.lower()
+            abort(502, "Constant Contact returned an invalid activity ID.")
+        check_provider(response)
+
+
+def send_registration(connection, revision, destination, email, first, last, *, before_send):
+    normalized_email = email_key(email)
+    if len(normalized_email) > 80:
+        raise ValueError("Email address exceeds 80 characters.")
+
+    if not list_id(destination):
+        raise ValueError("Invalid Constant Contact list.")
+    destination = destination.lower()
+
+    if not isinstance(first, str) or not isinstance(last, str):
+        raise ValueError("First and last name must be strings.")
+    first = first.strip()
+    last = last.strip()
+    if (not first or not last or len(first) > 50 or len(last) > 50
+            or not first.isprintable() or not last.isprintable()):
+        raise ValueError("First and last name must be non-empty, printable, and at most 50 characters.")
+
+    record = read_contact(connection, revision, normalized_email)
+    if record is None:
+        record = _create_contact(
+            connection, revision, destination,
+            normalized_email, first, last, before_send,
+        )
+        if record is None:
+            record = read_contact(connection, revision, normalized_email)
+            if record is None:
+                abort(502)
+
+    if record["pending"]:
+        return {"state": "pending_confirmation"}
+    if not record["eligible"]:
+        return {"state": "skipped"}
+    if destination in record["memberships"]:
+        return {"state": "sent"}
+
+    activity_id = _add_contact_to_list(
+        connection, revision, record["id"], destination, before_send,
+    )
+    return {"state": "submitted", "activity_id": activity_id}

@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from werkzeug.exceptions import Conflict
 import workspace_oauth
 import constant_contact_crm as contact
 from test_marketo_connection import _resp
@@ -287,3 +289,133 @@ class TestConstantContactConnection(unittest.TestCase):
         response = page.request.get(root, headers=auth)
         self.assertEqual(response.status, 409)
         self.assertEqual(provider.reads, reads)
+
+    def test_existing_contact_opt_out(self):
+
+        connection = Mock()
+        connection.api.return_value = _resp(
+            {
+                "contacts": [
+                    {
+                        "contact_id": _U2,
+                        "email_address": {
+                            "address": "viewer@example.test",
+                            "permission_to_send": "unsubscribed",
+                            "confirm_status": "off",
+                        },
+                        "list_memberships": [],
+                    }
+                ]
+            }
+        )
+        before_send = Mock()
+        result = contact.send_registration(
+            connection,
+            "rev",
+            _U1,
+            "VIEWER@example.test",
+            "Test",
+            "Viewer",
+            before_send=before_send,
+        )
+        self.assertEqual(result["state"], "skipped")
+        connection.api.assert_called_once_with(
+            "rev",
+            "GET",
+            contact.API_BASE + "/contacts",
+            params={
+                "email": "viewer@example.test",
+                "status": "all",
+                "include": "list_memberships",
+                "limit": 2,
+            },
+        )
+        before_send.assert_not_called()
+
+    def test_new_contact_pending_confirmation(self):
+
+        connection = Mock()
+        connection.api.side_effect = [
+            _resp({"contacts": []}),
+            _resp(
+                {
+                    "contact_id": _U2,
+                    "email_address": {
+                        "address": "viewer@example.test",
+                        "permission_to_send": "pending_confirmation",
+                        "confirm_status": "pending",
+                    },
+                }
+            ),
+        ]
+        before_send = Mock()
+        result = contact.send_registration(
+            connection,
+            "rev",
+            _U1,
+            "VIEWER@example.test",
+            "Test",
+            "Viewer",
+            before_send=before_send,
+        )
+        self.assertEqual(result["state"], "pending_confirmation")
+        connection.api.assert_called_with(
+            "rev",
+            "POST",
+            contact.API_BASE + "/contacts",
+            json={
+                "email_address": {
+                    "address": "viewer@example.test",
+                    "permission_to_send": "explicit",
+                },
+                "first_name": "Test",
+                "last_name": "Viewer",
+                "create_source": "Contact",
+                "list_memberships": [_U1],
+            },
+            before_send=before_send,
+        )
+
+    def test_recheck_scope_after_401(self):
+        conn = workspace_oauth.Connection(contact.OAUTH, tx=None, operator="t" * 48)
+        conn.access_token = Mock(side_effect=["old", "new"])
+        resp = _resp({})
+        resp.status_code = 401
+        resp._content_consumed = True
+        guard = Mock(side_effect=[None, Conflict()])
+        with patch.object(workspace_oauth, "provider_request", return_value=resp) as provider_request:
+            with self.assertRaises(Conflict):
+                conn.api("rev", "POST", contact.API_BASE + "/contacts", before_send=guard, json={})
+        self.assertEqual(guard.call_count, 2)
+        self.assertEqual(provider_request.call_count, 1)
+        conn.access_token.assert_called_with("rev", rejected="old")
+
+    def test_existing_contact_adds_membership_only(self):
+        guard = Mock()
+        connection = Mock()
+        connection.api.side_effect = [
+            _resp({
+                "contacts": [{
+                    "contact_id": _U2,
+                    "email_address": {
+                        "address": "viewer@example.test",
+                        "permission_to_send": "explicit",
+                    },
+                    "list_memberships": [],
+                }]
+            }),
+            _resp({"activity_id": _U2}),
+        ]
+
+        result = contact.send_registration(
+            connection, "rev", _U1, "viewer@example.test",
+            "Test", "Viewer", before_send=guard,
+        )
+
+        assert result == {"state": "submitted", "activity_id": _U2}
+        connection.api.assert_called_with(
+            "rev", "POST",
+            contact.API_BASE + "/activities/add_list_memberships",
+            json={"source": {"contact_ids": [_U2]}, "list_ids": [_U1]},
+            before_send=guard,
+        )

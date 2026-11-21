@@ -331,12 +331,18 @@ class Connection:
                             (self.cipher.encrypt(json.dumps(updated).encode()), self.key))
             return updated["access"]
 
-    def api(self, revision, method, url, headers=None, **kwargs):
+    def api(self, revision, method, url, headers=None, *, before_send=None, **kwargs):
         access = self.access_token(revision)
         headers = dict(headers or {})
-        response = provider_request(method, url, headers=headers | {"Authorization": "Bearer " + access}, **kwargs)
+
+        def send(access):
+            if before_send is not None:
+                before_send()
+            return provider_request(method, url, headers=headers | {"Authorization": "Bearer " + access}, **kwargs)
+
+        response = send(access)
         if response.status_code == 401:
             response.close()
             access = self.access_token(revision, rejected=access)
-            response = provider_request(method, url, headers=headers | {"Authorization": "Bearer " + access}, **kwargs)
+            response = send(access)
         return response
