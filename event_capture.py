@@ -210,11 +210,12 @@ def srt_endpoint(address, port):
 
 
 class Relay:
-    def __init__(self, args, lease, playback=None):
+    def __init__(self, args, lease, playback=None, *, recording=None):
         self.stop = Event()
         self.done = Event()
         self.lease = lease
         self.playback = playback
+        self.recording = recording
         self.progress = EncoderProgress(args, subprocess.DEVNULL, playback.path if playback else None)
         self.process = self.progress.process
         try:
@@ -238,11 +239,18 @@ class Relay:
                             self.process.kill()
                         self.process.wait()
                     break
+                if self.recording is not None:
+                    self.recording.collect(self.playback.path)
         finally:
-            if self.playback:
-                self.playback.close()
-            self.lease.release()
-            self.done.set()
+            try:
+                if self.recording is not None:
+                    self.recording.collect(self.playback.path)
+                    self.recording.finish()
+            finally:
+                if self.playback:
+                    self.playback.close()
+                self.lease.release()
+                self.done.set()
 
 
 class SrtPublisher:
@@ -263,10 +271,11 @@ class SrtPublisher:
 
 
 class SrtRelay(Relay):
-    def __init__(self, encoder, endpoint, lease, playback=None):
+    def __init__(self, encoder, endpoint, lease, playback=None, *, recording=None):
         self.endpoints = (endpoint, None)
         self.publisher = SrtPublisher(endpoint)
-        super().__init__([*self.publisher.read_arguments(playback), *output_arguments(encoder, playback)], lease, playback)
+        super().__init__([*self.publisher.read_arguments(playback), *output_arguments(encoder, playback)],
+                         lease, playback, recording=recording)
 
     def credentials(self):
         return self.publisher.credentials()
@@ -559,10 +568,10 @@ class RedundantRtmpRelay(RedundantRelay):
 
 
 class RedundantSrtRelay(RedundantRelay):
-    def __init__(self, encoder, endpoints, lease, playback, height, end_at):
+    def __init__(self, encoder, endpoints, lease, playback, height, end_at, *, recording=None):
         self.endpoints = endpoints
         publishers = dict(primary=SrtPublisher(endpoints[0]), backup=SrtPublisher(endpoints[1]))
-        super().__init__(encoder, lease, playback, height, end_at, Event(), publishers)
+        super().__init__(encoder, lease, playback, height, end_at, Event(), publishers, recording=recording)
 
     def credentials(self):
         backup = self.feeds["backup"].publisher.credentials()
@@ -672,11 +681,11 @@ class Studio:
         return self.prepare(uid, opens, lambda lease, playback: Capture(encoder, lease, playback),
                             playback_window=playback_window).token
 
-    def srt(self, uid, opens, encoder, endpoints, playback_window=None, height=None, end_at=None):
+    def srt(self, uid, opens, encoder, endpoints, playback_window=None, height=None, end_at=None, *, recording=None):
         def receive(lease, playback):
             if endpoints[1]:
-                return RedundantSrtRelay(encoder, endpoints, lease, playback, height, end_at)
-            return SrtRelay(encoder, endpoints[0], lease, playback)
+                return RedundantSrtRelay(encoder, endpoints, lease, playback, height, end_at, recording=recording)
+            return SrtRelay(encoder, endpoints[0], lease, playback, recording=recording)
         return self.prepare(uid, opens, receive, playback_window=playback_window).credentials()
 
     def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None, recording=None):
