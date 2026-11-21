@@ -230,6 +230,22 @@
           <p role="status" id="eventMarketoImportStatus"></p>
         </fieldset>
 
+        <fieldset id="eventMailchimp" hidden>
+          <legend>Send consented registrations to Mailchimp</legend>
+          <button type="button" id="eventMailchimpLoad">Load Mailchimp audiences</button>
+          <button type="button" id="eventMailchimpMore" hidden>More Mailchimp audiences</button>
+          <label>Mailchimp audience
+            <select id="eventMailchimpAudience">
+              <option value=""></option>
+            </select>
+          </label>
+          <div id="eventMailchimpMapping"></div>
+          <p role="status" id="eventMailchimpMappingStatus"></p>
+          <button type="button" id="eventMailchimpEnable" disabled>Save Mailchimp delivery</button>
+          <button type="button" id="eventMailchimpStop" hidden>Stop Mailchimp delivery</button>
+          <button type="button" id="eventMailchimpRefresh">Refresh Mailchimp delivery status</button>
+          <p role="status" id="eventMailchimpStatus"></p>
+        </fieldset>
         <fieldset id="eventMarketo" hidden>
           <legend>Send consented registrations to Marketo</legend>
           <button type="button" id="eventMarketoLoad">Load programs and fields</button>

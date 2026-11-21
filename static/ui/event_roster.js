@@ -1,5 +1,6 @@
 import { setupHubSpot } from "./event_hubspot.js";
 import { setupMarketo } from "./event_marketo.js";
+import { setupMailchimp } from "./event_mailchimp.js";
 import { setupMarketoImport } from "./event_marketo_import.js";
 const sourceNames = { form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot", "hubspot-scheduled": "HubSpot automatic refresh",
     marketo: "Marketo",
@@ -59,6 +60,7 @@ export function setupEventRoster(request, download) {
     }
     const chooseHubSpot = setupHubSpot(request, () => void load(0));
     const chooseMarketo = setupMarketo(request);
+    const chooseMailchimp = setupMailchimp(request);
     const chooseMarketoImport = setupMarketoImport(request, () => void load(0));
     panel.addEventListener("toggle", () => {
         if (panel.open)
@@ -90,6 +92,7 @@ export function setupEventRoster(request, download) {
         base = selected;
         chooseHubSpot(base);
         chooseMarketo(base, event);
+        chooseMailchimp(base, event);
         chooseMarketoImport(base, event);
         filter = "";
         page = 0;

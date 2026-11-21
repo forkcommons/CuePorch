@@ -1,5 +1,6 @@
 import {setupHubSpot} from "./event_hubspot.js";
 import {setupMarketo} from "./event_marketo.js";
+import {setupMailchimp} from "./event_mailchimp.js";
 import {setupMarketoImport} from "./event_marketo_import.js";
 
 type Request = <T>(path: string, method?: string, body?: object, integration?: boolean) => Promise<T>;
@@ -71,6 +72,7 @@ export function setupEventRoster(request: Request, download: Download) {
 
   const chooseHubSpot = setupHubSpot(request, () => void load(0));
   const chooseMarketo = setupMarketo(request);
+  const chooseMailchimp = setupMailchimp(request);
   const chooseMarketoImport = setupMarketoImport(request, () => void load(0));
 
   panel.addEventListener("toggle", () => {
@@ -100,6 +102,7 @@ export function setupEventRoster(request: Request, download: Download) {
     base = selected;
     chooseHubSpot(base);
     chooseMarketo(base, event);
+    chooseMailchimp(base, event);
     chooseMarketoImport(base, event);
     filter = "";
     page = 0;
