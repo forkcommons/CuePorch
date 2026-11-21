@@ -826,7 +826,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         data = request.get_json()
         if not isinstance(data, dict):
             abort(422, "Choose a YouTube Live broadcast.")
+        series = data.get("series", False)
+        if type(series) is not bool:
+            abort(422, "Choose whether to remember the YouTube Live series.")
         broadcast, channel = data.get("broadcast"), data.get("channel")
+        if series:
+            channels = youtube_live.channels(youtube_live_connection, revision)
+            if channels["next"] or [item["id"] for item in channels["items"]] != [channel]:
+                abort(409, "Connect a single YouTube channel before setting up future broadcasts.")
         bound = youtube_live.bound_target(youtube_live_connection, revision, broadcast, channel)
         staff()
         with tx() as con:
@@ -836,6 +843,15 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             latest = youtube_live_connection.connection(con)
             if not latest or latest["revision"] != revision:
                 abort(409, "The YouTube Live connection changed. Reload destinations.")
+            if series:
+                live_destination_series.ensure_recurring(con, uid)
+                event_revision, _, _ = creation_access(con, uid, opens)
+                if bound["privacy"] not in youtube_live.PRIVACY:
+                    abort(502, "YouTube did not confirm broadcast privacy.")
+                live_destination_series.save(
+                    con, uid, "youtube-live", channel, revision, event_revision, opens,
+                    {"privacy": bound["privacy"]},
+                )
             uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
         return private(dict(id=uid_destination), 201)
 
@@ -1131,12 +1147,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         auto_prepare = body.get("auto_prepare")
         if auto_prepare is not None and type(auto_prepare) is not bool:
             abort(422, "Choose whether to prepare LinkedIn delivery automatically.")
+        series = body.get("series", False)
+        if type(series) is not bool:
+            abort(422, "Choose whether the LinkedIn Live event recurs.")
 
         try:
             with FileLock(linkedin_lease(key), timeout=0):
                 with tx() as con:
                     if access(con) != scope:
                         abort(409, "The event or LinkedIn Live connection changed.")
+                    if series:
+                        live_destination_series.ensure_recurring(con, uid)
                     prior = con.execute(linkedin_live_job.READ, key).fetchone()
                     if prior:
                         if (prior["state"], prior["video"], prior["event_revision"], prior["revision"]) == (
@@ -1144,6 +1165,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                             if auto_prepare is not None:
                                 linkedin_live_job.set_auto(con, key, auto_prepare)
                             enabled = bool(con.execute(linkedin_live_job.AUTO, key).fetchone())
+                            if series:
+                                live_destination_series.save(
+                                    con, uid, connection.key, owner_key, revision, event_revision, opens,
+                                    {"auto_prepare": enabled})
                             return private(dict(state="scheduled", post_urn=prior["post"], auto_prepare=enabled))
                         abort(409, "This occurrence already has a LinkedIn Live schedule.")
                 page = connection.scheduled_events(revision, owner, starts_ms, start)
@@ -1158,6 +1183,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     con.execute("INSERT INTO linkedin_live_creation VALUES(?,?,?,?,?,'scheduled',?,?)",
                                 (*key, event_revision, revision, video, selected["post_urn"]))
                     linkedin_live_job.set_auto(con, key, auto_prepare is not False)
+                    if series:
+                        live_destination_series.save(
+                            con, uid, connection.key, owner_key, revision, event_revision, opens,
+                            {"auto_prepare": auto_prepare is not False})
         except Timeout:
             abort(409, "Another request is changing this LinkedIn Live occurrence.")
         return private(dict(state="scheduled", post_urn=selected["post_urn"], auto_prepare=auto_prepare is not False), 201)

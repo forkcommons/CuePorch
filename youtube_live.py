@@ -230,6 +230,7 @@ def bound_target(connection, revision, broadcast_id, channel_id):
     snippet, status, details = broadcast_details(connection, revision, broadcast_id, channel_id)
     if status.get("lifeCycleStatus") != "ready":
         abort(409, "That broadcast is not ready for a stream binding.")
+    privacy = status.get("privacyStatus")
     stream_id = details.get("boundStreamId")
     if not isinstance(stream_id, str) or not IDENTIFIER.fullmatch(stream_id):
         abort(409, "That broadcast has no bound stream.")
@@ -268,4 +269,4 @@ def bound_target(connection, revision, broadcast_id, channel_id):
     server = f"rtmps://{u.hostname}:443/live2"
     if len(server) > MAX_ADDRESS:
         abort(502, "YouTube returned an invalid RTMPS address.")
-    return {"title": title, "server": server, "key": key, "stream": stream_id}
+    return {"title": title, "server": server, "key": key, "stream": stream_id, "privacy": privacy}

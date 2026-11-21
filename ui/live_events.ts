@@ -155,6 +155,8 @@ const youtubeSeriesLabel = element("youtubeSeriesLabel");
 const youtubeSeriesInput = element<HTMLInputElement>("youtubeSeries");
 const youtubeSeriesSkip = button("youtubeSeriesSkip");
 const youtubeSeriesStop = button("youtubeSeriesStop");
+const youtubeAddSeriesLabel = element("youtubeAddSeriesLabel");
+const youtubeAddSeries = element<HTMLInputElement>("youtubeAddSeries");
 let youtubeNext: string | null = null;
 const facebookForm = element<HTMLFormElement>("addFacebookLiveDestination");
 const facebookPage = element<HTMLSelectElement>("facebookLivePage");
@@ -441,6 +443,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   youtubeMore.hidden = true;
   youtubeStatus.textContent = "";
   youtubeSubmit.disabled = true;
+  youtubeAddSeriesLabel.hidden = event.event.schedule.repeat === "none";
+  youtubeAddSeries.checked = false;
   youtubeCreate.reset();
   youtubeCreateButton.textContent = "Create YouTube broadcast";
   youtubeSeriesLabel.hidden = event.event.schedule.repeat === "none";
@@ -1132,9 +1136,10 @@ youtubeForm.onsubmit = event => {
   const selected = youtubeList.selectedOptions[0];
   if (!selected?.dataset.channel) return;
   void action(async () => {
-    await request<{id:string}>(mediaPath("destinations/youtube"), "POST", {broadcast: selected.value, channel: selected.dataset.channel});
+    await request<{id:string}>(mediaPath("destinations/youtube"), "POST", {broadcast: selected.value, channel: selected.dataset.channel, series: !youtubeAddSeriesLabel.hidden && youtubeAddSeries.checked});
     youtubeStatus.textContent = "YouTube destination added.";
     await refreshDestinations();
+    await refreshYouTubeSeries();
   });
 };
 youtubeCreate.onsubmit = event => {
@@ -1370,7 +1375,10 @@ existingLinkedinChoose.onclick = () => void action(async () => {
   const result = await request<{post_urn: string | null; auto_prepare: boolean}>(
     mediaPath(`destinations/${linkedinProvider()}/existing`), "POST", {
       id: option.value, start: Number(option.dataset.start), auto_prepare: linkedinAutomaticDelivery.checked,
+      series: !linkedinSeriesLabel.hidden && linkedinSeries.checked,
     });
+  if (selection !== active || revision !== linkedinAccountRevision) return;
+  await refreshLinkedinSeries();
   if (selection !== active || revision !== linkedinAccountRevision) return;
   const urn = result.post_urn ?? "";
   linkedinPost.hidden = !/^urn:li:ugcPost:[0-9]{1,30}$/.test(urn);

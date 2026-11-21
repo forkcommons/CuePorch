@@ -347,8 +347,33 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 events.get_by_role("button", name="More YouTube broadcasts", exact=True).click()
                 expect(events.locator("#youtubeBroadcastList option[value=fixture-broadcast-2]")).to_have_count(1)
                 events.get_by_role("combobox", name="YouTube broadcast", exact=True).select_option(value="fixture-broadcast")
+                blocked = api.post(
+                    destinations_url + "/youtube",
+                    headers=operator_headers,
+                    data=dict(broadcast="fixture-broadcast", channel="UC-live-1", series=True),
+                )
+                self.assertEqual(409, blocked.status)
+                observed["single_channel"] = True
+                series_checkbox = events.get_by_label("Create future YouTube broadcasts from this channel", exact=True)
+                expect(series_checkbox).to_be_visible()
+                expect(series_checkbox).not_to_be_checked()
+                series_checkbox.check()
                 events.get_by_role("button", name="Add YouTube destination", exact=True).click()
                 expect(events.get_by_role("button", name="Turn off Porch Simulcast")).to_be_enabled()
+                second_id = occurrences[1]["id"]
+                series_url = base + f"/api/live-events/{event_id}/{second_id}/destinations/youtube/series"
+                series = api.get(series_url, headers=operator_headers)
+                self.assertTrue(series.ok)
+                series_data = series.json()
+                self.assertIs(True, series_data["active"])
+                self.assertIs(True, series_data["inherited"])
+                with closing(sqlite3.connect(database)) as db:
+                    options, = db.execute("SELECT options FROM live_destination_series WHERE event=? AND provider='youtube-live'",
+                                          (event_id,)).fetchone()
+                    self.assertEqual({"privacy": broadcast["status"]["privacyStatus"]}, json.loads(options))
+                deleted = api.delete(series_url, headers=operator_headers, data={"date": False})
+                self.assertTrue(deleted.ok)
+                observed["single_channel"] = False
 
                 listed = api.get(destinations_url, headers=operator_headers)
                 self.assertTrue(listed.ok)
