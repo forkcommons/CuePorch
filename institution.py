@@ -87,6 +87,7 @@ import library_upload
 import hubspot_crm
 import marketo_crm
 import event_hubspot_outbound
+import event_contact_delivery
 import event_hubspot_engagement
 import library_integrations
 import intake_watch
@@ -214,6 +215,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_hubspot_bridge.SCHEMA
             + library_hubspot_folders.SCHEMA
             + library_hubspot_media_events.SCHEMA
+            + event_contact_delivery.SCHEMA
             + event_api.SCHEMA
             + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
@@ -834,7 +836,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 if step == event_hubspot_outbound.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
-                            SELECT id FROM live_event_hubspot_delivery WHERE state='queued')""", (step,))
+                            SELECT id FROM live_event_hubspot_delivery WHERE state='queued'
+                            UNION SELECT id FROM live_event_contact_delivery WHERE state='queued')""", (step,))
                 if step == event_hubspot_engagement.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
@@ -1392,7 +1395,7 @@ def create_app(root, database, operator, institution, simulation=None):
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
-                            ai_actor, hubspot)
+                            ai_actor, hubspot, marketo=marketo)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 

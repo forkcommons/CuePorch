@@ -31,6 +31,8 @@ import event_captions
 import event_engagement
 import event_hubspot_sync
 import event_hubspot_outbound
+import event_contact_delivery
+import marketo_crm
 import event_hubspot_engagement
 import hubspot_crm
 import event_library_recordings
@@ -427,7 +429,8 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor, hubspot):
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, marketo=None):
+    marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
     rtmp_config = event_rtmp.configured()
@@ -442,6 +445,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             stop_webhooks()
         stop_hubspot()
         stop_hubspot_outbound()
+        stop_marketo()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -974,6 +978,52 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 engagement_available=engagement_available,
             ))
 
+    def set_marketo_destination(uid, opens, body):
+        if marketo is None:
+            abort(404)
+        program_id = body.get('program')
+        if type(program_id) is not int or program_id <= 0:
+            abort(422)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            row_revision, form_revision = row['revision'], form['revision']
+        try:
+            marketo_crm.program(marketo, program_id)
+            mapping = body.get('mapping', {})
+            mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
+        except ValueError:
+            abort(422)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            if row['revision'] != row_revision or form['revision'] != form_revision:
+                abort(409)
+            event_contact_delivery.set_destination(
+                con, 'marketo', uid, opens,
+                provider_revision=marketo_revision,
+                event_revision=row['revision'],
+                form_revision=form['revision'],
+                deadline=int(event_attendance.expires_at(slot)),
+                destination={'program': program_id, 'mapping': mapping},
+            )
+
+    @app.route('/api/live-events/<uid>/<int:opens>/registration/marketo/outbound', methods=['GET', 'PUT', 'DELETE'])
+    def marketo_outbound(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        if request.method == 'GET':
+            same_origin(secure)
+        else:
+            from browser_account_security import json_mutation
+            body = json_mutation(secure, 'X-CuePorch-Integration')
+            if request.method == 'PUT':
+                set_marketo_destination(uid, opens, body)
+        with tx() as con:
+            row, event = read(con, uid)
+            selected_open(event, opens)
+            if request.method == 'DELETE':
+                event_contact_delivery.disable(con, 'marketo', uid, opens)
+            return private(event_contact_delivery.receipt(con, 'marketo', uid, opens, marketo_revision))
+
     def validate_hubspot_engagement(con, plan):
         row, event = read(con, plan["event"])
         slot = selected_open(event, plan["opens"])
@@ -989,6 +1039,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409)
         return event["title"]
 
+    stop_marketo = event_contact_delivery.start_marketo(
+        app, tx, database, marketo, marketo_revision, validate_hubspot_plan,
+    )
     stop_hubspot = event_hubspot_sync.start(
         app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
     )
@@ -1799,6 +1852,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
+            marketo_plan = None
+            marketo_consent = ""
+            if form and not withdrawn and (not delivery or delivery['delivery'] != 'replay') and event['visibility'] in event_mail.WATCHABLE and marketo_revision:
+                candidate = event_contact_delivery.get(con, 'marketo', row['id'], shown['id'])
+                if (
+                    candidate
+                    and candidate['provider_revision'] == marketo_revision
+                    and candidate['event_revision'] == row['revision']
+                    and candidate['form_revision'] == form['revision']
+                    and candidate['deadline'] > int(now.timestamp())
+                ):
+                    marketo_plan = candidate
+                    mark_scope = ['marketo-outbound', scope, candidate['generation']]
+                    marketo_consent = forms.dumps(mark_scope)
+
             if (form and not withdrawn and (not delivery or delivery["delivery"] != "replay")
                     and event["visibility"] in event_mail.WATCHABLE
                     and hubspot_crm.outbound_available(hubspot)):
@@ -1829,6 +1897,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         if (created and contact_plan
                                 and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
                             event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
+                        if created and marketo_plan and valid_ticket(forms,request.form.get('marketo_consent',''),mark_scope,1200):
+                            event_contact_delivery.enqueue(con,action,marketo_plan,registrant,int(now.timestamp()))
                         engagement_agreed = bool(hubspot_engagement_consent) and valid_ticket(
                             forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
                         if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed):
@@ -1977,6 +2047,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
+                                     marketo_consent=marketo_consent,
                                      hubspot_engagement_consent=hubspot_engagement_consent,
                                      unlock_token=frame_grant, event_access=access,
                                      current_event_url=viewer_url(row, event, embed, link_key),

@@ -58,6 +58,21 @@ class MarketoConnection:
     def __repr__(self):
         return "MarketoConnection(origin=%r)" % (self.origin,)
 
+    def revision(self, signing_key):
+        import hmac
+        import json
+
+        payload = json.dumps(
+            [
+                "CuePorch Marketo configuration",
+                self.origin,
+                self.client_id,
+                self._secret,
+            ],
+            separators=(",", ":"),
+        )
+        return hmac.new(signing_key.encode(), payload.encode(), "sha256").hexdigest()
+
     def _get_token(self):
         with self._lock:
             if self._token is not None and time.monotonic() < self._expiry:
@@ -312,3 +327,207 @@ def lead_fields(connection):
             name, {"name": name, "label": label, "type": dtype, "length": length}
         )
     return sorted(fields.values(), key=lambda f: f["label"])
+
+
+def lookup_lead(connection, email):
+    if not isinstance(email, str) or not email or not email.isascii() or "," in email:
+        raise ValueError("invalid email")
+    flags = (
+        "unsubscribed",
+        "marketingSuspended",
+        "emailInvalid",
+        "blackListed",
+        "emailSuspended",
+    )
+    params = {
+        "filterType": "email",
+        "filterValues": email,
+        "fields": ",".join(("id", "email", *flags)),
+    }
+    payload = connection.api("GET", "/rest/v1/leads.json", params=params)
+    if payload.get("moreResult") is True or payload.get("nextPageToken"):
+        raise BadGateway("incomplete lead result")
+    results = payload.get("result")
+    if not isinstance(results, list):
+        raise BadGateway("ambiguous lead result")
+    if not results:
+        return None
+    if len(results) > 1:
+        raise BadGateway("ambiguous lead result")
+    lead = results[0]
+    lead_id = lead.get("id") if isinstance(lead, dict) else None
+    if isinstance(lead_id, bool) or not isinstance(lead_id, int) or lead_id <= 0:
+        raise BadGateway("invalid lead id")
+    if not isinstance(lead, dict):
+        raise BadGateway("email mismatch")
+    lead_email = lead.get("email")
+    if not isinstance(lead_email, str) or lead_email.casefold() != email.casefold():
+        raise BadGateway("email mismatch")
+    values = [lead.get(name) for name in flags]
+    if any(value is not None and not isinstance(value, bool) for value in values):
+        raise BadGateway("invalid boolean field")
+    return {"id": lead_id, "opted_out": any(value is True for value in values)}
+
+
+def save_lead(connection, email, properties, existing_id, *, before_write):
+    creating = existing_id is None
+    row = dict(properties)
+    row.pop("email", None)
+    row.pop("id", None)
+    if creating:
+        row["email"] = email
+        action, lookup, expected = "createOnly", "email", "created"
+    else:
+        row["id"] = existing_id
+        action, lookup, expected = "updateOnly", "id", "updated"
+    payload = {"action": action, "lookupField": lookup, "input": [row]}
+    data = connection.api(
+        "POST", "/rest/v1/leads.json", before_write=before_write, json=payload
+    )
+    results = data.get("result") if isinstance(data, dict) else None
+    result = results[0] if isinstance(results, list) and len(results) == 1 else None
+    if not isinstance(result, dict):
+        raise BadGateway("lead write failed")
+    lead_id = result.get("id")
+    if result.get("status") != expected or type(lead_id) is not int or lead_id <= 0:
+        raise BadGateway("lead write failed")
+    if not creating and lead_id != existing_id:
+        raise BadGateway("lead write failed")
+    return lead_id
+
+
+def mark_registered(connection, program_id, lead_id, *, before_write):
+    if not all(
+        isinstance(v, int) and not isinstance(v, bool) and v > 0
+        for v in (program_id, lead_id)
+    ):
+        raise ValueError("program_id and lead_id must be positive ints")
+    path = f"/rest/v1/programs/{program_id}/members/status.json"
+    payload = {"statusName": "Registered", "input": [{"leadId": lead_id}]}
+    resp = connection.api("POST", path, before_write=before_write, json=payload)
+    result = resp.get("result") if isinstance(resp, dict) else None
+    if not isinstance(result, list) or len(result) != 1:
+        raise BadGateway()
+    item = result[0]
+    if not isinstance(item, dict) or item.get("seq") != 0:
+        raise BadGateway()
+    status = item.get("status")
+    if status in ("created", "updated"):
+        if item.get("leadId") != lead_id:
+            raise BadGateway()
+        return True
+    if status == "skipped":
+        if "leadId" in item and item["leadId"] != lead_id:
+            raise BadGateway()
+        reasons = item.get("reasons")
+        if (
+            isinstance(reasons, list)
+            and len(reasons) == 1
+            and isinstance(reasons[0], dict)
+            and reasons[0].get("code") == "1037"
+        ):
+            return True
+    raise BadGateway()
+
+
+def validate_mapping(form, mapping, fields):
+    source = {}
+    for entry in form.get("fields", []) if isinstance(form, dict) else form.fields:
+        key = entry.get("id") if isinstance(entry, dict) else entry.id
+        source[key] = entry
+    destination = {item["name"]: item for item in fields}
+    if not isinstance(mapping, dict) or len(mapping) > 20:
+        raise ValueError("Invalid mapping")
+    allowed = {
+        "string",
+        "text",
+        "email",
+        "phone",
+        "url",
+        "date",
+        "datetime",
+        "integer",
+        "float",
+        "currency",
+    }
+    result, seen = {}, set()
+    for field_id, name in mapping.items():
+        if not isinstance(name, str):
+            raise ValueError("Invalid mapping")
+        field, provider_field = source.get(field_id), destination.get(name)
+        if field is None or provider_field is None or name in seen:
+            raise ValueError("Invalid mapping")
+        field_type = field.get("type") if isinstance(field, dict) else field.type
+        provider_type = provider_field.get("type")
+        if field_type == "checkbox":
+            ok = provider_type == "boolean"
+        elif field_type in ("text", "select"):
+            ok = provider_type in allowed
+        else:
+            ok = False
+        if not ok:
+            raise ValueError("Invalid mapping")
+        seen.add(name)
+        result[field_id] = {
+            "name": provider_field.get("name"),
+            "type": provider_type,
+            "length": provider_field.get("length"),
+        }
+    return result
+
+
+def mapped_properties(answers, mapping):
+    import datetime
+    import math
+
+    result = {}
+    for source, target in (("first_name", "firstName"), ("last_name", "lastName")):
+        answer = answers.get(source)
+        if isinstance(answer, str) and answer.strip():
+            result[target] = answer
+    for key, meta in mapping.items():
+        answer = answers.get(key)
+        if answer is None or (isinstance(answer, str) and not answer.strip()):
+            continue
+        name, value_type, length = meta["name"], meta.get("type"), meta.get("length")
+        if value_type == "boolean":
+            if not isinstance(answer, bool):
+                raise ValueError("Invalid answer")
+            value = answer
+        elif value_type in ("integer", "int"):
+            if (
+                not isinstance(answer, str)
+                or re.fullmatch(r"[+-]?[0-9]+", answer) is None
+            ):
+                raise ValueError("Invalid answer")
+            value = int(answer)
+        elif value_type in ("float", "currency"):
+            if not isinstance(answer, str):
+                raise ValueError("Invalid answer")
+            try:
+                value = float(answer)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid answer")
+            if not math.isfinite(value):
+                raise ValueError("Invalid answer")
+        elif value_type == "date":
+            try:
+                value = datetime.date.fromisoformat(answer).isoformat()
+            except (TypeError, ValueError):
+                raise ValueError("Invalid answer")
+        elif value_type in ("datetime", "date_time"):
+            try:
+                parsed = datetime.datetime.fromisoformat(answer)
+            except (TypeError, ValueError):
+                raise ValueError("Invalid answer")
+            if parsed.utcoffset() is None:
+                raise ValueError("Invalid answer")
+            value = parsed.isoformat()
+        else:
+            if not isinstance(answer, str):
+                raise ValueError("Invalid answer")
+            if isinstance(length, int) and length > 0 and len(answer) > length:
+                raise ValueError("Invalid answer")
+            value = answer
+        result[name] = value
+    return result

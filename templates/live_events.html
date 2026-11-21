@@ -213,6 +213,22 @@
           <button type="button" id="eventHubSpotReadOutbound">Refresh delivery status</button>
           <p id="eventHubSpotOutboundStatus" role="status"></p>
         </fieldset>
+        <fieldset id="eventMarketo" hidden>
+          <legend>Send consented registrations to Marketo</legend>
+          <button type="button" id="eventMarketoLoad">Load programs and fields</button>
+          <button type="button" id="eventMarketoMore" hidden>More programs</button>
+          <label>Event program
+            <select id="eventMarketoProgram">
+              <option value="">Choose a program</option>
+            </select>
+          </label>
+          <div id="eventMarketoMapping"></div>
+          <button type="button" id="eventMarketoEnable" disabled>Save Marketo delivery</button>
+          <button type="button" id="eventMarketoStop" hidden>Stop Marketo delivery</button>
+          <button type="button" id="eventMarketoRefresh">Refresh delivery status</button>
+          <p role="status" id="eventMarketoStatus"></p>
+        </fieldset>
+
       </details>
       <details id="eventCsvSettings">
         <summary>Import attendee CSV</summary>

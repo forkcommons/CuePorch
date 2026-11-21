@@ -1,4 +1,5 @@
 import {setupHubSpot} from "./event_hubspot.js";
+import {setupMarketo} from "./event_marketo.js";
 
 type Request = <T>(path: string, method?: string, body?: object, integration?: boolean) => Promise<T>;
 type Download = (path: string, filename: string) => Promise<void>;
@@ -66,6 +67,7 @@ export function setupEventRoster(request: Request, download: Download) {
   }
 
   const chooseHubSpot = setupHubSpot(request, () => void load(0));
+  const chooseMarketo = setupMarketo(request);
 
   panel.addEventListener("toggle", () => {
     if (panel.open) void load(page);
@@ -93,6 +95,7 @@ export function setupEventRoster(request: Request, download: Download) {
     occurrence = opens;
     base = selected;
     chooseHubSpot(base);
+    chooseMarketo(base, event);
     filter = "";
     page = 0;
     panel.open = false;
