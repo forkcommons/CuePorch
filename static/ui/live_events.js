@@ -843,10 +843,11 @@ async function refreshDestinations(result) {
         waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
         retrying: "Reconnecting", disabled: "Off", disconnected: "Disconnected",
     };
+    const presetLabels = { instagram: "Instagram Live", tiktok: "TikTok LIVE", x: "X Live" };
     destinationList.replaceChildren(...result.destinations.map(item => {
         const row = document.createElement("li");
         const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
-            : item.opens !== null ? " · Patreon Live for this date" : "";
+            : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
         row.textContent = `${item.name}${scope} · ${item.server} · ${labels[item.state] || item.state}`;
         const control = document.createElement("button");
         control.type = "button";
@@ -952,7 +953,12 @@ destinationForm.onsubmit = event => {
 };
 const presetSelect = destinationForm.elements.namedItem("preset");
 const patreonDestinationHelp = element("patreonDestinationHelp");
-function syncPresetHelp() { patreonDestinationHelp.hidden = presetSelect.value !== "patreon"; }
+const socialDestinationHelp = element("socialDestinationHelp");
+function syncPresetHelp() {
+    const preset = presetSelect.value;
+    patreonDestinationHelp.hidden = preset !== "patreon";
+    socialDestinationHelp.hidden = !["instagram", "tiktok", "x"].includes(preset);
+}
 presetSelect.addEventListener("change", syncPresetHelp);
 destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
 syncPresetHelp();
