@@ -171,10 +171,12 @@ class PatreonLive(unittest.TestCase):
 
         assert request.delete(targets + "/" + member_id, headers=auth).status == 204
 
-        presets = {"instagram": "Instagram Live", "tiktok": "TikTok LIVE", "x": "X Live", "linkedin": "LinkedIn Live"}
+        presets = {"instagram": "Instagram Live", "tiktok": "TikTok LIVE", "x": "X Live",
+                   "linkedin": "LinkedIn Live", "vimeo-ott": "Vimeo OTT"}
         for preset, label in presets.items():
             form.get_by_label("Destination type").select_option(preset)
-            expect(page.locator("#socialDestinationHelp")).to_be_visible()
+            help_id = "#ottDestinationHelp" if preset == "vimeo-ott" else "#socialDestinationHelp"
+            expect(page.locator(help_id)).to_be_visible()
             form.get_by_label("Destination name").fill(label)
             server = "rtmp://127.0.0.1:41998/live" if preset == "tiktok" else "rtmps://127.0.0.1:41999/live"
             form.get_by_label("RTMP or RTMPS server").fill(server)
@@ -189,6 +191,9 @@ class PatreonLive(unittest.TestCase):
         clear_transport = request.post(targets, headers=auth, data={"name": "Insecure LinkedIn", "preset": "linkedin",
                                        "server": "rtmp://127.0.0.1:41999/live", "key": "fixture-linkedin-key"})
         assert clear_transport.status == 422
+        ott_rtmp = request.post(targets, headers=auth, data={"name": "OTT RTMP", "preset": "vimeo-ott",
+                                "server": "rtmp://127.0.0.1:41998/live", "key": "fixture-ott-rtmp-key"})
+        assert ott_rtmp.ok
         current = request.get(targets, headers=auth)
         assert current.ok
         current_by_name = {row["name"]: row for row in current.json()["destinations"]}
@@ -214,7 +219,10 @@ class PatreonLive(unittest.TestCase):
         assert denied.status == 409
         check_destination_rtmps(database.parent, database, current_by_name["LinkedIn Live"]["id"], operator,
                                 "rtmps://127.0.0.1:41999/live", "fixture-linkedin-key", "linkedin-live")
-        print("Browser verified Instagram, TikTok, X and LinkedIn presets, occurrence isolation and credential exclusion.",
+        assert current_by_name["Vimeo OTT"]["server"] == "rtmps://127.0.0.1:41999/live"
+        check_destination_rtmps(database.parent, database, current_by_name["Vimeo OTT"]["id"], operator,
+                                "rtmps://127.0.0.1:41999/live", "fixture-vimeo-ott-key")
+        print("Browser verified Instagram, TikTok, X, LinkedIn and Vimeo OTT presets, scope and credential exclusion.",
               flush=True)
 
 
