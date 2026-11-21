@@ -113,18 +113,21 @@ def paired_playlists(primary_text, selected, language, name):
         tags = [f"#EXT-X-PROGRAM-DATE-TIME:{date}", f"#EXTINF:{fragment.duration:.6f},"]
         video.extend([*tags, fragment.name])
         audio.extend([*tags, "1-" + fragment.name[2:]])
-    safe_name = " ".join(name.replace('"', "'").split())
+    return audio_master(language, name), "\n".join(video) + "\n", "\n".join(audio) + "\n"
+
+
+def audio_master(language, name):
     if not re.fullmatch(r"[a-z0-9-]+", language):
         raise ValueError("Invalid interpreter language.")
-    master = [
+    safe_name = " ".join(name.replace('"', "'").split())
+    return "\n".join([
         "#EXTM3U", "#EXT-X-VERSION:3",
         '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,AUTOSELECT=YES',
         f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="{safe_name}",LANGUAGE="{language}",'
         'DEFAULT=NO,AUTOSELECT=YES,URI="1.m3u8"',
         '#EXT-X-STREAM-INF:BANDWIDTH=12000000,AUDIO="audio"',
         "2.m3u8",
-    ]
-    return tuple("\n".join(playlist) + "\n" for playlist in (master, video, audio))
+    ]) + "\n"
 
 
 def read_timeline(directory, rendition):
@@ -149,8 +152,9 @@ def number(fragment):
 class AlignedAudio:
     manifests = ("master.m3u8", "1.m3u8", "2.m3u8")
 
-    def __init__(self, primary):
+    def __init__(self, primary, recording=None):
         self.primary = primary
+        self.recording = recording
         self.identity = uuid4().hex
         self.path = None
         self.latest = None
@@ -173,14 +177,17 @@ class AlignedAudio:
             return self.primary.path, ()
         raise ValueError("Unrecognized interpreted video resource.")
 
-    def render(self, target, sources):
+    def render(self, target, sources, item):
         base_file = self.primary.path / target.name
         try:
             fallback = decode_pcm(base_file)
         except subprocess.CalledProcessError:
             fallback = b""
         pcm = aligned_pcm(target, sources, lambda source: self.decoded[source.name], fallback)
-        encode_audio_segment(pcm, first_video_pts(base_file), self.path / ("1-" + target.name[2:]))
+        destination = self.path / ("1-" + target.name[2:])
+        encode_audio_segment(pcm, first_video_pts(base_file), destination)
+        if self.recording is not None:
+            self.recording.audio(destination, item, bool(sources))
 
     def update(self, item):
         primary_text, programme = read_timeline(self.primary.path, 0)
@@ -213,7 +220,7 @@ class AlignedAudio:
                     sources.append(source)
             if self.latest is None and not sources:
                 continue
-            self.render(target, sources)
+            self.render(target, sources, item)
             self.latest = number(target)
             changed = True
         if not changed:

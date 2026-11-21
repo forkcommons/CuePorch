@@ -23,7 +23,7 @@ class Input:
         self.done = Event()
         self.publisher = RtmpPublisher(config, self.stop)
         self.path = None
-        self.mixer = AlignedAudio(parent.playback) if isinstance(parent, RtmpRelay) else None
+        self.mixer = AlignedAudio(parent.playback, parent.recording) if isinstance(parent, RtmpRelay) else None
         self.mixing = None
         if self.mixer is not None:
             self.mixing = Thread(target=self.mixer.run, args=(self,), name="CuePorch interpreter mixer", daemon=True)

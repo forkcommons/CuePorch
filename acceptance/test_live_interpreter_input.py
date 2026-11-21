@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.parse import urljoin
 
 import requests
@@ -19,9 +19,11 @@ from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
 from browser import chromium
+import event_replay_spool
 from installed_events import play_event
 from installed_rtmp_relay import free_port, marked_feed, relay_fixture
 from institution import create_app
+import library_events
 from test_private_live_event import TEAM, hear_frequency
 from test_drive_import import QuietHandler, service_worker
 
@@ -38,14 +40,16 @@ def interpreter_fixture(binary):
         relay_env, certificate = cleanup.enter_context(relay_fixture(root, port, binary))
         cleanup.enter_context(patch.dict("os.environ", relay_env | {"CUEPORCH_PUBLIC_URL": ""}))
         operator = secrets.token_urlsafe(32)
-        with patch("institution.library_worker.start", return_value=lambda: None):
-            app = create_app(root, root / "workspace.sqlite", operator, "station")
+        db = root / "workspace.sqlite"
+        with patch("institution.library_worker.start", return_value=lambda: None) as worker:
+            app = create_app(root, db, operator, "station")
+        tx, action = worker.call_args.args[3:5]
         for name, stop in app.extensions.items():
             if name.startswith("stop_") and callable(stop):
                 cleanup.callback(stop)
         server = make_server("127.0.0.1", port, app, threaded=True, request_handler=QuietHandler)
         cleanup.enter_context(service_worker(server))
-        yield app, f"http://127.0.0.1:{port}", {"Authorization": "Bearer " + operator}, certificate
+        yield app, f"http://127.0.0.1:{port}", {"Authorization": "Bearer " + operator}, certificate, db, tx, action
 
 
 @contextmanager
@@ -66,9 +70,11 @@ def publish_tone(server, key, certificate, frequency):
                 publisher.wait(timeout=8)
 
 
-def decoded_tone(path):
+def decoded_tone(path, stream=0, at=None):
+    seek = ["-ss", str(at)] if at is not None else []
     sample = subprocess.run(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path), "-t", "0.5",
+        ["ffmpeg", "-nostdin", "-loglevel", "error", *seek, "-i", str(path),
+         "-map", f"0:a:{stream}", "-t", "0.5",
          "-f", "s16le", "-ac", "1", "-ar", "16000", "pipe:1"],
         check=True, capture_output=True, timeout=8,
     ).stdout
@@ -116,11 +122,12 @@ def prepare_with_browser(base, auth, route):
 @unittest.skipUnless(os.environ.get("CUEPORCH_TEST_MEDIAMTX"), "Local MediaMTX fixture binary required")
 class LiveInterpreterInputTest(unittest.TestCase):
     def test_rtmps_interpreter_reconnect_and_revoke(self):
-        with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate):
+        with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db, tx, action):
             now = datetime.now(timezone.utc)
             event_response = requests.post(base + "/api/live-events", headers=auth, timeout=8, json={
                 "title": "Interpreter rehearsal", "slug": "interpretation", "visibility": "private",
-                "type": "live", "latency": "low", "dvr_seconds": 30,
+                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": True,
+                "archive_replay": False,
                 "schedule": {
                     "timezone": "UTC", "repeat": "none",
                     "start": (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M"),
@@ -215,9 +222,71 @@ class LiveInterpreterInputTest(unittest.TestCase):
                 self.assertEqual(team.request.get(alternate).status, 404)
                 expect(track).to_be_hidden(timeout=12000)
                 hear_frequency(page, 440)
+                self.assertEqual(requests.delete(path + "/rtmp", headers=auth, timeout=8).status_code, 204)
+                self.assert_replay(db, tx, action, base, auth, stable, path, uid, opens, team, page)
             self.assertEqual(requests.get(route, headers=auth, timeout=8).json(), {"inputs": []})
             with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
                 self.assertNotEqual(revoked.wait(timeout=8), 0)
+
+    def assert_replay(self, db, tx, action, base, auth, stable, path, uid, opens, team, page):
+        archive = None
+        deadline = monotonic() + 25
+        while archive is None and monotonic() < deadline:
+            archive = event_replay_spool.available(db.parent / "interpreted-replays", uid, opens, "fixture-delivery")
+            if archive is None:
+                sleep(.25)
+        self.assertIsNotNone(archive)
+        segments = sorted(archive.directory.glob("1-*.ts"))
+        self.assertGreater(len(segments), 5)
+        self.assertAlmostEqual(decoded_tone(segments[0]), 440, delta=28)
+        interpretation = next(index for index, segment in enumerate(segments)
+                              if abs(decoded_tone(segment) - 880) < 28)
+        gate = f"{base}/api/actions/live-replay-{uid}-{opens}"
+        self.assertFalse(requests.get(base + "/api/policy", headers=auth, timeout=8).json()["replay"])
+        requests.put(base + "/api/policy/replay", headers=auth, json={"required": True}, timeout=8).raise_for_status()
+        host = Mock()
+        with patch("event_peer.observe", return_value={"state": "replay"}):
+            library_events.publish_replays(tx, db, "https://peer.example", lambda _: host, action)
+            self.assertEqual(requests.get(gate, headers=auth, timeout=8).json()["status"], "waiting")
+            page.goto(stable)
+            expect(page.locator("#eventPlayer video")).to_have_count(0)
+            self.assert_retained_copy(db, base, auth, path, interpretation + .15)
+            requests.post(gate + "/decision", headers=auth, json={"decision": "approve"}, timeout=8).raise_for_status()
+            library_events.publish_replays(tx, db, "https://peer.example", lambda _: host, action)
+        replay, width, duration = play_event(page, stable, "Replay")
+        self.assertEqual(width, 320)
+        self.assertAlmostEqual(duration, archive.duration, delta=.5)
+        hear_frequency(page, 440)
+        track = page.get_by_role("combobox", name="Audio track")
+        track.select_option(label="Spanish")
+        page.locator("#eventPlayer video").evaluate("(video, at) => { video.currentTime = at; }", interpretation + .15)
+        hear_frequency(page, 880)
+        alternate = urljoin(replay, "1.m3u8")
+        self.assertEqual(requests.get(alternate, timeout=8).status_code, 404)
+        host.call.return_value.json.return_value = {"privacy": {"id": 3}}
+        with patch("event_peer.connected_host", side_effect=lambda *_: nullcontext(host)):
+            self.assertEqual(requests.delete(path + "/delivery", headers=auth, timeout=8).status_code, 204)
+        self.assertEqual(team.request.get(alternate).status, 404)
+        host.set_public.assert_not_called()
+
+    def assert_retained_copy(self, db, base, auth, path, at):
+        endpoint = path + "/library-recording"
+        requests.post(endpoint, headers=auth, timeout=8).raise_for_status()
+        deadline = monotonic() + 20
+        while monotonic() < deadline:
+            state = requests.get(endpoint, headers=auth, timeout=8).json()
+            self.assertNotEqual(state["state"], "failed", state)
+            if state["state"] == "ready":
+                break
+            sleep(.25)
+        else:
+            self.fail("The interpreted replay did not reach the Library.")
+        work = requests.get(base + "/api/library/work/" + state["work"], headers=auth, timeout=8).json()
+        self.assertEqual(work["source_privacy"], "private")
+        digest = next(item["sha256"] for item in work["files"] if item["role"] == "playback")
+        media = db.parent / "objects" / digest
+        self.assertAlmostEqual(decoded_tone(media, 0, at), 440, delta=28)
+        self.assertAlmostEqual(decoded_tone(media, 1, at), 880, delta=28)
 
     def assert_received(self, route, auth, receiver, frequency, previous=None):
         deadline = monotonic() + 15

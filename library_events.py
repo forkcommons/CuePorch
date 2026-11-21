@@ -44,6 +44,7 @@ import marketo_crm
 import event_hubspot_engagement
 import hubspot_crm
 import event_library_recordings
+import event_replay_spool
 import event_mail
 import event_player
 import event_playlist
@@ -1905,7 +1906,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     return private(prior)
                 connection = provision_event(uid, opens, browser=True, preview=False)
                 end_at = datetime.fromisoformat(shift["end"]).timestamp()
-                return private(studio.rtmp(uid, opens, connection, rtmp_config, window, height, end_at))
+                recording = None
+                if height is None and event["save_replay"]:
+                    with tx() as con:
+                        target = occurrence(con, uid, opens)
+                    recording = event_replay_spool.reserve(recordings.replay_root, uid, opens, target["remote"])
+                try:
+                    return private(studio.rtmp(uid, opens, connection, rtmp_config, window, height, end_at, recording))
+                except (OSError, ValueError):
+                    if recording is not None:
+                        recording.finish()
+                    raise
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
@@ -2175,10 +2186,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return measurement.dumps([*scope, delivery["remote"], replay, uuid.uuid4().hex,
                                   [*context, duration_ms], joined, sharing])
 
-    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope, joined=None, sharing=None):
+    def interpreted_archive(event, delivery, scope):
+        if delivery and event["save_replay"] and delivery["delivery"] == "replay":
+            return event_replay_spool.available(recordings.replay_root, scope[0], scope[2], delivery["remote"])
+        return None
+
+    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope, joined=None,
+                        sharing=None, archive=None):
         address = analytics_token = None
         status = "Scheduled"
         attendance = [joined] if joined else []
+        if archive is not None:
+            session = files.dumps(scope + [delivery["remote"], f"interpreted:{archive.identity}", True] + attendance)
+            address = url_for("event_media_file", token=session, filename="master.m3u8")
+            if analytics_scope is not None:
+                analytics_token = playback_token(scope, delivery, True, analytics_scope,
+                                                round(archive.duration * 1000), joined, sharing)
+            return address, analytics_token, "Replay"
         try:
             if native_video:
                 raw = media.metadata(delivery["origin"], delivery["remote"])
@@ -2541,17 +2565,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             elif dash and delivery["delivery"] == "ready":
                 status = "Buffering the Fail-safe signal"
             else:
+                archive = interpreted_archive(event, delivery, scope)
+                if archive is not None:
+                    native_video, transport = True, f"replay:{archive.identity}"
                 address, analytics_token, status = viewer_playback(
-                    event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing)
+                    event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing, archive)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
-            native_replay = private_replay or latest_captioned or appearance["customize"]
+            archive = interpreted_archive(event, latest, replay_scope)
+            native_replay = private_replay or latest_captioned or appearance["customize"] or archive is not None
             replay_address, replay_measurement, replay_status = viewer_playback(
-                event, latest, replay_scope, native_replay, private_replay, reporting_scope)
+                event, latest, replay_scope, native_replay, private_replay, reporting_scope, archive=archive)
             if replay_address and replay_status == "Replay":
                 address, analytics_token, status = replay_address, replay_measurement, replay_status
                 native_video, playing, preview_replay = native_replay, latest_slot, True
+                if archive is not None:
+                    transport = f"replay:{archive.identity}"
         caption_endpoint = None
         if can_participate:
             if status == "Replay" and native_video:
@@ -2721,6 +2751,13 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     response = dash_hls(source.resource(filename))
                 else:
                     response = local_hls(source.path, filename)
+            elif isinstance(gateway, str) and gateway.startswith("interpreted:"):
+                archive = event_replay_spool.available(recordings.replay_root, uid, opens, remote)
+                manifests = event_replay_spool.ARCHIVE_MANIFESTS
+                if (not replay or archive is None or gateway != f"interpreted:{archive.identity}"
+                        or (filename not in manifests and not event_replay_spool.SEGMENT.fullmatch(filename))):
+                    abort(404)
+                response = local_hls(archive.directory, filename, manifests, playlist_limit=8 * 1024**2)
             else:
                 response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
         except (OSError, ValueError, requests.RequestException):

@@ -55,11 +55,11 @@ def manifest_text(payload):
     return content
 
 
-def local_hls(directory, filename, manifests=("0.m3u8",)):
+def local_hls(directory, filename, manifests=("0.m3u8",), playlist_limit=256 * 1024):
     if filename in manifests:
         with (directory / filename).open("rb") as playlist:
-            payload = playlist.read(256 * 1024 + 1)
-        if len(payload) > 256 * 1024:
+            payload = playlist.read(playlist_limit + 1)
+        if len(payload) > playlist_limit:
             raise ValueError("The local playlist is too large.")
         response = Response(manifest_text(payload), mimetype=FORMATS["m3u8"])
     elif LIVE_FILE.fullmatch(filename) and filename.endswith(".ts"):

@@ -338,7 +338,7 @@ class RtmpPublisher:
 class RtmpRelay:
     """Pull an authenticated local MediaMTX publisher into the existing event fanout."""
 
-    def __init__(self, encoder, config, lease, playback):
+    def __init__(self, encoder, config, lease, playback, recording=None):
         self.lease = lease
         self.playback = playback
         self.stop = Event()
@@ -346,6 +346,7 @@ class RtmpRelay:
         self.publisher = RtmpPublisher(config, self.stop)
         self.progress = None
         self.public = encoder["public"]
+        self.recording = recording
         self.args = [*self.publisher.read_arguments(playback), *output_arguments(encoder, playback)]
         Thread(target=self.run, name="CuePorch RTMP receiver", daemon=True).start()
 
@@ -368,7 +369,8 @@ class RtmpRelay:
                 self.progress = EncoderProgress(self.args, subprocess.DEVNULL, self.playback.path)
                 process = self.process
                 while process.poll() is None and not self.stop.wait(.25):
-                    pass
+                    if self.recording is not None:
+                        self.recording.collect(self.playback.path)
                 if process.poll() is None:
                     process.terminate()
                     try:
@@ -382,10 +384,17 @@ class RtmpRelay:
             pass
         finally:
             self.stop.set()
-            self.publisher.disconnect()
-            self.playback.close()
-            self.lease.release()
-            self.done.set()
+            try:
+                if self.recording is not None:
+                    self.recording.collect(self.playback.path)
+                    self.recording.finish()
+            except (OSError, ValueError):
+                pass
+            finally:
+                self.publisher.disconnect()
+                self.playback.close()
+                self.lease.release()
+                self.done.set()
 
 
 class BackupInput:
@@ -659,11 +668,11 @@ class Studio:
             return SrtRelay(encoder, endpoints[0], lease, playback)
         return self.prepare(uid, opens, receive, playback_window=playback_window).credentials()
 
-    def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None):
+    def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None, recording=None):
         def receive(lease, playback):
             if height is not None:
                 return RedundantRtmpRelay(encoder, config, lease, playback, height, end_at)
-            return RtmpRelay(encoder, config, lease, playback)
+            return RtmpRelay(encoder, config, lease, playback, recording)
         return self.prepare(uid, opens, receive, playback_window=window).credentials()
 
     def rtmp_room(self, uid, opens):

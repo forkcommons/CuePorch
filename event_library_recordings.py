@@ -18,6 +18,7 @@ from catalog import build_intake, merge_collection
 from cueporch import work_id
 from event_media import root_path
 import event_peer
+import event_replay_spool
 from media_tools import LOCAL_FFMPEG, run_media
 
 
@@ -66,9 +67,25 @@ class Recordings:
         self.institution = institution
         self.remember_work = remember_work
         self.directory = database.parent / "library-event-recordings"
+        self.replay_root = database.parent / "interpreted-replays"
         self.stopping = Event()
         self.thread = Thread(target=self.scan, name="CuePorch library recording worker", daemon=True)
+        self.replay_thread = Thread(target=self.scan_replays, name="CuePorch interpreted replay worker", daemon=True)
         self.thread.start()
+        self.replay_thread.start()
+
+    def replay_allowed(self, uid, opens, remote):
+        with self.tx() as con:
+            return con.execute("""SELECT 1 FROM live_occurrence o JOIN live_event e ON e.id=o.event
+                WHERE o.event=? AND o.opens=? AND o.remote=? AND o.delivery IN ('ready','replay')
+                AND json_extract(e.settings,'$.save_replay')=1""", (uid, opens, remote)).fetchone() is not None
+
+    def scan_replays(self):
+        while not self.stopping.wait(2):
+            try:
+                event_replay_spool.finalize_next(self.replay_root, self.stopping, self.replay_allowed)
+            except (OSError, ValueError):
+                self.app.logger.exception("The interpreted replay queue could not advance")
 
     def scan(self):
         while not self.stopping.wait(3):
@@ -113,20 +130,34 @@ class Recordings:
             self.update(selected, "ready", work=uid)
             return
         try:
-            raw = self.media.metadata(origin, remote)
-            status = event_peer.status(raw)["state"]
-            if status in ("waiting_for_encoder", "live", "ended", "preparing_replay"):
-                self.update(selected, "waiting", retry=10)
-                return
-            if status != "replay":
-                raise ValueError("The connected host has no finished replay for this occurrence.")
-            files = media_files(origin, remote, raw)
-            if shutil.disk_usage(self.directory).free < 3 * sum(size for _, size in files) + 512 * 1024**2:
+            scope = selected["event"], selected["opens"], remote
+            archive = event_replay_spool.available(self.replay_root, *scope)
+            if archive is None:
+                if (self.replay_root / event_replay_spool.key(*scope)).is_dir():
+                    self.update(selected, "waiting", retry=3)
+                    return
+                raw = self.media.metadata(origin, remote)
+                status = event_peer.status(raw)["state"]
+                if status in ("waiting_for_encoder", "live", "ended", "preparing_replay"):
+                    self.update(selected, "waiting", retry=10)
+                    return
+                if status != "replay":
+                    raise ValueError("The connected host has no finished replay for this occurrence.")
+                files = media_files(origin, remote, raw)
+                size = 3 * sum(size for _, size in files)
+            else:
+                size = 2 * sum(path.stat().st_size for path in archive.directory.iterdir()
+                               if event_replay_spool.SEGMENT.fullmatch(path.name))
+            if shutil.disk_usage(self.directory).free < size + event_replay_spool.FREE_RESERVE:
                 raise ValueError("The Library has insufficient space to retain this recording.")
             self.update(selected, "preparing", retry=30)
             with TemporaryDirectory(dir=self.directory) as temporary:
                 folder = Path(temporary)
-                duration = self.retain(selected, files, folder)
+                if archive is None:
+                    duration = self.retain(selected, files, folder)
+                else:
+                    remux_archive(archive.directory, folder / "recording.mp4", self.stopping)
+                    duration = archive.duration
                 if self.stopping.is_set():
                     return
                 event = json.loads(selected["settings"])
@@ -179,6 +210,19 @@ class Recordings:
     def close(self):
         self.stopping.set()
         self.thread.join(timeout=12)
+        self.replay_thread.join(timeout=8)
+
+
+def remux_archive(directory, destination, stopping):
+    demux = ["-protocol_whitelist", "file,pipe", "-allowed_extensions", "ts,m3u8", "-f", "hls"]
+    result = run_media([
+        "ffmpeg", "-nostdin", "-v", "error", "-copyts", "-start_at_zero",
+        *demux, "-i", str(directory / "2.m3u8"), *demux, "-i", str(directory / "1.m3u8"),
+        "-map", "0:V:0", "-map", "0:a:0?", "-map", "1:a:0", "-c", "copy",
+        "-map_metadata", "-1", "-movflags", "+faststart", str(destination),
+    ], stopping=stopping, timeout=3600)
+    if result.returncode or not destination.is_file():
+        raise ValueError("The interpreted replay could not be prepared for Library playback.")
 
 
 def register(app, tx, staff, access):
