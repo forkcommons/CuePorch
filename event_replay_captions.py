@@ -1,4 +1,4 @@
-"""Queue local captions against the finished PeerTube recording's timeline."""
+"""Queue local captions against the finished replay timeline."""
 
 import json
 from pathlib import Path
@@ -15,7 +15,9 @@ import requests
 import caption_adapter
 import event_captions
 import event_peer
+import event_replay_spool
 from event_media import root_path
+from media_tools import run_media
 import subtitles
 import team_ai_policy
 
@@ -68,6 +70,7 @@ class ReplayCaptionJobs:
         self.tx = tx
         self.media = media
         self.directory = database.parent / "replay-captions"
+        self.replay_root = database.parent / "interpreted-replays"
         self.stopping = Event()
         self.thread = Thread(target=self.scan, name="CuePorch replay caption scheduler", daemon=True)
         self.thread.start()
@@ -120,6 +123,19 @@ class ReplayCaptionJobs:
                             (state, json.dumps(cues) if cues else None, job["revision"]))
 
     def download(self, job, destination):
+        archive = event_replay_spool.available(self.replay_root, job["event"], job["opens"], job["remote"])
+        if archive is not None:
+            budget = event_replay_spool.FREE_RESERVE + round(archive.duration * 32_000)
+            if shutil.disk_usage(self.directory).free < budget:
+                raise ValueError("The local replay caption workspace has insufficient free space.")
+            result = run_media([
+                "ffmpeg", "-nostdin", "-v", "error", *event_replay_spool.HLS_INPUT,
+                str(archive.directory / "2.m3u8"), "-map", "0:a:0", "-c:a", "copy",
+                "-map_metadata", "-1", str(destination),
+            ], stopping=self.stopping)
+            if result.returncode or not destination.is_file() or not destination.stat().st_size:
+                raise ValueError("The replay program audio could not be prepared for captioning.")
+            return
         path, size = archive_source(self.media, job["origin"], job["remote"])
         if shutil.disk_usage(self.directory).free < size + 512 * 1024**2:
             raise ValueError("The local replay caption workspace has insufficient free space.")

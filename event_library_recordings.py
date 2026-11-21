@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -59,7 +60,7 @@ def media_files(origin, remote, raw):
 
 
 class Recordings:
-    def __init__(self, app, tx, media, database, root, institution, remember_work):
+    def __init__(self, app, tx, media, database, root, institution, remember_work, publish_ready):
         self.app = app
         self.tx = tx
         self.media = media
@@ -68,6 +69,7 @@ class Recordings:
         self.remember_work = remember_work
         self.directory = database.parent / "library-event-recordings"
         self.replay_root = database.parent / "interpreted-replays"
+        self.publish_ready = publish_ready
         self.stopping = Event()
         self.thread = Thread(target=self.scan, name="CuePorch library recording worker", daemon=True)
         self.replay_thread = Thread(target=self.scan_replays, name="CuePorch interpreted replay worker", daemon=True)
@@ -84,7 +86,9 @@ class Recordings:
         while not self.stopping.wait(2):
             try:
                 event_replay_spool.finalize_next(self.replay_root, self.stopping, self.replay_allowed)
-            except (OSError, ValueError):
+                with self.app.app_context():
+                    self.publish_ready()
+            except (OSError, ValueError, sqlite3.Error):
                 self.app.logger.exception("The interpreted replay queue could not advance")
 
     def scan(self):
@@ -214,10 +218,10 @@ class Recordings:
 
 
 def remux_archive(directory, destination, stopping):
-    demux = ["-protocol_whitelist", "file,pipe", "-allowed_extensions", "ts,m3u8", "-f", "hls"]
     result = run_media([
         "ffmpeg", "-nostdin", "-v", "error", "-copyts", "-start_at_zero",
-        *demux, "-i", str(directory / "2.m3u8"), *demux, "-i", str(directory / "1.m3u8"),
+        *event_replay_spool.HLS_INPUT, str(directory / "2.m3u8"),
+        *event_replay_spool.HLS_INPUT, str(directory / "1.m3u8"),
         "-map", "0:V:0", "-map", "0:a:0?", "-map", "1:a:0", "-c", "copy",
         "-map_metadata", "-1", "-movflags", "+faststart", str(destination),
     ], stopping=stopping, timeout=3600)
