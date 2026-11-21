@@ -44,6 +44,69 @@ def configure_library_destination(page, base, path, audience_ids, showcase=False
         ).to_have_value("GENRE")
 
 
+def play_registered_library_video(browser, base, address, email, consent, *, embed=False):
+    ctx = browser.new_context()
+    try:
+        page = ctx.new_page()
+        if embed:
+            page.goto(base + "/watch")
+            page.set_content(f'<iframe src="{base + address}"></iframe>')
+            target = page.frame_locator("iframe")
+        else:
+            page.goto(base + address)
+            target = page
+        video = target.locator("video")
+        expect(video).to_have_count(0)
+        target.locator("input[name=email]").fill(email)
+        for name in ("first_name", "last_name"):
+            field = target.locator(f"input[name={name}]")
+            if field.count():
+                field.first.fill("Test")
+        genre = target.locator("select[name=field_genre]")
+        expect(genre).to_have_count(1)
+        genre.select_option("Documentary")
+        box = target.locator("input[name=mailchimp_form_consent]")
+        if consent is None:
+            expect(box).to_have_count(0)
+        else:
+            expect(box).not_to_be_checked()
+            if consent is True:
+                box.check()
+        target.get_by_role("button", name="Register and watch").click()
+        expect(video).to_be_visible()
+        size = video.evaluate("""v => new Promise((resolve, reject) => {
+            v.muted = true;
+            const timer = setTimeout(() => reject(Error("video did not start")), 5000);
+            const done = () => {
+                clearTimeout(timer);
+                resolve({width: v.videoWidth, height: v.videoHeight});
+            };
+            const waitFrame = () => {
+                if (typeof v.requestVideoFrameCallback === "function") {
+                    v.requestVideoFrameCallback(done);
+                } else {
+                    done();
+                }
+            };
+            const onTimeUpdate = () => {
+                if (v.currentTime > 0) {
+                    v.removeEventListener("timeupdate", onTimeUpdate);
+                    waitFrame();
+                }
+            };
+            v.play().then(() => {
+                if (v.currentTime > 0) {
+                    waitFrame();
+                } else {
+                    v.addEventListener("timeupdate", onTimeUpdate);
+                }
+            }, reject);
+        })""")
+        assert abs(size["width"] - 320) <= 1 and abs(size["height"] - 180) <= 1
+    finally:
+        ctx.close()
+
+
 class RegistrationProvider(MailchimpProvider):
     def __init__(self, challenge=None, fault=None):
         super().__init__(challenge=challenge, fault=fault)
@@ -859,113 +922,154 @@ class MailchimpRegistrationTest(unittest.TestCase):
                 page, base, f"/operator/showcases?select={sid}", ["listsafe2"], showcase=True
             )
 
-        def hidden_value(text, name):
-            for tag in re.findall(r"<input[^>]*>", text):
-                if f'name="{name}"' in tag:
-                    match = re.search(r'value="([^"]+)"', tag)
-                    if match:
-                        return html.unescape(match.group(1))
-            raise AssertionError(f"missing {name}")
+            def hidden_value(text, name):
+                for tag in re.findall(r"<input[^>]*>", text):
+                    if f'name="{name}"' in tag:
+                        match = re.search(r'value="([^"]+)"', tag)
+                        if match:
+                            return html.unescape(match.group(1))
+                raise AssertionError(f"missing {name}")
 
-        def viewer(path, headers=None):
-            resp = client.get(path, headers=headers)
-            assert resp.status_code == 200, resp.data
-            return resp.get_data(as_text=True)
+            def viewer(path, headers=None):
+                resp = client.get(path, headers=headers)
+                assert resp.status_code == 200, resp.data
+                return resp.get_data(as_text=True)
 
-        def form_data(enrollment, consent, email, genre="Documentary"):
-            data = {
-                "enrollment": enrollment,
-                "email": email,
-                "first_name": "Test",
-                "last_name": "Viewer",
-                "field_genre": genre,
-            }
-            if consent is not False:
-                data["mailchimp_form_consent"] = consent
-            return data
+            def form_data(enrollment, consent, email, genre="Documentary"):
+                data = {
+                    "enrollment": enrollment,
+                    "email": email,
+                    "first_name": "Test",
+                    "last_name": "Viewer",
+                    "field_genre": genre,
+                }
+                if consent is not False:
+                    data["mailchimp_form_consent"] = consent
+                return data
 
-        def wait_receipt(path, audiences, states=None, timeout=10):
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                rec = client.get(f"{path}/mailchimp/outbound", headers=auth).get_json()
-                dests = rec.get("destinations", [])
-                if (
-                    len(dests) == len(audiences)
-                    and [d.get("audience") for d in dests] == audiences
-                ):
-                    if all(d.get("states") == (states or {"sent": 1}) for d in dests):
-                        return rec
-                time.sleep(0.1)
-            raise AssertionError(f"timeout for {path}")
+            def wait_receipt(path, audiences, states=None, timeout=10):
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    rec = client.get(f"{path}/mailchimp/outbound", headers=auth).get_json()
+                    dests = rec.get("destinations", [])
+                    if (
+                        len(dests) == len(audiences)
+                        and [d.get("audience") for d in dests] == audiences
+                    ):
+                        if all(d.get("states") == (states or {"sent": 1}) for d in dests):
+                            return rec
+                    time.sleep(0.1)
+                raise AssertionError(f"timeout for {path}")
 
-        iframe_headers = {"Sec-Fetch-Dest": "iframe"}
-        embed_path = f"/embed/work/{video}"
-        embed_html = viewer(embed_path, iframe_headers)
-        enrollment = hidden_value(embed_html, "enrollment")
-        consent = hidden_value(embed_html, "mailchimp_form_consent")
+            iframe_headers = {"Sec-Fetch-Dest": "iframe"}
+            embed_path = f"/embed/work/{video}"
+            embed_html = viewer(embed_path, iframe_headers)
+            enrollment = hidden_value(embed_html, "enrollment")
+            consent = hidden_value(embed_html, "mailchimp_form_consent")
 
-        no_consent_email = f"video-no-{time.time_ns()}@example.com"
-        resp = client.post(
-            embed_path,
-            data=form_data(enrollment, False, no_consent_email),
-            headers=iframe_headers,
-        )
-        assert "<video" in resp.get_data(as_text=True)
-        assert len(provider.writes) == 0
+            no_consent_email = f"video-no-{time.time_ns()}@example.com"
+            play_registered_library_video(
+                browser, base, embed_path, no_consent_email, False, embed=True
+            )
+            assert len(provider.writes) == 0
 
-        video_email = f"video-{time.time_ns()}@example.com"
-        resp = client.post(
-            embed_path,
-            data=form_data(enrollment, consent, video_email),
-            headers=iframe_headers,
-        )
-        assert resp.status_code in (200, 201, 302), resp.data
-        wait_receipt(work_path, ["listsafe1", "listsafe2"])
-        duplicate = client.post(
-            embed_path,
-            data=form_data(enrollment, consent, video_email),
-            headers=iframe_headers,
-        )
-        assert duplicate.status_code == 200
-        wait_receipt(work_path, ["listsafe1", "listsafe2"])
+            video_email = f"video-{time.time_ns()}@example.com"
+            play_registered_library_video(
+                browser, base, embed_path, video_email, True, embed=True
+            )
+            wait_receipt(work_path, ["listsafe1", "listsafe2"])
+            duplicate = client.post(
+                embed_path,
+                data=form_data(enrollment, consent, video_email),
+                headers=iframe_headers,
+            )
+            assert duplicate.status_code == 200
+            wait_receipt(work_path, ["listsafe1", "listsafe2"])
 
-        show_html = viewer("/showcases/mailchimp-gallery")
-        show_enrollment = hidden_value(show_html, "enrollment")
-        show_consent = hidden_value(show_html, "mailchimp_form_consent")
-        resp = client.post(
-            "/showcases/mailchimp-gallery",
-            data=form_data(show_enrollment, consent, no_consent_email),
-        )
-        assert resp.status_code == 200
-        assert (
-            client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()[
-                "destinations"
-            ][0]["states"]
-            == {}
-        )
-        show_email = f"show-{time.time_ns()}@example.com"
+            show_html = viewer("/showcases/mailchimp-gallery")
+            show_enrollment = hidden_value(show_html, "enrollment")
+            resp = client.post(
+                "/showcases/mailchimp-gallery",
+                data=form_data(show_enrollment, consent, no_consent_email),
+            )
+            assert resp.status_code == 200
+            assert (
+                client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()[
+                    "destinations"
+                ][0]["states"]
+                == {}
+            )
+            show_email = f"show-{time.time_ns()}@example.com"
 
-        resp = client.put(
-            "/api/policy/event_contact_sync", headers=auth, json={"required": True}
-        )
-        assert resp.status_code in (200, 201), resp.data
-        resp = client.post(
-            "/showcases/mailchimp-gallery",
-            data=form_data(show_enrollment, show_consent, show_email),
-        )
-        assert resp.status_code in (200, 201, 302), resp.data
-        rec = client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()
-        assert any(d.get("states") == {"waiting": 1} for d in rec["destinations"])
+            resp = client.put(
+                "/api/policy/event_contact_sync", headers=auth, json={"required": True}
+            )
+            assert resp.status_code in (200, 201), resp.data
+            play_registered_library_video(
+                browser, base, "/showcases/mailchimp-gallery", show_email, True, embed=False
+            )
+            rec = client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()
+            assert any(d.get("states") == {"waiting": 1} for d in rec["destinations"])
 
-        resp = client.put(
-            "/api/policy/event_contact_sync", headers=auth, json={"required": False}
-        )
-        assert resp.status_code in (200, 201), resp.data
-        wait_receipt(show_path, ["listsafe2"])
+            resp = client.put(
+                "/api/policy/event_contact_sync", headers=auth, json={"required": False}
+            )
+            assert resp.status_code in (200, 201), resp.data
+            wait_receipt(show_path, ["listsafe2"])
 
-        writes = sorted(provider.writes, key=lambda w: w["email_address"])
-        assert [w["email_address"] for w in writes] == sorted(
-            [video_email, video_email, show_email]
-        )
-        assert all(w["status_if_new"] == "pending" for w in writes)
-        assert all(w["merge_fields"] == {"GENRE": "Documentary"} for w in writes)
+            writes = sorted(provider.writes, key=lambda w: w["email_address"])
+            assert [w["email_address"] for w in writes] == sorted(
+                [video_email, video_email, show_email]
+            )
+            assert all(w["status_if_new"] == "pending" for w in writes)
+            assert all(w["merge_fields"] == {"GENRE": "Documentary"} for w in writes)
+
+            resp = client.put(
+                "/api/policy/event_contact_sync", headers=auth, json={"required": True}
+            )
+            assert resp.status_code in (200, 201), resp.data
+            gallery = "/showcases/mailchimp-gallery"
+            play_registered_library_video(
+                browser, base, gallery, "stopped-showcase@example.test", True
+            )
+            wait_receipt(show_path, ["listsafe2"], {"sent": 1, "waiting": 1})
+
+            def stop_delivery(path):
+                with page.expect_response(
+                    lambda result: result.url == base + path + "/mailchimp/outbound"
+                    and result.request.method == "DELETE"
+                ) as deleted:
+                    page.locator("#registrationMailchimpStop").click()
+                assert deleted.value.ok, deleted.value.text()
+                expect(page.locator("#registrationMailchimpStatus")).to_have_text(
+                    "Mailchimp delivery is off."
+                )
+                receipt = client.get(path + "/mailchimp/outbound", headers=auth).get_json()
+                assert receipt["state"] == "off" and receipt["destinations"] == []
+
+            stop_delivery(show_path)
+            page.goto(base + f"/operator/videos/{video}/interactivity")
+            stop_delivery(work_path)
+
+            from contextlib import closing
+            import sqlite3
+
+            with closing(sqlite3.connect(provider.database, timeout=5)) as con:
+                canceled = con.execute(
+                    "SELECT email, payload, due FROM library_mailchimp_form_delivery "
+                    "WHERE kind = 'showcase' AND subject = ? AND state = 'canceled'",
+                    (sid,),
+                ).fetchall()
+            assert canceled == [(None, None, None)]
+
+            resp = client.put(
+                "/api/policy/event_contact_sync", headers=auth, json={"required": False}
+            )
+            assert resp.status_code in (200, 201), resp.data
+            play_registered_library_video(
+                browser, base, gallery, "local-showcase@example.test", None
+            )
+            play_registered_library_video(
+                browser, base, embed_path, "local-video@example.test", None, embed=True
+            )
+            assert sorted(provider.writes, key=lambda w: w["email_address"]) == writes
