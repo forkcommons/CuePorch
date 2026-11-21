@@ -2523,9 +2523,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 (dash or (event["latency"] == "low" and not captioned))) else None
             if source:
                 transport = f"local:{source.identity}"
+                mixer = None if dash else interpreters.audience(row["id"], shown["id"], source)
+                if mixer:
+                    transport = f"{transport}:{mixer.identity}"
                 attendance = [joined] if joined else []
                 session = files.dumps(scope + [delivery["remote"], transport, False] + attendance)
-                address = url_for("event_media_file", token=session, filename="master.m3u8" if dash else "0.m3u8")
+                address = url_for("event_media_file", token=session, filename="master.m3u8" if dash or mixer else "0.m3u8")
                 native_video, status = True, "Live"
                 if reporting_scope is not None:
                     analytics_token = playback_token(scope, delivery, False, reporting_scope, None, joined, sharing)
@@ -2704,11 +2707,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 abort(404)
         try:
             if local:
-                source = studio.playback(uid, opens, gateway.removeprefix("local:"))
+                source_id, _, mix_id = gateway.removeprefix("local:").partition(":")
+                source = studio.playback(uid, opens, source_id)
                 if not source:
                     abort(404)
-                response = (dash_hls(source.resource(filename)) if isinstance(source, event_dash_buffer.Buffer)
-                            else local_hls(source.path, filename))
+                if mix_id:
+                    mixer = interpreters.audience(uid, opens, source)
+                    if mixer is None or mixer.identity != mix_id:
+                        abort(404)
+                    directory, manifests = mixer.resource(filename)
+                    response = local_hls(directory, filename, manifests)
+                elif isinstance(source, event_dash_buffer.Buffer):
+                    response = dash_hls(source.resource(filename))
+                else:
+                    response = local_hls(source.path, filename)
             else:
                 response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
         except (OSError, ValueError, requests.RequestException):
