@@ -18,6 +18,8 @@ from media_tools import video_properties
 import subtitles
 from team_brand_kits import written_kit
 from timeline_cards import normalize_card
+from timeline_text import normalize_text
+from timeline_text_motion import prepare_text
 import timeline_stickers
 import timeline_templates
 import timeline_graphics
@@ -77,12 +79,15 @@ def normalize(raw, get_work, root, con):
             abort(422, "Choose a source for each clip.")
         graphic = timeline_graphics.normalize_graphic(item.get("graphic"))
         sticker = timeline_stickers.normalize_sticker(item.get("sticker"), get_work, find_cut)
+        text_layers = normalize_text(item.get("text_layers"))
         if "card" in item:
             clip = normalize_card(item)
             if graphic is not None:
                 clip["graphic"] = graphic
             if sticker is not None:
                 clip["sticker"] = sticker
+            if text_layers:
+                clip["text_layers"] = text_layers
             clips.append(clip)
             continue
         if not isinstance(item.get("work"), str):
@@ -98,6 +103,8 @@ def normalize(raw, get_work, root, con):
             clip["graphic"] = graphic
         if sticker is not None:
             clip["sticker"] = sticker
+        if text_layers:
+            clip["text_layers"] = text_layers
         clips.append(clip)
 
     music = raw.get("music")
@@ -170,6 +177,30 @@ def register(app, tx, staff, get_work, root, signing_key):
         response = send_file(BytesIO(data), mimetype="image/png", max_age=0)
         response.cache_control.no_store = True
         response.cache_control.private = True
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.post("/api/library/timeline-texts/preview")
+    def preview_timeline_text():
+        staff()
+        request.max_content_length = 8192
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            abort(422)
+        ratio = body.get("ratio")
+        if not isinstance(ratio, str) or ratio not in SIZES:
+            abort(422)
+        layers = normalize_text(body.get("text"))
+        if not layers:
+            abort(422)
+        w, h = SIZES[ratio]
+        factor = 480.0 / max(w, h)
+        size = (max(1, round(w * factor)), max(1, round(h * factor)))
+        with tempfile.TemporaryDirectory() as scratch:
+            out_path = prepare_text(layers, size, Path(scratch) / "preview.png")
+            data = out_path.read_bytes()
+        response = send_file(BytesIO(data), mimetype="image/png", max_age=0)
+        response.headers["Cache-Control"] = "no-store, private"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 

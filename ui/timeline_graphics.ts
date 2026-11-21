@@ -138,8 +138,8 @@ export function mountTimelineGraphics(
   return { show };
 }
 
-export function createTimelineOverlayPreview<T>(kind: 'graphic' | 'sticker'): (spec: T | null, ratio: string, color: string, credential: string) => void {
-  const suffix = kind === 'graphic' ? 'Graphic' : 'Sticker';
+export function createTimelineOverlayPreview<T>(kind: 'graphic' | 'sticker' | 'text'): (spec: T | null, ratio: string, color: string, credential: string) => void {
+  const suffix = { graphic: 'Graphic', sticker: 'Sticker', text: 'Text' }[kind];
   const imageId = `timeline${suffix}Preview`;
   const statusId = `timeline${suffix}Status`;
   const canvasClass = `has-timeline-${kind}`;

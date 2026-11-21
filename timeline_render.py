@@ -22,6 +22,7 @@ class Clip:
     still: bool = False
     graphic: Path | None = None
     sticker: Sticker | None = None
+    text: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,8 @@ def render(target, clips, size, color, music=None, stopping=None, *, credit_meta
         has_sticker = clip.sticker is not None
         # Choose the label the base stream is written to so the clip chain
         # always ends on [v{index}] regardless of graphic/sticker presence.
-        if not has_graphic and not has_sticker:
+        has_text = clip.text is not None
+        if not has_graphic and not has_sticker and not has_text:
             base_out = f"v{index}"
         else:
             base_out = f"b{index}"
@@ -72,7 +74,7 @@ def render(target, clips, size, color, music=None, stopping=None, *, credit_meta
             sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2",
                             "-framerate", "30", "-i", str(clip.graphic)))
             video_input += 1
-            graphic_out = f"v{index}" if not has_sticker else f"g{index}"
+            graphic_out = f"g{index}" if has_sticker or has_text else f"v{index}"
             chain_parts.append(
                 f"[{current}][{graphic_input}:V:0]overlay=0:0:eof_action=repeat[{graphic_out}]"
             )
@@ -90,8 +92,25 @@ def render(target, clips, size, color, music=None, stopping=None, *, credit_meta
                                 "-framerate", "30", "-i", str(sticker.path)))
                 overlay_opts = "eof_action=repeat:shortest=0"
             video_input += 1
+            sticker_out = f"s{index}" if has_text else f"v{index}"
             chain_parts.append(
-                f"[{current}][{sticker_input}:V:0]overlay={sticker.x}:{sticker.y}:{overlay_opts}[v{index}]"
+                f"[{current}][{sticker_input}:V:0]overlay={sticker.x}:{sticker.y}:{overlay_opts}[{sticker_out}]"
+            )
+            current = sticker_out
+        if clip.text is not None:
+            path = str(clip.text)
+            if clip.text.suffix.lower() == ".apng":
+                sources.extend(["-f", "apng", "-ignore_loop", "1",
+                                   "-protocol_whitelist", "file,pipe",
+                                   "-i", path])
+            else:
+                sources.extend(["-f", "image2", "-framerate", "30",
+                                   "-protocol_whitelist", "file,pipe",
+                                   "-i", path])
+            text_input = video_input
+            video_input += 1
+            chain_parts.append(
+                f"[{current}][{text_input}:V:0]overlay=0:0:eof_action=repeat:shortest=0[v{index}]"
             )
         filters.append(";".join(chain_parts))
         if clip.has_audio and not clip.still:

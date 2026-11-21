@@ -36,6 +36,7 @@
           <div id="timelineCardPreview" hidden></div>
           <img id="timelineGraphicPreview" alt="" hidden>
           <img id="timelineStickerPreview" alt="" hidden>
+          <img id="timelineTextPreview" alt="" hidden>
         </div>
         <p id="timelineSourceName"></p>
         <div class="video-work-actions">
@@ -96,6 +97,73 @@
             <button id="clearTimelineSticker" type="button" disabled>Clear sticker</button>
           </div>
           <p id="timelineStickerStatus" role="status"></p>
+        </fieldset>
+        <fieldset>
+          <legend>Text layers</legend>
+
+          <label for="timelineLayerSelect">Layer</label>
+          <select id="timelineLayerSelect">
+            <option value="">New text layer</option>
+          </select>
+
+          <label for="timelineLayerText">Text</label>
+          <textarea id="timelineLayerText" maxlength="150"></textarea>
+
+          <label for="timelineLayerStyle">Style</label>
+          <select id="timelineLayerStyle">
+            <option value="title">Title</option>
+            <option value="headline">Headline</option>
+            <option value="subheadline">Subheadline</option>
+            <option value="caption">Caption</option>
+          </select>
+
+          <label for="timelineLayerFont">Font</label>
+          <select id="timelineLayerFont">
+            <option value="sans">Sans</option>
+            <option value="serif">Serif</option>
+          </select>
+
+          <label for="timelineLayerSize">Size (% of short side)</label>
+          <input id="timelineLayerSize" type="number" min="2" max="18" value="10">
+
+          <label for="timelineLayerColor">Text color</label>
+          <input id="timelineLayerColor" type="color" value="#ffffff">
+
+          <label for="timelineLayerFillOn">Fill</label>
+          <input id="timelineLayerFillOn" type="checkbox">
+          <label for="timelineLayerFill">Fill color</label>
+          <input id="timelineLayerFill" type="color" value="#182629">
+
+          <label for="timelineLayerHighlightOn">Highlight</label>
+          <input id="timelineLayerHighlightOn" type="checkbox">
+          <label for="timelineLayerHighlight">Highlight color</label>
+          <input id="timelineLayerHighlight" type="color" value="#e5a323">
+
+          <label for="timelineLayerAlign">Align</label>
+          <select id="timelineLayerAlign">
+            <option value="left">Left</option>
+            <option value="center">Center</option>
+            <option value="right">Right</option>
+          </select>
+
+          <label for="timelineLayerPosition">Position</label>
+          <select id="timelineLayerPosition">
+            <option value="top">Top</option>
+            <option value="center">Center</option>
+            <option value="bottom">Bottom</option>
+          </select>
+
+          <label for="timelineLayerShadow">Shadow</label>
+          <input id="timelineLayerShadow" type="checkbox">
+
+          <label for="timelineLayerEffect">Effect</label>
+          <select id="timelineLayerEffect"></select>
+
+          <button id="applyTimelineText" type="button" disabled>Apply text</button>
+          <button id="clearTimelineText" type="button" disabled>Remove text layer</button>
+          <button id="replayTimelineText" type="button" disabled>Replay text effect</button>
+
+          <output id="timelineTextStatus" role="status"></output>
         </fieldset>
         <fieldset>
           <legend>Brand kit</legend>

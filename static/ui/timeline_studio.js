@@ -5,6 +5,7 @@ import { showTimelineCard } from "./timeline_templates.js";
 import { createTimelineGraphicPreview, createTimelineOverlayPreview, mountTimelineGraphics } from "./timeline_graphics.js";
 import { mountTimelineStickers } from "./timeline_stickers.js";
 import { mountTimelineStock } from "./timeline_stock.js";
+import { mountTimelineText } from "./timeline_text.js";
 function isMedia(clip) {
     return clip !== undefined && "work" in clip;
 }
@@ -45,7 +46,16 @@ let graphicControls;
 const paintGraphic = createTimelineGraphicPreview();
 const paintSticker = createTimelineOverlayPreview("sticker");
 const stickerControls = mountTimelineStickers(setSticker);
+const textControls = mountTimelineText(setTextLayers);
+const paintText = createTimelineOverlayPreview("text");
 key.value = sessionStorage.getItem("cueporchOperator") || "";
+button("replayTimelineText").onclick = () => {
+    const layers = state?.clips[selected]?.text_layers;
+    if (!layers?.length)
+        return;
+    paintText(null, state.ratio, state.color, key.value);
+    paintText(layers, state.ratio, state.color, key.value);
+};
 function message(error) {
     status.textContent = error instanceof Error ? error.message : String(error);
 }
@@ -189,6 +199,9 @@ function paint() {
     paintGraphic(selectedClip?.graphic ?? null, state.ratio, state.color, key.value);
     stickerControls.show(selectedClip?.sticker ?? null, Boolean(selectedClip), [...media.values()]);
     paintSticker(selectedClip?.sticker ?? null, state.ratio, state.color, key.value);
+    textControls.show(selectedClip?.text_layers ?? [], Boolean(selectedClip));
+    paintText(selectedClip?.text_layers?.length ? selectedClip.text_layers : null, state.ratio, state.color, key.value);
+    button("replayTimelineText").disabled = !selectedClip?.text_layers?.length;
     if (selectedClip && !isMedia(selectedClip)) {
         cardPreview.hidden = false;
         showTimelineCard(cardPreview, selectedClip, state.ratio);
@@ -590,6 +603,15 @@ function setSticker(sticker) {
         updated = rest;
     }
     change({ ...state, clips: state.clips.map((item, index) => index === selected ? updated : item) });
+}
+function setTextLayers(layers) {
+    const clips = state.clips.map((clip, index) => {
+        if (index !== selected)
+            return clip;
+        const { text_layers: _removed, ...rest } = clip;
+        return layers.length ? { ...rest, text_layers: layers } : rest;
+    });
+    change({ ...state, clips });
 }
 async function open() {
     const [items, loaded, shelf] = await Promise.all([

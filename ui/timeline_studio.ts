@@ -6,9 +6,10 @@ import {showTimelineCard, type CardClip} from "./timeline_templates.js";
 import { createTimelineGraphicPreview, createTimelineOverlayPreview, mountTimelineGraphics, type TimelineGraphic, type GraphicAsset } from "./timeline_graphics.js";
 import { mountTimelineStickers, type TimelineSticker } from "./timeline_stickers.js";
 import { mountTimelineStock, type StockRights } from "./timeline_stock.js";
+import { mountTimelineText, type TextLayer } from "./timeline_text.js";
 
 interface MediaClip { work: string; cut: string; start: number; end: number }
-type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic; sticker?: TimelineSticker};
+type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic; sticker?: TimelineSticker; text_layers?: TextLayer[]};
 function isMedia(clip: Clip | undefined): clip is MediaClip & {graphic?: TimelineGraphic; sticker?: TimelineSticker} {
   return clip !== undefined && "work" in clip;
 }
@@ -57,7 +58,16 @@ let graphicControls: ReturnType<typeof mountTimelineGraphics> | undefined;
 const paintGraphic = createTimelineGraphicPreview();
 const paintSticker = createTimelineOverlayPreview<TimelineSticker>("sticker");
 const stickerControls = mountTimelineStickers(setSticker);
+const textControls = mountTimelineText(setTextLayers);
+const paintText = createTimelineOverlayPreview<TextLayer[]>("text");
 key.value = sessionStorage.getItem("cueporchOperator") || "";
+
+button("replayTimelineText").onclick = () => {
+  const layers = state?.clips[selected]?.text_layers;
+  if (!layers?.length) return;
+  paintText(null, state.ratio, state.color, key.value);
+  paintText(layers, state.ratio, state.color, key.value);
+};
 
 function message(error: unknown) {
   status.textContent = error instanceof Error ? error.message : String(error);
@@ -217,6 +227,9 @@ function paint() {
   paintGraphic(selectedClip?.graphic ?? null, state.ratio, state.color, key.value);
   stickerControls.show(selectedClip?.sticker ?? null, Boolean(selectedClip), [...media.values()]);
   paintSticker(selectedClip?.sticker ?? null, state.ratio, state.color, key.value);
+  textControls.show(selectedClip?.text_layers ?? [], Boolean(selectedClip));
+  paintText(selectedClip?.text_layers?.length ? selectedClip.text_layers : null, state.ratio, state.color, key.value);
+  button("replayTimelineText").disabled = !selectedClip?.text_layers?.length;
   if (selectedClip && !isMedia(selectedClip)) {
     cardPreview.hidden = false;
     showTimelineCard(cardPreview, selectedClip, state.ratio);
@@ -605,6 +618,15 @@ function setSticker(sticker: TimelineSticker | null) {
     updated = rest as Clip;
   }
   change({...state, clips: state.clips.map((item, index) => index === selected ? updated : item)});
+}
+
+function setTextLayers(layers: TextLayer[]) {
+  const clips = state.clips.map((clip, index) => {
+    if (index !== selected) return clip;
+    const {text_layers: _removed, ...rest} = clip;
+    return layers.length ? {...rest, text_layers: layers} : rest;
+  });
+  change({...state, clips});
 }
 
 async function open() {

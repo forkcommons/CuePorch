@@ -118,7 +118,7 @@ export function mountTimelineGraphics(assets, receive) {
     return { show };
 }
 export function createTimelineOverlayPreview(kind) {
-    const suffix = kind === 'graphic' ? 'Graphic' : 'Sticker';
+    const suffix = { graphic: 'Graphic', sticker: 'Sticker', text: 'Text' }[kind];
     const imageId = `timeline${suffix}Preview`;
     const statusId = `timeline${suffix}Status`;
     const canvasClass = `has-timeline-${kind}`;
