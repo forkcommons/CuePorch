@@ -958,17 +958,29 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             series = con.execute("""SELECT after_opens,privacy FROM facebook_live_series
                 WHERE event=? AND page=? AND revision=? AND event_revision=?""",
                                  (uid, page, revision, event_revision)).fetchone()
+        auto_current = automatic is not None and (automatic["revision"], automatic["event_revision"]) == (revision, event_revision)
         if creation:
             state = "prepared" if creation["state"] == "prepared" else "unconfirmed"
         elif automatic:
             state = "idle"
-            if (automatic["revision"], automatic["event_revision"]) == (revision, event_revision):
+            if auto_current:
                 state = {"queued": "queued", "attempted": "failed"}.get(automatic["state"], "idle")
         else:
             state = "queued" if series and opens > series["after_opens"] else "idle"
+        restorable = bool(
+            not creation
+            and series is not None
+            and opens > series["after_opens"]
+            and auto_current
+            and automatic["state"] == "canceled"
+        )
         result = dict(state=state, series=series is not None)
+        if restorable:
+            result["restorable"] = True
         if profile:
-            if automatic and (automatic["revision"], automatic["event_revision"]) == (revision, event_revision):
+            if restorable:
+                privacy = series["privacy"]
+            elif auto_current:
                 privacy = automatic["privacy"]
             elif series and opens > series["after_opens"]:
                 privacy = series["privacy"]
@@ -986,6 +998,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         series = request.get_json().get("series", False)
         if type(series) is not bool:
             abort(422, "Choose whether to apply automatic starts to future dates.")
+        restore = False
         privacy = None
         if request.method == "PUT":
             privacy = request.get_json().get("privacy")
@@ -993,6 +1006,11 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 privacy = facebook_live.normalize_profile_privacy(privacy)
             elif privacy is not None:
                 abort(422, "Privacy is only supported for Facebook profiles.")
+            restore = request.get_json().get("restore", False)
+            if type(restore) is not bool:
+                abort(422, "Invalid restore value.")
+            if restore and (series or privacy is not None):
+                abort(422, "Restore cannot be combined with series or privacy.")
         try:
             with facebook_lease(key), tx() as con:
                 enforce_sharing(con, feature="outbound")
@@ -1005,6 +1023,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if request.method == "DELETE":
                     facebook_live_job.queue(con, key, revision, event_revision, state="canceled")
                     return private(dict(state="canceled"))
+                if restore:
+                    if not con.execute("SELECT 1 FROM facebook_live_series WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<?", (uid, key[2], revision, event_revision, opens)).fetchone():
+                        abort(409, "No automatic starts to restore.")
+                    con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=? AND revision=? AND event_revision=? AND state='canceled'", (uid, opens, key[2], revision, event_revision))
+                    if con.execute("SELECT 1 FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key).fetchone():
+                        abort(409, "An explicit automatic start is already set for this occurrence.")
+                    return private(dict(state="queued"), 202)
                 check_provider_capacity(con, uid, opens)
                 if series:
                     settings = con.execute("SELECT settings FROM live_event WHERE id=?", (uid,)).fetchone()["settings"]

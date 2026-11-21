@@ -163,6 +163,7 @@ const facebookPage = element<HTMLSelectElement>("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookAutomatic = input("facebookAutomatic");
 const facebookCancel = button("cancelFacebookAuto");
+const facebookRestoreDate = button("facebookRestoreDate");
 const facebookSeries = input("facebookSeries");
 const facebookSeriesControls = element("facebookSeriesControls");
 const facebookSeriesStop = button("facebookSeriesStop");
@@ -177,6 +178,7 @@ function clearFacebookAsyncStatus() {
   facebookStatusRevision++;
   facebookStatus.textContent = "";
   facebookCancel.disabled = true;
+  facebookRestoreDate.hidden = true;
   facebookSeriesStop.disabled = true;
   facebookPrivacy.value = "";
 }
@@ -464,6 +466,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   facebookSubmit.disabled = true;
   facebookAutomatic.checked = true;
   facebookCancel.disabled = true;
+  facebookRestoreDate.hidden = true;
   facebookSeriesControls.hidden = event.event.schedule.repeat === "none";
   facebookSeries.checked = !facebookSeriesControls.hidden;
   facebookSeries.disabled = false;
@@ -1210,9 +1213,10 @@ async function refreshFacebookAutoStatus() {
   const privacyBefore = facebookPrivacy.value;
   facebookStatus.textContent = "";
   facebookCancel.disabled = true;
+  facebookRestoreDate.hidden = true;
   facebookSeriesStop.disabled = true;
   try {
-    const result = await request<{state: string; series: boolean; privacy?: string | null}>(`${path}/auto?page=${encodeURIComponent(page)}`);
+    const result = await request<{state: string; series: boolean; privacy?: string | null; restorable?: boolean}>(`${path}/auto?page=${encodeURIComponent(page)}`);
     if (revision !== facebookStatusRevision || path !== facebookBasePath()) return;
     const labels: Record<string, string> = {
       queued: "Facebook Live will start when this occurrence is ready to stream.",
@@ -1220,8 +1224,11 @@ async function refreshFacebookAutoStatus() {
       unconfirmed: "Facebook has not confirmed the broadcast. Check Live Producer.",
       failed: "CuePorch could not start Facebook Live. Check the Facebook connection and try again.",
     };
-    facebookStatus.textContent = labels[result.state] ?? "";
+    facebookStatus.textContent = result.restorable
+      ? "Facebook Live start is skipped for this occurrence."
+      : labels[result.state] ?? "";
     facebookCancel.disabled = !["queued", "failed"].includes(result.state);
+    facebookRestoreDate.hidden = !result.restorable;
     facebookSeriesStop.disabled = !result.series;
     if (facebookProfile() && facebookPrivacy.value === privacyBefore) {
       facebookPrivacy.value = result.privacy ?? "";
@@ -1253,6 +1260,7 @@ facebookLoad.onclick = () => void action(async () => {
   const revision = ++facebookStatusRevision;
   facebookStatus.textContent = "";
   facebookCancel.disabled = true;
+  facebookRestoreDate.hidden = true;
   facebookSeriesStop.disabled = true;
   facebookSubmit.disabled = true;
   try {
@@ -1282,6 +1290,7 @@ facebookForm.onsubmit = event => {
         automatic ? "PUT" : "POST",
         facebookProfile() ? {page, series, privacy} : {page, series});
       if (revision !== facebookStatusRevision || path !== facebookBasePath()) return;
+      facebookRestoreDate.hidden = true;
       facebookCancel.disabled = result.state !== "queued";
       if (result.state === "queued") {
         facebookStatus.textContent = "Facebook Live will start when this occurrence is ready to stream.";
@@ -1310,11 +1319,19 @@ facebookCancel.onclick = () => void action(async () => {
   try {
     await request(path + "/auto", "DELETE", {page});
     if (revision !== facebookStatusRevision || path !== facebookBasePath()) return;
-    facebookStatus.textContent = "Automatic Facebook Live start canceled.";
+    await refreshFacebookAutoStatus();
+    if (facebookRestoreDate.hidden) facebookStatus.textContent = "Automatic Facebook Live start canceled.";
   } catch (error) {
     if (revision === facebookStatusRevision && path === facebookBasePath()) facebookCancel.disabled = false;
     throw error;
   }
+});
+facebookRestoreDate.onclick = () => void action(async () => {
+  if (!active || !facebookPage.value || facebookRestoreDate.hidden) return;
+  const path = facebookBasePath();
+  const page = facebookPage.value;
+  await request(path + "/auto", "PUT", {page, restore: true});
+  if (path === facebookBasePath() && page === facebookPage.value) await refreshFacebookAutoStatus();
 });
 facebookSeriesStop.onclick = () => void action(async () => {
   if (!active || !facebookPage.value || facebookSeriesStop.disabled) return;

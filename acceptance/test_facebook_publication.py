@@ -414,8 +414,15 @@ class FacebookPublication(unittest.TestCase):
                                  api.get(inherited_path + "/facebook/auto?page=101", headers=auth).json())
                 canceled_date = api.delete(skipped_path + "/facebook/auto", headers=auth, data={"page": "101"})
                 self.assertEqual(200, canceled_date.status, canceled_date.text())
-                self.assertEqual({"state": "idle", "series": True},
+                self.assertEqual({"state": "idle", "series": True, "restorable": True},
                                  api.get(skipped_path + "/facebook/auto?page=101", headers=auth).json())
+                restored = api.put(skipped_path + "/facebook/auto", headers=auth,
+                                   data={"page": "101", "restore": True})
+                self.assertEqual(202, restored.status, restored.text())
+                self.assertEqual({"state": "queued", "series": True},
+                                 api.get(skipped_path + "/facebook/auto?page=101", headers=auth).json())
+                restored_date = api.delete(skipped_path + "/facebook/auto", headers=auth, data={"page": "101"})
+                self.assertEqual(200, restored_date.status, restored_date.text())
                 with closing(sqlite3.connect(database)) as db:
                     db.executemany("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
                                    [(created["id"], int(date["id"])) for date in (inherited, skipped)])
@@ -470,6 +477,20 @@ class FacebookPublication(unittest.TestCase):
                 for occurrence_path in (next_targets, skipped_path):
                     canceled = api.delete(occurrence_path + "/facebook-profile/auto", headers=auth, data={"page": "707"})
                     self.assertEqual(200, canceled.status, canceled.text())
+                page.get_by_role("button", name=f"Open production for Facebook Live rehearsal at {skipped['local'].replace('T', ' ')}", exact=True).click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.locator("#facebookLiveTarget").select_option("profile")
+                page.get_by_role("button", name="Load Facebook profiles", exact=True).click()
+                expect(page.locator("#facebookRestoreDate")).to_be_visible()
+                page.locator("#facebookRestoreDate").click()
+                expect(page.locator("#facebookLivePrivacy")).to_have_value("ALL_FRIENDS")
+                expect(page.locator("#facebookRestoreDate")).to_be_hidden()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
+                restored = api.put(skipped_path + "/facebook-profile/auto", headers=auth,
+                                   data={"page": "707", "restore": True})
+                self.assertEqual(202, restored.status, restored.text())
+                page.get_by_role("button", name="Cancel automatic start", exact=True).click()
+                expect(page.locator("#facebookRestoreDate")).to_be_visible()
                 self.assertEqual([], profile_writes)
                 inherited_profile = []
                 with patch.object(facebook_live_job, "time", lambda: int(skipped["id"]) + 1):
