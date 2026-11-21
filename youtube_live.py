@@ -4,7 +4,7 @@ import dataclasses
 import re
 from urllib.parse import urlsplit
 from flask import abort
-from werkzeug.exceptions import TooManyRequests
+from werkzeug.exceptions import HTTPException, TooManyRequests
 from browser_account_security import secure_site
 import team_accounts
 from team_accounts import MANAGERS
@@ -120,6 +120,106 @@ def broadcasts(connection, revision, cursor=None):
     return {"items": rows, "next": nxt}
 
 
+class YouTubeWriteUnconfirmed(Exception):
+    """A remote write may have succeeded, so look it up before proceeding."""
+
+
+def _create(connection, revision, resource, params, data, channel, action, before_send):
+    try:
+        with connection.api(revision, "POST", f"{API}/{resource}", params=params,
+                            json=data, before_send=before_send) as response:
+            if response.status_code >= 500 or response.status_code == 408:
+                raise YouTubeWriteUnconfirmed(action)
+            if response.status_code not in (200, 201):
+                _fail(response, action)
+            item = response_object(response)
+    except HTTPException as error:
+        if error.code != 502:
+            raise
+        raise YouTubeWriteUnconfirmed(action) from error
+    snippet = item.get("snippet")
+    item_id = item.get("id")
+    if (not isinstance(item_id, str) or not IDENTIFIER.fullmatch(item_id)
+            or not isinstance(snippet, dict) or snippet.get("channelId") != channel):
+        raise YouTubeWriteUnconfirmed(action)
+    return item
+
+
+def insert_broadcast(connection, revision, channel, title, starts, ends, privacy, marker, before_send=None):
+    data = {
+        "snippet": {"title": title, "description": marker,
+                    "scheduledStartTime": starts, "scheduledEndTime": ends},
+        "status": {"privacyStatus": privacy},
+        "contentDetails": {"enableAutoStart": True, "enableAutoStop": True},
+    }
+    return _create(connection, revision, "liveBroadcasts", {"part": BROADCAST_PARTS},
+                   data, channel, "broadcast creation", before_send)
+
+
+def insert_stream(connection, revision, channel, title, marker, before_send=None):
+    data = {
+        "snippet": {"title": title, "description": marker},
+        "cdn": {"frameRate": "variable", "resolution": "variable", "ingestionType": "rtmp"},
+        "contentDetails": {"isReusable": False},
+    }
+    return _create(connection, revision, "liveStreams", {"part": "id,snippet,cdn,contentDetails"},
+                   data, channel, "stream creation", before_send)
+
+
+def find_created(connection, revision, resource, channel, marker):
+    params = {"mine": "true", "maxResults": 50, "part": "id,snippet"}
+    if resource == "liveBroadcasts":
+        params["broadcastType"] = "event"
+    found = None
+    cursors = set()
+    for _ in range(MAX_PAGES):
+        page = _get(connection, revision, resource, params, "created resource lookup")
+        items = page.get("items")
+        if not isinstance(items, list) or len(items) > 50:
+            abort(502, "YouTube returned an invalid list of resources.")
+        for item in items:
+            snippet = item.get("snippet") if isinstance(item, dict) else None
+            if not isinstance(snippet, dict):
+                abort(502, "YouTube returned an invalid resource.")
+            if snippet.get("description") == marker and snippet.get("channelId") == channel:
+                candidate = item.get("id")
+                if (not isinstance(candidate, str) or not IDENTIFIER.fullmatch(candidate)
+                        or (found is not None and found != candidate)):
+                    abort(502, "YouTube returned an ambiguous resource match.")
+                found = candidate
+        cursor = page.get("nextPageToken")
+        if cursor is None:
+            return found
+        if not isinstance(cursor, str) or not CURSOR.fullmatch(cursor) or cursor in cursors:
+            abort(502, "YouTube returned an invalid or repeating resource cursor.")
+        cursors.add(cursor)
+        params["pageToken"] = cursor
+    abort(502, "YouTube resource lookup reached its page limit.")
+
+
+def bind_created(connection, revision, broadcast, stream, channel, before_send=None):
+    params = {"id": broadcast, "streamId": stream, "part": "id,snippet,contentDetails"}
+    item = _create(connection, revision, "liveBroadcasts/bind", params,
+                   None, channel, "stream binding", before_send)
+    details = item.get("contentDetails")
+    if item["id"] != broadcast or not isinstance(details, dict) or details.get("boundStreamId") != stream:
+        raise YouTubeWriteUnconfirmed("stream binding")
+
+
+def broadcast_details(connection, revision, broadcast_id, channel_id):
+    result = _get(connection, revision, "liveBroadcasts",
+                  {"id": broadcast_id, "part": BROADCAST_PARTS}, "broadcast lookup")
+    items = result.get("items")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        abort(404, "That YouTube broadcast is unavailable.")
+    item = items[0]
+    snippet, status, details = item.get("snippet"), item.get("status"), item.get("contentDetails")
+    if (item.get("id") != broadcast_id or not isinstance(snippet, dict) or snippet.get("channelId") != channel_id
+            or not isinstance(status, dict) or not isinstance(details, dict)):
+        abort(404, "That YouTube broadcast is unavailable.")
+    return snippet, status, details
+
+
 def bound_target(connection, revision, broadcast_id, channel_id):
     if (not isinstance(broadcast_id, str) or not IDENTIFIER.fullmatch(broadcast_id)
             or not isinstance(channel_id, str) or not IDENTIFIER.fullmatch(channel_id)):
@@ -135,18 +235,7 @@ def bound_target(connection, revision, broadcast_id, channel_id):
             break
     if not owned:
         abort(403, "That channel is not connected to this workspace.")
-    result = _get(connection, revision, "liveBroadcasts",
-                  {"id": broadcast_id, "part": BROADCAST_PARTS}, "broadcast lookup")
-    items = result.get("items") if isinstance(result, dict) else None
-    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
-        abort(404, "That YouTube broadcast is unavailable.")
-    item = items[0]
-    snippet, status, details = item.get("snippet"), item.get("status"), item.get("contentDetails")
-    snippet = snippet if isinstance(snippet, dict) else {}
-    status = status if isinstance(status, dict) else {}
-    details = details if isinstance(details, dict) else {}
-    if item.get("id") != broadcast_id or snippet.get("channelId") != channel_id:
-        abort(404, "That YouTube broadcast is unavailable.")
+    snippet, status, details = broadcast_details(connection, revision, broadcast_id, channel_id)
     if status.get("lifeCycleStatus") != "ready":
         abort(409, "That broadcast is not ready for a stream binding.")
     stream_id = details.get("boundStreamId")

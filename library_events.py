@@ -1561,6 +1561,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         selected_open(event, opens)
         return can_simulcast(con, uid, event)
 
+    def youtube_creation_access(con, uid, opens):
+        row, event = read(con, uid)
+        slot = selected_open(event, opens)
+        current = occurrence(con, uid, opens)
+        if (not can_simulcast(con, uid, event) or publication(con, row, event) != "eligible"
+                or datetime.fromisoformat(slot["end"]) <= datetime.now(timezone.utc)
+                or (current and current["delivery"] in ("withdrawing", "withdrawn", "replay"))):
+            abort(409, "Creating a YouTube broadcast requires an eligible public event that has not ended.")
+        return row["revision"], event["title"], slot
+
     def outgoing_programs(con):
         now = datetime.now(timezone.utc)
         candidates = {}
@@ -1589,7 +1599,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
     event_simulcast.register(
         app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing,
-        youtube_live_connection,
+        youtube_live_connection, youtube_creation_access,
     )
 
     def released_previews(con):

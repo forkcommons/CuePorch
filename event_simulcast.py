@@ -2,6 +2,7 @@
 
 from base64 import urlsafe_b64encode
 from contextlib import suppress
+from datetime import datetime, timezone
 from hmac import digest
 import os
 from queue import Empty, Full, Queue
@@ -17,6 +18,7 @@ from filelock import FileLock, Timeout
 from flask import abort, request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
+from werkzeug.exceptions import HTTPException
 
 from event_audio import MASTER_MAX, SEGMENT_MAX, released_fragments, released_variant, selected_variant
 from event_capture import EncoderProgress
@@ -32,6 +34,11 @@ CREATE TABLE IF NOT EXISTS live_simulcast_destination(
  server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL, opens INTEGER,
  provider TEXT, revision TEXT, remote TEXT, stream TEXT,
  UNIQUE(event,name));
+CREATE TABLE IF NOT EXISTS youtube_live_creation(
+ event TEXT NOT NULL, opens INTEGER NOT NULL, event_revision TEXT NOT NULL,
+ revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
+ phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT,
+ PRIMARY KEY(event,opens));
 """
 
 
@@ -465,7 +472,8 @@ class Simulcast:
             job.thread.join(timeout=15)
 
 
-def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection):
+def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
+             creation_access):
     def _require_provider_connection():
         if not youtube_live_connection.revision():
             abort(409, "Connect YouTube Live before using YouTube Live destinations.")
@@ -493,6 +501,160 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             (remote, stream),
         ).fetchone() is not None
 
+    def check_youtube_capacity(con, uid, opens):
+        count = con.execute(
+            "SELECT COUNT(*) FROM live_simulcast_destination WHERE event=? AND opens=? AND provider='youtube-live'",
+            (uid, opens),
+        ).fetchone()[0]
+        if count >= 10:
+            abort(409, "An occurrence supports up to 10 connected destinations.")
+
+    def save_youtube_destination(con, uid, opens, revision, broadcast, bound):
+        check_youtube_capacity(con, uid, opens)
+        if _used_provider_destination(con, broadcast, bound["stream"]):
+            abort(409, "This broadcast or its stream is already assigned to an occurrence.")
+        name = _provider_name(con, uid, bound["title"], broadcast)
+        destination = uuid.uuid4().hex
+        con.execute(
+            "INSERT INTO live_simulcast_destination"
+            "(id,event,name,server,secret,enabled,opens,provider,revision,remote,stream)"
+            " VALUES(?,?,?,?,?,1,?,'youtube-live',?,?,?)",
+            (destination, uid, name, bound["server"], outputs.cipher.encrypt(bound["key"].encode()),
+             opens, revision, broadcast, bound["stream"]),
+        )
+        return destination
+
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/youtube/create")
+    def create_youtube_destination(uid, opens):
+        staff()
+        payload = request.get_json()
+        privacy = payload.get("privacy", "private") if isinstance(payload, dict) else None
+        if not isinstance(privacy, str) or privacy not in youtube_live.PRIVACY:
+            abort(422, "Choose YouTube broadcast privacy.")
+
+        connection = youtube_live_connection
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            event_revision, title, slot = creation_access(con, uid, opens)
+            saved = connection.connection(con)
+            if not saved:
+                abort(409, "Connect YouTube Live before creating a broadcast.")
+            return event_revision, title[:100].strip(), slot, saved["revision"]
+
+        with tx() as con:
+            event_revision, title, slot, revision = access(con)
+        lease_dir = outputs.directory / "youtube-creation"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lease_name = digest(b"CuePorch YouTube creation", f"{uid}:{opens}".encode(), "sha256").hex()
+
+        def check(con):
+            live_revision, _, _, live_connection = access(con)
+            if live_revision != event_revision or live_connection != revision:
+                abort(409, "The event or YouTube connection changed. Reload destinations.")
+
+        def before_send():
+            staff()
+            with tx() as con:
+                check(con)
+
+        def advance(con, phase, *, broadcast=None, stream=None, destination=None):
+            con.execute("""UPDATE youtube_live_creation SET phase=?, broadcast=COALESCE(?, broadcast),
+                        stream=COALESCE(?, stream), destination=COALESCE(?, destination) WHERE event=? AND opens=?""",
+                        (phase, broadcast, stream, destination, uid, opens))
+
+        def provision():
+            with tx() as con:
+                check(con)
+                job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
+                                  (uid, opens)).fetchone()
+            if job is None:
+                channels = youtube_live.channels(connection, revision)
+                if len(channels["items"]) != 1 or channels["next"]:
+                    abort(409, "Connect a single YouTube channel before creating a broadcast.")
+                marker = f"Created by CuePorch ({uuid.uuid4().hex})"
+                with tx() as con:
+                    check(con)
+                    check_youtube_capacity(con, uid, opens)
+                    con.execute("INSERT INTO youtube_live_creation VALUES(?,?,?,?,?,?,?,'new',NULL,NULL,NULL)",
+                                (uid, opens, event_revision, revision, channels["items"][0]["id"], privacy, marker))
+                    job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
+                                      (uid, opens)).fetchone()
+            if (job["revision"], job["event_revision"], job["privacy"]) != (revision, event_revision, privacy):
+                abort(409, "Use the original settings to check this broadcast, or select an existing broadcast.")
+            if job["destination"]:
+                with tx() as con:
+                    check(con)
+                    if not con.execute("SELECT 1 FROM live_simulcast_destination WHERE id=?", (job["destination"],)).fetchone():
+                        abort(409, "This broadcast was removed. Use the existing broadcasts list to add it again.")
+                return private(dict(state="complete", id=job["destination"]))
+
+            phase, channel, marker = job["phase"], job["channel"], job["marker"]
+
+            def inserted(field, collection, start, create):
+                if job[field]:
+                    return job[field]
+                if phase != start:
+                    return youtube_live.find_created(connection, revision, collection, channel, marker)
+                if field == "broadcast" and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
+                    abort(409, "Choose a future occurrence to schedule a new YouTube broadcast.")
+                pending = field + "_pending"
+                with tx() as con:
+                    check(con)
+                    advance(con, pending)
+                try:
+                    return create()["id"]
+                except youtube_live.YouTubeWriteUnconfirmed:
+                    return youtube_live.find_created(connection, revision, collection, channel, marker)
+                except HTTPException as error:
+                    if error.code is not None and 400 <= error.code < 500:
+                        with tx() as con:
+                            advance(con, start)
+                    raise
+
+            broadcast = inserted("broadcast", "liveBroadcasts", "new", lambda: youtube_live.insert_broadcast(
+                connection, revision, channel, title, slot["start"], slot["end"], privacy, marker, before_send))
+            if not broadcast:
+                return private(dict(state="pending"), 202)
+            if not job["broadcast"]:
+                with tx() as con:
+                    check(con)
+                    advance(con, "broadcast_confirmed", broadcast=broadcast)
+                phase = "broadcast_confirmed"
+
+            stream = inserted("stream", "liveStreams", "broadcast_confirmed", lambda: youtube_live.insert_stream(
+                connection, revision, channel, title, marker, before_send))
+            if not stream:
+                return private(dict(state="pending"), 202)
+            if not job["stream"]:
+                with tx() as con:
+                    check(con)
+                    advance(con, "stream_confirmed", stream=stream)
+
+            _, _, details = youtube_live.broadcast_details(connection, revision, broadcast, channel)
+            binding = details.get("boundStreamId")
+            if binding and binding != stream:
+                abort(409, "This YouTube broadcast is already bound to a different stream.")
+            if not binding:
+                try:
+                    youtube_live.bind_created(connection, revision, broadcast, stream, channel, before_send)
+                except youtube_live.YouTubeWriteUnconfirmed:
+                    return private(dict(state="pending"), 202)
+            bound = youtube_live.bound_target(connection, revision, broadcast, channel)
+            if bound["stream"] != stream:
+                abort(409, "The YouTube broadcast binding changed before it could be added.")
+            with tx() as con:
+                check(con)
+                destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
+                advance(con, "complete", destination=destination)
+            return private(dict(state="complete", id=destination), 201)
+
+        try:
+            with FileLock(lease_dir / (lease_name + ".lock"), timeout=0):
+                return provision()
+        except Timeout:
+            return private(dict(state="pending"), 202)
+
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube", methods=["GET", "POST"])
     def youtube_destination(uid, opens):
         staff()
@@ -518,23 +680,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             latest = youtube_live_connection.connection(con)
             if not latest or latest["revision"] != revision:
                 abort(409, "The YouTube Live connection changed. Reload destinations.")
-            count = con.execute(
-                "SELECT COUNT(*) FROM live_simulcast_destination WHERE event=? AND opens=? AND provider='youtube-live'",
-                (uid, opens),
-            ).fetchone()[0]
-            if count >= 10:
-                abort(409, "An occurrence supports up to 10 connected destinations.")
-            if _used_provider_destination(con, broadcast, bound["stream"]):
-                abort(409, "This broadcast or its stream is already assigned to an occurrence.")
-            name = _provider_name(con, uid, bound["title"], broadcast)
-            uid_destination = uuid.uuid4().hex
-            con.execute(
-                "INSERT INTO live_simulcast_destination"
-                "(id,event,name,server,secret,enabled,opens,provider,revision,remote,stream)"
-                " VALUES(?,?,?,?,?,1,?,'youtube-live',?,?,?)",
-                (uid_destination, uid, name, bound["server"], outputs.cipher.encrypt(bound["key"].encode()),
-                 opens, revision, broadcast, bound["stream"]),
-            )
+            uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
         return private(dict(id=uid_destination), 201)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
