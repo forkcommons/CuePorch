@@ -238,3 +238,69 @@ def campaign_members(connection, revision, value):
         seen.add(next_cursor)
         cursor = next_cursor
     return results
+
+
+def person_id(object_name, value):
+    if not isinstance(object_name, str) or not isinstance(value, str):
+        return False
+    prefix = {"Lead": "00Q", "Contact": "003"}.get(object_name)
+    if prefix is None:
+        return False
+    if len(value) not in (15, 18):
+        return False
+    if not value.startswith(prefix):
+        return False
+    return value.isascii() and value.isalnum()
+
+
+def _lookup_row(row, object_name, expected_email):
+    if not isinstance(row, dict):
+        abort(502)
+    for key in ("Id", "Email", "HasOptedOutOfEmail"):
+        if key not in row:
+            abort(502)
+    id_value = row["Id"]
+    email_value = row["Email"]
+    opted_out = row["HasOptedOutOfEmail"]
+    if not person_id(object_name, id_value):
+        abort(502)
+    if not isinstance(email_value, str):
+        abort(502)
+    if not isinstance(opted_out, bool):
+        abort(502)
+    try:
+        returned = email_key(email_value)
+    except BadRequest:
+        abort(502)
+    if returned != expected_email:
+        abort(502)
+    return {"id": id_value, "opted_out": opted_out}
+
+
+def lookup_person(connection, revision, address):
+    normalized = email_key(address)
+    escaped = normalized.replace("\\", "\\\\").replace("'", "\\'")
+    matches = []
+    for name in ("Contact", "Lead"):
+        soql = (
+            "SELECT Id,Email,HasOptedOutOfEmail FROM %s "
+            "WHERE Email = '%s'" % (name, escaped)
+        )
+        if name == "Lead":
+            soql += " AND IsConverted = false"
+        soql += " LIMIT 2"
+        records, cursor = _query_page(connection, revision, soql)
+        if cursor is not None:
+            abort(502)
+        if not isinstance(records, (list, tuple)):
+            abort(502)
+        if len(records) > 2:
+            abort(502)
+        for row in records:
+            matches.append((name, _lookup_row(row, name, normalized)))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        abort(422, description="Multiple Salesforce contacts or leads match this email.")
+    name, data = matches[0]
+    return {"object": name, "id": data["id"], "opted_out": data["opted_out"]}

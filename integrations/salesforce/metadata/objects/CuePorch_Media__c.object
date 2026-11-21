@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>CuePorch Media</label>
+    <pluralLabel>CuePorch Media Records</pluralLabel>
+    <nameField>
+        <label>Title</label>
+        <type>Text</type>
+    </nameField>
+    <sharingModel>Private</sharingModel>
+    <externalSharingModel>Private</externalSharingModel>
+    <fields>
+        <fullName>External_Key__c</fullName>
+        <label>External Key</label>
+        <type>Text</type>
+        <length>64</length>
+        <unique>true</unique>
+        <externalId>true</externalId>
+        <caseSensitive>false</caseSensitive>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Campaign__c</fullName>
+        <label>Campaign</label>
+        <type>Lookup</type>
+        <referenceTo>Campaign</referenceTo>
+        <relationshipLabel>CuePorch Media</relationshipLabel>
+        <relationshipName>CuePorch_Media_Records</relationshipName>
+        <deleteConstraint>Restrict</deleteConstraint>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Kind__c</fullName>
+        <label>Kind</label>
+        <type>Text</type>
+        <length>16</length>
+        <required>true</required>
+    </fields>
+</CustomObject>
