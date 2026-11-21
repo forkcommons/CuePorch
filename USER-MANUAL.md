@@ -209,6 +209,8 @@ A workspace owner can open a named Library folder and choose **HubSpot Media Bri
 
 Open **Embed on a website** beneath the embed code for WordPress, WooCommerce, Wix, and GoDaddy instructions. On a WordPress site that supports oEmbed discovery, paste the ordinary viewer URL for a public CuePorch video with **Anywhere** embedding into an Embed block. For other permitted embeds, paste the iframe into a WordPress Custom HTML block, WooCommerce product description, Wix Embed HTML element or GoDaddy HTML section. Preview the page using its published origin. If the site builder adds another frame, CuePorch's published embed rules still apply to the frame origins. Registration, password and domain rules also apply when the iframe is copied to another site. [WordPress oEmbed discovery](https://developer.wordpress.org/advanced-administration/wordpress/oembed/) · [Wix embed elements](https://support.wix.com/en/article/wix-editor-embedding-a-site-or-a-widget) · [GoDaddy HTML sections](https://www.godaddy.com/help/add-html-or-custom-code-to-my-site-27252)
 
+For a Videos tab or placement among classic WooCommerce product gallery images, use the [CuePorch Video companion](integrations/wordpress/README.md).
+
 CuePorch’s own embedded player offers an optional JavaScript API. Select **Include player API script** to turn it on for the generated iframe. Import the `Player` class from your CuePorch host and pass the iframe element. The API supports playback, pause, seek, elapsed time, duration, volume, mute, loop and playback events.
 
 ```javascript
