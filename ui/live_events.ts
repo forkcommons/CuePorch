@@ -185,6 +185,10 @@ const linkedinCompany = element<HTMLSelectElement>("linkedinLiveCompany");
 const linkedinSubmit = button("scheduleLinkedinLive");
 const linkedinStatus = element("linkedinLiveStatus");
 const linkedinPost = element<HTMLAnchorElement>("linkedinLivePost");
+const linkedinSeriesLabel = element<HTMLLabelElement>("linkedinSeriesLabel");
+const linkedinSeries = input("linkedinSeries");
+const linkedinSeriesSkip = button("linkedinSeriesSkip");
+const linkedinSeriesStop = button("linkedinSeriesStop");
 const existingLinkedinList = element<HTMLSelectElement>("existingLinkedinList");
 const existingLinkedinMore = button("existingLinkedinMore");
 const existingLinkedinChoose = button("existingLinkedinChoose");
@@ -203,6 +207,10 @@ function resetLinkedinAccount() {
   linkedinStatus.textContent = "";
   linkedinPost.hidden = true;
   linkedinPost.removeAttribute("href");
+  linkedinSeriesLabel.hidden = !active || active.event.event.schedule.repeat === "none";
+  linkedinSeries.checked = true;
+  linkedinSeriesSkip.hidden = true;
+  linkedinSeriesStop.hidden = true;
   button("prepareLinkedinLive").disabled = false;
   button("loadLinkedinCompany").textContent = linkedinAccount.value === "member"
     ? "Load LinkedIn profile" : "Load LinkedIn Company Page";
@@ -1041,6 +1049,32 @@ async function refreshYouTubeSeries() {
     youtubeSeriesStop.hidden = true;
   }
 }
+async function refreshLinkedinSeries() {
+  if (!active) return;
+  const selection = active;
+  const revision = linkedinAccountRevision;
+  try {
+    const result = await request<{ active: boolean; inherited: boolean; skipped: boolean }>(mediaPath(`destinations/${linkedinProvider()}/series`));
+    if (selection !== active || revision !== linkedinAccountRevision) return;
+    linkedinSeriesSkip.hidden = !(result.inherited && !result.skipped);
+    linkedinSeriesStop.hidden = !result.active;
+  } catch {
+    if (selection !== active || revision !== linkedinAccountRevision) return;
+    linkedinSeriesSkip.hidden = true;
+    linkedinSeriesStop.hidden = true;
+  }
+}
+async function changeLinkedinSeries(date: boolean) {
+  const selection = active;
+  if (!selection || selection.event.event.schedule.repeat === "none") return;
+  const revision = linkedinAccountRevision;
+  await request(mediaPath(`destinations/${linkedinProvider()}/series`), "DELETE", {date});
+  if (selection !== active || revision !== linkedinAccountRevision) return;
+  await refreshLinkedinSeries();
+  await refreshDestinations();
+}
+linkedinSeriesSkip.onclick = () => void action(() => changeLinkedinSeries(true));
+linkedinSeriesStop.onclick = () => void action(() => changeLinkedinSeries(false));
 destinations.ontoggle = () => {
   if (!destinations.open) return;
   void action(async () => {
@@ -1263,6 +1297,7 @@ button("loadLinkedinCompany").onclick = () => void action(async () => {
   if (selection !== active || revision !== linkedinAccountRevision) return;
   linkedinCompany.append(new Option((profile ? "Profile " : "Company Page ") + account.id, account.id));
   linkedinSubmit.disabled = false;
+  if (!linkedinSeriesLabel.hidden) await refreshLinkedinSeries();
 });
 linkedinForm.onsubmit = event => {
   event.preventDefault();
@@ -1273,6 +1308,7 @@ linkedinForm.onsubmit = event => {
   const account = linkedinAccount.value === "member"
     ? {profile: linkedinCompany.value} : {company: linkedinCompany.value};
   const auto_prepare = linkedinAutomaticDelivery.checked;
+  const series = !linkedinSeriesLabel.hidden && linkedinSeries.checked;
   void action(async () => {
     linkedinSubmit.disabled = true;
     linkedinStatus.textContent = "";
@@ -1280,7 +1316,7 @@ linkedinForm.onsubmit = event => {
     linkedinPost.removeAttribute("href");
     try {
       const result = await request<{state: "scheduled" | "pending" | "unconfirmed"; post_urn?: string;
-        auto_prepare?: boolean}>(path, "POST", {...account, auto_prepare});
+        auto_prepare?: boolean}>(path, "POST", {...account, auto_prepare, series});
       if (selection !== active || revision !== linkedinAccountRevision) return;
       const urn = result.post_urn ?? "";
       if (result.state === "scheduled" && /^urn:li:ugcPost:[0-9]{1,30}$/.test(urn)) {
@@ -1294,6 +1330,7 @@ linkedinForm.onsubmit = event => {
       } else {
         linkedinStatus.textContent = "LinkedIn did not confirm the announcement. Check the connected account.";
       }
+      if (result.state === "scheduled") await refreshLinkedinSeries();
     } finally {
       if (selection === active && revision === linkedinAccountRevision) linkedinSubmit.disabled = !linkedinCompany.value;
     }

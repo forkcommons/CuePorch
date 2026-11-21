@@ -754,7 +754,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             return private(dict(state="pending"), 202)
 
     def prepare_destination_series(row, opens):
-        if row["provider"] != 'youtube-live':
+        connection = linkedin_connections.get(row["provider"])
+        if connection:
+            with tx() as con:
+                existing = con.execute(linkedin_live_job.READ, (row["event"], opens, row["owner"])).fetchone()
+            if existing and (existing["state"] == "scheduled" or (existing["event_revision"], existing["revision"]) != (row["event_revision"], row["revision"])):
+                return
+            selected = row["owner"].removeprefix("member:") if row["provider"] == "linkedin-member-live" else row["owner"]
+            auto_prepare = json.loads(row["options"])["auto_prepare"]
+            schedule_linkedin(row["event"], opens, connection, selected, auto_prepare, series=row)
+            return
+        if row["provider"] != "youtube-live":
             return
         with tx() as con:
             exists = con.execute(
@@ -768,15 +778,18 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
     app.extensions["stop_recurring_simulcast"] = live_destination_series.start(app, tx, prepare_destination_series)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube/series", methods=["GET", "DELETE"])
-    def youtube_series(uid, opens):
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin/series", methods=["GET", "DELETE"], defaults={"provider": "linkedin-live"})
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/series", methods=["GET", "DELETE"], defaults={"provider": "linkedin-member-live"})
+    def provider_series(uid, opens, provider="youtube-live"):
         staff()
         with tx() as con:
             enforce_sharing(con, feature="outbound")
             event_revision, _, _ = creation_access(con, uid, opens)
-            grant = youtube_live_connection.connection(con)
+            connection = live_connections[provider]
+            grant = connection.connection(con)
             series = con.execute("""SELECT * FROM live_destination_series
-                WHERE event=? AND provider='youtube-live' AND revision=? AND event_revision=?""",
-                (uid, grant["revision"] if grant else None, event_revision)).fetchone()
+                WHERE event=? AND provider=? AND revision=? AND event_revision=?""",
+                (uid, provider, grant["revision"] if grant else None, event_revision)).fetchone()
             inherited = bool(series and opens > series["after_opens"])
             if request.method == "GET":
                 return private(dict(active=series is not None, inherited=inherited,
@@ -794,6 +807,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 con.execute("""UPDATE live_simulcast_destination SET enabled=0
                     WHERE event=? AND opens=? AND provider=? AND revision=?""",
                     (uid, opens, series["provider"], series["revision"]))
+                if provider in linkedin_connections:
+                    linkedin_live_job.set_auto(con, (uid, opens, series["owner"]), False)
         return private(dict(ok=True))
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube", methods=["GET", "POST"])
@@ -1009,13 +1024,33 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         auto_prepare = payload.get("auto_prepare")
         if auto_prepare is not None and type(auto_prepare) is not bool:
             abort(422, "Choose whether to prepare LinkedIn delivery automatically.")
+        selected = payload.get("profile") if profile else connection.company
+        if not isinstance(selected, str):
+            abort(422, "Choose a connected LinkedIn Live account.")
+        remember_series = payload.get("series", False)
+        if type(remember_series) is not bool:
+            abort(422, "Choose whether to remember the LinkedIn Live series.")
+        return schedule_linkedin(
+            uid, opens, connection, selected, auto_prepare,
+            remember_series=remember_series,
+        )
+
+    def schedule_linkedin(uid, opens, connection, selected, auto_prepare, *, series=None, remember_series=False):
 
         def access(con):
-            enforce_sharing(con, feature="outbound")
+            if series is None:
+                enforce_sharing(con, feature="outbound")
+            elif not live_destination_series.enabled(con, series, opens):
+                abort(409, "The LinkedIn Live series is not enabled.")
             event_revision, title, slot = creation_access(con, uid, opens)
             saved = connection.connection(con)
             if not saved:
                 abort(409, "Connect LinkedIn Live before scheduling a broadcast.")
+            if series is not None and (
+                series["revision"] != saved["revision"]
+                or series["event_revision"] != event_revision
+            ):
+                abort(409, "The event or LinkedIn connection changed. Reload destinations.")
             starts = datetime.fromisoformat(slot["start"])
             if starts <= datetime.now(timezone.utc):
                 abort(409, "Choose a future occurrence for the LinkedIn Live announcement.")
@@ -1023,34 +1058,40 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         with tx() as con:
             event_revision, revision, title, start_ms = access(con)
+            if remember_series:
+                live_destination_series.ensure_recurring(con, uid)
 
-        if profile:
-            owner_key, owner = linked_owner(connection, revision)
-            selected = payload.get("profile")
-            if not isinstance(selected, str) or owner_key != "member:" + selected:
-                abort(403, "Choose the connected LinkedIn Live profile.")
-        else:
-            owner_key = connection.company
+        owner_key, owner = linked_owner(connection, revision)
+        expected_key = "member:" + selected if connection is linkedin_member_live_connection else selected
+        if owner_key != expected_key:
+            abort(403, "Choose the connected LinkedIn Live account.")
 
         def check(con):
             if access(con) != (event_revision, revision, title, start_ms):
                 abort(409, "The event or LinkedIn connection changed. Reload destinations.")
 
         def before_send():
-            staff()
+            if series is None:
+                staff()
             with tx() as con:
                 check(con)
 
         try:
             with FileLock(linkedin_lease((uid, opens, owner_key)), timeout=0):
-                if not profile:
-                    _, owner = linked_owner(connection, revision)
                 result, status = linkedin_live_job.provision(
                     tx, check,
                     lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
                     lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
                     uid, opens, owner_key, event_revision, revision, auto_prepare,
                 )
+                if remember_series and result["state"] == "scheduled":
+                    with tx() as con:
+                        check(con)
+                        live_destination_series.save(
+                            con, uid, connection.key, owner_key, revision,
+                            event_revision, opens,
+                            {"auto_prepare": auto_prepare is not False},
+                        )
         except Timeout:
             return private(dict(state="pending"), 202)
         return private(result, status)
@@ -1144,6 +1185,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         def access(con):
             if interactive:
                 enforce_sharing(con, feature="outbound")
+            elif con.execute("""SELECT 1 FROM live_destination_series_skip
+                    WHERE event=? AND provider=? AND owner=? AND opens=?""",
+                    (uid, connection.key, owner_key, opens)).fetchone():
+                abort(409, "This occurrence was skipped.")
             revision, _, slot = creation_access(con, uid, opens)
             creation = con.execute(linkedin_live_job.READ, key).fetchone()
             saved = connection.connection(con)
