@@ -23,9 +23,10 @@ from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import event_simulcast
+import live_destination_series
 from institution import create_app
 import youtube_live
-from youtube_rtmps_fixture import check_youtube_rtmps
+from youtube_rtmps_fixture import check_destination_rtmps, check_youtube_rtmps
 
 
 class YouTubeLiveCatalog(unittest.TestCase):
@@ -74,6 +75,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 original_update(self, candidates)
 
             cleanup.enter_context(patch.object(event_simulcast.Simulcast, "update", capture_candidates))
+            cleanup.enter_context(patch.object(live_destination_series, "SCAN_INTERVAL", 0.2))
 
             with patch("institution.library_worker.start", return_value=lambda: None):
                 app = create_app(root, database, operator, "station")
@@ -189,7 +191,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
             @remote.get("/liveBroadcasts")
             def live_broadcasts():
-                if request.args.get("id") == "created-broadcast":
+                if request.args.get("id") and request.args["id"] == created_broadcast.get("id"):
                     return {"items": [created_broadcast]}
                 if request.args["part"] == "id,snippet":
                     assert request.args["mine"] == "true"
@@ -207,7 +209,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
             @remote.get("/liveStreams")
             def live_streams():
-                if request.args.get("id") == "created-stream":
+                if request.args.get("id") and request.args["id"] == created_stream.get("id"):
                     return {"items": [created_stream]}
                 assert request.args["id"] == "fixture-stream"
                 observed["stream_fetch"] = True
@@ -233,7 +235,9 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert body["snippet"]["description"].startswith("Created by CuePorch (")
                 assert datetime.fromisoformat(body["snippet"]["scheduledStartTime"]) < datetime.fromisoformat(
                     body["snippet"]["scheduledEndTime"])
-                created_broadcast.update(body, id="created-broadcast")
+                broadcast_id = "series-broadcast" if observed.get("recurring_id") else "created-broadcast"
+                created_broadcast.clear()
+                created_broadcast.update(body, id=broadcast_id)
                 created_broadcast["snippet"]["channelId"] = "UC-live-1"
                 created_broadcast["status"]["lifeCycleStatus"] = "created"
                 observed["writes"].append("broadcast")
@@ -247,11 +251,12 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert body["cdn"] == {"resolution": "variable", "frameRate": "variable", "ingestionType": "rtmp"}
                 assert body["contentDetails"] == {"isReusable": False}
                 assert body["snippet"]["description"] == created_broadcast["snippet"]["description"]
-                created_stream.update(body, id="created-stream")
+                stream_id = "series-stream" if observed.get("recurring_id") else "created-stream"
+                created_stream.update(body, id=stream_id)
                 created_stream["snippet"]["channelId"] = "UC-live-1"
                 created_stream["cdn"]["ingestionInfo"] = {
                     "rtmpsIngestionAddress": "rtmps://a.rtmps.youtube.com:443/live2",
-                    "streamName": "fixture-created-stream-key",
+                    "streamName": "fixture-series-key" if observed.get("recurring_id") else "fixture-created-stream-key",
                 }
                 observed["writes"].append("stream")
                 return created_stream
@@ -264,7 +269,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert request.args["streamId"] == created_stream["id"]
                 assert not request.get_data()
                 created_broadcast["status"]["lifeCycleStatus"] = "ready"
-                created_broadcast["contentDetails"]["boundStreamId"] = "created-stream"
+                created_broadcast["contentDetails"]["boundStreamId"] = created_stream["id"]
                 observed["writes"].append("bind")
                 return {"error": "simulated loss after binding"}, 503
 
@@ -406,7 +411,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 future = {
                     "title": "Future channel broadcast", "slug": "future-channel-broadcast",
                     "visibility": "public", "type": "live", "latency": "standard", "save_replay": False,
-                    "schedule": dict(schedule, count=1, start=start.strftime("%Y-%m-%dT%H:%M"),
+                    "schedule": dict(schedule, count=4, start=start.strftime("%Y-%m-%dT%H:%M"),
                                      end=(start + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")),
                 }
                 scheduled = api.post(base + "/api/live-events", headers=operator_headers, data=future)
@@ -419,6 +424,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 creation_page.goto(base + "/operator/live-events")
                 creation_page.get_by_role("button", name="Open production for Future channel broadcast", exact=False).first.click()
                 creation_page.get_by_text("Simulcast destinations", exact=True).click()
+                expect(creation_page.get_by_role("checkbox", name="Create YouTube broadcasts for future dates")).to_be_checked()
                 creation_page.get_by_role("button", name="Create YouTube broadcast").click()
                 check_status = creation_page.get_by_role("button", name="Check creation status")
                 expect(check_status).to_be_enabled()
@@ -451,6 +457,48 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 refused = api.post(held_path, headers=operator_headers, data={})
                 self.assertEqual(409, refused.status)
                 self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
+
+                series_event = scheduled.json()
+                event_base = f"{base}/api/live-events/{series_event['id']}"
+                _, second, third, fourth = [int(item["id"]) for item in series_event["occurrences"]]
+                later_targets = f"{event_base}/{second}/destinations"
+                skip_targets = f"{event_base}/{third}/destinations"
+                last_series = f"{event_base}/{fourth}/destinations/youtube/series"
+                series_suffix = "/youtube/series"
+                active_series = dict(active=True, inherited=True, skipped=False)
+                self.assertEqual(active_series, api.get(later_targets + series_suffix, headers=operator_headers).json())
+                skipped = api.delete(skip_targets + series_suffix, headers=operator_headers, data={"date": True})
+                self.assertTrue(skipped.ok, skipped.text())
+                self.assertEqual(active_series | {"skipped": True},
+                                 api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                observed["recurring_id"] = True
+                real_due = live_destination_series.due
+                clock_at = datetime.fromtimestamp(second, tz=timezone.utc) - timedelta(minutes=10)
+                stop_app()
+                with patch.object(live_destination_series, "due", side_effect=lambda con, _: real_due(con, clock_at)):
+                    with patch("institution.library_worker.start", return_value=lambda: None):
+                        service.app = create_app(root, database, operator, "station")
+                    stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                    wait_until(lambda: bool(destination_rows(api.get(later_targets, headers=operator_headers))),
+                               12, "The scheduler did not prepare the later YouTube broadcast.")
+                    clock_at = datetime.fromtimestamp(third, tz=timezone.utc) - timedelta(minutes=10)
+                    with closing(sqlite3.connect(database)) as connection:
+                        connection.row_factory = sqlite3.Row
+                        self.assertEqual([], list(real_due(connection, clock_at)))
+                        row = connection.execute(
+                            "SELECT phase,broadcast,stream FROM youtube_live_creation WHERE event=? AND opens=?",
+                            (series_event["id"], second)).fetchone()
+                        self.assertEqual(("complete", "series-broadcast", "series-stream"), tuple(row))
+                self.assertEqual(second, int(datetime.fromisoformat(
+                    created_broadcast["snippet"]["scheduledStartTime"]).timestamp()))
+                self.assertEqual(["broadcast", "stream", "bind"] * 2, observed["writes"])
+                kept = destination_rows(api.get(later_targets, headers=operator_headers))
+                check_destination_rtmps(root, database, kept[0]["id"], operator, kept[0]["server"], "fixture-series-key")
+                self.assertEqual([], destination_rows(api.get(skip_targets, headers=operator_headers)))
+                self.assertTrue(api.delete(last_series, headers=operator_headers, data={"date": False}).ok)
+                self.assertEqual(dict(active=False, inherited=False, skipped=False),
+                                 api.get(last_series, headers=operator_headers).json())
+                self.assertEqual(kept, destination_rows(api.get(later_targets, headers=operator_headers)))
 
                 page.get_by_role("button", name="Disconnect YouTube Live", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("YouTube Live disconnected.", timeout=15000)

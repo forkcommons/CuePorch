@@ -472,8 +472,11 @@
               <option value="unlisted">Unlisted</option>
               <option value="public">Public</option>
             </select></label>
+            <label id="youtubeSeriesLabel" hidden><input type="checkbox" id="youtubeSeries" name="series" checked> Create YouTube broadcasts for future dates</label>
             <button type="submit" id="createYouTubeBroadcastButton">Create YouTube broadcast</button>
           </form>
+          <button type="button" id="youtubeSeriesSkip" hidden>Skip YouTube on this date</button>
+          <button type="button" id="youtubeSeriesStop" hidden>Stop YouTube for future dates</button>
           <p id="youtubeBroadcastStatus" role="status"></p>
         </section>
         <form id="addFacebookLiveDestination" hidden>

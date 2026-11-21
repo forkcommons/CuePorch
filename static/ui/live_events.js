@@ -79,6 +79,10 @@ const youtubeForm = element("addYouTubeDestination");
 const youtubeSubmit = button("addYouTubeDestinationButton");
 const youtubeCreate = element("createYouTubeBroadcast");
 const youtubeCreateButton = button("createYouTubeBroadcastButton");
+const youtubeSeriesLabel = element("youtubeSeriesLabel");
+const youtubeSeriesInput = element("youtubeSeries");
+const youtubeSeriesSkip = button("youtubeSeriesSkip");
+const youtubeSeriesStop = button("youtubeSeriesStop");
 let youtubeNext = null;
 const facebookForm = element("addFacebookLiveDestination");
 const facebookPage = element("facebookLivePage");
@@ -353,6 +357,10 @@ function choose(event, instance) {
     youtubeSubmit.disabled = true;
     youtubeCreate.reset();
     youtubeCreateButton.textContent = "Create YouTube broadcast";
+    youtubeSeriesLabel.hidden = event.event.schedule.repeat === "none";
+    youtubeSeriesInput.disabled = youtubeSeriesLabel.hidden;
+    youtubeSeriesSkip.hidden = true;
+    youtubeSeriesStop.hidden = true;
     facebookForm.hidden = true;
     facebookTarget.value = "page";
     facebookPageLabel.textContent = "Facebook Live Page";
@@ -953,8 +961,33 @@ async function refreshDestinations(result) {
         return row;
     }));
 }
-destinations.ontoggle = () => { if (destinations.open)
-    void action(() => refreshDestinations()); };
+async function refreshYouTubeSeries() {
+    if (!active)
+        return;
+    const selection = active;
+    try {
+        const result = await request(mediaPath("destinations/youtube/series"));
+        if (selection !== active)
+            return;
+        youtubeSeriesSkip.hidden = !(result.inherited && !result.skipped);
+        youtubeSeriesStop.hidden = !result.active;
+    }
+    catch {
+        if (selection !== active)
+            return;
+        youtubeSeriesSkip.hidden = true;
+        youtubeSeriesStop.hidden = true;
+    }
+}
+destinations.ontoggle = () => {
+    if (!destinations.open)
+        return;
+    void action(async () => {
+        await refreshDestinations();
+        if (!youtubeSeriesLabel.hidden)
+            await refreshYouTubeSeries();
+    });
+};
 button("refreshDestinations").onclick = () => void action(() => refreshDestinations());
 async function loadYouTubeBroadcasts(more = false) {
     if (!active)
@@ -985,6 +1018,30 @@ async function loadYouTubeBroadcasts(more = false) {
 }
 button("loadYoutubeBroadcasts").onclick = () => void action(() => loadYouTubeBroadcasts());
 youtubeMore.onclick = () => void action(() => loadYouTubeBroadcasts(true));
+youtubeSeriesSkip.onclick = () => {
+    if (!active)
+        return;
+    const selection = active;
+    void action(async () => {
+        await request(mediaPath("destinations/youtube/series"), "DELETE", { date: true });
+        if (selection !== active)
+            return;
+        await refreshYouTubeSeries();
+        await refreshDestinations();
+    });
+};
+youtubeSeriesStop.onclick = () => {
+    if (!active)
+        return;
+    const selection = active;
+    void action(async () => {
+        await request(mediaPath("destinations/youtube/series"), "DELETE", { date: false });
+        if (selection !== active)
+            return;
+        await refreshYouTubeSeries();
+        await refreshDestinations();
+    });
+};
 youtubeForm.onsubmit = event => {
     event.preventDefault();
     const selected = youtubeList.selectedOptions[0];
@@ -1001,17 +1058,20 @@ youtubeCreate.onsubmit = event => {
     if (!active || youtubeCreateButton.disabled)
         return;
     const path = mediaPath("destinations/youtube/create");
-    const privacy = new FormData(youtubeCreate).get("privacy");
+    const formData = new FormData(youtubeCreate);
+    const privacy = formData.get("privacy");
+    const series = formData.get("series") === "on";
     void action(async () => {
         youtubeCreateButton.disabled = true;
         try {
-            const result = await request(path, "POST", { privacy });
+            const result = await request(path, "POST", { privacy, series });
             if (!active || mediaPath("destinations/youtube/create") !== path)
                 return;
             if (result.state === "complete") {
                 youtubeStatus.textContent = "YouTube broadcast created.";
                 youtubeCreateButton.textContent = "Create YouTube broadcast";
                 await refreshDestinations();
+                await refreshYouTubeSeries();
             }
             else {
                 youtubeStatus.textContent = "Waiting for YouTube to confirm the broadcast.";
