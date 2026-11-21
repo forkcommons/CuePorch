@@ -2,7 +2,7 @@
 
 from base64 import urlsafe_b64encode
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hmac import digest
 import json
 import os
@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS youtube_live_creation(
  revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
  phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT,
  PRIMARY KEY(event,opens));
+CREATE TABLE IF NOT EXISTS youtube_live_restart(
+ replaces TEXT PRIMARY KEY, event_revision TEXT NOT NULL, revision TEXT NOT NULL,
+ channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
+ phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT);
 """ + facebook_live_job.SCHEMA + linkedin_live_job.SCHEMA + live_destination_series.SCHEMA
 
 
@@ -614,7 +618,45 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         return prepare_youtube(uid, opens, privacy, remember_series=remember_series)
 
-    def prepare_youtube(uid, opens, privacy, *, series=None, remember_series=False):
+    def youtube_lease(uid, opens):
+        lease_dir = outputs.directory / "youtube-creation"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lease_name = digest(b"CuePorch YouTube creation", f"{uid}:{opens}".encode(), "sha256").hex()
+        return FileLock(lease_dir / (lease_name + ".lock"), timeout=0)
+
+    def old_youtube_destination(con, uid, opens, destination, revision):
+        old = con.execute("""SELECT d.remote FROM live_simulcast_destination d
+            JOIN live_occurrence o ON o.event=d.event AND o.opens=d.opens
+            WHERE d.id=? AND d.event=? AND d.opens=? AND d.revision=? AND d.provider='youtube-live'
+              AND d.enabled=0 AND o.delivery='ready'""", (destination, uid, opens, revision)).fetchone()
+        if old is None:
+            abort(409, "The YouTube destination changed. Reload destinations.")
+        return old["remote"]
+
+    def initialize_youtube_restart(uid, opens, old, event_revision, revision, before_send):
+        connection = youtube_live_connection
+        with tx() as con:
+            remote = old_youtube_destination(con, uid, opens, old, revision)
+            job = con.execute("SELECT * FROM youtube_live_restart WHERE replaces=?", (old,)).fetchone()
+            if job:
+                return job, job["privacy"]
+        channel, privacy, lifecycle = youtube_live.restart_details(connection, revision, remote)
+        if lifecycle not in ("complete", "revoked"):
+            lifecycle = youtube_live.finish_broadcast(connection, revision, remote, channel, before_send)
+        before_send()
+        with tx() as con:
+            old_youtube_destination(con, uid, opens, old, revision)
+            if lifecycle in ("ready", "created"):
+                con.execute("UPDATE live_simulcast_destination SET enabled=1 WHERE id=?", (old,))
+                return None
+            marker = f"Created by CuePorch ({uuid.uuid4().hex})"
+            con.execute("""INSERT INTO youtube_live_restart
+                (replaces,event_revision,revision,channel,privacy,marker,phase) VALUES (?,?,?,?,?,?,'new')""",
+                        (old, event_revision, revision, channel, privacy, marker))
+            job = con.execute("SELECT * FROM youtube_live_restart WHERE replaces=?", (old,)).fetchone()
+            return job, privacy
+
+    def prepare_youtube(uid, opens, privacy, *, series=None, remember_series=False, restart=None):
         connection = youtube_live_connection
 
         def access(con):
@@ -635,14 +677,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             event_revision, title, slot, revision = access(con)
             if remember_series:
                 live_destination_series.ensure_recurring(con, uid)
-        lease_dir = outputs.directory / "youtube-creation"
-        lease_dir.mkdir(parents=True, exist_ok=True)
-        lease_name = digest(b"CuePorch YouTube creation", f"{uid}:{opens}".encode(), "sha256").hex()
+        job_table, job_scope, job_key = (
+            ("youtube_live_creation", "event=? AND opens=?", (uid, opens)) if restart is None
+            else ("youtube_live_restart", "replaces=?", (restart,))
+        )
 
         def check(con):
             live_revision, _, _, live_connection = access(con)
             if live_revision != event_revision or live_connection != revision:
                 abort(409, "The event or YouTube connection changed. Reload destinations.")
+            if restart is not None:
+                old_youtube_destination(con, uid, opens, restart, revision)
 
         def before_send():
             if series is None:
@@ -651,29 +696,38 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 check(con)
 
         def advance(con, phase, *, broadcast=None, stream=None, destination=None):
-            con.execute("""UPDATE youtube_live_creation SET phase=?, broadcast=COALESCE(?, broadcast),
-                        stream=COALESCE(?, stream), destination=COALESCE(?, destination) WHERE event=? AND opens=?""",
-                        (phase, broadcast, stream, destination, uid, opens))
+            con.execute(f"""UPDATE {job_table} SET phase=?, broadcast=COALESCE(?, broadcast),
+                        stream=COALESCE(?, stream), destination=COALESCE(?, destination) WHERE {job_scope}""",
+                        (phase, broadcast, stream, destination, *job_key))
 
         def provision():
-            with tx() as con:
-                check(con)
-                job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
-                                  (uid, opens)).fetchone()
-            if job is None:
-                channels = youtube_live.channels(connection, revision)
-                if len(channels["items"]) != 1 or channels["next"]:
-                    abort(409, "Connect a single YouTube channel before creating a broadcast.")
-                if series is not None and channels["items"][0]["id"] != series["owner"]:
-                    abort(409, "The authorized YouTube channel changed.")
-                marker = f"Created by CuePorch ({uuid.uuid4().hex})"
+            nonlocal privacy
+            if restart is not None:
+                initialized = initialize_youtube_restart(uid, opens, restart, event_revision, revision, before_send)
+                if initialized is None:
+                    return private(dict(state="complete", id=restart))
+                job, privacy = initialized
+            else:
                 with tx() as con:
                     check(con)
-                    check_provider_capacity(con, uid, opens)
-                    con.execute("INSERT INTO youtube_live_creation VALUES(?,?,?,?,?,?,?,'new',NULL,NULL,NULL)",
-                                (uid, opens, event_revision, revision, channels["items"][0]["id"], privacy, marker))
                     job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
                                       (uid, opens)).fetchone()
+                if job is None:
+                    channels = youtube_live.channels(connection, revision)
+                    if len(channels["items"]) != 1 or channels["next"]:
+                        abort(409, "Connect a single YouTube channel before creating a broadcast.")
+                    if series is not None and channels["items"][0]["id"] != series["owner"]:
+                        abort(409, "The authorized YouTube channel changed.")
+                    marker = f"Created by CuePorch ({uuid.uuid4().hex})"
+                    with tx() as con:
+                        check(con)
+                        check_provider_capacity(con, uid, opens)
+                        con.execute("""INSERT INTO youtube_live_creation
+                            (event, opens, event_revision, revision, channel, privacy, marker, phase, broadcast, stream, destination)
+                            VALUES (?,?,?,?,?,?,?,'new',NULL,NULL,NULL)""",
+                                    (uid, opens, event_revision, revision, channels["items"][0]["id"], privacy, marker))
+                        job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
+                                          (uid, opens)).fetchone()
             if series is not None and (job["channel"], job["revision"], job["event_revision"]) != (series["owner"], series["revision"], series["event_revision"]):
                 abort(409)
             if (job["revision"], job["event_revision"], job["privacy"]) != (revision, event_revision, privacy):
@@ -694,7 +748,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     return job[field]
                 if phase != start:
                     return youtube_live.find_created(connection, revision, collection, channel, marker)
-                if field == "broadcast" and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
+                if (field == "broadcast" and restart is None
+                        and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc)):
                     abort(409, "Choose a future occurrence to schedule a new YouTube broadcast.")
                 pending = field + "_pending"
                 with tx() as con:
@@ -710,8 +765,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                             advance(con, start)
                     raise
 
+            starts, ends = slot["start"], slot["end"]
+            if restart is not None:
+                earliest = datetime.now(timezone.utc) + timedelta(seconds=15)
+                starts = earliest.isoformat()
+                if datetime.fromisoformat(ends) <= earliest:
+                    ends = None
             broadcast = inserted("broadcast", "liveBroadcasts", "new", lambda: youtube_live.insert_broadcast(
-                connection, revision, channel, title, slot["start"], slot["end"], privacy, marker, before_send))
+                connection, revision, channel, title, starts, ends, privacy, marker, before_send))
             if not broadcast:
                 return private(dict(state="pending"), 202)
             if not job["broadcast"]:
@@ -743,14 +804,23 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 abort(409, "The YouTube broadcast binding changed before it could be added.")
             with tx() as con:
                 check(con)
+                if restart is not None:
+                    if broadcast == old_youtube_destination(con, uid, opens, restart, revision):
+                        abort(409, "YouTube returned the previous broadcast instead of a replacement.")
+                    con.execute("DELETE FROM live_simulcast_destination WHERE id=?", (restart,))
                 destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
                 if remember_series:
                     live_destination_series.save(con, uid, 'youtube-live', job['channel'], revision, event_revision, opens, {'privacy': privacy})
                 advance(con, "complete", destination=destination)
+                if restart is not None:
+                    con.execute("""UPDATE youtube_live_creation SET channel=?,privacy=?,marker=?,broadcast=?,stream=?,destination=?
+                        WHERE event=? AND opens=? AND destination=? AND phase='complete'""",
+                                (channel, privacy, marker, broadcast, stream, destination, uid, opens, restart))
+                    con.execute("DELETE FROM youtube_live_restart WHERE replaces=?", (restart,))
             return private(dict(state="complete", id=destination), 201)
 
         try:
-            with FileLock(lease_dir / (lease_name + ".lock"), timeout=0):
+            with youtube_lease(uid, opens):
                 return provision()
         except Timeout:
             return private(dict(state="pending"), 202)
@@ -1454,6 +1524,23 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             destinations.append(item)
         return dict(available=available, destinations=destinations)
 
+    def turn_off_youtube(uid, opens, destination):
+        try:
+            with youtube_lease(uid, opens):
+                with tx() as con:
+                    row = con.execute("""SELECT revision,remote FROM live_simulcast_destination
+                        WHERE id=? AND event=? AND opens=? AND provider='youtube-live'""",
+                                      (destination, uid, opens)).fetchone()
+                    if not row:
+                        abort(404)
+                    con.execute("UPDATE live_simulcast_destination SET enabled=0 WHERE id=?", (destination,))
+                connection = youtube_live_connection
+                channel, _, _ = youtube_live.restart_details(connection, row["revision"], row["remote"])
+                youtube_live.finish_broadcast(connection, row["revision"], row["remote"], channel)
+                return "", 204
+        except Timeout:
+            abort(409, "YouTube is still confirming a broadcast change. Try again shortly.")
+
     def toggle_started_facebook(uid, opens, destination, enabled, key):
         page = key[2]
         connection, provider_owner, create_live = facebook_provider(page)
@@ -1543,6 +1630,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             only_date = early.get("only_date", False) if isinstance(early, dict) else False
             if type(enabled) is bool and only_date is False and datetime.now(timezone.utc).timestamp() >= opens:
                 with tx() as con:
+                    youtube = con.execute("""SELECT d.enabled FROM live_simulcast_destination d
+                        JOIN live_occurrence o ON o.event=d.event AND o.opens=d.opens
+                        WHERE d.id=? AND d.event=? AND d.opens=? AND d.provider='youtube-live' AND o.delivery='ready'""",
+                                          (destination, uid, opens)).fetchone()
                     fb = con.execute(
                         "SELECT f.page FROM live_simulcast_destination d"
                         " JOIN live_occurrence o ON o.event=d.event AND o.opens=d.opens"
@@ -1551,6 +1642,11 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         " AND o.delivery='ready'",
                         (destination, uid, opens),
                     ).fetchone()
+                if youtube is not None:
+                    if not enabled:
+                        return turn_off_youtube(uid, opens, destination)
+                    if not youtube["enabled"]:
+                        return prepare_youtube(uid, opens, None, restart=destination)
                 if fb:
                     return toggle_started_facebook(uid, opens, destination, enabled, (uid, opens, fb["page"]))
         with tx() as con:
@@ -1565,6 +1661,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if not saved:
                 abort(404)
             if request.method == "DELETE":
+                if con.execute("SELECT 1 FROM youtube_live_restart WHERE replaces=?",
+                               (destination,)).fetchone():
+                    abort(409, "YouTube is still confirming the replacement. Use Turn on to check again.")
                 if con.execute("SELECT 1 FROM facebook_live_creation WHERE destination=? AND state='sending'",
                                (destination,)).fetchone():
                     abort(409, "Facebook is still confirming this broadcast.")
