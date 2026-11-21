@@ -17,7 +17,7 @@ import review_notifications
 import review_push
 import review_settings
 from catalog import video_version_key
-from media_tools import video_properties
+from media_tools import review_frame_times, video_properties
 
 SCHEMA = (
     """
@@ -522,6 +522,36 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             )
         )
         return media_bandwidth.measure(response, tx, work["id"]) if track is None else response
+
+    @app.get("/review/<uid>/frames/<version>")
+    def review_frames(uid, version):
+        with tx() as con:
+            row, work = active(con, uid)
+            if not authorized(con, row):
+                abort(403)
+            selected = playable_versions(work, row).get(version)
+            if selected is None:
+                abort(404)
+            cut, video = selected
+            rendition = request.args.get("rendition")
+            if rendition:
+                video = video_choices(cut).get(rendition)
+                if video is None:
+                    abort(404)
+        address = request.args.get("at", "")
+        if not re.fullmatch(r"[0-9]{1,6}", address):
+            abort(400)
+        bucket = int(address)
+        if bucket % 10 or bucket > 7 * 86400:
+            abort(400)
+        path = root / "objects" / video["sha256"]
+        if not path.is_file():
+            abort(404)
+        try:
+            frames = review_frame_times(path, bucket)
+        except ValueError:
+            return confidential(({"error": "Frame timestamps are unavailable."}, 503))
+        return confidential({"frames": frames})
 
     @app.post("/review/<uid>/unlock")
     def unlock(uid):

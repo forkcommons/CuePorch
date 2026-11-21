@@ -5,9 +5,12 @@ import os
 import subprocess
 import time
 from functools import lru_cache
+from threading import BoundedSemaphore
 
 
 LOCAL_FFMPEG = ["ffmpeg", "-nostdin", "-protocol_whitelist", "file,pipe"]
+REVIEW_FRAME_PROBES = BoundedSemaphore(2)
+REVIEW_FRAME_OUTPUT_LIMIT = 1024 * 1024
 
 
 def run_media(args, timeout=None, stopping=None):
@@ -102,6 +105,49 @@ def make_gif(source, target, start, end):
     )
     if result.returncode or not target.is_file() or not target.stat().st_size:
         raise ValueError("Unable to make an animated GIF from this selection.")
+
+
+def parse_review_frame_times(output, start, end):
+    lines = output.splitlines()
+    time_bases = [match for line in lines if (match := re.fullmatch(rb"#tb 0: (\d+)/(\d+)", line))]
+    if len(time_bases) != 1:
+        raise ValueError("Frame timestamps are unavailable.")
+    numerator, denominator = map(int, time_bases[0].groups())
+    if not numerator or not denominator:
+        raise ValueError("Invalid frame timestamp scale.")
+    frames = set()
+    for line in lines:
+        if not line or line.startswith(b"#"):
+            continue
+        fields = line.split(b",", 3)
+        if len(fields) != 4 or fields[0].strip() != b"0":
+            raise ValueError("Invalid frame timestamp record.")
+        position = int(fields[2]) * numerator / denominator
+        if start <= position <= end:
+            frames.add(position)
+    return tuple(sorted(frames))
+
+
+@lru_cache(maxsize=32)
+def review_frame_times(path, bucket):
+    # Stream-copy the selected video and index presentation order, not decoding order.
+    start, end = max(0, bucket - 2), bucket + 12
+    if not REVIEW_FRAME_PROBES.acquire(blocking=False):
+        raise ValueError("Frame timestamp probes are busy.")
+    try:
+        probe = run_media([
+            *LOCAL_FFMPEG, "-v", "error", "-copyts", "-start_at_zero",
+            "-ss", str(start), "-t", str(end - start), "-i", str(path),
+            "-map", "0:V:0", "-c:v", "copy", "-fs", str(REVIEW_FRAME_OUTPUT_LIMIT),
+            "-f", "framecrc", "-",
+        ], timeout=8)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("Frame timestamps are unavailable.") from error
+    finally:
+        REVIEW_FRAME_PROBES.release()
+    if probe.returncode or len(probe.stdout) >= REVIEW_FRAME_OUTPUT_LIMIT:
+        raise ValueError("Frame timestamps are unavailable.")
+    return parse_review_frame_times(probe.stdout, start, end)
 
 
 @lru_cache(maxsize=256)
