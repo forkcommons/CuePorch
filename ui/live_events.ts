@@ -157,6 +157,7 @@ const facebookPage = element<HTMLSelectElement>("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookStatus = element("facebookLiveStatus");
 const linkedinForm = element<HTMLFormElement>("linkedinLiveSchedule");
+const linkedinAutomaticDelivery = input("linkedinAutomaticDelivery");
 const linkedinCompany = element<HTMLSelectElement>("linkedinLiveCompany");
 const linkedinSubmit = button("scheduleLinkedinLive");
 const linkedinStatus = element("linkedinLiveStatus");
@@ -396,6 +397,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   facebookSubmit.disabled = true;
   facebookStatus.textContent = "";
   linkedinForm.hidden = true;
+  linkedinAutomaticDelivery.checked = true;
   linkedinCompany.replaceChildren();
   linkedinSubmit.disabled = true;
   existingLinkedinList.replaceChildren();
@@ -1076,18 +1078,21 @@ linkedinForm.onsubmit = event => {
   if (!selection || linkedinSubmit.disabled || !linkedinCompany.value) return;
   const path = mediaPath("destinations/linkedin/schedule");
   const company = linkedinCompany.value;
+  const auto_prepare = linkedinAutomaticDelivery.checked;
   void action(async () => {
     linkedinSubmit.disabled = true;
     linkedinStatus.textContent = "";
     linkedinPost.hidden = true;
     linkedinPost.removeAttribute("href");
     try {
-      const result = await request<{state: "scheduled" | "pending" | "unconfirmed"; post_urn?: string}>(
-        path, "POST", {company});
+      const result = await request<{state: "scheduled" | "pending" | "unconfirmed"; post_urn?: string;
+        auto_prepare?: boolean}>(path, "POST", {company, auto_prepare});
       if (selection !== active) return;
       const urn = result.post_urn ?? "";
       if (result.state === "scheduled" && /^urn:li:ugcPost:[0-9]{1,30}$/.test(urn)) {
-        linkedinStatus.textContent = "Announced on LinkedIn. Set up the stream in LinkedIn Live Studio.";
+        linkedinStatus.textContent = result.auto_prepare
+          ? "Announced on LinkedIn. CuePorch will prepare delivery when this occurrence is ready to stream."
+          : "Announced on LinkedIn. Use Prepare LinkedIn delivery when ready.";
         linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
         linkedinPost.hidden = false;
       } else if (result.state === "pending") {
@@ -1130,14 +1135,18 @@ existingLinkedinChoose.onclick = () => void action(async () => {
   const selection = active;
   const option = existingLinkedinList.selectedOptions[0];
   if (!selection || !option?.dataset.start) return;
-  const result = await request<{post_urn: string | null}>(mediaPath("destinations/linkedin/existing"),
-    "POST", {id: option.value, start: Number(option.dataset.start)});
+  const result = await request<{post_urn: string | null; auto_prepare: boolean}>(
+    mediaPath("destinations/linkedin/existing"), "POST", {
+      id: option.value, start: Number(option.dataset.start), auto_prepare: linkedinAutomaticDelivery.checked,
+    });
   if (selection !== active) return;
   const urn = result.post_urn ?? "";
   linkedinPost.hidden = !/^urn:li:ugcPost:[0-9]{1,30}$/.test(urn);
   if (linkedinPost.hidden) linkedinPost.removeAttribute("href");
   else linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
-  linkedinStatus.textContent = "Existing LinkedIn event selected.";
+  linkedinStatus.textContent = result.auto_prepare
+    ? "Existing LinkedIn event selected. CuePorch will prepare delivery when this occurrence is ready to stream."
+    : "Existing LinkedIn event selected. Use Prepare LinkedIn delivery when ready.";
 });
 button("prepareLinkedinLive").onclick = () => void action(async () => {
   const selection = active;
