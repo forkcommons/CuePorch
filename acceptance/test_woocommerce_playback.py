@@ -169,8 +169,14 @@ def create_woocommerce_video(ap, base, operator):
     draft = popup.locator("#pickerEditDraft")
     expect(draft).to_be_visible(timeout=45000)
     href = draft.get_attribute("href") or ""
+    verify_created_video(popup, base, operator, href)
+    assert ap.locator("#_cueporch_video_urls").input_value() == before
+    popup.close()
+
+
+def verify_created_video(popup, base, operator, href):
     parts = urlparse(href).path.strip("/").split("/")
-    assert parts[:2] == ["operator", "videos"] and parts[3] == "timeline", href
+    assert len(parts) == 4 and parts[:2] == ["operator", "videos"] and parts[3] == "timeline", href
     uid = parts[2]
     r = popup.context.request.get(
         f"{base}/api/library/work/{uid}/privacy",
@@ -178,7 +184,6 @@ def create_woocommerce_video(ap, base, operator):
     )
     data = r.json()
     assert data.get("visibility") == "private" and data.get("embed_url") is None
-    assert ap.locator("#_cueporch_video_urls").input_value() == before
     request = popup.context.request
     headers = {'Authorization': f'Bearer {operator}'}
     project = request.get(f'{base}/api/library/work/{uid}/timeline', headers=headers)
@@ -190,8 +195,21 @@ def create_woocommerce_video(ap, base, operator):
     popup.wait_for_function("() => { const v = document.querySelector('#owned-preview-video'); return !!v && v.videoWidth === 640 && v.videoHeight === 360 && v.currentTime >= 0.2; }", timeout=10000)
     expect(popup.locator('#owned-preview-video')).to_have_js_property('videoWidth', 640)
     expect(popup.locator('#owned-preview-video')).to_have_js_property('videoHeight', 360)
-    popup.close()
-    return uid
+    popup.locator("#owned-preview-video").evaluate("element => element.remove()")
+
+
+def verify_wordpress_photo_draft(popup, base, operator, clip):
+    png = subprocess.run(
+        ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', str(clip),
+         '-frames:v', '1', '-c:v', 'png', '-f', 'image2pipe', 'pipe:1'],
+        check=True, capture_output=True,
+    ).stdout
+    popup.click('#pickerPhotoCreation summary')
+    popup.fill('#pickerPhotoTitle', 'WordPress photo draft')
+    popup.set_input_files('#pickerPhotoFiles', {'name':'photo.png','mimeType':'image/png','buffer':png})
+    popup.click('#pickerPhotoCreateStart')
+    expect(popup.locator('#pickerPhotoEditDraft')).to_be_visible(timeout=45000)
+    verify_created_video(popup,base,operator,popup.get_attribute('#pickerPhotoEditDraft','href') or '')
 
 
 def verify_private_picker_upload(popup, clip):
@@ -239,7 +257,7 @@ def select_in_cueporch_picker(ap, base, operator, uid, clip):
     expect(ap.locator('#_cueporch_video_urls')).to_have_value(embed)
 
 
-def verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid):
+def verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid, clip):
     ap.goto(f'{storefront}/wp-admin/post-new.php?post_type=page')
     ap.wait_for_function("window.wp?.blocks?.getBlockType('cueporch/video') && wp.data.select('core/editor').getCurrentPostType() === 'page'")
     ap.evaluate("() => { const b = wp.blocks.createBlock('cueporch/video'); wp.data.dispatch('core/block-editor').insertBlocks(b); wp.data.dispatch('core/editor').editPost({title: 'CuePorch Video Test'}); }")
@@ -265,6 +283,7 @@ def verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid
     popup.fill('#pickerKey', operator)
     popup.click('#pickerAuth button')
     popup.wait_for_selector('#pickerLibrary', state='visible')
+    verify_wordpress_photo_draft(popup, base, operator, clip)
     popup.fill('#pickerSearch', 'Embed clip')
     with popup.expect_event('close'):
         popup.get_by_role('button', name='Choose Embed clip', exact=False).click()
@@ -346,7 +365,7 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid, clip
             verify_woocommerce_player(iframe, embed)
             gp.close()
         if not block_gallery:
-            verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid)
+            verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid, clip)
         verify_woocommerce_revocation(guest, storefront, product_id, base, operator, uid)
     finally:
         admin.close()
