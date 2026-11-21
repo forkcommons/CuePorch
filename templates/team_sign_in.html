@@ -50,6 +50,16 @@
       <button type="submit">Search</button>
       <button type="button" id="clearTeamSearch" hidden>Clear search</button>
     </form>
+    <form id="teamSlackFolder" hidden>
+      <label>Folder <select name="folder" required></select></label>
+      <button>Slack notifications</button>
+    </form>
+    <dialog id="teamSlackDialog" aria-labelledby="teamSlackHeading">
+      <h3 id="teamSlackHeading"></h3>
+      <div id="teamSlackBody"></div>
+      <p id="teamSlackDialogStatus" role="status" aria-live="polite"></p>
+      <form method="dialog"><button>Close</button></form>
+    </dialog>
     <h3>Available videos</h3>
     <p id="teamLibraryEmpty" role="status" hidden>There are no videos available to you yet.</p>
     <ul id="teamVideos"></ul>
