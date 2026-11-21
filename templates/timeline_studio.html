@@ -322,6 +322,21 @@
     <section aria-labelledby="timelineHeading">
       <h2 id="timelineHeading">Video track</h2>
       <p id="timelineDuration"></p>
+      <div class="timeline-scale">
+        <div class="timeline-scale-controls" role="group" aria-label="Timeline zoom">
+          <button type="button" id="timelineZoomOut" aria-label="Zoom out">−</button>
+          <button type="button" id="timelineZoomIn" aria-label="Zoom in">+</button>
+          <button type="button" id="timelineFit">Fit timeline</button>
+          <output id="timelineZoomValue" role="status" aria-live="polite">Fit</output>
+        </div>
+        <div id="timelineScaleViewport" class="timeline-scale-viewport" tabindex="0" role="region" aria-label="Timeline scale">
+          <div id="timelineScaleContent" class="timeline-scale-content">
+            <div id="timelineScaleRuler" class="timeline-scale-ruler" aria-hidden="true"></div>
+            <div id="timelineScaleClips" class="timeline-scale-clips" role="group" aria-label="Timeline clips"></div>
+            <div id="timelineScaleCursor" class="timeline-scale-cursor" aria-hidden="true" hidden></div>
+          </div>
+        </div>
+      </div>
       <ol id="timelineClips"></ol>
     </section>
     <section id="timelineTranscript" aria-labelledby="timelineTranscriptHeading" hidden>
