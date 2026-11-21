@@ -65,7 +65,7 @@ async function exportCsv(suffix, filename) {
     setTimeout(() => URL.revokeObjectURL(uri), 1000);
 }
 const showRatings = teamPreview ? undefined : setupRatings(call, timestamp, displayTime, () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
-const showRegistration = teamPreview ? undefined : setupRegistration(call, () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value);
+const showRegistration = teamPreview ? undefined : setupRegistration(call, () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value, undefined, () => endpoint + "/registration/mailchimp/outbound");
 function appendChapter(chapter) {
     const row = rowTemplate.content.firstElementChild.cloneNode(true);
     const name = row.querySelector("[name=title]");

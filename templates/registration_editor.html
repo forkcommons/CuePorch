@@ -57,6 +57,20 @@
       <label>Save as registration preset <input name="preset_name" maxlength="80"></label>
       <button type="submit">Save registration</button>
       <p id="registrationStatus" role="status"></p>
+      {% if not event_registration_editor %}
+      <fieldset id="registrationMailchimp" hidden>
+        <legend>Mailchimp delivery</legend>
+        <button type="button" id="registrationMailchimpLoad">Load Mailchimp audiences</button>
+        <button type="button" id="registrationMailchimpMore" hidden>More Mailchimp audiences</button>
+        <label>Audience <select id="registrationMailchimpAudience"></select></label>
+        <button type="button" id="registrationMailchimpAdd">Add audience</button>
+        <div id="registrationMailchimpDestinations"></div>
+        <button type="button" id="registrationMailchimpSave">Save Mailchimp delivery</button>
+        <button type="button" id="registrationMailchimpRefresh">Reload Mailchimp delivery</button>
+        <button type="button" id="registrationMailchimpStop" hidden>Stop Mailchimp delivery</button>
+        <p id="registrationMailchimpStatus" role="status"></p>
+      </fieldset>
+      {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>
         <table><thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th></tr></thead>

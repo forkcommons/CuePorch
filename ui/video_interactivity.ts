@@ -73,7 +73,8 @@ async function exportCsv(suffix: string, filename: string) {
 const showRatings = teamPreview ? undefined : setupRatings(call, timestamp, displayTime,
   () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
 const showRegistration = teamPreview ? undefined : setupRegistration(call,
-  () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value);
+  () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value, undefined,
+  () => endpoint + "/registration/mailchimp/outbound");
 
 function appendChapter(chapter: Chapter) {
   const row = rowTemplate.content.firstElementChild!.cloneNode(true) as HTMLElement;

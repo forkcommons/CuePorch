@@ -17,6 +17,33 @@ from test_marketo_connection import _resp
 from institution import create_app
 
 
+from playwright.sync_api import expect
+
+def configure_library_destination(page, base, path, audience_ids, showcase=False):
+    page.goto(base + path)
+    if showcase:
+        page.click("#showcaseRegistration")
+    page.click("#registrationMailchimpLoad")
+    page.click("#registrationMailchimpMore")
+    for audience_id in audience_ids:
+        page.select_option("#registrationMailchimpAudience", audience_id)
+        page.click("#registrationMailchimpAdd")
+        page.select_option(
+            f'fieldset[data-mailchimp-audience="{audience_id}"] select[data-form-field="field_genre"]',
+            "GENRE",
+        )
+    page.click("#registrationMailchimpSave")
+    expect(page.get_by_text("Mailchimp delivery is enabled.")).to_be_visible()
+    with page.expect_response(lambda r: r.request.method == "GET"):
+        page.click("#registrationMailchimpRefresh")
+    for audience_id in audience_ids:
+        expect(
+            page.locator(
+                f'fieldset[data-mailchimp-audience="{audience_id}"] select[data-form-field="field_genre"]'
+            )
+        ).to_have_value("GENRE")
+
+
 class RegistrationProvider(MailchimpProvider):
     def __init__(self, challenge=None, fault=None):
         super().__init__(challenge=challenge, fault=fault)
@@ -718,7 +745,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
         assert {key: sent["properties"][key] for key in expected} == expected
 
     def test_mailchimp_embedded_video_and_showcase_forms(self):
-        self.run_rehearsal(BrowserRegistrationProvider(), self.exercise_library_forms)
+        self.run_rehearsal(BrowserRegistrationProvider(), self.exercise_library_forms, public_url="")
 
     def exercise_library_forms(self, app, operator, provider):
         from io import BytesIO
@@ -799,7 +826,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
             "options": ["Documentary", "Experimental"],
         }
 
-        def enable_form(path, destinations):
+        def enable_form(path):
             cur = client.get(path, headers=auth).get_json()
             body = {
                 "revision": cur["revision"],
@@ -807,33 +834,30 @@ class MailchimpRegistrationTest(unittest.TestCase):
             }
             resp = client.put(path, headers=auth, json=body)
             assert resp.status_code in (200, 201), resp.data
-            resp = client.put(
-                f"{path}/mailchimp/outbound",
-                headers=auth,
-                json={"destinations": destinations},
-            )
-            assert resp.status_code in (200, 201), resp.data
-            rec = client.get(f"{path}/mailchimp/outbound", headers=auth).get_json()
-            assert rec["enabled"] is True
-            assert [d["audience"] for d in rec["destinations"]] == [
-                d["audience"] for d in destinations
-            ]
 
         work_path = f"/api/library/work/{video}/registration"
         show_path = f"/api/showcases/{sid}/registration"
-        enable_form(
-            work_path,
-            [
-                {"audience": "listsafe1", "mapping": {"field_genre": "GENRE"}},
-                {"audience": "listsafe2", "mapping": {"field_genre": "GENRE"}},
-            ],
-        )
-        enable_form(
-            show_path,
-            [
-                {"audience": "listsafe2", "mapping": {"field_genre": "GENRE"}},
-            ],
-        )
+        enable_form(work_path)
+        enable_form(show_path)
+
+        from browser import chromium
+        from playwright.sync_api import sync_playwright
+        from test_drive_import import QuietHandler, service_worker
+        from werkzeug.serving import make_server
+
+        server = make_server("127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True)
+        base = f"http://127.0.0.1:{server.server_port}"
+        with service_worker(server), sync_playwright() as pw, chromium(pw) as browser:
+            page = browser.new_page()
+            page.add_init_script(
+                "sessionStorage.setItem('cueporchOperator', " + json.dumps(operator) + ")"
+            )
+            configure_library_destination(
+                page, base, f"/operator/videos/{video}/interactivity", ["listsafe1", "listsafe2"]
+            )
+            configure_library_destination(
+                page, base, f"/operator/showcases?select={sid}", ["listsafe2"], showcase=True
+            )
 
         def hidden_value(text, name):
             for tag in re.findall(r"<input[^>]*>", text):

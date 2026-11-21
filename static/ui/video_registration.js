@@ -1,7 +1,11 @@
+import { setupLibraryMailchimp } from "./library_mailchimp_registration.js";
 import { checked } from "./team_api.js";
 const imageFields = ["logo", "background_image"];
-export function setupRegistration(call, download, credential, saved) {
+export function setupRegistration(call, download, credential, saved, mailchimpEndpoint) {
     const form = document.querySelector("#registrationEditor");
+    const mailchimpPanel = form.querySelector("#registrationMailchimp");
+    const mailchimp = mailchimpPanel && mailchimpEndpoint
+        ? setupLibraryMailchimp(mailchimpPanel, credential) : undefined;
     const listing = form.querySelector("#registrantRows");
     const protectedNotice = form.querySelector("#registrationProtected");
     const fields = form.querySelector("#registrationFields");
@@ -154,7 +158,7 @@ export function setupRegistration(call, download, credential, saved) {
         translations = structuredClone(settings.translations ?? {});
         renderTranslation();
     }
-    function render(state) {
+    function render(state, endpoint) {
         current = state;
         renderFields(state.settings);
         field(form, "preset_name").value = "";
@@ -168,6 +172,8 @@ export function setupRegistration(call, download, credential, saved) {
             row.insertCell().textContent = person.email;
             row.insertCell().textContent = new Date(person.registered * 1000).toLocaleString();
         }
+        if (mailchimp && endpoint !== undefined)
+            void mailchimp(endpoint, state.settings);
     }
     async function action(callback) {
         message.textContent = "";
@@ -263,19 +269,26 @@ export function setupRegistration(call, download, credential, saved) {
     };
     form.onsubmit = event => {
         event.preventDefault();
+        const endpoint = mailchimpEndpoint?.();
         void useDraft(async (settings, context) => {
+            if (context !== current || form.hidden || endpoint !== mailchimpEndpoint?.())
+                return;
             const updated = await call("/registration", "PUT", { revision: context.revision,
                 preset_name: field(form, "preset_name").value, settings });
-            if (context !== current || form.hidden)
+            if (context !== current || form.hidden || endpoint !== mailchimpEndpoint?.())
                 return;
-            render(updated);
+            render(updated, endpoint);
             message.textContent = "Registration saved.";
             saved?.();
         });
     };
     form.querySelector("#registrationExport").onclick = () => void action(download);
     return () => action(async () => {
-        render(await call("/registration"));
+        const endpoint = mailchimpEndpoint?.();
+        const state = await call("/registration");
+        if (endpoint !== mailchimpEndpoint?.())
+            return;
+        render(state, endpoint);
         form.hidden = false;
     });
 }
