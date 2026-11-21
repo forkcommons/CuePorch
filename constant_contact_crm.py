@@ -278,3 +278,43 @@ def send_registration(connection, revision, destination, email, first, last, *, 
         connection, revision, record["id"], destination, before_send,
     )
     return {"state": "submitted", "activity_id": activity_id}
+
+def activity_status(connection, revision, activity_id):
+    if not list_id(activity_id):
+        raise ValueError("invalid activity_id")
+    activity_id = activity_id.lower()
+
+    data = _get(connection, revision, f"/activities/{activity_id}")
+
+    if not isinstance(data, dict):
+        abort(502)
+
+    rid = data.get("activity_id")
+    if not list_id(rid):
+        abort(502)
+    if rid.lower() != activity_id:
+        abort(502)
+
+    state = data.get("state")
+    if state not in ("initialized", "processing", "completed", "cancelled", "failed", "timed_out"):
+        abort(502)
+
+    activity_errors = data.get("activity_errors", [])
+    if not isinstance(activity_errors, list) or not all(isinstance(e, str) for e in activity_errors):
+        abort(502)
+
+    status = data.get("status", {})
+    if not isinstance(status, dict):
+        abort(502)
+
+    error_count = status.get("error_count", 0)
+    cannot_add = status.get("cannot_add_to_list_count", 0)
+    for v in (error_count, cannot_add):
+        if type(v) is not int or v < 0:
+            abort(502)
+
+    if activity_errors or error_count > 0 or cannot_add > 0 or state in ("cancelled", "failed", "timed_out"):
+        return "problem"
+    if state == "completed":
+        return "completed"
+    return "submitted"

@@ -80,6 +80,9 @@
     {% if delivery_consent %}
         <label><input type="checkbox" name="mailchimp_form_consent" value="{{ delivery_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
     {% endif %}
+    {% if registration.constant_contact_form_consent %}
+    <label><input type="checkbox" name="constant_contact_form_consent" value="{{ registration.constant_contact_form_consent }}"> Share my email address and first and last names with the organizer through Constant Contact and receive marketing email from the organizer.</label>
+    {% endif %}
     {% if mailchimp_consent %}
     <label><input type="checkbox" name="mailchimp_consent" value="{{ mailchimp_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
     {% endif %}
