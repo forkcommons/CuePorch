@@ -30,6 +30,8 @@ import event_chat
 import event_captions
 import event_engagement
 import event_hubspot_sync
+import event_salesforce_sync
+import salesforce_crm
 import event_hubspot_outbound
 import event_contact_delivery
 import event_mailchimp_engagement
@@ -498,7 +500,7 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, marketo=None):
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, marketo=None):
     marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
@@ -517,6 +519,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         stop_marketo()
         stop_mailchimp()
         stop_marketo_sync()
+        stop_salesforce_sync()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -916,13 +919,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return private(dict(result, skipped=skipped, occurrence=opens))
 
     def enroll_marketo_members(con, row, slot, form, members, mapping, *, source):
+        contacts = (marketo_crm.static_list_attendee(member, mapping) for member in members)
+        return enroll_crm_contacts(con, row, slot, form, contacts, source=source)
+
+    def enroll_crm_contacts(con, row, slot, form, contacts, *, source):
         added = 0
         existing = 0
         duplicates = 0
         skipped = 0
         seen = set()
-        for member in members:
-            fields = marketo_crm.static_list_attendee(member, mapping)
+        for fields in contacts:
             if fields is None:
                 skipped += 1
                 continue
@@ -1308,6 +1314,22 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if marketo is not None
         else lambda: None
     )
+    salesforce_apply = event_salesforce_sync.register(
+        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake, enroll_crm_contacts,
+    )
+
+    def fetch_salesforce_sync(job):
+        return (salesforce_crm.campaign_members(salesforce, job["connection"], job["segment"]),)
+
+    def apply_salesforce_sync(con, job, fields):
+        row, slot, form = validate_hubspot_plan(con, job)
+        return salesforce_apply(con, row, slot, form, fields, job["actor"], "salesforce-scheduled")
+
+    stop_salesforce_sync = event_hubspot_sync.start(
+        app, tx, database, salesforce, validate_hubspot_plan, apply_salesforce_sync,
+        provider="salesforce", fetch=fetch_salesforce_sync,
+    ) if salesforce.configured else lambda: None
+
     stop_hubspot_outbound = event_hubspot_outbound.start(
         app, tx, database, hubspot, validate_hubspot_plan,
         engagement_validate=validate_hubspot_engagement if hubspot_crm.engagement_available(hubspot) else None,

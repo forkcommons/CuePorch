@@ -23,6 +23,7 @@ def next_due(opens: int, end: int, zone: str, now: int) -> int | None:
 SYNC_TABLES = {
     "hubspot": "live_event_hubspot_sync",
     "marketo": "live_event_marketo_sync",
+    "salesforce": "live_event_salesforce_sync",
 }
 
 SCHEMA = "\n".join(
@@ -363,10 +364,12 @@ def start(
     return close
 
 
-def disconnect(con):
+def disconnect(con, *, provider="hubspot"):
+    table = SYNC_TABLES[provider]
+    name = "Salesforce Sales Cloud" if provider == "salesforce" else "HubSpot"
     con.execute(
-        "UPDATE live_event_hubspot_sync SET due=NULL,state='problem',problem=?,generation=lower(hex(randomblob(16))) WHERE due IS NOT NULL",
-        ("HubSpot was disconnected. Reconnect and enable synchronization again.",),
+        f"UPDATE {table} SET due=NULL,state='problem',problem=?,generation=lower(hex(randomblob(16))) WHERE due IS NOT NULL",
+        (f"{name} was disconnected. Reconnect and enable synchronization again.",),
     )
 
 

@@ -179,9 +179,9 @@ class TestCampaignDiscovery(unittest.TestCase):
         self.assertEqual(cm.exception.code, 409)
 
     def test_rejects_absolute_pagination_url(self):
-        from salesforce_crm import _parse_campaigns
+        from salesforce_crm import _query_result
         from werkzeug.exceptions import HTTPException
         body = {"records": [FIRST], "done": False, "nextRecordsUrl": "https://another.my.salesforce.com/services/data/v64.0/query/batch-200"}
         with self.assertRaises(HTTPException) as cm:
-            _parse_campaigns(body, None)
+            _query_result(body, None)
         self.assertEqual(cm.exception.code, 502)

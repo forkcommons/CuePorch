@@ -2,7 +2,9 @@ import os
 import re
 
 from flask import abort
+from werkzeug.exceptions import BadRequest
 
+from browser_account_security import email_key
 from workspace_oauth import Config, Connection, check_provider, response_object
 
 _MY_DOMAIN = re.compile(
@@ -44,82 +46,195 @@ class SalesforceConnection(Connection):
         return saved
 
 
-_CURSOR_RE = re.compile(r'[A-Za-z0-9_-]{1,256}')
-_NEXT_RE = re.compile(r'/services/data/v64\.0/query/([A-Za-z0-9_-]{1,256})')
-_ID_RE = re.compile(r'701(?:[A-Za-z0-9]{12}|[A-Za-z0-9]{15})')
-_SOQL = 'SELECT Id, Name, IsActive FROM Campaign WHERE IsActive = true ORDER BY Name, Id'
+API_PATH = "/services/data/v64.0"
+_CURSOR_RE = re.compile(r"[A-Za-z0-9_-]{1,256}")
+_NEXT_RE = re.compile(re.escape(API_PATH) + r"/query/([A-Za-z0-9_-]{1,256})")
+_ID_RE = re.compile(r"701[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?")
+
+
+def campaign_id(value):
+    return isinstance(value, str) and _ID_RE.fullmatch(value) is not None
+
+
+def matching_campaign(given, returned):
+    if not campaign_id(given) or not campaign_id(returned):
+        return False
+    if given == returned:
+        return True
+    if len(given) == 15 and len(returned) == 18:
+        return returned[:15] == given
+    if len(given) == 18 and len(returned) == 15:
+        return given[:15] == returned
+    return False
+
+
+def _get(connection, revision, path, **kwargs):
+    connection.require_configured()
+    with connection.api(revision, "GET", connection.origin + API_PATH + path, **kwargs) as response:
+        check_provider(response)
+        return response_object(response)
+
+
+def _query_page(connection, revision, soql, cursor=None):
+    if cursor is None:
+        path = "/query"
+        kwargs = {"params": {"q": soql}}
+    else:
+        if not isinstance(cursor, str) or _CURSOR_RE.fullmatch(cursor) is None:
+            abort(400, "invalid cursor")
+        path = "/query/" + cursor
+        kwargs = {}
+    body = _get(connection, revision, path, **kwargs)
+    return _query_result(body, cursor)
+
+
+def _query_result(body, cursor):
+    if not isinstance(body, dict):
+        abort(502, "malformed query response")
+    records = body.get("records")
+    done = body.get("done")
+    if not isinstance(records, list) or not (0 <= len(records) <= 2000):
+        abort(502, "malformed query response")
+    if not isinstance(done, bool):
+        abort(502, "malformed query response")
+
+    if done and body.get("nextRecordsUrl") is not None:
+        abort(502, "malformed query response")
+
+    next_cursor = None
+    if not done:
+        next_url = body.get("nextRecordsUrl")
+        if not isinstance(next_url, str):
+            abort(502, "malformed query response")
+        match = _NEXT_RE.fullmatch(next_url)
+        if match is None:
+            abort(502, "malformed query response")
+        next_cursor = match.group(1)
+        if cursor is not None and next_cursor == cursor:
+            abort(502, "malformed query response")
+
+    return records, next_cursor
+
+
+def _campaign(row):
+    if not isinstance(row, dict):
+        abort(502, "corrupted campaign")
+    cid = row.get("Id")
+    name = row.get("Name")
+    active = row.get("IsActive")
+    if not campaign_id(cid):
+        abort(502, "corrupted campaign")
+    if not isinstance(name, str) or not (1 <= len(name) <= 255) or not name.isprintable():
+        abort(502, "corrupted campaign")
+    if not isinstance(active, bool):
+        abort(502, "corrupted campaign")
+    return cid, name, active
+
+
+def _campaigns_from_records(records, next_cursor):
+    campaigns_list = []
+    seen = set()
+    for row in records:
+        cid, name, active = _campaign(row)
+        if not active or cid in seen:
+            abort(502, "corrupted campaign")
+        seen.add(cid)
+        campaigns_list.append({"id": cid, "name": name})
+    return {"campaigns": campaigns_list, "next_cursor": next_cursor}
 
 
 def campaigns(connection, revision, cursor=None):
-    connection.require_configured()
-    base = connection.origin + '/services/data/v64.0/query'
-
-    if cursor is None:
-        target = base
-        api_kwargs = {'params': {'q': _SOQL}}
-    else:
-        if not isinstance(cursor, str) or _CURSOR_RE.fullmatch(cursor) is None:
-            abort(400)
-        target = base + '/' + cursor
-        api_kwargs = {}
-
-    with connection.api(revision, 'GET', target, **api_kwargs) as response:
-        check_provider(response)
-        body = response_object(response)
-
-    return _parse_campaigns(body, cursor)
+    soql = (
+        "SELECT Id, Name, IsActive FROM Campaign "
+        "WHERE IsActive = true ORDER BY Name, Id"
+    )
+    records, next_cursor = _query_page(connection, revision, soql, cursor)
+    return _campaigns_from_records(records, next_cursor)
 
 
-def _parse_campaigns(body, cursor):
-    if not isinstance(body, dict):
-        abort(502)
+def campaign(connection, revision, value):
+    if not campaign_id(value):
+        abort(400, "invalid campaign id")
+    body = _get(
+        connection,
+        revision,
+        "/sobjects/Campaign/" + value,
+        params={"fields": "Id,Name,IsActive"},
+    )
+    cid, name, active = _campaign(body)
+    if not matching_campaign(value, cid):
+        abort(502, "corrupted campaign")
+    if not active:
+        abort(409, "campaign inactive")
+    return {"id": cid, "name": name}
 
-    records = body.get('records')
-    if not isinstance(records, list) or len(records) > 2000:
-        abort(502)
 
-    done = body.get('done')
-    if not isinstance(done, bool):
-        abort(502)
+def _member_name(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if len(stripped) > 80:
+        return None
+    if any(not ch.isprintable() for ch in stripped):
+        return None
+    return stripped
 
-    next_url = body.get('nextRecordsUrl')
 
-    items = []
+def _member_fields(row):
+    if not row.get("LeadId") and not row.get("ContactId"):
+        return None
+    if row.get("HasOptedOutOfEmail") is not False:
+        return None
+
+    try:
+        email = email_key(row.get("Email"))
+    except BadRequest:
+        return None
+
+    first_name = _member_name(row.get("FirstName"))
+    last_name = _member_name(row.get("LastName"))
+    if first_name is None or last_name is None:
+        return None
+
+    return {
+        "email": email,
+        "first_name": first_name,
+        "last_name": last_name,
+    }
+
+
+def campaign_members(connection, revision, value):
+    cid = campaign(connection, revision, value)["id"]
+    soql = ("SELECT Id, CampaignId, LeadId, ContactId, Email, FirstName, LastName, "
+            "HasOptedOutOfEmail FROM CampaignMember WHERE CampaignId = '%s' ORDER BY Id" % cid)
+    results = []
+    cursor = None
     seen = set()
-    for rec in records:
-        if not isinstance(rec, dict):
+    seen_ids = set()
+    first = True
+    while True:
+        rows, next_cursor = _query_page(connection, revision, soql, cursor)
+        if not first and not rows:
             abort(502)
-
-        cid = rec.get('Id')
-        name = rec.get('Name')
-        active = rec.get('IsActive')
-
-        if not isinstance(cid, str) or _ID_RE.fullmatch(cid) is None:
+        for row in rows:
+            if not isinstance(row, dict):
+                abort(502)
+            rid = row.get("Id")
+            if not (isinstance(rid, str) and rid):
+                abort(502)
+            if rid in seen_ids:
+                abort(502)
+            seen_ids.add(rid)
+            if not matching_campaign(cid, row.get("CampaignId")):
+                abort(502)
+            results.append(_member_fields(row))
+        first = False
+        if next_cursor is None:
+            break
+        if next_cursor in seen:
             abort(502)
-        if cid in seen:
-            abort(502)
-        seen.add(cid)
-
-        if active is not True:
-            abort(502)
-
-        if not isinstance(name, str) or not name or len(name) > 255 or not name.isprintable():
-            abort(502)
-
-        items.append({'id': cid, 'name': name})
-
-    extracted = None
-    if done:
-        if next_url is not None:
-            abort(502)
-    else:
-        if not isinstance(next_url, str):
-            abort(502)
-        match = _NEXT_RE.fullmatch(next_url)
-        if match is None:
-            abort(502)
-        extracted = match.group(1)
-        if extracted == cursor:
-            abort(502)
-
-    return {'campaigns': items, 'next_cursor': extracted}
+        seen.add(next_cursor)
+        cursor = next_cursor
+    return results
