@@ -8,7 +8,7 @@ from time import monotonic, time
 
 import requests
 
-from event_capture import BusyError, EncoderProgress, MAX_ROOMS, RtmpPublisher, RtmpRelay
+from event_capture import BusyError, EncoderProgress, MAX_ROOMS, RedundantRtmpRelay, RTMP_ROOMS, RtmpPublisher
 from event_interpreter_timing import AlignedAudio
 
 
@@ -23,7 +23,10 @@ class Input:
         self.done = Event()
         self.publisher = RtmpPublisher(config, self.stop)
         self.path = None
-        self.mixer = AlignedAudio(parent.playback, parent.recording) if isinstance(parent, RtmpRelay) else None
+        self.mixer = None
+        if isinstance(parent, RTMP_ROOMS):
+            self.mixer = AlignedAudio(parent.playback, getattr(parent, "recording", None),
+                                      allow_discontinuity=isinstance(parent, RedundantRtmpRelay))
         self.mixing = None
         if self.mixer is not None:
             self.mixing = Thread(target=self.mixer.run, args=(self,), name="CuePorch interpreter mixer", daemon=True)

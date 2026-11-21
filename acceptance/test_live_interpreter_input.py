@@ -21,7 +21,7 @@ from werkzeug.serving import make_server
 from browser import chromium
 import event_replay_spool
 from installed_events import play_event
-from installed_rtmp_relay import free_port, marked_feed, relay_fixture
+from installed_rtmp_relay import CHECK_COLOUR, free_port, marked_feed, relay_fixture
 from institution import create_app
 from test_private_live_event import TEAM, hear_frequency
 from test_drive_import import QuietHandler, service_worker
@@ -125,12 +125,15 @@ class LiveInterpreterInputTest(unittest.TestCase):
     def test_interpreter_replay_releases_automatically_while_host_is_offline(self):
         self.exercise_interpreter(manual=False)
 
-    def exercise_interpreter(self, manual):
+    def test_interpreter_audio_survives_primary_encoder_failover(self):
+        self.exercise_interpreter(manual=False, redundant=True)
+
+    def exercise_interpreter(self, manual, redundant=False):
         with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db):
             now = datetime.now(timezone.utc)
             event_response = requests.post(base + "/api/live-events", headers=auth, timeout=8, json={
                 "title": "Interpreter rehearsal", "slug": "interpretation", "visibility": "private",
-                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": True,
+                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": not redundant,
                 "archive_replay": False,
                 "schedule": {
                     "timezone": "UTC", "repeat": "none",
@@ -155,7 +158,7 @@ class LiveInterpreterInputTest(unittest.TestCase):
                     "server": "rtmp://127.0.0.1:1/live", "key": "synthetic-primary",
                 }),
             ):
-                primary = requests.post(path + "/rtmp", headers=auth, timeout=8)
+                primary = requests.post(path + "/rtmp", headers=auth, timeout=8, json={"backup": redundant})
             self.assertEqual(primary.status_code, 200, primary.text if not primary.ok else None)
             denied = requests.get(route, timeout=8)
             self.assertIn(denied.status_code, (401, 403, 404))
@@ -173,13 +176,16 @@ class LiveInterpreterInputTest(unittest.TestCase):
             invitation = invited.json()["path"].split("#", 1)[1]
             stable = base + event["watch"]
             with (
-                marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate, "red", "320x180", 30, 440),
+                ExitStack() as feeds,
                 patch("event_media.Gateway.metadata", return_value={
                     "isLive": True, "privacy": {"id": 3}, "state": {"id": 4},
                 }),
                 sync_playwright() as pw,
                 chromium(pw, args=["--autoplay-policy=no-user-gesture-required"]) as browser,
             ):
+                primary_feed = feeds.enter_context(
+                    marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate, "red", "320x180", 30, 440)
+                )
                 team = browser.new_context()
                 joined = team.request.post(base + "/api/team/join", headers=TEAM, data={
                     "invitation": invitation, "name": "Listener", "password": "listener-password",
@@ -200,6 +206,9 @@ class LiveInterpreterInputTest(unittest.TestCase):
                     hear_frequency(page, 440)
                     track.select_option(label="Spanish")
                     hear_frequency(page, 880)
+                    if redundant:
+                        self.assert_failover(feeds, page, track, primary_feed, encoder, certificate, path, auth, team)
+                        return
                     player = page.locator("#eventPlayer")
                     master = urljoin(stable, player.get_attribute("data-address"))
                     alternate = urljoin(master, "1.m3u8")
@@ -238,6 +247,51 @@ class LiveInterpreterInputTest(unittest.TestCase):
             with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
                 self.assertNotEqual(revoked.wait(timeout=8), 0)
 
+    def assert_failover(self, feeds, page, track, primary, encoder, certificate, path, auth, team):
+        page.wait_for_function(CHECK_COLOUR, arg=0, timeout=25000)
+        video = page.locator("#eventPlayer video")
+        video.evaluate("el => { window.originalVideo = el; }")
+        backup = feeds.enter_context(marked_feed(encoder["server"], encoder["backup_key"], "ffmpeg", certificate,
+                                                 "blue", "640x360", 25, 620))
+        deadline = monotonic() + 15
+        while monotonic() < deadline:
+            health = requests.get(path + "/health?source=relay", headers=auth, timeout=8).json()
+            if health["encoder"]["inputs"]["backup"]:
+                break
+            sleep(.25)
+        else:
+            self.fail("The independent backup encoder did not reach the program.")
+        primary.terminate()
+        primary.wait(timeout=6)
+        page.wait_for_function(CHECK_COLOUR, arg=2, timeout=25000)
+        hear_frequency(page, 880)
+        self.assertTrue(video.evaluate("el => el === window.originalVideo"))
+        self.assertEqual(track.locator("option:checked").text_content(), "Spanish")
+        feeds.enter_context(marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate,
+                                        "green", "480x270", 20, 520))
+        deadline = monotonic() + 15
+        while monotonic() < deadline:
+            health = requests.get(path + "/health?source=relay", headers=auth, timeout=8).json()
+            inputs = health["encoder"]["inputs"]
+            if inputs["primary"] and inputs["selected"] == "backup":
+                break
+            sleep(.25)
+        else:
+            self.fail("The returning primary encoder did not warm up behind the active backup.")
+        backup.terminate()
+        backup.wait(timeout=6)
+        page.wait_for_function(CHECK_COLOUR, arg=1, timeout=25000)
+        hear_frequency(page, 880)
+        self.assertTrue(video.evaluate("el => el === window.originalVideo"))
+        self.assertEqual(track.locator("option:checked").text_content(), "Spanish")
+        address = urljoin(page.url, page.locator("#eventPlayer").get_attribute("data-address"))
+        paired = [team.request.get(urljoin(address, name)) for name in ("1.m3u8", "2.m3u8")]
+        for manifest in paired:
+            self.assertEqual(manifest.status, 200)
+            self.assertEqual(manifest.text().splitlines().count("#EXT-X-DISCONTINUITY"), 2)
+        self.assertEqual([line for line in paired[0].text().splitlines() if line.startswith("#EXT-X-DISCONTINUITY")],
+                         [line for line in paired[1].text().splitlines() if line.startswith("#EXT-X-DISCONTINUITY")])
+
     def assert_replay(self, db, base, auth, stable, path, uid, opens, team, page, manual):
         archive = None
         deadline = monotonic() + 25
@@ -248,7 +302,7 @@ class LiveInterpreterInputTest(unittest.TestCase):
         self.assertIsNotNone(archive)
         segments = sorted(archive.directory.glob("1-*.ts"))
         self.assertGreater(len(segments), 5)
-        self.assertAlmostEqual(decoded_tone(segments[0]), 440, delta=28)
+        self.assertAlmostEqual(decoded_tone(segments[0], at=.15), 440, delta=28)
         interpretation = next(index for index, segment in enumerate(segments)
                               if abs(decoded_tone(segment) - 880) < 28)
         gate = f"{base}/api/actions/live-replay-{uid}-{opens}"
