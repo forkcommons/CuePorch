@@ -445,7 +445,7 @@ Connect **Facebook Live** for a Page or **Facebook Profile Live** for an eligibl
 
 During a live event, **Turn off** ends the current Facebook Page or Profile broadcast while CuePorch continues streaming. **Turn on** starts a separate Facebook broadcast with the same audience and recurring settings. If Facebook leaves the stop unconfirmed, the destination stays off. Check the broadcast in Live Producer. If manual preview mode was chosen, CuePorch prepares the replacement for preview and publishing in Live Producer.
 
-For recurring YouTube and LinkedIn streams, use **Skip … on this date** to omit a single occurrence. **Restore … on this date** puts a future occurrence back on the schedule before provider preparation starts.
+For recurring YouTube and LinkedIn streams, use **Skip … on this date** to omit a single occurrence. **Restore … on this date** puts a future occurrence back on the schedule before stream setup begins. CuePorch can restore a future LinkedIn date after announcing it and will use the same announcement.
 
 For **Patreon Live**, create the Live on Patreon and choose **Other streaming source**. In CuePorch, open production for the matching occurrence and select **Patreon Live** as the destination type. Paste the RTMPS server and separate key from Patreon. CuePorch uses those credentials for that occurrence only. Check the signal in Patreon's preview, select the audience there and start the Live from Patreon. Patreon issues another server and key for the next Live. Its own membership rules apply on Patreon. [Patreon Live setup](https://support.patreon.com/hc/en-us/articles/35597591801997-Going-Live-on-Patreon-through-OBS)
 

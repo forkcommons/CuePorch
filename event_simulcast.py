@@ -805,7 +805,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                                    (uid, opens)).fetchone():
                         return False
                 elif provider in linkedin_connections:
-                    if con.execute(linkedin_live_job.READ, (uid, opens, series["owner"])).fetchone():
+                    key = (uid, opens, series["owner"])
+                    if con.execute(linkedin_live_job.INGEST, key).fetchone():
+                        return False
+                    announcement = con.execute(linkedin_live_job.READ, key).fetchone()
+                    if announcement and (announcement["state"], announcement["revision"], announcement["event_revision"]) != (
+                            "scheduled", series["revision"], event_revision):
                         return False
                 return True
 
@@ -837,7 +842,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     WHERE event=? AND opens=? AND provider=? AND revision=?""",
                     (uid, opens, series["provider"], series["revision"]))
                 if provider in linkedin_connections:
-                    linkedin_live_job.set_auto(con, (uid, opens, series["owner"]), False)
+                    key = (uid, opens, series["owner"])
+                    if con.execute(linkedin_live_job.INGEST, key).fetchone():
+                        linkedin_live_job.set_auto(con, key, False)
         return private(dict(ok=True))
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube", methods=["GET", "POST"])
