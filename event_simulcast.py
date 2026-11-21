@@ -779,9 +779,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
     app.extensions["stop_recurring_simulcast"] = live_destination_series.start(app, tx, prepare_destination_series)
 
-    @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube/series", methods=["GET", "DELETE"])
-    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin/series", methods=["GET", "DELETE"], defaults={"provider": "linkedin-live"})
-    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/series", methods=["GET", "DELETE"], defaults={"provider": "linkedin-member-live"})
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube/series", methods=["GET", "DELETE", "PUT"])
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin/series", methods=["GET", "DELETE", "PUT"], defaults={"provider": "linkedin-live"})
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/series", methods=["GET", "DELETE", "PUT"], defaults={"provider": "linkedin-member-live"})
     def provider_series(uid, opens, provider="youtube-live"):
         staff()
         with tx() as con:
@@ -793,9 +793,36 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 WHERE event=? AND provider=? AND revision=? AND event_revision=?""",
                 (uid, provider, grant["revision"] if grant else None, event_revision)).fetchone()
             inherited = bool(series and opens > series["after_opens"])
+
+            def can_restore():
+                if opens <= datetime.now(timezone.utc).timestamp():
+                    return False
+                if con.execute("SELECT 1 FROM live_simulcast_destination WHERE event=? AND opens=? AND provider=? AND revision=?",
+                               (uid, opens, provider, series["revision"])).fetchone():
+                    return False
+                if provider == "youtube-live":
+                    if con.execute("SELECT 1 FROM youtube_live_creation WHERE event=? AND opens=?",
+                                   (uid, opens)).fetchone():
+                        return False
+                elif provider in linkedin_connections:
+                    if con.execute(linkedin_live_job.READ, (uid, opens, series["owner"])).fetchone():
+                        return False
+                return True
+
             if request.method == "GET":
-                return private(dict(active=series is not None, inherited=inherited,
-                                    skipped=inherited and not live_destination_series.enabled(con, series, opens)))
+                skipped = inherited and not live_destination_series.enabled(con, series, opens)
+                result = dict(active=series is not None, inherited=inherited, skipped=skipped)
+                if skipped:
+                    result["restorable"] = can_restore()
+                return private(result)
+            if request.method == "PUT":
+                skipped = inherited and not live_destination_series.enabled(con, series, opens)
+                if skipped:
+                    if not can_restore():
+                        abort(409, "This date can no longer be restored.")
+                    con.execute("DELETE FROM live_destination_series_skip WHERE event=? AND provider=? AND owner=? AND opens=?",
+                                (uid, series["provider"], series["owner"], opens))
+                return private(dict(ok=True))
             payload = request.get_json()
             if not isinstance(payload, dict) or type(payload.get("date")) is not bool:
                 abort(422, "Choose whether to skip this date or stop future scheduling.")
