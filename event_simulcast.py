@@ -32,7 +32,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_simulcast_destination(
  id TEXT PRIMARY KEY, event TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE,
  server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL, opens INTEGER,
- provider TEXT, revision TEXT, remote TEXT, stream TEXT,
+ provider TEXT, revision TEXT, remote TEXT, stream TEXT, preset TEXT,
  UNIQUE(event,name));
 CREATE TABLE IF NOT EXISTS youtube_live_creation(
  event TEXT NOT NULL, opens INTEGER NOT NULL, event_revision TEXT NOT NULL,
@@ -50,6 +50,7 @@ def migrate(con):
         ("revision", "TEXT"),
         ("remote", "TEXT"),
         ("stream", "TEXT"),
+        ("preset", "TEXT"),
     ):
         if column not in columns:
             con.execute(f"ALTER TABLE live_simulcast_destination ADD COLUMN {column} {definition}")
@@ -83,11 +84,13 @@ def destination_scope(body, server, opens):
     preset = body.get("preset", "custom")
     if preset == "custom":
         return None
-    if preset != "patreon":
-        abort(422, "Choose a supported destination preset or use the custom option.")
-    if not server.startswith("rtmps://"):
-        abort(422, "Patreon destinations require an RTMPS server URL. Enter an RTMPS server or choose the custom option.")
-    return opens
+    if preset == "patreon":
+        if not server.startswith("rtmps://"):
+            abort(422, "Patreon destinations require an RTMPS server URL. Enter an RTMPS server or choose the custom option.")
+        return opens
+    if preset in ("instagram", "tiktok", "x"):
+        return opens
+    abort(422, "Choose a supported destination preset or use the custom option.")
 
 
 def highest_variant(master):
@@ -712,12 +715,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if any(row["name"].casefold() == name.casefold() for row in all_rows):
                     abort(409, "Choose a different destination name.")
                 con.execute(
-                    "INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()), enabled, scope),
+                    "INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens,preset)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()),
+                     enabled, scope, body.get("preset") if scope is not None else None),
                 )
             rows = con.execute(
-                "SELECT id,name,server,enabled,opens,provider,revision FROM live_simulcast_destination"
+                "SELECT id,name,server,enabled,opens,provider,revision,preset FROM live_simulcast_destination"
                 " WHERE event=? AND (opens IS NULL OR opens=?) ORDER BY name",
                 (uid, opens),
             ).fetchall()

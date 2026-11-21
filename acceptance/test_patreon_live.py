@@ -170,6 +170,46 @@ class PatreonLive(unittest.TestCase):
 
         assert request.delete(targets + "/" + member_id, headers=auth).status == 204
 
+        presets = {"instagram": "Instagram Live", "tiktok": "TikTok LIVE", "x": "X Live"}
+        for preset, label in presets.items():
+            form.get_by_label("Destination type").select_option(preset)
+            expect(page.locator("#socialDestinationHelp")).to_be_visible()
+            form.get_by_label("Destination name").fill(label)
+            server = "rtmp://127.0.0.1:41998/live" if preset == "tiktok" else "rtmps://127.0.0.1:41999/live"
+            form.get_by_label("RTMP or RTMPS server").fill(server)
+            form.get_by_label("Destination stream key").fill(f"fixture-{preset}-key")
+            form.get_by_role("button", name="Add destination").click()
+            expect(form.get_by_label("Destination stream key")).to_have_value("")
+            expect(page.get_by_text(f"{label} for this date", exact=False)).to_be_visible()
+
+        invalid = request.post(targets, headers=auth, data={"name": "Bad", "preset": "unknown",
+                               "server": "rtmp://127.0.0.1:41998/live", "key": "fixture-unknown-key"})
+        assert invalid.status == 422
+        current = request.get(targets, headers=auth)
+        assert current.ok
+        current_by_name = {row["name"]: row for row in current.json()["destinations"]}
+        for preset, label in presets.items():
+            target = current_by_name[label]
+            key = f"fixture-{preset}-key"
+            assert target["opens"] == int(first["id"]) and target["preset"] == preset
+            assert key not in current.text() and key not in page.content()
+            assert request.delete(next_targets + "/" + target["id"], headers=auth).status == 404
+        following = request.get(next_targets, headers=auth)
+        assert following.ok
+        assert {row["name"] for row in following.json()["destinations"]} == {"Station feed"}
+
+        private = request.post(base + "/api/live-events", headers=auth,
+                               data=dict(event, visibility="private", slug="private-preset-rehearsal"))
+        assert private.ok
+        closed = private.json()
+        denied = request.post(
+            f"{base}/api/live-events/{closed['id']}/{closed['occurrences'][0]['id']}/destinations",
+            headers=auth, data={"name": "Private", "preset": "instagram",
+                                "server": "rtmps://127.0.0.1:41999/live", "key": "fixture-private-key"},
+        )
+        assert denied.status == 409
+        print("Browser verified Instagram, TikTok and X RTMP presets, occurrence isolation and credential exclusion.", flush=True)
+
 
 if __name__ == "__main__":
     unittest.main()
