@@ -502,6 +502,7 @@ function choose(event: LiveEvent, instance: Occurrence) {
   const watch = element<HTMLAnchorElement>("eventWatch");
   const studio = element<HTMLAnchorElement>("eventStudio");
   studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
+  element<HTMLAnchorElement>("eventRecordOnly").href = studio.href + "?mode=record";
   element("eventShare").hidden = !event.watch;
   element("eventEmbedField").hidden = !event.embed;
   function occurrenceLink(path: string) {
