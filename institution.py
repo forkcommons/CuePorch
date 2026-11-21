@@ -66,6 +66,7 @@ import library_embed
 import library_events
 import library_folder_privacy
 import library_folders
+import library_hubspot_bridge
 import library_file_links
 import folder_slack
 import library_languages
@@ -207,6 +208,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_registration.SCHEMA
             + registration_return.SCHEMA
             + library_events.SCHEMA
+            + library_hubspot_bridge.SCHEMA
             + event_api.SCHEMA
             + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
@@ -821,6 +823,9 @@ def create_app(root, database, operator, institution, simulation=None):
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM social_publication WHERE state='queued' AND final_sent=0
                             AND (provider<>'youtube' OR (probe=0 AND offset=0)))""", (step,))
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT job FROM library_hubspot_media WHERE state='queued' AND operation='publish' AND create_attempted=0)""", (step,))
                 if step == event_hubspot_outbound.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
@@ -1395,6 +1400,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
                                                sharing_access, hubspot)
+    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)

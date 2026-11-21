@@ -255,6 +255,28 @@ def protected_route(con, uid):
     ).fetchone() is not None
 
 
+def public_oembed_eligible(con, work, permits):
+    if work is None or playback(work) is None:
+        return False
+    uid = work["id"]
+    row = get_privacy(con, uid)
+    if row is None:
+        return False
+    if blocked(con, uid) or protected_route(con, uid):
+        return False
+    handoff = library_peer_handoff.get(con, uid)
+    if handoff and handoff["state"] == "pending":
+        return False
+    if library_registration.active(con, "video", uid):
+        return False
+    settings = json.loads(row["settings"])
+    if settings.get("visibility") != "public" or settings.get("embed") != "anywhere":
+        return False
+    if not permits(work, settings):
+        return False
+    return True
+
+
 def operator_sharing(con, work, permits):
     uid = work["id"]
     row = get_privacy(con, uid)
@@ -413,19 +435,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         uid, start = parsed
         with tx() as con:
             work = find_work(uid)
-            if work is None or playback(work) is None:
-                abort(404)
-            row = get_privacy(con, uid)
-            if row is None or blocked(con, uid) or protected_route(con, uid):
-                abort(404)
-            handoff = library_peer_handoff.get(con, uid)
-            if handoff and handoff["state"] == "pending":
-                abort(404)
-            if library_registration.active(con, "video", uid):
-                abort(404)
-            settings = json.loads(row["settings"])
-            if (settings.get("visibility") != "public" or settings.get("embed") != "anywhere"
-                    or not permits(work, settings)):
+            if not public_oembed_eligible(con, work, permits):
                 abort(404)
             body = library_embed.oembed_video(team_origin, uid, title_for(con, work), start, maxwidth, maxheight)
         response = make_response(body)

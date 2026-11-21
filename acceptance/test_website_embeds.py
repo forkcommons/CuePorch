@@ -1,6 +1,7 @@
 import sys
 from contextlib import ExitStack
 import json
+import time
 from pathlib import Path
 import secrets
 import subprocess
@@ -16,7 +17,113 @@ from browser import chromium
 from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import library_hubspot_bridge
 from institution import create_app
+
+
+class BridgeProvider:
+    def __init__(self):
+        self.record = None
+        self.creates = 0
+        self.updates = 0
+        self.archives = 0
+
+    @staticmethod
+    def response(status, data=None):
+        import requests
+
+        r = requests.Response()
+        r.status_code = status
+        r._content = json.dumps(data).encode("utf-8") if data is not None else b""
+        r._content_consumed = True
+        return r
+
+    def request(self, method, url, **kwargs):
+        method = method.upper()
+        oauth_url = "https://api.hubapi.com/oauth/2026-03/token"
+        base = "https://api.hubapi.com/crm/objects/2026-09/a123_Videos"
+
+        if method == "POST" and url == oauth_url:
+            return self.response(
+                200,
+                {
+                    "access_token": "bridge-access",
+                    "refresh_token": "fixture-refresh-token",
+                    "expires_in": 1800,
+                    "token_type": "Bearer",
+                },
+            )
+
+        headers = kwargs.get("headers") or {}
+        assert headers.get("Authorization") == "Bearer bridge-access"
+
+        if method == "POST" and url == base + "/search":
+            body = kwargs.get("json") or {}
+            filters = []
+            for group in body.get("filterGroups", []):
+                filters.extend(group.get("filters", []))
+
+            external_id = None
+            for f in filters:
+                if f.get("propertyName") == "hs_external_id":
+                    assert f.get("operator") == "EQ"
+                    external_id = f.get("value")
+                    break
+
+            assert external_id is not None
+            assert body.get("limit") == 2
+
+            if (
+                self.record is not None
+                and self.record["properties"].get("hs_external_id") == external_id
+            ):
+                return self.response(200, {"total": 1, "results": [self.record]})
+            return self.response(200, {"total": 0, "results": []})
+
+        if method == "POST" and url == base:
+            body = kwargs.get("json") or {}
+            props = body.get("properties") or {}
+            keys = (
+                "hs_title",
+                "hs_external_id",
+                "hs_oembed_url",
+                "hs_details_page_link",
+            )
+
+            self.record = {
+                "id": "712",
+                "archived": False,
+                "properties": {key: props.get(key) for key in keys},
+            }
+            self.creates += 1
+            return self.response(502, {"message": "fixture lost acknowledgment"})
+
+        if method == "PATCH" and url == base + "/712":
+            body = kwargs.get("json") or {}
+            props = body.get("properties") or {}
+            keys = (
+                "hs_title",
+                "hs_external_id",
+                "hs_oembed_url",
+                "hs_details_page_link",
+            )
+
+            assert self.record is not None
+            assert props.get("hs_external_id") == self.record["properties"].get(
+                "hs_external_id"
+            )
+            assert set(props.keys()) == set(keys)
+
+            self.record["properties"] = {key: props.get(key) for key in keys}
+            self.updates += 1
+            return self.response(200, self.record)
+
+        if method == "DELETE" and url == base + "/712":
+            self.archives += 1
+            self.record = None
+            return self.response(204)
+
+        raise AssertionError(f"Unexpected network request: {method} {url}")
 
 
 class WebsiteEmbeds(unittest.TestCase):
@@ -77,8 +184,32 @@ class WebsiteEmbeds(unittest.TestCase):
             consumer_url = f"http://127.0.0.1:{consumer_server.server_port}"
             database = root / "workspace.sqlite"
             operator = secrets.token_urlsafe(32)
+            bridge = BridgeProvider()
+            bridge.time_offset = 0
             cleanup.enter_context(
-                patch.dict("os.environ", {"CUEPORCH_PUBLIC_URL": base})
+                patch.dict(
+                    "os.environ",
+                    {
+                        "CUEPORCH_PUBLIC_URL": base,
+                        "CUEPORCH_HUBSPOT_CLIENT_ID": "bridge-client",
+                        "CUEPORCH_HUBSPOT_CLIENT_SECRET": "bridge-secret",
+                        "CUEPORCH_HUBSPOT_MEDIA_TYPE": "a123_Videos",
+                    },
+                )
+            )
+            cleanup.enter_context(
+                patch("workspace_oauth.provider_request", bridge.request)
+            )
+            original_bridge_start = library_hubspot_bridge.start
+            cleanup.enter_context(
+                patch.object(
+                    library_hubspot_bridge,
+                    "start",
+                    side_effect=lambda *args, **kwargs: original_bridge_start(
+                        *args,
+                        **{**kwargs, "clock": lambda: time.time() + bridge.time_offset},
+                    ),
+                )
             )
 
             def start_app():
@@ -104,9 +235,114 @@ class WebsiteEmbeds(unittest.TestCase):
             cleanup.enter_context(service_worker(service))
             cleanup.enter_context(service_worker(consumer_server))
             with sync_playwright() as playwright, chromium(playwright) as browser:
-                self.exercise(browser, base, consumer_url, consumer, operator, clip)
+                self.exercise(
+                    browser, base, consumer_url, consumer, operator, clip, bridge
+                )
 
-    def exercise(self, browser, base, consumer_url, consumer, operator, clip):
+    def bridge_wait(self, page, base, h, uid, state):
+        deadline = time.time() + 10
+        last = None
+        while time.time() < deadline:
+            response = page.request.get(
+                f"{base}/api/library/work/{uid}/hubspot-media-bridge",
+                headers=h,
+            )
+            assert response.ok, response.text
+            last = response.json()
+            if last.get("state") == state:
+                return last
+            page.wait_for_timeout(100)
+        assert False, last
+
+    def verify_bridge_publication(self, page, base, h, operator, uid, durl, bridge):
+        from urllib.parse import parse_qs, urlencode, urlsplit
+        from playwright.sync_api import expect
+
+        callback = base + "/integration/oauth/hubspot/callback"
+        page.add_init_script(
+            f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)})"
+        )
+
+        def handle_hubspot(route):
+            qs = parse_qs(urlsplit(route.request.url).query)
+            assert "state" in qs
+            assert qs["redirect_uri"][0] == callback
+            optional_scope = qs.get("optional_scope", [""])[0].split()
+            assert "media_bridge.read" in optional_scope
+            assert "media_bridge.write" in optional_scope
+            location = (
+                callback
+                + "?"
+                + urlencode({"state": qs["state"][0], "code": "bridge-code"})
+            )
+            route.fulfill(status=302, headers={"Location": location})
+
+        page.route("https://app.hubspot.com/oauth/authorize?*", handle_hubspot)
+        page.goto(base + "/operator/integrations")
+        page.get_by_text("Connect HubSpot", exact=True).click()
+        expect(page.get_by_text("Disconnect HubSpot", exact=True)).to_be_visible()
+
+        page.goto(base + "/operator/library")
+        page.get_by_role("button", name="Load library", exact=True).click()
+        page.locator('summary[aria-label^="Actions for "]').first.click()
+        page.get_by_role("button", name="Share", exact=True).click()
+        group = page.get_by_role("group", name="HubSpot Media Bridge")
+        expect(group).to_be_visible()
+        add = group.get_by_role("button", name="Add video to HubSpot", exact=True)
+        expect(add).to_be_enabled()
+
+        r = page.request.put(
+            base + "/api/policy/publication",
+            headers=h,
+            data={"required": True},
+        )
+        assert r.ok, r.text
+        add.click()
+        expect(group.get_by_role("status")).to_contain_text(
+            "Waiting for publication approval"
+        )
+        assert bridge.creates == 0
+
+        r = page.request.put(
+            base + "/api/policy/publication",
+            headers=h,
+            data={"required": False},
+        )
+        assert r.ok, r.text
+        receipt = self.bridge_wait(page, base, h, uid, "unconfirmed")
+        assert bridge.creates == 1
+
+        group.get_by_role("button", name="Refresh HubSpot status", exact=True).click()
+        expect(group.get_by_role("status")).to_have_text(receipt["problem"])
+
+        add = group.get_by_role("button", name="Add video to HubSpot", exact=True)
+        add.click()
+        self.bridge_wait(page, base, h, uid, "published")
+        assert bridge.creates == 1
+        assert bridge.updates == 1
+        self.assert_bridge_properties(bridge, durl, base, uid)
+
+    def verify_bridge_withdrawal(self, page, base, h, uid, bridge):
+        bridge.time_offset += 35
+        self.bridge_wait(page, base, h, uid, "archived")
+        assert bridge.archives == 1
+        assert bridge.record is None
+
+    def assert_bridge_properties(self, bridge, durl, base, uid):
+        assert bridge.record is not None
+        props = bridge.record["properties"]
+        assert set(props.keys()) == {
+            "hs_external_id",
+            "hs_title",
+            "hs_oembed_url",
+            "hs_details_page_link",
+        }
+        assert props["hs_oembed_url"] == durl
+        assert props["hs_details_page_link"] == f"{base}/watch/work/{uid}"
+        assert props["hs_title"]
+        assert props["hs_external_id"]
+
+    def exercise(self, browser, base, consumer_url, consumer, operator, clip, bridge):
         import json
         from uuid import uuid4
         from playwright.sync_api import expect
@@ -146,7 +382,10 @@ class WebsiteEmbeds(unittest.TestCase):
         durl = page.locator(
             'link[rel="alternate"][type="application/json+oembed"]'
         ).get_attribute("href")
-        d = api.get(durl + "&maxwidth=400&maxheight=180")
+        self.verify_bridge_publication(page, base, h, operator, uid, durl, bridge)
+        d = api.get(
+            bridge.record["properties"]["hs_oembed_url"] + "&maxwidth=400&maxheight=180"
+        )
         assert d.ok and "no-store" in (d.headers.get("cache-control") or "")
         dj = d.json()
         assert dj["width"] <= 400 and dj["height"] <= 180
@@ -183,6 +422,7 @@ class WebsiteEmbeds(unittest.TestCase):
         )
         assert pr.ok, pr.text
         assert api.get(durl).status == 404
+        self.verify_bridge_withdrawal(page, base, h, uid, bridge)
         page.goto(watch)
         assert (
             page.locator(

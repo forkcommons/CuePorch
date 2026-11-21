@@ -533,7 +533,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     @app.get("/api/integrations/hubspot/subscriptions")
     def hubspot_subscriptions():
         read_api()
-        if "optional_scope" not in hubspot.config.authorization_parameters:
+        if not hubspot_crm.outbound_available(hubspot):
             abort(404)
         revision = hubspot.revision()
         result = hubspot_crm.subscriptions(hubspot, revision)

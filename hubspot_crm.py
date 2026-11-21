@@ -18,19 +18,32 @@ LISTS = ORIGIN + "/crm/lists/2026-09"
 ENGAGEMENT_SCOPE = "analytics.behavioral_events.send"
 
 
+OUTBOUND_SCOPES = (
+    "crm.lists.write",
+    "crm.objects.contacts.write",
+    "communication_preferences.read_write",
+)
+
+
 def oauth_config():
     import os
     from dataclasses import replace
 
+    scopes = []
     if os.environ.get("CUEPORCH_HUBSPOT_OUTBOUND") == "1":
-        optional_scope = "crm.lists.write crm.objects.contacts.write communication_preferences.read_write"
+        scopes.extend(OUTBOUND_SCOPES)
         if os.environ.get("CUEPORCH_HUBSPOT_ENGAGEMENT") == "1":
-            optional_scope += " " + ENGAGEMENT_SCOPE
-        return replace(
-            OAUTH,
-            authorization_parameters={"optional_scope": optional_scope},
-        )
-    return OAUTH
+            scopes.append(ENGAGEMENT_SCOPE)
+    import hubspot_media_bridge
+
+    if hubspot_media_bridge.object_type():
+        scopes.extend(hubspot_media_bridge.MEDIA_SCOPES)
+    if not scopes:
+        return OAUTH
+    return replace(
+        OAUTH,
+        authorization_parameters={"optional_scope": " ".join(scopes)},
+    )
 
 
 def engagement_available(connection):
@@ -38,6 +51,12 @@ def engagement_available(connection):
     return connection.configured and ENGAGEMENT_SCOPE in (
         config.authorization_parameters.get("optional_scope", "").split()
     )
+
+
+def outbound_available(connection):
+    config = connection.config
+    scopes = config.authorization_parameters.get("optional_scope", "").split()
+    return connection.configured and all(scope in scopes for scope in OUTBOUND_SCOPES)
 
 
 def crm(connection, revision, method, url, **kwargs):

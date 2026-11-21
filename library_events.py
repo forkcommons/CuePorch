@@ -903,7 +903,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def configure_hubspot_outbound(uid, opens):
         staff()
         secure = secure_site(mail_origin)
-        available = hubspot.configured and "optional_scope" in hubspot.config.authorization_parameters
+        available = hubspot_crm.outbound_available(hubspot)
         engagement_available = hubspot_crm.engagement_available(hubspot)
         if request.method == "GET":
             same_origin(secure)
@@ -995,7 +995,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     stop_hubspot_outbound = event_hubspot_outbound.start(
         app, tx, database, hubspot, validate_hubspot_plan,
         engagement_validate=validate_hubspot_engagement if hubspot_crm.engagement_available(hubspot) else None,
-    ) if "optional_scope" in hubspot.config.authorization_parameters else lambda: None
+    ) if hubspot_crm.outbound_available(hubspot) else lambda: None
 
     @app.get("/api/live-events/<uid>/registrants/<registrant>")
     def event_registrant_details(uid, registrant):
@@ -1801,8 +1801,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             if (form and not withdrawn and (not delivery or delivery["delivery"] != "replay")
                     and event["visibility"] in event_mail.WATCHABLE
-                    and hubspot.configured
-                    and "optional_scope" in hubspot.config.authorization_parameters):
+                    and hubspot_crm.outbound_available(hubspot)):
                 candidate = event_hubspot_outbound.get(con, row["id"], shown["id"])
                 connection = hubspot.connection(con)
                 if (candidate and connection

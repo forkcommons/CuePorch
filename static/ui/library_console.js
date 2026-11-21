@@ -1003,6 +1003,82 @@ async function copyText(field) {
         workDialogStatus.textContent = "Select and copy the highlighted text.";
     }
 }
+async function mediaBridgeControls(work) {
+    let receipt;
+    const path = workEndpoint(work) + "/hubspot-media-bridge";
+    try {
+        const response = await request(path);
+        const done = await completed(response);
+        receipt = await done.json();
+    }
+    catch {
+        return null;
+    }
+    const { configured, connected, eligible, state } = receipt;
+    if (!configured)
+        return null;
+    if (state === "off" && (!connected || !eligible))
+        return null;
+    const group = document.createElement("div");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "HubSpot Media Bridge");
+    const title = document.createElement("h3");
+    title.textContent = "HubSpot Media Bridge";
+    const status = document.createElement("p");
+    status.setAttribute("role", "status");
+    status.textContent = bridgeStatusText(receipt);
+    group.append(title, status);
+    const addButton = document.createElement("button");
+    addButton.textContent = state === "published" ? "Update HubSpot video" : "Add video to HubSpot";
+    const removeButton = document.createElement("button");
+    removeButton.textContent = "Remove video from HubSpot";
+    const refreshButton = document.createElement("button");
+    refreshButton.textContent = "Refresh HubSpot status";
+    if (!eligible || !connected || state === "queued" || state === "waiting") {
+        addButton.hidden = true;
+    }
+    if (state === "off" || state === "archived" || !connected) {
+        removeButton.hidden = true;
+    }
+    action(addButton, async () => {
+        const response = await request(path, "PUT", {}, { "X-CuePorch-Integration": "1" });
+        await completed(response);
+        const updated = await mediaBridgeControls(work);
+        if (updated && group.isConnected)
+            group.replaceWith(updated);
+    });
+    action(removeButton, async () => {
+        const response = await request(path, "DELETE", {}, { "X-CuePorch-Integration": "1" });
+        await completed(response);
+        const updated = await mediaBridgeControls(work);
+        if (updated && group.isConnected)
+            group.replaceWith(updated);
+    });
+    action(refreshButton, async () => {
+        const updated = await mediaBridgeControls(work);
+        if (!group.isConnected)
+            return;
+        if (updated)
+            group.replaceWith(updated);
+        else
+            group.remove();
+    });
+    group.append(addButton, removeButton, refreshButton);
+    return group;
+}
+function bridgeStatusText(receipt) {
+    if (receipt.problem)
+        return receipt.problem;
+    switch (receipt.state) {
+        case "published": return "Published to HubSpot";
+        case "waiting": return "Waiting for publication approval";
+        case "queued": return "Queued for HubSpot";
+        case "unconfirmed": return "Unconfirmed by HubSpot";
+        case "archived": return "Archived in HubSpot";
+        case "canceled": return "Canceled";
+        default: return receipt.state || "Ready";
+    }
+}
 async function shareDialog(work, copy) {
     const info = await getWorkInfo(work);
     openWorkDialog("Share " + info.title);
@@ -1013,6 +1089,18 @@ async function shareDialog(work, copy) {
             social.textContent = `Publish to ${label}`;
             workDialogBody.append(social);
         }
+    }
+    if (!copy && (!work.asset_type || work.asset_type === "video")) {
+        const placeholder = document.createElement("div");
+        workDialogBody.append(placeholder);
+        void mediaBridgeControls(work).then(controls => {
+            if (!placeholder.isConnected)
+                return;
+            if (controls)
+                placeholder.replaceWith(controls);
+            else
+                placeholder.remove();
+        });
     }
     if (!info.watch && !info.embed) {
         const link = document.createElement("a");
