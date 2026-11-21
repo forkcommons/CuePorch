@@ -20,6 +20,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from browser_account_security import private, same_origin, secure_site
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, dash_hls, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
+from event_interpreters import InterpreterInputs
 import event_peer
 import event_rtmp
 import event_dash_buffer
@@ -61,6 +62,7 @@ import content_rating
 from library_actions import title_for
 import library_analytics
 from library_interactivity import text_field
+from library_languages import language_tag
 from library_privacy import allowed_ancestor, frame_policy, normalize_domain, try_password
 import library_registration
 import mail_relay
@@ -526,7 +528,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     media = Gateway()
     studio = Studio(database)
     rtmp_config = event_rtmp.configured()
-    event_rtmp.register(app, rtmp_config, studio)
+    interpreters = InterpreterInputs(database)
+    app.extensions["event_interpreter_inputs"] = interpreters
+    event_rtmp.register(app, rtmp_config, studio, interpreters)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
     recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
     stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
@@ -547,6 +551,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         outputs.close()
         preview_outputs.close()
         programs.close()
+        interpreters.close()
         studio.close()
         captions.close()
         replay_captions.close()
@@ -1880,6 +1885,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     if request.method == "POST" and encoder_preview_enabled(con, uid):
                         abort(409, "Use the private encoder preview or turn off preview for this event.")
                 if request.method == "DELETE":
+                    interpreters.stop_all(uid, opens)
                     studio.close_rtmp(uid, opens)
                     return "", 204
                 window = direct_window(uid, {"preview": False})
@@ -1906,6 +1912,41 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409, str(error))
         except (OSError, ValueError):
             abort(502, "Could not start the low-latency RTMP relay.")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/interpreters", methods=["GET", "POST"])
+    @app.delete("/api/live-events/<uid>/<int:opens>/interpreters/<language>")
+    def event_interpreter_input(uid, opens, language=None):
+        staff()
+        try:
+            with locked(uid):
+                with tx() as con:
+                    _, event = read(con, uid)
+                    shift = selected_open(event, opens)
+                    target = occurrence(con, uid, opens)
+                if request.method == "GET":
+                    return private(dict(inputs=interpreters.list(uid, opens)))
+                if request.method == "DELETE":
+                    interpreters.stop_input(uid, opens, language_tag(language))
+                    return "", 204
+                body = request.get_json(silent=True)
+                if not isinstance(body, dict):
+                    abort(422, "Enter interpreter details.")
+                language = language_tag(body.get("language"))
+                if language == "und":
+                    abort(422, "Choose a language for the interpreter.")
+                name = text_field(body.get("name"), "an interpreter name", 50, True)
+                deadline = datetime.fromisoformat(shift["end"]).timestamp()
+                parent = studio.rtmp_room(uid, opens)
+                if (not rtmp_config or not parent or not target or target["delivery"] != "ready"
+                        or deadline <= datetime.now(timezone.utc).timestamp()):
+                    abort(409, "Prepare low-latency RTMP for this occurrence before adding an interpreter.")
+                return private(interpreters.prepare(uid, opens, parent, rtmp_config, name, language, deadline).credentials())
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except BusyError as error:
+            abort(409, str(error))
+        except OSError:
+            abort(502, "Could not prepare the interpreter input.")
 
     @app.route("/api/live-events/<uid>/<int:opens>/dash", methods=["POST", "DELETE"])
     def event_dash_relay(uid, opens):
@@ -2022,6 +2063,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         return "", 204
                     con.execute("UPDATE live_occurrence SET delivery='withdrawing' WHERE event=? AND opens=?",
                                 (uid, opens))
+                interpreters.stop_all(uid, opens)
                 studio.withdraw(uid, opens)
                 with event_peer.connected_host(target["origin"]) as host:
                     video = host.call("GET", "/api/v1/videos/" + target["remote"]).json()

@@ -145,6 +145,17 @@
       </div>
       <button type="button" id="prepareLowRtmp" hidden>Prepare low-latency RTMP</button>
       <button type="button" id="stopLowRtmp" hidden>Stop low-latency RTMP</button>
+      <details id="interpreterPanel" hidden>
+        <summary>Interpreter input</summary>
+        <form id="interpreterForm" autocomplete="off">
+          <label>Language <input id="interpreterLanguage" required maxlength="35" placeholder="es"></label>
+          <label>Name <input id="interpreterName" required maxlength="50"></label>
+          <button type="submit">Prepare interpreter input</button>
+        </form>
+        <button type="button" id="refreshInterpreters">Refresh interpreter status</button>
+        <p id="interpreterStatus" role="status"></p>
+        <ul id="interpreterRows"></ul>
+      </details>
       <button type="button" id="prepareDash" hidden>Prepare MPEG-DASH contribution</button>
       <button type="button" id="stopDash" hidden>Stop MPEG-DASH contribution</button>
       <div id="dashSettings" hidden>
