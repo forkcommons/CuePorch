@@ -75,7 +75,7 @@ const openRegistration = setupRegistration((suffix, method, values) => request(e
         if (current.id === selectedId)
             renderRokuLink(null);
     });
-}, () => endpoint() + "/registration/mailchimp/outbound");
+}, () => endpoint() + "/registration");
 function renderRokuLink(path) {
     rokuFeed.value = path || "";
     rokuFeed.parentElement.hidden = !path;

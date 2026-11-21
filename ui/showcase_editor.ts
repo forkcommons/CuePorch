@@ -108,7 +108,7 @@ const openRegistration = setupRegistration(
       if (current.id === selectedId) renderRokuLink(null);
     });
   },
-  () => endpoint() + "/registration/mailchimp/outbound",
+  () => endpoint() + "/registration",
 );
 
 function renderRokuLink(path: string | null) {

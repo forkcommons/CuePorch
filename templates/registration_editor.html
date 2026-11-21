@@ -70,6 +70,17 @@
         <button type="button" id="registrationMailchimpStop" hidden>Stop Mailchimp delivery</button>
         <p id="registrationMailchimpStatus" role="status"></p>
       </fieldset>
+      <fieldset id="registrationConstantContact" hidden>
+        <legend>Constant Contact delivery</legend>
+        <button type="button" id="registrationConstantContactLoad">Load Constant Contact lists</button>
+        <button type="button" id="registrationConstantContactMore">More Constant Contact lists</button>
+        <button type="button" id="registrationConstantContactSave">Save Constant Contact delivery</button>
+        <button type="button" id="registrationConstantContactRefresh">Reload Constant Contact delivery</button>
+        <button type="button" id="registrationConstantContactStop" hidden>Stop Constant Contact delivery</button>
+        <label for="registrationConstantContactList">Constant Contact list</label>
+        <select id="registrationConstantContactList"></select>
+        <p id="registrationConstantContactStatus" role="status"></p>
+      </fieldset>
       {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>

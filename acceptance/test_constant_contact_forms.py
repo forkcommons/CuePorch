@@ -50,6 +50,23 @@ class FakeProvider:
 
         assert kwargs.get("headers", {}).get("Authorization") == "Bearer a1"
 
+        if method == "GET" and url == f"{API_BASE}/contact_lists":
+            if kwargs["params"] == {"cursor": "test-next"}:
+                return _resp({
+                    "lists": [{
+                        "list_id": LIST_ID,
+                        "name": "Station audience",
+                    }],
+                })
+            assert set(kwargs["params"]) == {"limit", "status", "channel_type"}
+            return _resp({
+                "lists": [{
+                    "list_id": "44444444-4444-4444-4444-444444444444",
+                    "name": "Other list",
+                }],
+                "_links": {"next": {"href": "/v3/contact_lists?cursor=test-next"}},
+            })
+
         if method == "GET" and url == f"{API_BASE}/contact_lists/{LIST_ID}":
             return _resp({"list_id": LIST_ID, "name": "Station audience"})
 
@@ -168,7 +185,7 @@ class ConstantContactFormsTest(unittest.TestCase):
             clock=lambda: self.now,
         )
 
-    def enable_video(self):
+    def enable_video(self, *, configure_delivery=True):
         fixture_path = self.database.parent / "fixture.mp4"
         subprocess.run(
             [
@@ -206,15 +223,16 @@ class ConstantContactFormsTest(unittest.TestCase):
         )
         assert reg_put.status_code in (200, 204)
         outbound_path = reg_path + "/constant-contact/outbound"
-        outbound_put = self.client.put(
-            outbound_path,
-            headers=self.auth,
-            json={"list_id": LIST_ID},
-        )
-        assert outbound_put.status_code in (200, 204)
-        outbound_get = self.client.get(outbound_path, headers=self.auth)
-        assert outbound_get.status_code == 200
-        assert outbound_get.get_json().get("enabled") is True
+        if configure_delivery:
+            outbound_put = self.client.put(
+                outbound_path,
+                headers=self.auth,
+                json={"list_id": LIST_ID},
+            )
+            assert outbound_put.status_code in (200, 204)
+            outbound_get = self.client.get(outbound_path, headers=self.auth)
+            assert outbound_get.status_code == 200
+            assert outbound_get.get_json().get("enabled") is True
         return f"/embed/work/{work_id}", outbound_path
 
     def submit(self, path, email, consent=True):
@@ -360,3 +378,253 @@ class ConstantContactFormsTest(unittest.TestCase):
                 "WHERE state='canceled'"
             ).fetchall()
         self.assertEqual(rows, [(None, None, None, None)])
+
+    def enable_showcase(self):
+        fixture = self.database.parent / "fixture.mp4"
+        upload = self.client.post(
+            "/api/library/uploads",
+            data={
+                "file": (BytesIO(fixture.read_bytes()), "gallery.mp4"),
+                "upload_id": str(uuid4()),
+                "privacy": json.dumps({"visibility": "public", "embed": "anywhere"}),
+            },
+            headers=self.auth,
+            content_type="multipart/form-data",
+        )
+        self.assertIn(upload.status_code, (200, 201))
+        member_id = upload.get_json()["id"]
+
+        response = self.client.post("/api/showcases", json={}, headers=self.auth)
+        self.assertIn(response.status_code, (200, 201))
+        sid = response.get_json()["id"]
+
+        showcase = self.client.get(f"/api/showcases/{sid}", headers=self.auth)
+        self.assertEqual(showcase.status_code, 200)
+        current = showcase.get_json()
+        updated = self.client.put(
+            f"/api/showcases/{sid}",
+            json={
+                "slug": "constant-contact-gallery",
+                "revision": current["revision"],
+                "settings": current["settings"] | {
+                    "title": "Constant Contact gallery",
+                    "visibility": "public",
+                    "videos": [member_id],
+                },
+            },
+            headers=self.auth,
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        registration = self.client.get(f"/api/showcases/{sid}/registration", headers=self.auth)
+        self.assertEqual(registration.status_code, 200)
+        current_registration = registration.get_json()
+        registration_updated = self.client.put(
+            f"/api/showcases/{sid}/registration",
+            json={
+                "revision": current_registration["revision"],
+                "settings": current_registration["settings"] | {
+                    "enabled": True,
+                    "first_name": "required",
+                    "last_name": "required",
+                },
+            },
+            headers=self.auth,
+        )
+        self.assertEqual(registration_updated.status_code, 200)
+        return sid
+
+
+    def play_in_browser(self, browser, base, path, email, consent, *, embed=False):
+        from playwright.sync_api import expect
+
+        context = browser.new_context()
+        try:
+            page = context.new_page()
+            if embed:
+                page.goto(base + "/watch")
+                page.set_content(
+                    f'<iframe src="{base}{path}" width="640" height="360"></iframe>'
+                )
+                target = page.frame_locator("iframe")
+            else:
+                page.goto(base + path)
+                target = page
+
+            expect(target.locator("video")).to_have_count(0)
+
+            target.locator("input[name=email]").fill(email)
+            target.locator("input[name=first_name]").fill("Test")
+            target.locator("input[name=last_name]").fill("Viewer")
+
+            consent_input = target.locator(
+                "input[name=constant_contact_form_consent]"
+            )
+            if consent is None:
+                expect(consent_input).to_have_count(0)
+            else:
+                expect(consent_input).not_to_be_checked()
+                if consent:
+                    consent_input.check()
+
+            target.get_by_role("button", name="Register and watch").click()
+
+            video = target.locator("video")
+            expect(video).to_be_visible()
+
+            width, height = video.evaluate(
+                """
+                async (v) => {
+                    v.muted = true;
+                    await v.play();
+                    const start = v.currentTime;
+
+                    if (typeof v.requestVideoFrameCallback === 'function') {
+                        await new Promise((resolve, reject) => {
+                            let settled = false;
+                            const timeout = setTimeout(() => {
+                                if (settled) return;
+                                settled = true;
+                                reject(new Error('Timed out waiting for video frame after 5s'));
+                            }, 5000);
+
+                            v.requestVideoFrameCallback(() => {
+                                if (settled) return;
+                                settled = true;
+                                clearTimeout(timeout);
+                                resolve();
+                            });
+                        });
+                    } else {
+                        await new Promise((resolve, reject) => {
+                            let settled = false;
+                            let interval;
+                            const timeout = setTimeout(() => {
+                                if (settled) return;
+                                settled = true;
+                                clearInterval(interval);
+                                reject(new Error('Timed out waiting for video currentTime to advance after 5s'));
+                            }, 5000);
+
+                            interval = setInterval(() => {
+                                if (settled) return;
+                                if (v.currentTime > start) {
+                                    settled = true;
+                                    clearInterval(interval);
+                                    clearTimeout(timeout);
+                                    resolve();
+                                }
+                            }, 50);
+                        });
+                    }
+
+                    return [v.videoWidth, v.videoHeight];
+                }
+                """
+            )
+
+            assert (width, height) == (320, 180), (
+                f"Unexpected video dimensions {width}x{height}, expected 320x180"
+            )
+            return width, height
+        finally:
+            context.close()
+
+
+    def test_operator_delivery_and_browser_playback(self):
+        from browser import chromium
+        from playwright.sync_api import expect, sync_playwright
+        from test_drive_import import QuietHandler, service_worker
+        from werkzeug.serving import make_server
+
+        embed_path, outbound_path = self.enable_video(configure_delivery=False)
+        video_id = embed_path.rsplit("/", 1)[-1]
+        sid = self.enable_showcase()
+        gallery = "/showcases/constant-contact-gallery"
+        video_path = f"/operator/videos/{video_id}/interactivity"
+        show_path = f"/operator/showcases?select={sid}"
+
+        server = make_server(
+            "127.0.0.1", 0, self.client.application,
+            request_handler=QuietHandler, threaded=True,
+        )
+        base = f"http://127.0.0.1:{server.server_port}"
+
+        with service_worker(server), sync_playwright() as pw, chromium(pw) as browser:
+            staff = browser.new_page()
+            staff.add_init_script(
+                "sessionStorage.setItem('cueporchOperator', %s)" % json.dumps(OPERATOR)
+            )
+
+            def open_editor(path, showcase=False):
+                staff.goto(f"{base}{path}")
+                if showcase:
+                    staff.click("#showcaseRegistration")
+
+            def configure():
+                staff.click("#registrationConstantContactLoad")
+                expect(
+                    staff.locator("#registrationConstantContactList option").filter(
+                        has_text="Other list"
+                    )
+                ).to_have_count(1)
+                staff.click("#registrationConstantContactMore")
+                staff.select_option("#registrationConstantContactList", LIST_ID)
+                staff.click("#registrationConstantContactSave")
+                expect(
+                    staff.locator("#registrationConstantContactStatus")
+                ).to_have_text("Constant Contact delivery is enabled.")
+
+            open_editor(video_path)
+            configure()
+            open_editor(video_path)
+            expect(
+                staff.locator("#registrationConstantContactList")
+            ).to_have_value(LIST_ID)
+
+            open_editor(show_path, True)
+            configure()
+            open_editor(show_path, True)
+            expect(
+                staff.locator("#registrationConstantContactList")
+            ).to_have_value(LIST_ID)
+
+            self.play_in_browser(
+                browser, base, embed_path, "declined@example.test", False, embed=True
+            )
+            self.now = time.time() + 1
+            assert not self.tick()
+            assert self.provider.creates == []
+
+            self.play_in_browser(
+                browser, base, embed_path, "optin@example.test", True, embed=True
+            )
+            self.play_in_browser(
+                browser, base, gallery, "gallery@example.test", True
+            )
+            self.now = time.time() + 1
+            self.tick()
+            self.tick()
+            assert sorted(
+                c["email_address"]["address"] for c in self.provider.creates
+            ) == sorted(["optin@example.test", "gallery@example.test"])
+            assert all(
+                c["list_memberships"] == [LIST_ID]
+                for c in self.provider.creates
+            )
+
+            staff.click("#registrationConstantContactStop")
+            expect(
+                staff.locator("#registrationConstantContactStatus")
+            ).to_have_text("Constant Contact delivery is off.")
+            before = len(self.provider.creates)
+            self.play_in_browser(
+                browser, base, gallery, "after-stop@example.test", None
+            )
+            self.now = time.time() + 1
+            assert not self.tick()
+            assert len(self.provider.creates) == before
+
+            assert self.client.get(
+                outbound_path, headers=self.auth
+            ).get_json()["enabled"]
