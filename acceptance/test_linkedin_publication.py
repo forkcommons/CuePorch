@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, closing
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -60,6 +61,8 @@ class LinkedInPublication(unittest.TestCase):
             ready = set()
             approved_live_pages = set()
             page_offsets = []
+            scheduled_videos = []
+            announcement_writes = []
             operator = secrets.token_urlsafe(32)
 
             def signed_request(method, url, **kwargs):
@@ -73,7 +76,7 @@ class LinkedInPublication(unittest.TestCase):
             cleanup.enter_context(patch.multiple(linkedin_live, OAUTH=replace(
                 linkedin_live.OAUTH, authorization_url=origin + "/oauth/authorize",
                 token_url=origin + "/oauth/token",
-            ), API=origin + "/rest"))
+            ), API=origin + "/rest", V2_API=origin + "/v2"))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_LINKEDIN_CLIENT_ID": "cueporch",
@@ -144,6 +147,39 @@ class LinkedInPublication(unittest.TestCase):
                 assert offset == 10
                 rows = [dict(role="ADMINISTRATOR", state="APPROVED", organizationTarget=owner)]
                 return dict(elements=rows if owner in approved_live_pages else [], paging=dict(links=[]))
+
+            @remote.post("/v2/liveVideos")
+            def live_videos():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                assert request.headers["X-Restli-Protocol-Version"] == "2.0.0"
+                incoming = request.json
+                assert incoming["author"] == {"organization": owner}
+                assert incoming["name"] == "LinkedIn Live rehearsal"
+                assert incoming["scheduledAt"] > int(time() * 1000)
+                scheduled_videos.append(incoming["scheduledAt"])
+                return "", 201, {"x-restli-id": str(1110 + len(scheduled_videos))}
+
+            @remote.post("/v2/ugcPosts")
+            def announcements():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                assert request.headers["X-Restli-Protocol-Version"] == "2.0.0"
+                video = f"urn:li:liveVideo:{1110 + len(scheduled_videos)}"
+                body = request.json
+                assert body == {
+                    "author": owner, "lifecycleState": "PUBLISHED",
+                    "specificContent": {"com.linkedin.ugc.ShareContent": {
+                        "media": [{"media": video, "status": "READY"}],
+                        "shareCommentary": {"text": "LinkedIn Live rehearsal"},
+                        "shareMediaCategory": "URN_REFERENCE",
+                    }},
+                    "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+                    "distribution": {"feedDistribution": "MAIN_FEED", "externalDistributionChannels": [],
+                                     "distributedViaFollowFeed": True},
+                }
+                announcement_writes.append(video)
+                if len(announcement_writes) == 2:
+                    return "", 503
+                return "", 201, {"x-restli-id": "urn:li:ugcPost:2222"}
 
             @remote.post("/rest/videos")
             def videos():
@@ -297,6 +333,57 @@ class LinkedInPublication(unittest.TestCase):
                 expect(page.get_by_text("Company Page 12345", exact=True)).to_be_visible()
                 self.assertEqual([0, 10, 0, 10], page_offsets)
                 self.assertNotIn("fixture-linkedin-live", api.get(base + "/api/integrations", headers=auth).text())
+                starts = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(second=0, microsecond=0)
+                event = dict(title="LinkedIn Live rehearsal", slug="linkedin-live-rehearsal", visibility="public",
+                             type="live", latency="standard", save_replay=False,
+                             schedule=dict(timezone="UTC", repeat="days", count=2,
+                                           start=starts.strftime("%Y-%m-%dT%H:%M"),
+                                           end=(starts + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")))
+                created = api.post(base + "/api/live-events", headers=auth, data=event)
+                self.assertTrue(created.ok, created.text())
+                data = created.json()
+                first, next_date = data["occurrences"]
+                path = base + f"/api/live-events/{data['id']}"
+                schedule_path = f"{path}/{first['id']}/destinations/linkedin/schedule"
+                next_path = f"{path}/{next_date['id']}/destinations/linkedin/schedule"
+                company = {"company": "12345"}
+                denied = api.post(schedule_path, headers=auth, data={"company": "999"})
+                self.assertEqual(403, denied.status)
+                self.assertEqual([], scheduled_videos)
+                page.goto(base + "/operator/live-events")
+                page.get_by_role("button", name="Open production for LinkedIn Live rehearsal",
+                                 exact=False).first.click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Load LinkedIn Company Page", exact=True).click()
+                page.get_by_role("button", name="Schedule and announce on LinkedIn", exact=True).click()
+                expect(page.locator("#linkedinLivePost")).to_have_attribute(
+                    "href", "https://www.linkedin.com/feed/update/urn:li:ugcPost:2222/")
+                repeated = api.post(schedule_path, headers=auth, data=company)
+                self.assertEqual(200, repeated.status, repeated.text())
+                self.assertEqual("urn:li:ugcPost:2222", repeated.json()["post_urn"])
+                self.assertEqual([int(starts.timestamp()) * 1000], scheduled_videos)
+                self.assertEqual(["urn:li:liveVideo:1111"], announcement_writes)
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
+                held = api.post(base + "/api/live-events", headers=auth, data=event | {"slug": "held-linkedin-live"})
+                self.assertTrue(held.ok, held.text())
+                hold = held.json()
+                pending = hold["occurrences"][0]["id"]
+                blocked = api.post(base + f"/api/live-events/{hold['id']}/{pending}/destinations/linkedin/schedule",
+                                   headers=auth, data=company)
+                self.assertEqual(409, blocked.status, blocked.text())
+                self.assertEqual(1, len(scheduled_videos))
+                self.assertEqual(1, len(announcement_writes))
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": False}).ok)
+                uncertain = api.post(next_path, headers=auth, data=company)
+                self.assertEqual((202, {"state": "unconfirmed"}), (uncertain.status, uncertain.json()))
+                stop()
+                stop = start_app()
+                after_restart = api.post(next_path, headers=auth, data=company)
+                self.assertEqual((202, {"state": "unconfirmed"}), (after_restart.status, after_restart.json()))
+                self.assertEqual([int(starts.timestamp()) * 1000,
+                                  int((starts + timedelta(days=1)).timestamp()) * 1000], scheduled_videos)
+                self.assertEqual(["urn:li:liveVideo:1111", "urn:li:liveVideo:1112"], announcement_writes)
+                page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect LinkedIn Live", exact=True)).to_be_visible()
                 expect(page.get_by_role("button", name="Disconnect LinkedIn Company Page", exact=True)).to_be_visible()
@@ -310,6 +397,7 @@ class LinkedInPublication(unittest.TestCase):
         print("LinkedIn Company Page OAuth, multipart restart and ordered ETags, opted-in approval, public posting,"
               " exact playback, ambiguous post result and disconnect passed.")
         print("Separate LinkedIn Live grant, paginated Page admin verification, and independent disconnect passed.")
+        print("LinkedIn Live Company Page browser scheduling, public announcement, optional approval and restart passed.")
 
 
 if __name__ == "__main__":

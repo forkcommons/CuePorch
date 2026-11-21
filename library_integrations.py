@@ -32,7 +32,6 @@ import mailchimp_crm
 import library_mailchimp_forms
 import library_list_registration
 import marketo_crm
-import linkedin_live
 import linkedin_upload
 import mail_relay
 import social_publication
@@ -290,7 +289,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, facebook_live_connection, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, facebook_live_connection, linkedin_live_connection, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -312,7 +311,6 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
-    linkedin_live_connection = linkedin_live.LiveConnection(tx, operator, sharing_access)
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)

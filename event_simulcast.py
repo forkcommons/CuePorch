@@ -26,6 +26,7 @@ from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
 from browser_account_security import private
 import event_peer
 import facebook_live_job
+import linkedin_live_job
 import facebook_upload
 import youtube_live
 
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS youtube_live_creation(
  revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
  phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT,
  PRIMARY KEY(event,opens));
-""" + facebook_live_job.SCHEMA
+""" + facebook_live_job.SCHEMA + linkedin_live_job.SCHEMA
 
 
 def migrate(con):
@@ -478,7 +479,7 @@ class Simulcast:
 
 
 def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
-             facebook_live_connection,
+             facebook_live_connection, linkedin_live_connection,
              creation_access):
     live_connections = {item.key: item for item in (youtube_live_connection, facebook_live_connection)}
     def _require_provider_connection():
@@ -745,6 +746,56 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 )
         except Timeout:
             return private(dict(state="unconfirmed"), 202)
+        return private(result, status)
+
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/schedule")
+    def schedule_linkedin_live(uid, opens):
+        staff()
+        payload = request.get_json()
+        company = payload.get("company") if isinstance(payload, dict) else None
+        connection = linkedin_live_connection
+        if not connection.configured:
+            abort(409, "Configure LinkedIn Live before scheduling a broadcast.")
+        if company != connection.company:
+            abort(403, "Choose the connected LinkedIn Live Company Page.")
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            event_revision, title, slot = creation_access(con, uid, opens)
+            saved = connection.connection(con)
+            if not saved:
+                abort(409, "Connect LinkedIn Live before scheduling a broadcast.")
+            starts = datetime.fromisoformat(slot["start"])
+            if starts <= datetime.now(timezone.utc):
+                abort(409, "Choose a future occurrence for the LinkedIn Live announcement.")
+            return event_revision, saved["revision"], title.strip()[:75], int(starts.timestamp()) * 1000
+
+        with tx() as con:
+            event_revision, revision, title, start_ms = access(con)
+
+        def check(con):
+            if access(con) != (event_revision, revision, title, start_ms):
+                abort(409, "The event or LinkedIn connection changed. Reload destinations.")
+
+        def before_send():
+            staff()
+            with tx() as con:
+                check(con)
+
+        lease_dir = outputs.directory / "linkedin-schedule"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lock_name = digest(b"CuePorch LinkedIn schedule", f"{uid}:{opens}:{company}".encode(), "sha256").hex()
+        try:
+            with FileLock(lease_dir / (lock_name + ".lock"), timeout=0):
+                owner = connection.authorized_company(revision)["urn"]
+                result, status = linkedin_live_job.provision(
+                    tx, check,
+                    lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
+                    lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
+                    uid, opens, company, event_revision, revision,
+                )
+        except Timeout:
+            return private(dict(state="pending"), 202)
         return private(result, status)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
