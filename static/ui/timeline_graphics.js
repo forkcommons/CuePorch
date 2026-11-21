@@ -117,7 +117,12 @@ export function mountTimelineGraphics(assets, receive) {
     syncDisabled();
     return { show };
 }
-export function createTimelineGraphicPreview() {
+export function createTimelineOverlayPreview(kind) {
+    const suffix = kind === 'graphic' ? 'Graphic' : 'Sticker';
+    const imageId = `timeline${suffix}Preview`;
+    const statusId = `timeline${suffix}Status`;
+    const canvasClass = `has-timeline-${kind}`;
+    const endpoint = `/api/library/timeline-${kind}s/preview`;
     let controller = null;
     let objectUrl = null;
     let cacheKey = null;
@@ -134,18 +139,18 @@ export function createTimelineGraphicPreview() {
     };
     const clearOverlay = () => {
         const canvas = document.getElementById('timelinePreviewCanvas');
-        const img = document.getElementById('timelineGraphicPreview');
-        canvas.classList.remove('has-timeline-graphic');
+        const img = document.getElementById(imageId);
+        canvas.classList.remove(canvasClass);
         img.onload = null;
         img.onerror = null;
         img.removeAttribute('src');
         img.hidden = true;
     };
-    return (graphic, ratio, color, credential) => {
+    return (spec, ratio, color, credential) => {
         const canvas = document.getElementById('timelinePreviewCanvas');
-        const img = document.getElementById('timelineGraphicPreview');
-        const status = document.getElementById('timelineGraphicStatus');
-        if (!graphic) {
+        const img = document.getElementById(imageId);
+        const status = document.getElementById(statusId);
+        if (!spec) {
             if (controller) {
                 controller.abort();
                 controller = null;
@@ -157,7 +162,7 @@ export function createTimelineGraphicPreview() {
         }
         canvas.style.setProperty('--timeline-aspect', ratio.replace(':', ' / '));
         canvas.style.setProperty('--timeline-background', `#${color.replace(/^#/, '')}`);
-        const key = `${JSON.stringify(graphic)}|${ratio}`;
+        const key = `${JSON.stringify(spec)}|${ratio}`;
         if (key === cacheKey)
             return;
         if (controller)
@@ -170,10 +175,10 @@ export function createTimelineGraphicPreview() {
         const run = async () => {
             let createdUrl = null;
             try {
-                const res = await fetch('/api/library/timeline-graphics/preview', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credential}` },
-                    body: JSON.stringify({ graphic, ratio }),
+                    body: JSON.stringify({ [kind]: spec, ratio }),
                     signal: local.signal,
                 });
                 if (controller !== local)
@@ -194,7 +199,7 @@ export function createTimelineGraphicPreview() {
                         return;
                     }
                     img.hidden = false;
-                    canvas.classList.add('has-timeline-graphic');
+                    canvas.classList.add(canvasClass);
                     status.textContent = '';
                 };
                 img.onerror = () => {
@@ -218,4 +223,7 @@ export function createTimelineGraphicPreview() {
         };
         void run();
     };
+}
+export function createTimelineGraphicPreview() {
+    return createTimelineOverlayPreview('graphic');
 }

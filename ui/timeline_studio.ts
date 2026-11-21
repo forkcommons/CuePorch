@@ -3,19 +3,20 @@ import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
 import type { BrandKit, BrandKits } from "./brand_kits.js";
 import {showTimelineCard, type CardClip} from "./timeline_templates.js";
-import { createTimelineGraphicPreview, mountTimelineGraphics, type TimelineGraphic, type GraphicAsset } from "./timeline_graphics.js";
+import { createTimelineGraphicPreview, createTimelineOverlayPreview, mountTimelineGraphics, type TimelineGraphic, type GraphicAsset } from "./timeline_graphics.js";
+import { mountTimelineStickers, type TimelineSticker } from "./timeline_stickers.js";
 import { mountTimelineStock, type StockRights } from "./timeline_stock.js";
 
 interface MediaClip { work: string; cut: string; start: number; end: number }
-type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic};
-function isMedia(clip: Clip | undefined): clip is MediaClip & {graphic?: TimelineGraphic} {
+type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic; sticker?: TimelineSticker};
+function isMedia(clip: Clip | undefined): clip is MediaClip & {graphic?: TimelineGraphic; sticker?: TimelineSticker} {
   return clip !== undefined && "work" in clip;
 }
 interface Music { work: string; cut?: string; start: number; gain: number }
 interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null; brand?: BrandKit | null }
 interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
 interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null }
-interface Media { id: string; title: string; asset_type?: string; folder: string | null; stock_asset?: StockRights | null }
+interface Media { id: string; title: string; asset_type?: string; source_cut?: string | null; folder: string | null; stock_asset?: StockRights | null }
 interface Cue { start: number; end: number; text: string }
 
 const node = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -54,6 +55,8 @@ let uploadId = "";
 let kits: BrandKit[] = [];
 let graphicControls: ReturnType<typeof mountTimelineGraphics> | undefined;
 const paintGraphic = createTimelineGraphicPreview();
+const paintSticker = createTimelineOverlayPreview<TimelineSticker>("sticker");
+const stickerControls = mountTimelineStickers(setSticker);
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
 function message(error: unknown) {
@@ -212,6 +215,8 @@ function paint() {
   const selectedClip = state.clips[selected];
   graphicControls?.show(selectedClip?.graphic ?? null, Boolean(selectedClip));
   paintGraphic(selectedClip?.graphic ?? null, state.ratio, state.color, key.value);
+  stickerControls.show(selectedClip?.sticker ?? null, Boolean(selectedClip), [...media.values()]);
+  paintSticker(selectedClip?.sticker ?? null, state.ratio, state.color, key.value);
   if (selectedClip && !isMedia(selectedClip)) {
     cardPreview.hidden = false;
     showTimelineCard(cardPreview, selectedClip, state.ratio);
@@ -589,6 +594,19 @@ async function loadTimelineGraphics() {
   }
 }
 
+function setSticker(sticker: TimelineSticker | null) {
+  const clip = state.clips[selected];
+  if (!clip) throw new Error("Select a clip before applying a sticker.");
+  let updated: Clip;
+  if (sticker) {
+    updated = {...clip, sticker};
+  } else {
+    const {sticker: _removed, ...rest} = clip;
+    updated = rest as Clip;
+  }
+  change({...state, clips: state.clips.map((item, index) => index === selected ? updated : item)});
+}
+
 async function open() {
   const [items, loaded, shelf] = await Promise.all([
     call<Media[]>("/api/library"), call<Project>(endpoint() + "/timeline"), call<BrandKits>("/api/library/brand-kits"),
@@ -625,8 +643,13 @@ async function open() {
       paint();
     },
     use: async item => {
-      if (item.asset_type === "audio") change({ ...state, music: { work: item.id, start: 0, gain: 25 } });
-      else await appendClip(item.id);
+      if (item.asset_type === "image" && item.source_cut) {
+        setSticker({ work: item.id, cut: item.source_cut, position: "bottom-right", size: 30 });
+      } else if (item.asset_type === "audio") {
+        change({ ...state, music: { work: item.id, start: 0, gain: 25 } });
+      } else {
+        await appendClip(item.id);
+      }
     },
   });
 }

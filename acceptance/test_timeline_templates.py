@@ -33,6 +33,31 @@ class TimelineTemplates(unittest.TestCase):
     def test_stock(self):
         self.run_fixture(check_timeline_stock)
 
+    def test_stickers(self):
+        self.run_fixture(check_timeline_stickers)
+
+    def test_sticker_apng_cover_does_not_change_frame_timing(self):
+        from PIL import Image
+        from timeline_stickers import prepare_sticker
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "cover.png"
+            with (Image.new("RGBA", (40, 24), "blue") as cover,
+                  Image.new("RGBA", cover.size, (255, 0, 0, 128)) as red,
+                  Image.new("RGBA", cover.size, (0, 255, 0, 192)) as green):
+                cover.save(source, save_all=True, default_image=True, append_images=[red, green],
+                           duration=[180, 240], loop=0)
+            path, _, _ = prepare_sticker(source, root, (240, 135), {"size": 30, "position": "center"})
+            with Image.open(path) as image:
+                self.assertFalse(image.info.get("default_image"))
+                self.assertEqual(image.n_frames, 2)
+                self.assertEqual(image.info["duration"], 180)
+                self.assertEqual(image.getpixel((5, 5)), (255, 0, 0, 128))
+                image.seek(1)
+                self.assertEqual(image.info["duration"], 240)
+                self.assertEqual(image.getpixel((5, 5)), (0, 255, 0, 192))
+
     def run_fixture(self, check):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory())) / "collection"
@@ -290,6 +315,134 @@ def check_timeline_graphics(page, base, auth, uid, root):
 
     rgb = avg(1.0, 640, 360)
     assert rgb[2] > 180 and rgb[0] < 80 and rgb[1] < 80, rgb
+
+
+def check_timeline_stickers(page, base, auth, uid, root):
+    from io import BytesIO
+
+    from PIL import Image
+
+    path = root.parent / "sticker.gif"
+    red = Image.new("RGBA", (48, 48))
+    green = red.copy()
+    red.paste((255, 0, 0, 255), (8, 8, 40, 40))
+    green.paste((0, 255, 0, 255), (8, 8, 40, 40))
+    red.save(path, save_all=True, append_images=[green], duration=[250, 250], loop=0, disposal=2)
+
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    choose_clip = page.locator("#timelineClips").get_by_role("button", name="blue", exact=True)
+    choose_clip.click()
+    page.get_by_text("Add a licensed file", exact=True).click()
+    page.locator("#timelineStockFile").set_input_files(str(path))
+    page.locator("#timelineStockUploadCategory").fill("Sticker")
+    page.locator("#timelineStockLicense").select_option("CC-BY-4.0")
+    page.locator("#timelineStockAuthor").fill("GIF Fixture")
+    page.locator("#timelineStockSource").fill("https://example.test/gif")
+    page.locator("#timelineStockUploadButton").click()
+    expect(page.locator("#timelineStockCredit")).to_contain_text("GIF Fixture")
+
+    page.locator("#timelineStockKind").select_option("image")
+    asset = page.locator("#timelineStockAsset").input_value()
+    page.locator("#timelineStockUse").click()
+    expect(page.locator("#timelineStickerAsset")).to_have_value(asset)
+    page.locator("#timelineStickerPosition").select_option("center")
+    page.locator("#applyTimelineSticker").click()
+    expect(page.locator("#timelineStickerPreview")).to_be_visible()
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+
+    work_url = f"{base}/api/library/work/{uid}"
+    draft = requests.get(work_url + "/timeline", headers=auth, timeout=15)
+    draft.raise_for_status()
+    sticker = draft.json()["settings"]["clips"][0]["sticker"]
+    assert sticker["work"] == asset and sticker["position"] == "center", sticker
+    preview_url = base + "/api/library/timeline-stickers/preview"
+    body = {"ratio": "16:9", "sticker": sticker}
+    assert requests.post(preview_url, json=body, timeout=15).status_code == 403
+    assert requests.post(preview_url, headers=auth, json=body | {"ratio": []}, timeout=15).status_code == 422
+    res = requests.post(preview_url, headers=auth, json=body, timeout=15)
+    res.raise_for_status()
+    assert "private" in res.headers["Cache-Control"] and "no-store" in res.headers["Cache-Control"]
+    with Image.open(BytesIO(res.content)) as preview:
+        assert preview.format == "PNG" and preview.n_frames == 2
+        center = preview.width // 2, preview.height // 2
+        assert preview.convert("RGBA").getpixel(center) == (255, 0, 0, 255)
+        assert preview.convert("RGBA").getpixel((2, 2))[3] == 0
+        preview.seek(1)
+        assert preview.convert("RGBA").getpixel(center) == (0, 255, 0, 255)
+
+    page.reload()
+    choose_clip.click()
+    expect(page.locator("#timelineStickerAsset")).to_have_value(asset)
+    expect(page.locator("#timelineStickerPosition")).to_have_value("center")
+    expect(page.locator("#timelineStickerPreview")).to_be_visible()
+    page.locator("#renderTimeline").click()
+    expect(page.locator("#timelineStatus")).to_have_text("New version saved.", timeout=60000)
+    check_sticker_output(root, uid)
+
+
+def check_sticker_output(root, uid):
+    root = Path(root)
+    manifest = json.loads((root / "manifest.json").read_text())
+    work = next(
+        w for w in manifest["works"] if w.get("id") == uid or w.get("uid") == uid
+    )
+
+    stock = [a for a in (work.get("editor_assets") or []) if a.get("source") == "cueporch-stock"]
+    assert len(stock) == 1, stock
+    asset = stock[0]
+    assert asset.get("credit") == "GIF Fixture", asset.get("credit")
+    assert asset.get("license") == "CC-BY-4.0", asset.get("license")
+    assert asset.get("source_url") == "https://example.test/gif", asset.get("source_url")
+
+    files = work.get("files") or []
+    orig = [f for f in files if f.get("role") == "original"]
+    play = [f for f in files if f.get("role") == "playback"]
+    assert orig, "missing original"
+    assert play, "missing playback"
+
+    for f in files:
+        role = f.get("role")
+        sha = f.get("sha256")
+        assert role in ("original", "playback"), role
+        assert sha, f"missing sha256 for {role}"
+        p = root / "objects" / sha
+        assert p.exists(), p
+        proc = subprocess.run(
+            ["ffprobe", "-hide_banner", "-show_format", str(p)],
+            capture_output=True,
+        )
+        text = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+        assert "Credit: GIF Fixture" in text, (role, sha)
+
+    play_src = root / "objects" / play[0]["sha256"]
+
+    def avg(t, x, y):
+        raw = subprocess.check_output([
+            "ffmpeg", "-v", "error", "-ss", str(t), "-i", str(play_src),
+            "-vf", f"crop=2:2:{x}:{y}", "-frames:v", "1",
+            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+        ])
+        assert len(raw) >= 3, (t, x, y, len(raw))
+        n = len(raw) // 3
+        return tuple(sum(raw[i::3]) // n for i in range(3))
+
+    r, g, b = avg(0.12, 640, 360)
+    assert r > 180 and g < 80 and b < 80, (0.12, r, g, b)
+    r, g, b = avg(0.37, 640, 360)
+    assert g > 180 and r < 80 and b < 80, (0.37, r, g, b)
+    r, g, b = avg(0.62, 640, 360)
+    assert r > 180 and g < 80 and b < 80, (0.62, r, g, b)
+    r, g, b = avg(0.37, 4, 4)
+    assert b > 180 and r < 80 and g < 80, (0.37, 4, 4, r, g, b)
+
+    with TemporaryDirectory() as tmp:
+        target = Path(tmp) / "sticker-export"
+        export(root, root.parent / "workspace.sqlite", target)
+        portable = json.loads((target / "collection" / "manifest.json").read_text())
+        pw = next(
+            w for w in portable["works"] if w.get("id") == uid or w.get("uid") == uid
+        )
+        assert pw.get("editor_assets") == work.get("editor_assets"), pw.get("editor_assets")
 
 
 def check_timeline_stock(page, base, auth, uid, root):

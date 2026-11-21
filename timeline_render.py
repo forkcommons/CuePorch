@@ -7,6 +7,13 @@ from media_tools import run_media, video_properties
 
 
 @dataclass(frozen=True)
+class Sticker:
+    path: Path
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
 class Clip:
     source: Path
     start: int
@@ -14,6 +21,7 @@ class Clip:
     has_audio: bool
     still: bool = False
     graphic: Path | None = None
+    sticker: Sticker | None = None
 
 
 @dataclass(frozen=True)
@@ -49,17 +57,43 @@ def render(target, clips, size, color, music=None, stopping=None, *, credit_meta
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x{color},setsar=1,format=yuv420p,"
             f"tpad=stop_mode=clone:stop_duration={length},trim=duration={length}"
         )
-        if clip.graphic is not None:
+        has_graphic = clip.graphic is not None
+        has_sticker = clip.sticker is not None
+        # Choose the label the base stream is written to so the clip chain
+        # always ends on [v{index}] regardless of graphic/sticker presence.
+        if not has_graphic and not has_sticker:
+            base_out = f"v{index}"
+        else:
+            base_out = f"b{index}"
+        chain_parts = [f"[{clip_input}:V:0]{base_filter}[{base_out}]"]
+        current = base_out
+        if has_graphic:
             graphic_input = video_input
             sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2",
                             "-framerate", "30", "-i", str(clip.graphic)))
             video_input += 1
-            filters.append(
-                f"[{clip_input}:V:0]{base_filter}[base{index}];"
-                f"[base{index}][{graphic_input}:V:0]overlay=0:0:eof_action=repeat[v{index}]"
+            graphic_out = f"v{index}" if not has_sticker else f"g{index}"
+            chain_parts.append(
+                f"[{current}][{graphic_input}:V:0]overlay=0:0:eof_action=repeat[{graphic_out}]"
             )
-        else:
-            filters.append(f"[{clip_input}:V:0]{base_filter}[v{index}]")
+            current = graphic_out
+        if has_sticker:
+            sticker = clip.sticker
+            sticker_input = video_input
+            is_apng = sticker.path.suffix.lower() == ".apng"
+            if is_apng:
+                sources.extend(("-protocol_whitelist", "file,pipe", "-f", "apng",
+                                "-ignore_loop", "0", "-i", str(sticker.path)))
+                overlay_opts = "shortest=1"
+            else:
+                sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2",
+                                "-framerate", "30", "-i", str(sticker.path)))
+                overlay_opts = "eof_action=repeat:shortest=0"
+            video_input += 1
+            chain_parts.append(
+                f"[{current}][{sticker_input}:V:0]overlay={sticker.x}:{sticker.y}:{overlay_opts}[v{index}]"
+            )
+        filters.append(";".join(chain_parts))
         if clip.has_audio and not clip.still:
             audio = f"[{clip_input}:a:0]aresample=48000,aformat=channel_layouts=stereo,apad"
         else:

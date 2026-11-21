@@ -2,8 +2,11 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from io import BytesIO
 import json
+from pathlib import Path
 import re
+import tempfile
 import uuid
 
 from flask import abort, request, send_file, url_for
@@ -15,6 +18,7 @@ from media_tools import video_properties
 import subtitles
 from team_brand_kits import written_kit
 from timeline_cards import normalize_card
+import timeline_stickers
 import timeline_templates
 import timeline_graphics
 
@@ -67,14 +71,18 @@ def normalize(raw, get_work, root, con):
             or not isinstance(raw_clips, list) or len(raw_clips) > 128):
         abort(422, "Choose a canvas, a background color and up to 128 source clips.")
     clips = []
+
     for item in raw_clips:
         if not isinstance(item, dict):
             abort(422, "Choose a source for each clip.")
         graphic = timeline_graphics.normalize_graphic(item.get("graphic"))
+        sticker = timeline_stickers.normalize_sticker(item.get("sticker"), get_work, find_cut)
         if "card" in item:
             clip = normalize_card(item)
             if graphic is not None:
                 clip["graphic"] = graphic
+            if sticker is not None:
+                clip["sticker"] = sticker
             clips.append(clip)
             continue
         if not isinstance(item.get("work"), str):
@@ -88,6 +96,8 @@ def normalize(raw, get_work, root, con):
         clip = dict(work=work["id"], cut=video_version_key(source), start=start, end=end)
         if graphic is not None:
             clip["graphic"] = graphic
+        if sticker is not None:
+            clip["sticker"] = sticker
         clips.append(clip)
 
     music = raw.get("music")
@@ -128,6 +138,40 @@ def register(app, tx, staff, get_work, root, signing_key):
     signer = URLSafeTimedSerializer(signing_key, salt="cueporch-timeline-preview")
     timeline_templates.register_templates(app, staff)
     timeline_graphics.register_graphics(app, staff, SIZES)
+
+    @app.post("/api/library/timeline-stickers/preview")
+    def preview_timeline_sticker():
+        staff()
+        request.max_content_length = 4096
+        body = request.get_json()
+        if (not isinstance(body, dict) or not isinstance(body.get("ratio"), str)
+                or body["ratio"] not in SIZES
+                or not isinstance(body.get("sticker"), dict)):
+            abort(422, "Choose a valid sticker and canvas.")
+        with tx() as con:
+            sticker = timeline_stickers.normalize_sticker(
+                body["sticker"], lambda uid: get_work(con, uid), find_cut)
+            work = get_work(con, sticker["work"])
+            cut = find_cut(work, sticker["cut"])
+            try:
+                source = timeline_stickers.sticker_source(root, cut)
+            except ValueError as exc:
+                abort(422, str(exc))
+        width, height = SIZES[body["ratio"]]
+        scale = 240 / max(width, height)
+        canvas240 = (round(width * scale), round(height * scale))
+        with tempfile.TemporaryDirectory() as scratch:
+            try:
+                path, _x, _y = timeline_stickers.prepare_sticker(
+                    source, Path(scratch), canvas240, sticker, preview=True)
+            except ValueError as exc:
+                abort(422, str(exc))
+            data = Path(path).read_bytes()
+        response = send_file(BytesIO(data), mimetype="image/png", max_age=0)
+        response.cache_control.no_store = True
+        response.cache_control.private = True
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     def preview_for(con, uid, version):
         work = get_work(con, uid)

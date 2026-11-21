@@ -16,6 +16,7 @@ export interface StockItem {
   title: string;
   asset_type?: string;
   stock_asset?: StockRights | null;
+  source_cut?: string | null;
 }
 
 function el<T extends HTMLElement>(id: string): T {
@@ -58,7 +59,12 @@ export function mountTimelineStock(context: {
 
   const stockItems = () => context.items().filter((item) => !!item.stock_asset);
   const usableItems = () =>
-    stockItems().filter((item) => item.asset_type === "video" || item.asset_type === "audio");
+    stockItems().filter(
+      (item) =>
+        item.asset_type === "video"
+        || item.asset_type === "audio"
+        || (item.asset_type === "image" && !!item.source_cut),
+    );
 
   function unique(key: keyof StockRights): string[] {
     const values = usableItems()
@@ -141,7 +147,7 @@ export function mountTimelineStock(context: {
 
   function rebuild(): void {
     fill(category, unique("category"), "All categories");
-    fill(kind, ["video", "audio"], "All kinds");
+    fill(kind, ["video", "audio", "image"], "All kinds");
     fill(mood, unique("mood"), "All moods");
     fill(genre, unique("genre"), "All genres");
     renderAssets();

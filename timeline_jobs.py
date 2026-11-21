@@ -23,7 +23,8 @@ from stock_assets import stock_credit, write_credit_metadata
 import subtitles
 import timeline_cards
 import timeline_graphics
-from timeline_render import Clip, Music, render
+import timeline_stickers
+from timeline_render import Clip, Music, Sticker, render
 
 
 SCHEMA = """
@@ -139,18 +140,38 @@ def register(app, tx, staff, get_work, root, remember_work):
             None if cut is None else stock_credit(source_work, cut)
             for _, source_work, cut in sources
         )
-        return render_input, sources, music, (source_credits, music_credit)
+        stickers = []
+        for item, _work, _cut in sources:
+            layer = item.get("sticker")
+            if not layer:
+                stickers.append(None)
+                continue
+            photo = get_work(con, layer["work"])
+            photo_cut = find_cut(photo, layer["cut"])
+            path = timeline_stickers.sticker_source(root, photo_cut)
+            credit = stock_credit(photo, photo_cut) or dict(
+                source="cueporch-library",
+                id=photo["id"],
+                revision=video_version_key(photo_cut),
+                asset_type="sticker",
+            )
+            stickers.append((path, credit))
+        return render_input, sources, stickers, music, (source_credits, music_credit)
 
     def process(job):
         with tx() as con:
             loaded = load_job(con, job)
         if isinstance(loaded, str):
             return loaded
-        settings, sources, music, attribution = loaded
+        settings, sources, stickers, music, attribution = loaded
         with TemporaryDirectory(dir=root / "objects", prefix="timeline-") as name:
             scratch = Path(name)
             clips = []
-            for item, _, cut in sources:
+            for (item, _, cut), sticker_info in zip(sources, stickers, strict=True):
+                sticker = None
+                if sticker_info:
+                    sticker = Sticker(*timeline_stickers.prepare_sticker(
+                        sticker_info[0], scratch, SIZES[settings["ratio"]], item["sticker"]))
                 graphic_path = None
                 if item.get("graphic"):
                     img = timeline_graphics.draw_graphic(item["graphic"], SIZES[settings["ratio"]])
@@ -160,11 +181,13 @@ def register(app, tx, staff, get_work, root, remember_work):
                     path = scratch / (uuid.uuid4().hex + ".png")
                     timeline_cards.draw_card(path, item["card"], SIZES[settings["ratio"]])
                     clips.append(Clip(str(path), 0, item["end"], False, still=True,
-                                      graphic=str(graphic_path) if graphic_path else None))
+                                      graphic=str(graphic_path) if graphic_path else None,
+                                      sticker=sticker))
                 else:
                     file, info = video_source(root, cut)
                     clips.append(Clip(file, item["start"], item["end"], bool(info["audio"]),
-                                      graphic=str(graphic_path) if graphic_path else None))
+                                      graphic=str(graphic_path) if graphic_path else None,
+                                      sticker=sticker))
             source_credits, music_credit = attribution
             editor_assets = []
             seen = set()
@@ -184,6 +207,8 @@ def register(app, tx, staff, get_work, root, remember_work):
                 if "graphic" in item:
                     add_asset({"id": item["graphic"]["id"], "source": "cueporch-built-in", "revision": 1})
                 add_asset(source_credits[idx])
+                if stickers[idx]:
+                    add_asset(stickers[idx][1])
             add_asset(music_credit)
             metadata = write_credit_metadata(scratch / "credits.ffmeta", editor_assets)
             original_path, screening_path = scratch / "timeline.mp4", scratch / "screening.mp4"
