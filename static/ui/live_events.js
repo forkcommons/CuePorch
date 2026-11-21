@@ -80,6 +80,10 @@ const youtubeSubmit = button("addYouTubeDestinationButton");
 const youtubeCreate = element("createYouTubeBroadcast");
 const youtubeCreateButton = button("createYouTubeBroadcastButton");
 let youtubeNext = null;
+const facebookForm = element("addFacebookLiveDestination");
+const facebookPage = element("facebookLivePage");
+const facebookSubmit = button("prepareFacebookLive");
+const facebookStatus = element("facebookLiveStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const backupKey = input("backupEncoderKey");
@@ -302,6 +306,10 @@ function choose(event, instance) {
     youtubeSubmit.disabled = true;
     youtubeCreate.reset();
     youtubeCreateButton.textContent = "Create YouTube broadcast";
+    facebookForm.hidden = true;
+    facebookPage.replaceChildren();
+    facebookSubmit.disabled = true;
+    facebookStatus.textContent = "";
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -838,6 +846,7 @@ async function refreshDestinations(result) {
         return;
     destinationForm.hidden = !result.available;
     youtubePanel.hidden = !result.available;
+    facebookForm.hidden = !result.available;
     destinationStatus.textContent = result.available ? "" : "Destinations require an event open to the public without registration.";
     const labels = {
         waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
@@ -847,7 +856,8 @@ async function refreshDestinations(result) {
     destinationList.replaceChildren(...result.destinations.map(item => {
         const row = document.createElement("li");
         const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
-            : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
+            : item.provider === "facebook-live" ? " · Facebook Live for this date"
+                : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
         row.textContent = `${item.name}${scope} · ${item.server} · ${labels[item.state] || item.state}`;
         const control = document.createElement("button");
         control.type = "button";
@@ -919,8 +929,8 @@ youtubeCreate.onsubmit = event => {
         return;
     const path = mediaPath("destinations/youtube/create");
     const privacy = new FormData(youtubeCreate).get("privacy");
-    youtubeCreateButton.disabled = true;
     void action(async () => {
+        youtubeCreateButton.disabled = true;
         try {
             const result = await request(path, "POST", { privacy });
             if (!active || mediaPath("destinations/youtube/create") !== path)
@@ -937,6 +947,41 @@ youtubeCreate.onsubmit = event => {
         }
         finally {
             youtubeCreateButton.disabled = false;
+        }
+    });
+};
+button("loadFacebookLivePages").onclick = () => void action(async () => {
+    if (!active)
+        return;
+    const path = mediaPath("destinations/facebook");
+    const result = await request("/api/integrations/facebook-live/pages");
+    if (!active || mediaPath("destinations/facebook") !== path)
+        return;
+    facebookPage.replaceChildren(...result.items.map(page => new Option(page.name, page.id)));
+    facebookSubmit.disabled = !result.items.length;
+});
+facebookForm.onsubmit = event => {
+    event.preventDefault();
+    if (!active || facebookSubmit.disabled || !facebookPage.value)
+        return;
+    const path = mediaPath("destinations/facebook");
+    const page = facebookPage.value;
+    void action(async () => {
+        facebookSubmit.disabled = true;
+        try {
+            const result = await request(path, "POST", { page });
+            if (!active || mediaPath("destinations/facebook") !== path)
+                return;
+            if (result.state === "prepared") {
+                facebookStatus.textContent = "Facebook Live prepared. Preview and publish in Facebook Live Producer.";
+                await refreshDestinations();
+            }
+            else {
+                facebookStatus.textContent = "Facebook has not confirmed the broadcast. Check Live Producer.";
+            }
+        }
+        finally {
+            facebookSubmit.disabled = !facebookPage.options.length;
         }
     });
 };

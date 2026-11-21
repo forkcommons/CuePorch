@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, closing
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -54,6 +55,7 @@ class FacebookPublication(unittest.TestCase):
             database = root / "workspace.sqlite"
             chunks = {}
             posts = []
+            live_writes = []
             exchanges = []
             checkpoints = dict(rate=0, interrupted=False, live_permission=False)
             operator = secrets.token_urlsafe(32)
@@ -130,6 +132,21 @@ class FacebookPublication(unittest.TestCase):
                     dict(id="303", name="Read Only", access_token="fixture-read", tasks=["ANALYZE"]),
                 ], paging=dict(next="https://invalid.example/untrusted/?access_token=never-forward",
                                cursors=dict(after="second-page")))
+
+            @remote.post("/graph/<page_id>/live_videos")
+            def prepare_live(page_id):
+                assert page_id in {"101", "202"}
+                authenticated("fixture-station" if page_id == "101" else "fixture-arts")
+                live_writes.append(page_id)
+                body = request.get_json()
+                assert set(body) == {"title", "status", "stop_on_delete_stream", "event_params"}
+                assert body["title"] == "Facebook Live rehearsal"
+                assert body["status"] == "SCHEDULED_UNPUBLISHED" and body["stop_on_delete_stream"] is True
+                assert type(body["event_params"]["start_time"]) is int
+                assert body["event_params"]["start_time"] > datetime.now(timezone.utc).timestamp()
+                if page_id == "202":
+                    return {"error": "fixture missing confirmation"}, 503
+                return dict(id="901", secure_stream_url="rtmps://live-api-s.facebook.com:443/rtmp/fixture-facebook-live-secret")
 
             @remote.post("/media/<page_id>/videos")
             def transfer(page_id):
@@ -264,9 +281,55 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual([{"id": "101", "name": "Porch Station"}, {"id": "202", "name": "Porch Arts"}],
                                  listed.json()["items"])
                 self.assertNotIn("fixture-", listed.text() + page.content())
+
+                api.put(base + "/api/policy/publication", headers=auth, data={"required": False})
+                starts = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(second=0, microsecond=0)
+                event = dict(title="Facebook Live rehearsal", slug="facebook-live-rehearsal", visibility="public",
+                             type="live", latency="standard", save_replay=False,
+                             schedule=dict(timezone="UTC", repeat="days", count=2,
+                                           start=starts.strftime("%Y-%m-%dT%H:%M"),
+                                           end=(starts + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")))
+                response = api.post(base + "/api/live-events", headers=auth, data=event)
+                self.assertTrue(response.ok, response.text())
+                created = response.json()
+                first, next_date = created["occurrences"]
+                event_path = base + f"/api/live-events/{created['id']}"
+                targets = event_path + f"/{first['id']}/destinations"
+                next_targets = event_path + f"/{next_date['id']}/destinations"
+                self.assertEqual(403, api.post(targets + "/facebook", headers=auth, data={"page": "303"}).status)
+                page.goto(base + "/operator/live-events")
+                page.get_by_role("button", name="Open production for Facebook Live rehearsal", exact=False).first.click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Load Facebook Live Pages", exact=True).click()
+                page.get_by_role("combobox", name="Facebook Live Page", exact=True).select_option("101")
+                page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("Facebook Live prepared.")
+                expect(page.get_by_text("Facebook Live for this date", exact=False)).to_be_visible()
+                repeat = api.post(targets + "/facebook", headers=auth, data={"page": "101"})
+                self.assertEqual(200, repeat.status, repeat.text())
+                destination = repeat.json()["id"]
+                rows = api.get(targets, headers=auth).json()["destinations"]
+                self.assertEqual([(destination, "facebook-live")], [(row["id"], row["provider"]) for row in rows])
+                self.assertEqual([], api.get(next_targets, headers=auth).json()["destinations"])
+                with closing(sqlite3.connect(database)) as db:
+                    encrypted, = db.execute("SELECT secret FROM live_simulcast_destination WHERE id=?",
+                                            (destination,)).fetchone()
+                self.assertNotIn(b"fixture-facebook-live-secret", encrypted)
+                self.assertNotIn("fixture-facebook-live-secret", page.content() + repeat.text())
+                uncertain = api.post(targets + "/facebook", headers=auth, data={"page": "202"})
+                self.assertEqual((202, {"state": "unconfirmed"}), (uncertain.status, uncertain.json()))
+                stop()
+                stop = start_app()
+                uncertain = api.post(targets + "/facebook", headers=auth, data={"page": "202"})
+                self.assertEqual((202, {"state": "unconfirmed"}), (uncertain.status, uncertain.json()))
+                self.assertEqual(["101", "202"], live_writes)
+
+                page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Facebook Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect Facebook Live", exact=True)).to_be_visible()
                 self.assertEqual(409, api.get(catalog, headers=auth).status)
+                self.assertEqual("disconnected", api.get(targets, headers=auth).json()["destinations"][0]["state"])
+                self.assertEqual(409, api.put(targets + "/" + destination, headers=auth, data={"enabled": True}).status)
                 self.assertEqual(2, len(api.get(endpoint, headers=auth).json()["pages"]))
                 page.get_by_role("button", name="Disconnect Facebook Pages", exact=True).click()
                 expect(page.get_by_role("button", name="Connect Facebook Pages", exact=True)).to_be_visible()
@@ -274,6 +337,7 @@ class FacebookPublication(unittest.TestCase):
         print("Facebook Pages OAuth long-lived scope, paginated Page selection, exact multipart restart and playback,"
               " rate-limit retry, optional approval and disconnect passed.")
         print("Facebook Live verified a separate grant, declined permission denial, safe Page list and independent disconnect.")
+        print("Facebook Live prepared one occurrence through the browser and preserved an unconfirmed write across restart.")
 
 
 if __name__ == "__main__":

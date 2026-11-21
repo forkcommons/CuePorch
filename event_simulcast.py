@@ -25,6 +25,8 @@ from event_capture import EncoderProgress
 from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
 from browser_account_security import private
 import event_peer
+import facebook_live_job
+import facebook_upload
 import youtube_live
 
 
@@ -39,7 +41,7 @@ CREATE TABLE IF NOT EXISTS youtube_live_creation(
  revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
  phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT,
  PRIMARY KEY(event,opens));
-"""
+""" + facebook_live_job.SCHEMA
 
 
 def migrate(con):
@@ -476,20 +478,22 @@ class Simulcast:
 
 
 def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
+             facebook_live_connection,
              creation_access):
+    live_connections = {item.key: item for item in (youtube_live_connection, facebook_live_connection)}
     def _require_provider_connection():
         if not youtube_live_connection.revision():
             abort(409, "Connect YouTube Live before using YouTube Live destinations.")
 
-    def _provider_name(con, uid, title, broadcast):
-        base = (title or "YouTube Live").strip()[:80] or "YouTube Live"
+    def _provider_name(con, uid, title, provider, broadcast):
+        base = title.strip()[:80]
         names = {
             row["name"].casefold()
             for row in con.execute("SELECT name FROM live_simulcast_destination WHERE event=?", (uid,))
         }
         if base.casefold() not in names:
             return base
-        suffix = "-" + digest(b"youtube-live", broadcast.encode(), "sha256").hex()[:6]
+        suffix = "-" + digest(provider.encode(), broadcast.encode(), "sha256").hex()[:6]
         candidate = base[:80 - len(suffix)] + suffix
         if candidate.casefold() in names:
             abort(409, "Choose a different destination name.")
@@ -504,26 +508,29 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             (remote, stream),
         ).fetchone() is not None
 
-    def check_youtube_capacity(con, uid, opens):
+    def check_provider_capacity(con, uid, opens):
         count = con.execute(
-            "SELECT COUNT(*) FROM live_simulcast_destination WHERE event=? AND opens=? AND provider='youtube-live'",
+            "SELECT COUNT(*) FROM live_simulcast_destination WHERE event=? AND opens=? AND provider IS NOT NULL",
             (uid, opens),
         ).fetchone()[0]
         if count >= 10:
             abort(409, "An occurrence supports up to 10 connected destinations.")
 
     def save_youtube_destination(con, uid, opens, revision, broadcast, bound):
-        check_youtube_capacity(con, uid, opens)
+        check_provider_capacity(con, uid, opens)
         if _used_provider_destination(con, broadcast, bound["stream"]):
             abort(409, "This broadcast or its stream is already assigned to an occurrence.")
-        name = _provider_name(con, uid, bound["title"], broadcast)
+        return save_provider_destination(con, uid, opens, "youtube-live", revision, broadcast, bound, bound["stream"])
+
+    def save_provider_destination(con, uid, opens, provider, revision, broadcast, bound, stream=None):
+        name = _provider_name(con, uid, bound["title"], provider, broadcast)
         destination = uuid.uuid4().hex
         con.execute(
             "INSERT INTO live_simulcast_destination"
             "(id,event,name,server,secret,enabled,opens,provider,revision,remote,stream)"
-            " VALUES(?,?,?,?,?,1,?,'youtube-live',?,?,?)",
+            " VALUES(?,?,?,?,?,1,?,?,?,?,?)",
             (destination, uid, name, bound["server"], outputs.cipher.encrypt(bound["key"].encode()),
-             opens, revision, broadcast, bound["stream"]),
+             opens, provider, revision, broadcast, stream),
         )
         return destination
 
@@ -578,7 +585,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 marker = f"Created by CuePorch ({uuid.uuid4().hex})"
                 with tx() as con:
                     check(con)
-                    check_youtube_capacity(con, uid, opens)
+                    check_provider_capacity(con, uid, opens)
                     con.execute("INSERT INTO youtube_live_creation VALUES(?,?,?,?,?,?,?,'new',NULL,NULL,NULL)",
                                 (uid, opens, event_revision, revision, channels["items"][0]["id"], privacy, marker))
                     job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
@@ -686,6 +693,60 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
         return private(dict(id=uid_destination), 201)
 
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/facebook")
+    def create_facebook_destination(uid, opens):
+        staff()
+        payload = request.get_json()
+        page = payload.get("page") if isinstance(payload, dict) else None
+        if not isinstance(page, str) or not facebook_upload.ID.fullmatch(page):
+            abort(422, "Choose a Facebook Live Page.")
+        connection = facebook_live_connection
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            event_revision, title, slot = creation_access(con, uid, opens)
+            saved = connection.connection(con)
+            if not saved:
+                abort(409, "Connect Facebook Live before preparing a broadcast.")
+            pages = connection.tokens(saved)["pages"]
+            if page not in pages:
+                abort(403, "That Facebook Live Page is not connected.")
+            return event_revision, title, slot, saved["revision"], pages[page]["name"]
+
+        with tx() as con:
+            event_revision, title, slot, revision, page_name = access(con)
+
+        def check(con):
+            current, _, _, grant, _ = access(con)
+            if (current, grant) != (event_revision, revision):
+                abort(409, "The event or Facebook connection changed. Reload destinations.")
+
+        def before_send():
+            staff()
+            with tx() as con:
+                check(con)
+                check_provider_capacity(con, uid, opens)
+                if datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
+                    abort(409, "Choose a future occurrence to prepare a Facebook Live broadcast.")
+
+        def save(con, target):
+            check_provider_capacity(con, uid, opens)
+            bound = target | {"title": page_name.strip() or "Facebook Live"}
+            return save_provider_destination(con, uid, opens, "facebook-live", revision, target["id"], bound)
+
+        lease_dir = outputs.directory / "facebook-creation"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lock_name = digest(b"CuePorch Facebook creation", f"{uid}:{opens}:{page}".encode(), "sha256").hex()
+        try:
+            with FileLock(lease_dir / (lock_name + ".lock"), timeout=0):
+                result, status = facebook_live_job.provision(
+                    tx, check, lambda: connection.create_page_live(revision, page, title, opens, before_send),
+                    save, uid, opens, page, revision,
+                )
+        except Timeout:
+            return private(dict(state="unconfirmed"), 202)
+        return private(result, status)
+
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
     def event_destinations(uid, opens):
         staff()
@@ -725,13 +786,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 " WHERE event=? AND (opens IS NULL OR opens=?) ORDER BY name",
                 (uid, opens),
             ).fetchall()
-            connection = youtube_live_connection.connection(con)
-            active_revision = connection["revision"] if connection else None
+            revisions = {key: row["revision"] for key, provider in live_connections.items()
+                         if (row := provider.connection(con))}
         destinations = []
         for row in rows:
             item = dict(row)
             revision = item.pop("revision")
-            if item["provider"] == "youtube-live" and revision != active_revision:
+            if item["provider"] is not None and revision != revisions.get(item["provider"]):
                 item["state"] = "disconnected"
             elif item["enabled"]:
                 item["state"] = outputs.state(uid, opens, row["id"])
@@ -762,10 +823,11 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     enforce_sharing(con, feature="outbound")
                     if not available:
                         abort(409, "Destinations require a public event without audience registration.")
-                    if saved["provider"] == "youtube-live":
-                        connection = youtube_live_connection.connection(con)
+                    if saved["provider"] is not None:
+                        provider = live_connections.get(saved["provider"])
+                        connection = provider.connection(con) if provider else None
                         if not connection or connection["revision"] != saved["revision"]:
-                            abort(409, "Reconnect YouTube Live to enable this destination.")
+                            abort(409, "Reconnect the provider to enable this destination.")
                 con.execute(
                     "UPDATE live_simulcast_destination SET enabled=? WHERE id=?",
                     (body["enabled"], destination),
