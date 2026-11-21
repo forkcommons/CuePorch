@@ -13,7 +13,7 @@ from filelock import FileLock
 from cueporch import checksum, dump, import_collection, work_id
 
 
-VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job")
+VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job", "editor_assets")
 
 
 def video_version_key(work):
@@ -43,6 +43,7 @@ class VideoReplacement:
     chapters: list | None = None
     original_language: str | None = None
     editor_job: str | None = None
+    editor_assets: list | None = None
 
 
 def update_video_version(root, uid, expected, replacement=None, restore_key=None, guard=None):
@@ -81,6 +82,8 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
                 version["chapters"] = replacement.chapters
             if replacement.editor_job is not None:
                 version["editor_job"] = replacement.editor_job
+            if replacement.editor_assets is not None:
+                version["editor_assets"] = replacement.editor_assets
         else:
             version = next(
                 (v for v in reversed(work.get("versions_history", []))
@@ -92,6 +95,8 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
         if work["files"] == version["files"]:
             if replacement is not None and replacement.editor_job is not None:
                 work["editor_job"] = replacement.editor_job
+                if replacement.editor_assets is not None:
+                    work["editor_assets"] = replacement.editor_assets
                 dump(path, manifest)
             return work
         history = [

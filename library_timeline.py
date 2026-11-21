@@ -16,6 +16,7 @@ import subtitles
 from team_brand_kits import written_kit
 from timeline_cards import normalize_card
 import timeline_templates
+import timeline_graphics
 
 
 SCHEMA = """
@@ -67,10 +68,16 @@ def normalize(raw, get_work, root, con):
         abort(422, "Choose a canvas, a background color and up to 128 source clips.")
     clips = []
     for item in raw_clips:
-        if isinstance(item, dict) and "card" in item:
-            clips.append(normalize_card(item))
+        if not isinstance(item, dict):
+            abort(422, "Choose a source for each clip.")
+        graphic = timeline_graphics.normalize_graphic(item.get("graphic"))
+        if "card" in item:
+            clip = normalize_card(item)
+            if graphic is not None:
+                clip["graphic"] = graphic
+            clips.append(clip)
             continue
-        if not isinstance(item, dict) or not isinstance(item.get("work"), str):
+        if not isinstance(item.get("work"), str):
             abort(422, "Choose a source for each clip.")
         work = get_work(item["work"])
         if work.get("asset_type", "video") != "video":
@@ -78,7 +85,10 @@ def normalize(raw, get_work, root, con):
         source = find_cut(work, item.get("cut"))
         _, info = video_source(root, source)
         start, end = valid_range(item, round(info["duration"] * 1000))
-        clips.append(dict(work=work["id"], cut=video_version_key(source), start=start, end=end))
+        clip = dict(work=work["id"], cut=video_version_key(source), start=start, end=end)
+        if graphic is not None:
+            clip["graphic"] = graphic
+        clips.append(clip)
 
     music = raw.get("music")
     if music is not None:
@@ -117,6 +127,7 @@ def project(con, root, work, actor):
 def register(app, tx, staff, get_work, root, signing_key):
     signer = URLSafeTimedSerializer(signing_key, salt="cueporch-timeline-preview")
     timeline_templates.register_templates(app, staff)
+    timeline_graphics.register_graphics(app, staff, SIZES)
 
     def preview_for(con, uid, version):
         work = get_work(con, uid)

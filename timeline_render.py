@@ -13,6 +13,7 @@ class Clip:
     end: int
     has_audio: bool
     still: bool = False
+    graphic: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -30,23 +31,37 @@ def render(target, clips, size, color, music=None, stopping=None):
     filters = []
     timeline = []
     total = 0
+    video_input = 0
     for index, clip in enumerate(clips):
         milliseconds = clip.end - clip.start
         length = f"{milliseconds / 1000:.3f}"
+        clip_input = video_input
         if clip.still:
             sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2", "-loop", "1",
                             "-framerate", "30", "-t", length, "-i", str(clip.source)))
         else:
             sources.extend(("-protocol_whitelist", "file,pipe", "-ss", f"{clip.start / 1000:.3f}", "-t", length,
                             "-i", str(clip.source)))
-        filters.append(
-            f"[{index}:V:0]setpts=PTS-STARTPTS,fps=30,"
+        video_input += 1
+        base_filter = (
+            f"setpts=PTS-STARTPTS,fps=30,"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x{color},setsar=1,format=yuv420p,"
-            f"tpad=stop_mode=clone:stop_duration={length},trim=duration={length}[v{index}]"
+            f"tpad=stop_mode=clone:stop_duration={length},trim=duration={length}"
         )
+        if clip.graphic is not None:
+            graphic_input = video_input
+            sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2",
+                            "-framerate", "30", "-i", str(clip.graphic)))
+            video_input += 1
+            filters.append(
+                f"[{clip_input}:V:0]{base_filter}[base{index}];"
+                f"[base{index}][{graphic_input}:V:0]overlay=0:0:eof_action=repeat[v{index}]"
+            )
+        else:
+            filters.append(f"[{clip_input}:V:0]{base_filter}[v{index}]")
         if clip.has_audio and not clip.still:
-            audio = f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo,apad"
+            audio = f"[{clip_input}:a:0]aresample=48000,aformat=channel_layouts=stereo,apad"
         else:
             audio = "anullsrc=r=48000:cl=stereo"
         filters.append(f"{audio},atrim=duration={length},asetpts=PTS-STARTPTS[a{index}]")
@@ -56,10 +71,11 @@ def render(target, clips, size, color, music=None, stopping=None):
     filters.append(f"{''.join(timeline)}concat=n={len(clips)}:v=1:a=1[assembled][speech]")
     audio_out = "[speech]"
     if music is not None:
+        music_input = video_input
         sources.extend(("-protocol_whitelist", "file,pipe", "-ss", f"{music.start / 1000:.3f}",
                         "-i", str(music.source)))
         filters.append(
-            f"[{len(clips)}:a:0]aresample=48000,aformat=channel_layouts=stereo,volume={music.gain / 100:.2f},"
+            f"[{music_input}:a:0]aresample=48000,aformat=channel_layouts=stereo,volume={music.gain / 100:.2f},"
             f"apad,atrim=duration={duration},asetpts=PTS-STARTPTS[music];"
             "[speech][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.97[audio]"
         )

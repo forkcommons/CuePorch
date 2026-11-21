@@ -298,6 +298,8 @@ Open **Timeline editor** to combine clips from the library. Use **Upload and add
 
 In **Timeline editor**, browse 35 original presets by category, search, or shape and preview a template before using it. Insert a single scene after the selected clip, or insert the template both before and after existing clips. Edit the title, subtitle, and duration, and use **Undo** to reverse an edit. CuePorch saves your draft automatically. When ready, choose **Render as a new version**.
 
+Select a timeline clip, then open **Graphics** to search or filter the built-in options. Choose a graphic and set its color, position and text where supported. Apply or clear the graphic and check the preview. A clip can have one optional graphic. CuePorch autosaves the draft, and you can use **Undo** before choosing **Render as a new version**. The portable export records the built-in graphics used in each rendered version.
+
 ### Record Studio
 
 Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background.

@@ -3,10 +3,11 @@ import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
 import type { BrandKit, BrandKits } from "./brand_kits.js";
 import {showTimelineCard, type CardClip} from "./timeline_templates.js";
+import { createTimelineGraphicPreview, mountTimelineGraphics, type TimelineGraphic, type GraphicAsset } from "./timeline_graphics.js";
 
 interface MediaClip { work: string; cut: string; start: number; end: number }
-type Clip = MediaClip | CardClip;
-function isMedia(clip: Clip | undefined): clip is MediaClip {
+type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic};
+function isMedia(clip: Clip | undefined): clip is MediaClip & {graphic?: TimelineGraphic} {
   return clip !== undefined && "work" in clip;
 }
 interface Music { work: string; cut?: string; start: number; gain: number }
@@ -50,6 +51,8 @@ let cues: Cue[] = [];
 let uploading = false;
 let uploadId = "";
 let kits: BrandKit[] = [];
+let graphicControls: ReturnType<typeof mountTimelineGraphics> | undefined;
+const paintGraphic = createTimelineGraphicPreview();
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
 function message(error: unknown) {
@@ -206,6 +209,8 @@ function paint() {
   }
   const cardPreview = node<HTMLElement>("timelineCardPreview");
   const selectedClip = state.clips[selected];
+  graphicControls?.show(selectedClip?.graphic ?? null, Boolean(selectedClip));
+  paintGraphic(selectedClip?.graphic ?? null, state.ratio, state.color, key.value);
   if (selectedClip && !isMedia(selectedClip)) {
     cardPreview.hidden = false;
     showTimelineCard(cardPreview, selectedClip, state.ratio);
@@ -562,6 +567,27 @@ async function loadTimelineTemplates() {
   }
 }
 
+async function loadTimelineGraphics() {
+  try {
+    const {assets} = await call<{assets: GraphicAsset[]}>("/api/library/timeline-graphics");
+    graphicControls = mountTimelineGraphics(assets, graphic => {
+      const clip = state.clips[selected];
+      if (!clip) return;
+      let updated: Clip;
+      if (graphic) {
+        updated = {...clip, graphic};
+      } else {
+        const {graphic: _removed, ...rest} = clip;
+        updated = rest as Clip;
+      }
+      change({...state, clips: state.clips.map((item, index) => index === selected ? updated : item)});
+    });
+    paint();
+  } catch (error) {
+    node("timelineGraphicStatus").textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
 async function open() {
   const [items, loaded, shelf] = await Promise.all([
     call<Media[]>("/api/library"), call<Project>(endpoint() + "/timeline"), call<BrandKits>("/api/library/brand-kits"),
@@ -582,6 +608,7 @@ async function open() {
   node("timelineRecovery").hidden = !project.draft;
   if (project.job) showJob(project.job, true);
   void loadTimelineTemplates();
+  void loadTimelineGraphics();
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value) run(open);

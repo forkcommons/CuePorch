@@ -21,6 +21,7 @@ from library_timeline import find_cut, SIZES, video_source
 from media_tools import prepare_screening
 import subtitles
 import timeline_cards
+import timeline_graphics
 from timeline_render import Clip, Music, render
 
 
@@ -142,18 +143,38 @@ def register(app, tx, staff, get_work, root, remember_work):
             scratch = Path(name)
             clips = []
             for item, _, cut in sources:
+                graphic_path = None
+                if item.get("graphic"):
+                    img = timeline_graphics.draw_graphic(item["graphic"], SIZES[settings["ratio"]])
+                    graphic_path = scratch / (uuid.uuid4().hex + ".png")
+                    img.save(graphic_path)
                 if cut is None:
                     path = scratch / (uuid.uuid4().hex + ".png")
                     timeline_cards.draw_card(path, item["card"], SIZES[settings["ratio"]])
-                    clips.append(Clip(str(path), 0, item["end"], False, still=True))
+                    clips.append(Clip(str(path), 0, item["end"], False, still=True,
+                                      graphic=str(graphic_path) if graphic_path else None))
                 else:
                     file, info = video_source(root, cut)
-                    clips.append(Clip(file, item["start"], item["end"], bool(info["audio"])))
+                    clips.append(Clip(file, item["start"], item["end"], bool(info["audio"]),
+                                      graphic=str(graphic_path) if graphic_path else None))
             original, screening = scratch / "timeline.mp4", scratch / "screening.mp4"
             duration = render(original, clips, SIZES[settings["ratio"]], settings["color"], music, stopping)
             prepare_screening(original, screening, stopping=stopping)
             captions, chapters = combined_attachments(root, sources)
-            replacement = VideoReplacement(original, screening, duration, captions, chapters, editor_job=job["id"])
+            editor_assets = []
+            seen = set()
+            for item, _, cut in sources:
+                for entry in (cut or {}).get("editor_assets", []):
+                    if entry["id"] not in seen:
+                        seen.add(entry["id"])
+                        editor_assets.append(entry)
+                if "graphic" in item:
+                    entry = {"id": item["graphic"]["id"], "source": "cueporch-built-in", "revision": 1}
+                    if entry["id"] not in seen:
+                        seen.add(entry["id"])
+                        editor_assets.append(entry)
+            replacement = VideoReplacement(original, screening, duration, captions, chapters,
+                                           editor_job=job["id"], editor_assets=editor_assets or None)
             with tx() as con:
                 get_work(con, job["work"])
                 updated = update_video_version(root, job["work"], expected=job["base"], replacement=replacement)
