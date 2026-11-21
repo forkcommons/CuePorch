@@ -747,40 +747,82 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
         return private(dict(id=uid_destination), 201)
 
-    @app.post("/api/live-events/<uid>/<int:opens>/destinations/facebook")
-    def create_facebook_destination(uid, opens):
-        staff()
+    def facebook_page():
         payload = request.get_json()
         page = payload.get("page") if isinstance(payload, dict) else None
         if not isinstance(page, str) or not facebook_upload.ID.fullmatch(page):
             abort(422, "Choose a Facebook Live Page.")
-        connection = facebook_live_connection
+        return page
 
-        def access(con):
-            enforce_sharing(con, feature="outbound")
-            event_revision, title, slot = creation_access(con, uid, opens)
-            saved = connection.connection(con)
-            if not saved:
-                abort(409, "Connect Facebook Live before preparing a broadcast.")
-            pages = connection.tokens(saved)["pages"]
-            if page not in pages:
-                abort(403, "That Facebook Live Page is not connected.")
-            return event_revision, title, slot, saved["revision"], pages[page]["name"]
+    def facebook_lease(key):
+        lease_dir = outputs.directory / "facebook-creation"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lock_name = digest(b"CuePorch Facebook creation", ":".join(map(str, key)).encode(), "sha256").hex()
+        return FileLock(lease_dir / (lock_name + ".lock"), timeout=0)
 
+    def facebook_access(con, uid, opens, page):
+        event_revision, title, slot = creation_access(con, uid, opens)
+        saved = facebook_live_connection.connection(con)
+        if not saved:
+            abort(409, "Connect Facebook Live before preparing a broadcast.")
+        pages = facebook_live_connection.tokens(saved)["pages"]
+        if page not in pages:
+            abort(403, "That Facebook Live Page is not connected.")
+        return event_revision, title, slot, saved["revision"], pages[page]["name"]
+
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/facebook")
+    def create_facebook_destination(uid, opens):
+        staff()
+        page = facebook_page()
+        result, status = prepare_facebook(uid, opens, page)
+        return private(result, status)
+
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto", methods=["PUT", "DELETE"])
+    def configure_facebook_auto(uid, opens):
+        staff()
+        key = (uid, opens, facebook_page())
+        try:
+            with facebook_lease(key), tx() as con:
+                enforce_sharing(con, feature="outbound")
+                if con.execute("SELECT 1 FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key).fetchone():
+                    abort(409, "A Facebook broadcast already exists or has an unconfirmed result for this occurrence.")
+                if request.method == "DELETE":
+                    con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key)
+                    return private(dict(state="canceled"))
+                event_revision, _, _, revision, _ = facebook_access(con, *key)
+                check_provider_capacity(con, uid, opens)
+                facebook_live_job.queue(con, key, revision, event_revision)
+        except Timeout:
+            abort(409, "Another request is preparing this Facebook broadcast.")
+        return private(dict(state="queued"), 202)
+
+    def prepare_facebook(uid, opens, page, *, automatic=None):
+        key = (uid, opens, page)
+        live_now = automatic is not None
         with tx() as con:
-            event_revision, title, slot, revision, page_name = access(con)
+            if not live_now:
+                enforce_sharing(con, feature="outbound")
+            event_revision, title, slot, revision, page_name = facebook_access(con, *key)
+        if live_now and (event_revision, revision) != (automatic["event_revision"], automatic["revision"]):
+            return {"state": "canceled"}, 200
 
         def check(con):
-            current, _, _, grant, _ = access(con)
+            if not live_now:
+                enforce_sharing(con, feature="outbound")
+            current, _, _, grant, _ = facebook_access(con, *key)
             if (current, grant) != (event_revision, revision):
                 abort(409, "The event or Facebook connection changed. Reload destinations.")
+            if live_now and not con.execute("""SELECT 1 FROM live_occurrence
+                WHERE event=? AND opens=? AND delivery='ready'""", key[:2]).fetchone():
+                abort(409, "The occurrence is no longer ready to stream.")
 
         def before_send():
-            staff()
+            if not live_now:
+                staff()
             with tx() as con:
                 check(con)
                 check_provider_capacity(con, uid, opens)
-                if datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
+                if not live_now and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
                     abort(409, "Choose a future occurrence to prepare a Facebook Live broadcast.")
 
         def save(con, target):
@@ -788,18 +830,21 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             bound = target | {"title": page_name.strip() or "Facebook Live"}
             return save_provider_destination(con, uid, opens, "facebook-live", revision, target["id"], bound)
 
-        lease_dir = outputs.directory / "facebook-creation"
-        lease_dir.mkdir(parents=True, exist_ok=True)
-        lock_name = digest(b"CuePorch Facebook creation", f"{uid}:{opens}:{page}".encode(), "sha256").hex()
         try:
-            with FileLock(lease_dir / (lock_name + ".lock"), timeout=0):
-                result, status = facebook_live_job.provision(
-                    tx, check, lambda: connection.create_page_live(revision, page, title, opens, before_send),
-                    save, uid, opens, page, revision,
+            with facebook_lease(key):
+                if not live_now:
+                    with tx() as con:
+                        check(con)
+                        con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key)
+                return facebook_live_job.provision(
+                    tx, check, lambda: facebook_live_connection.create_page_live(
+                        revision, page, title, opens, before_send, live_now=live_now),
+                    save, *key, revision, claim_auto=(lambda con: facebook_live_job.claim(con, key)) if live_now else None,
                 )
         except Timeout:
-            return private(dict(state="unconfirmed"), 202)
-        return private(result, status)
+            return {"state": "unconfirmed"}, 202
+
+    app.extensions["stop_facebook_live"] = facebook_live_job.start(app, tx, prepare_facebook)
 
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/schedule")
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/schedule",

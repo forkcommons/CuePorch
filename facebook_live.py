@@ -66,17 +66,20 @@ class PageLiveConnection(facebook_upload.PageConnection):
     def public_pages(self, con):
         return {"items": [{"id": key, "name": row["name"]} for key, row in self.pages(con).items()]}
 
-    def create_page_live(self, revision, page, title, opens, before_send):
+    def create_page_live(self, revision, page, title, opens, before_send, *, live_now=False):
         with self.tx() as con:
             access = self.tokens(self.authorize(con, revision))["pages"].get(page)
         if access is None:
             abort(403, "The Facebook Page is no longer connected.")
         before_send()
+        payload = {"title": title, "status": "LIVE_NOW" if live_now else "SCHEDULED_UNPUBLISHED",
+                   "stop_on_delete_stream": True}
+        if not live_now:
+            payload["event_params"] = {"start_time": opens}
         try:
             data = self.graph_request(
                 "POST", f"{facebook_upload.GRAPH}/{page}/live_videos", access["token"],
-                json={"title": title, "status": "SCHEDULED_UNPUBLISHED", "event_params": {"start_time": opens},
-                      "stop_on_delete_stream": True},
+                json=payload,
             )
             ident = facebook_upload.numeric(data.get("id"))
             key = parse_ingest(data.get("secure_stream_url"))
