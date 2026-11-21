@@ -31,6 +31,7 @@ function startPicker() {
     destinationLabel.textContent = picker.destination;
     mountLibraryUploader();
     mountProductCreation();
+    mountPhotoCreation();
     void loadLibrary();
     search.addEventListener("input", () => renderWorks());
     authForm.addEventListener("submit", (ev) => {
@@ -306,5 +307,61 @@ function mountProductCreation() {
     window.addEventListener("message", (event) => void receiveSource(event));
     section.hidden = false;
     button.disabled = false;
+}
+function mountPhotoCreation() {
+    if (new URLSearchParams(location.search).get("mode") === "create")
+        return;
+    const details = document.getElementById("pickerPhotoCreation");
+    const form = document.getElementById("pickerPhotoCreateForm");
+    const titleInput = document.getElementById("pickerPhotoTitle");
+    const filesInput = document.getElementById("pickerPhotoFiles");
+    const startBtn = document.getElementById("pickerPhotoCreateStart");
+    const editLink = document.getElementById("pickerPhotoEditDraft");
+    if (!details || !form || !titleInput || !filesInput || !startBtn || !editLink)
+        return;
+    details.hidden = false;
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    let staged = null;
+    const reset = () => {
+        staged = null;
+        editLink.hidden = true;
+    };
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (startBtn.disabled)
+            return;
+        const title = titleInput.value.trim();
+        const files = Array.from(filesInput.files ?? []);
+        if (!title || files.length < 1 || files.length > 8) {
+            status.textContent = "Enter a title and select 1–8 photos.";
+            return;
+        }
+        const bad = files.some((f) => !allowed.includes(f.type) || f.size <= 0 || f.size > 8 * 1024 * 1024);
+        if (bad) {
+            status.textContent =
+                "Use 1–8 JPEG, PNG, or WebP photos up to 8 MiB each.";
+            return;
+        }
+        titleInput.disabled = filesInput.disabled = startBtn.disabled = true;
+        try {
+            if (!staged)
+                staged = {
+                    id: crypto.randomUUID(),
+                    file: await createProductVideo(title, files),
+                };
+            const id = await saveProductVideoDraft(staged);
+            editLink.href = `/operator/videos/${id}/timeline`;
+            editLink.hidden = false;
+            status.textContent = "Draft saved privately";
+        }
+        catch {
+            status.textContent = "Draft save failed. Retry to reuse staged upload.";
+        }
+        finally {
+            titleInput.disabled = filesInput.disabled = startBtn.disabled = false;
+        }
+    });
+    titleInput.addEventListener("input", reset);
+    filesInput.addEventListener("change", reset);
 }
 startPicker();

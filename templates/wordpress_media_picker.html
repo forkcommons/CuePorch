@@ -35,6 +35,18 @@
 
       <section id="pickerLibrary" class="cue-picker-library" hidden>
         <button type="button" id="uploadLibrary">Upload</button>
+        <details id="pickerPhotoCreation" hidden>
+          <summary>Create a video from photos</summary>
+          <form id="pickerPhotoCreateForm">
+            <label for="pickerPhotoTitle">Title</label>
+            <input id="pickerPhotoTitle" type="text" maxlength="100" required>
+            <label for="pickerPhotoFiles">Photos</label>
+            <input id="pickerPhotoFiles" type="file" accept="image/jpeg,image/png,image/webp" multiple required>
+            <button id="pickerPhotoCreateStart" type="submit">Create private draft</button>
+            <a id="pickerPhotoEditDraft" href="#" target="_blank" rel="noopener" hidden>Open draft in CuePorch editor</a>
+            <p>Choose up to eight photos. CuePorch saves the video as a private draft.</p>
+          </form>
+        </details>
         <section id="pickerProductCreate" hidden>
           <h2>Create a product video</h2>
           <p>Use the title and photos from your named WordPress destination to create a video saved as a private draft.</p>

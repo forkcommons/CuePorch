@@ -26,6 +26,8 @@ For a saved product with WordPress-hosted images, select **Create Product Video*
 
 In the block editor, add **CuePorch Video**. Select **Choose from CuePorch** to choose a shareable Library video, or paste a CuePorch watch or embed URL. Save or publish the post or page and preview it as a guest. WordPress checks the saved URL against the CuePorch origin configured in Settings, and CuePorch applies the current playback permissions.
 
+In the CuePorch popup, **Upload** sends files to the Library. **Create a video from photos** makes a private draft you can open in the CuePorch editor. After its sharing settings allow an embed, choose it from the Library and save the WordPress page.
+
 ## Compatibility
 
 Use the classic WooCommerce product editor for product settings. On classic storefronts, gallery placement adds a video slide. On storefronts using the WooCommerce Product Gallery block, the hosted player appears in its own section immediately before or after the native gallery. The product-description iframe path is also available.
