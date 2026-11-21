@@ -444,3 +444,98 @@ def mapped_values(answers, mapping):
         else:
             out[spec["tag"]] = raw
     return out
+
+
+WEBINAR_EVENT = "cueporch_webinar_engagement"
+DELIVERY_MARKER = "cueporch_delivery_id"
+
+_MARKER_RE = re.compile(r"\A[a-f0-9]{32}\Z")
+
+
+def _event_marker(marker):
+    if not isinstance(marker, str) or _MARKER_RE.fullmatch(marker) is None:
+        abort(400)
+    return marker
+
+
+def member_event_seen(connection, revision, list_id, email, marker):
+    marker = _event_marker(marker)
+    _, _, member_path = _member_identity(list_id, email)
+    url = API + member_path + "/events"
+    offset = 0
+    for _ in range(20):
+        with connection.api(
+            revision, "GET", url, params={"count": 100, "offset": offset}
+        ) as resp:
+            check_provider(resp)
+            data = response_object(resp)
+        total = data.get("total_items")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            abort(502, "Mailchimp events response malformed")
+        events = data.get("events")
+        if not isinstance(events, list) or len(events) > 100:
+            abort(502, "Mailchimp events response malformed")
+        if offset + len(events) > total:
+            abort(502, "Mailchimp events response malformed")
+        for row in events:
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                abort(502, "Mailchimp events response malformed")
+            if row["name"] == WEBINAR_EVENT:
+                props = row.get("properties")
+                if not isinstance(props, dict):
+                    abort(502, "Mailchimp events response malformed")
+                if props.get(DELIVERY_MARKER) == marker:
+                    return True
+        offset += len(events)
+        if offset == total:
+            return False
+        if not events:
+            abort(502, "Mailchimp events response truncated unexpectedly")
+    abort(502, "Mailchimp events scan exceeded page limit")
+
+
+def add_member_event(
+    connection,
+    revision,
+    list_id,
+    email,
+    marker,
+    occurred_at,
+    properties,
+    *,
+    before_write,
+):
+    from datetime import datetime
+
+    marker = _event_marker(marker)
+    if not isinstance(properties, dict):
+        abort(400)
+    clean = {}
+    for key, value in properties.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            abort(400)
+        if key == DELIVERY_MARKER:
+            abort(400)
+        clean[key] = value
+    if not isinstance(occurred_at, str):
+        abort(400)
+    try:
+        parsed = datetime.fromisoformat(occurred_at)
+    except ValueError:
+        abort(400)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        abort(400)
+    clean[DELIVERY_MARKER] = marker
+    body = {"name": WEBINAR_EVENT, "occurred_at": occurred_at, "properties": clean}
+    _, _, member_path = _member_identity(list_id, email)
+    url = API + member_path + "/events"
+    before_write()
+    with connection.api(revision, "POST", url, json=body) as resp:
+        if resp.status_code == 204:
+            return
+        if resp.status_code in (429, 403, 404, 409):
+            check_provider(resp)
+            abort(502, "Mailchimp member event outcome is unconfirmed.")
+        if 400 <= resp.status_code < 500:
+            abort(422, "Mailchimp rejected the member event.")
+        abort(502, "Mailchimp member event outcome is unconfirmed.")

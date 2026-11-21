@@ -134,6 +134,15 @@ class MailchimpRegistrationTest(unittest.TestCase):
             BrowserRegistrationProvider(), self.exercise_browser, public_url=""
         )
 
+    def test_mailchimp_delivery_controls_engagement(self):
+        self.run_rehearsal(
+            BrowserRegistrationProvider(),
+            lambda app, operator, provider: self.exercise_browser(
+                app, operator, provider, engagement=True
+            ),
+            public_url="",
+        )
+
     def run_rehearsal(self, provider, exercise, *, public_url="http://localhost"):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory()))
@@ -194,7 +203,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
         self.assertEqual(response.status_code, 303, response.data)
         self.assertEqual(provider.exchanges, 1)
 
-    def create_webinar(self, client, hdr):
+    def create_webinar(self, client, hdr, *, engagement=False):
         start = datetime.now(UTC) + timedelta(minutes=6)
         end = start + timedelta(hours=1)
         schedule = {
@@ -224,6 +233,8 @@ class MailchimpRegistrationTest(unittest.TestCase):
         r = client.get(f"/api/live-events/{uid}/registration", headers=hdr)
         body = r.get_json()
         body["settings"]["enabled"] = True
+        if engagement:
+            body["settings"]["attendance_analytics"] = True
         body["settings"]["fields"] = [
             {
                 "id": "field_genre",
@@ -350,7 +361,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
         rc = receipt()
         assert rc["state"] == "off", rc
 
-    def exercise_browser(self, app, operator, provider):
+    def exercise_browser(self, app, operator, provider, *, engagement=False):
         from browser import chromium
         from playwright.sync_api import expect, sync_playwright
         from test_drive_import import QuietHandler, service_worker
@@ -358,7 +369,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
 
         client = app.test_client()
         headers = {"Authorization": "Bearer " + operator, "X-CuePorch-Integration": "1"}
-        uid, opens = self.create_webinar(client, headers)
+        uid, opens = self.create_webinar(client, headers, engagement=engagement)
         server = make_server(
             "127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True
         )
@@ -395,10 +406,16 @@ class MailchimpRegistrationTest(unittest.TestCase):
             page.select_option(
                 '#eventMailchimpMapping select[data-form-field="field_genre"]', "GENRE"
             )
+            if engagement:
+                eng = page.locator("#eventMailchimpEngagement")
+                expect(eng).to_be_enabled()
+                eng.check()
             page.locator("#eventMailchimpEnable").click()
             expect(page.locator("#eventMailchimpStatus")).to_contain_text(
                 "Mailchimp delivery enabled."
             )
+            if engagement:
+                expect(page.locator("#eventMailchimpEngagement")).to_be_checked()
             attendee = browser.new_page()
             attendee.goto(base + "/events/mailchimp-webinar?occurrence=" + str(opens))
             attendee.fill("input[name=first_name]", "Test")
@@ -408,6 +425,22 @@ class MailchimpRegistrationTest(unittest.TestCase):
             cb = attendee.locator('input[name="mailchimp_consent"]')
             expect(cb).not_to_be_checked()
             cb.check()
+            if engagement:
+                eng_cb = attendee.locator(
+                    'input[name="mailchimp_engagement_consent"]'
+                )
+                expect(eng_cb).not_to_be_checked()
+                eng_cb.check()
+                r = client.put(
+                    "/api/policy/event_engagement_sync",
+                    headers=headers,
+                    json={"required": True},
+                )
+                assert r.status_code in (200, 204), r.data
+            else:
+                expect(
+                    attendee.locator('input[name="mailchimp_engagement_consent"]')
+                ).to_have_count(0)
             attendee.locator("form button[type=submit]").first.click()
             self.wait_for_sent(client, headers, uid, opens)
             assert provider.writes == [
@@ -417,8 +450,21 @@ class MailchimpRegistrationTest(unittest.TestCase):
                     "merge_fields": {"GENRE": "Documentary"},
                 }
             ]
+            if engagement:
+                status = client.get(
+                    f"/api/live-events/{uid}/{opens}/registration/mailchimp/outbound",
+                    headers=headers,
+                )
+                assert status.status_code == 200, status.data
+                receipt = status.get_json()
+                assert receipt["engagement"] is True, receipt
+                assert receipt["engagement_states"] == {"waiting": 1}, receipt
             page.get_by_role("button", name="Refresh Mailchimp delivery status").click()
             expect(page.locator("#eventMailchimpStatus")).to_contain_text("sent: 1")
+            if engagement:
+                expect(page.locator("#eventMailchimpStatus")).to_contain_text(
+                    "Engagement waiting: 1"
+                )
             page.get_by_role("button", name="Stop Mailchimp delivery").click()
             expect(page.locator("#eventMailchimpStatus")).to_contain_text(
                 "Mailchimp delivery is off."

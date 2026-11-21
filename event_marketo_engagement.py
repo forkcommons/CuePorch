@@ -9,7 +9,6 @@ QUESTIONS_FIELD = "cuePorchQuestions"
 POLLS_FIELD = "cuePorchPolls"
 
 DELIMITER = "\n"
-ROW_LIMIT = 500
 
 
 def _truncate(value, limit):
@@ -31,94 +30,13 @@ def _truncate(value, limit):
 def payload(con, job, fields, duration_seconds, completed_at):
     """Build (properties, attended_live) for one live occurrence and consent."""
 
-    event = job["event"]
-    opens = job["opens"]
-    sharing = job["sharing"]
+    from event_engagement import activity_snapshot
 
-    played_count, watched_ms = con.execute(
-        """
-        SELECT COUNT(*), COALESCE(SUM(p.watched), 0)
-          FROM live_attendee_session s
-          JOIN live_playback p
-            ON p.id = s.session
-           AND p.event = ?
-           AND p.opens = ?
-           AND p.phase = 'live'
-           AND p.played = 1
-           AND p.seen <= ?
-         WHERE s.sharing = ?
-        """,
-        (event, opens, completed_at, sharing),
-    ).fetchone()
-
-    attended_live = played_count > 0
-
-    question_rows = con.execute(
-        """
-        SELECT q.sent AS sent, q.id AS id, q.question AS question
-          FROM live_question q
-          JOIN live_event_shared_activity sa
-            ON sa.feature = 'qa'
-           AND sa.activity = q.id
-           AND sa.viewer = q.viewer
-           AND sa.sharing = ?
-         WHERE q.event = ?
-           AND q.opens = ?
-           AND q.name IS NOT NULL
-           AND q.archived = 0
-           AND q.state IN ('published', 'answered')
-           AND q.sent <= ?
-         ORDER BY q.sent ASC, q.id ASC
-         LIMIT ?
-        """,
-        (sharing, event, opens, completed_at, ROW_LIMIT),
-    ).fetchall()
-
-    poll_rows = con.execute(
-        """
-        SELECT v.sent AS sent, p.id AS id, p.question AS question,
-               p.choices AS choices, v.choice AS choice
-          FROM live_poll p
-          JOIN live_poll_vote v
-            ON v.poll = p.id
-          JOIN live_event_shared_activity sa
-            ON sa.feature = 'poll'
-           AND sa.activity = p.id
-           AND sa.viewer = v.viewer
-           AND sa.sharing = ?
-         WHERE p.event = ?
-           AND p.opens = ?
-           AND v.sent <= ?
-         ORDER BY v.sent ASC, p.id ASC
-         LIMIT ?
-        """,
-        (sharing, event, opens, completed_at, ROW_LIMIT),
-    ).fetchall()
-
-    questions = []
-    for row in question_rows:
-        text = (row["question"] or "").strip()
-        if text:
-            questions.append(text)
-
-    polls = []
-    for row in poll_rows:
-        try:
-            choices = json.loads(row["choices"])
-        except (TypeError, ValueError):
-            continue
-        index = row["choice"]
-        if (
-            not isinstance(choices, list)
-            or type(index) is not int
-            or not 0 <= index < len(choices)
-            or not isinstance(choices[index], str)
-        ):
-            continue
-        question = (row["question"] or "").strip()
-        answer = choices[index].strip()
-        if question and answer:
-            polls.append(f"{question}: {answer}")
+    snapshot = activity_snapshot(con, job, completed_at)
+    attended_live = snapshot["attended_live"]
+    watched_ms = snapshot["live_ms"]
+    questions = snapshot["questions"]
+    polls = snapshot["polls"]
 
     has_questions = bool(questions)
     has_polls = bool(polls)

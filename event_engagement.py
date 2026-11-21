@@ -18,6 +18,111 @@ CREATE INDEX IF NOT EXISTS live_event_shared_activity_sharing ON live_event_shar
 """
 
 
+ROW_LIMIT = 500
+
+
+def activity_snapshot(con, job, completed_at):
+    import json
+
+    event = job["event"]
+    opens = job["opens"]
+    sharing = job["sharing"]
+
+    played_count, live_ms, replay_ms = con.execute(
+        """
+        SELECT COALESCE(SUM(CASE WHEN p.phase = 'live' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN p.phase = 'live' THEN p.watched ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN p.phase = 'replay' THEN p.watched ELSE 0 END), 0)
+          FROM live_attendee_session s
+          JOIN live_playback p
+            ON p.id = s.session
+           AND p.event = ?
+           AND p.opens = ?
+           AND p.phase IN ('live', 'replay')
+           AND p.played = 1
+           AND p.seen <= ?
+         WHERE s.sharing = ?
+        """,
+        (event, opens, completed_at, sharing),
+    ).fetchone()
+
+    attended_live = played_count > 0
+
+    question_rows = con.execute(
+        """
+        SELECT q.sent AS sent, q.id AS id, q.question AS question
+          FROM live_question q
+          JOIN live_event_shared_activity sa
+            ON sa.feature = 'qa'
+           AND sa.activity = q.id
+           AND sa.viewer = q.viewer
+           AND sa.sharing = ?
+         WHERE q.event = ?
+           AND q.opens = ?
+           AND q.name IS NOT NULL
+           AND q.archived = 0
+           AND q.state IN ('published', 'answered')
+           AND q.sent <= ?
+         ORDER BY q.sent ASC, q.id ASC
+         LIMIT ?
+        """,
+        (sharing, event, opens, completed_at, ROW_LIMIT),
+    ).fetchall()
+
+    poll_rows = con.execute(
+        """
+        SELECT v.sent AS sent, p.id AS id, p.question AS question,
+               p.choices AS choices, v.choice AS choice
+          FROM live_poll p
+          JOIN live_poll_vote v
+            ON v.poll = p.id
+          JOIN live_event_shared_activity sa
+            ON sa.feature = 'poll'
+           AND sa.activity = p.id
+           AND sa.viewer = v.viewer
+           AND sa.sharing = ?
+         WHERE p.event = ?
+           AND p.opens = ?
+           AND v.sent <= ?
+         ORDER BY v.sent ASC, p.id ASC
+         LIMIT ?
+        """,
+        (sharing, event, opens, completed_at, ROW_LIMIT),
+    ).fetchall()
+
+    questions = []
+    for row in question_rows:
+        text = (row["question"] or "").strip()
+        if text:
+            questions.append(text)
+
+    polls = []
+    for row in poll_rows:
+        try:
+            choices = json.loads(row["choices"])
+        except (TypeError, ValueError):
+            continue
+        index = row["choice"]
+        if (
+            not isinstance(choices, list)
+            or type(index) is not int
+            or not 0 <= index < len(choices)
+            or not isinstance(choices[index], str)
+        ):
+            continue
+        question = (row["question"] or "").strip()
+        answer = choices[index].strip()
+        if question and answer:
+            polls.append(f"{question}: {answer}")
+
+    return {
+        "attended_live": attended_live,
+        "live_ms": live_ms,
+        "replay_ms": replay_ms,
+        "questions": questions,
+        "polls": polls,
+    }
+
 def report(rows, filename):
     output = StringIO(newline="")
     writer = csv.writer(output)

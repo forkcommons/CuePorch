@@ -843,7 +843,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued'
-                            UNION SELECT action FROM library_hubspot_media_event WHERE state='queued')""", (step,))
+                            UNION SELECT action FROM library_hubspot_media_event WHERE state='queued'
+                            UNION SELECT id FROM live_event_mailchimp_engagement WHERE state='queued' AND write_started=0)""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",

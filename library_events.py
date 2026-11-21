@@ -32,6 +32,7 @@ import event_engagement
 import event_hubspot_sync
 import event_hubspot_outbound
 import event_contact_delivery
+import event_mailchimp_engagement
 import event_mailchimp_registration
 import event_marketo_engagement
 import marketo_crm
@@ -84,7 +85,8 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
-       + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA)
+       + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
+       + event_mailchimp_engagement.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -125,13 +127,36 @@ def observe_delivery(tx, database, origin, connect):
     now = datetime.now(timezone.utc)
     with tx() as con:
         hooks = event_webhooks.subscribed(con, ("live-event-started", "live-event-ended"))
-        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed,p.generation AS marketo_generation FROM live_occurrence o
-                             JOIN live_event e ON e.id=o.event LEFT JOIN live_webhook_feed f
-                             ON f.event=o.event AND f.occurrence=o.opens
-                             LEFT JOIN live_event_contact_plan p ON p.provider='marketo' AND p.event=o.event AND p.opens=o.opens AND p.event_revision=e.revision AND json_extract(p.destination,'$.engagement')=1
-                             AND EXISTS (SELECT 1 FROM live_event_marketo_engagement m WHERE m.event=o.event AND m.opens=o.opens AND m.generation=p.generation AND m.state='queued')
-                             AND NOT EXISTS (SELECT 1 FROM live_event_marketo_completion c WHERE c.generation=p.generation)
-                             WHERE o.origin=? AND o.opens<=? AND ((? AND o.delivery='ready' AND (f.state IS NULL OR f.state='live')) OR (p.generation IS NOT NULL AND o.delivery IN ('ready','replay')))""", (origin, now.timestamp(), hooks)).fetchall()
+        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed,
+                                      p.generation AS marketo_generation,
+                                      q.generation AS mailchimp_generation
+                               FROM live_occurrence o
+                               JOIN live_event e ON e.id=o.event
+                               LEFT JOIN live_webhook_feed f
+                                 ON f.event=o.event AND f.occurrence=o.opens
+                               LEFT JOIN live_event_contact_plan p
+                                 ON p.provider='marketo' AND p.event=o.event AND p.opens=o.opens
+                                AND p.event_revision=e.revision
+                                AND json_extract(p.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_marketo_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=p.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_marketo_completion c
+                                                WHERE c.generation=p.generation)
+                               LEFT JOIN live_event_contact_plan q
+                                 ON q.provider='mailchimp' AND q.event=o.event AND q.opens=o.opens
+                                AND q.event_revision=e.revision
+                                AND json_extract(q.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_mailchimp_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=q.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_mailchimp_completion c
+                                                WHERE c.generation=q.generation)
+                               WHERE o.origin=? AND o.opens<=?
+                                 AND ((? AND o.delivery='ready' AND (f.state IS NULL OR f.state='live'))
+                                      OR ((p.generation IS NOT NULL OR q.generation IS NOT NULL)
+                                          AND o.delivery IN ('ready','replay')))""",
+                            (origin, now.timestamp(), hooks)).fetchall()
     for item in entries:
         uid, opens = item["event"], item["opens"]
         slot = find_open(json.loads(item["settings"]), opens)
@@ -140,15 +165,17 @@ def observe_delivery(tx, database, origin, connect):
         try:
             with lock_event(database, uid, timeout=0):
                 marketo_generation = item["marketo_generation"]
+                mailchimp_generation = item["mailchimp_generation"]
+                any_generation = marketo_generation is not None or mailchimp_generation is not None
                 with tx() as con:
                     current = occurrence(con, uid, opens)
                     if not current or current["remote"] != item["remote"]:
                         continue
                     if current["delivery"] != "ready" and not (
-                        marketo_generation is not None and current["delivery"] == "replay"
+                        any_generation and current["delivery"] == "replay"
                     ):
                         continue
-                if marketo_generation is not None:
+                if any_generation:
                     observed = event_peer.observe(connect(origin), item["remote"], include_duration=True)
                 else:
                     observed = event_peer.observe(connect(origin), item["remote"])
@@ -165,11 +192,21 @@ def observe_delivery(tx, database, origin, connect):
                                 con.execute("INSERT OR IGNORE INTO live_webhook_feed VALUES(?,?,'closed')", (uid, opens))
                         else:
                             event_webhooks.observe(con, uid, opens, state)
-                    if (marketo_generation is not None and state in ("ended", "replay")
+                    if (any_generation and state in ("ended", "replay")
                             and current and current["remote"] == item["remote"]
                             and current["delivery"] in ("ready", "replay")):
-                        plan = event_contact_delivery.get(con, "marketo", uid, opens)
-                        if plan and plan["generation"] == marketo_generation:
+                        row = con.execute("SELECT revision FROM live_event WHERE id=?", (uid,)).fetchone()
+                        revision = row[0] if row else None
+                        for provider, module, generation in (
+                            ("marketo", event_marketo_engagement, marketo_generation),
+                            ("mailchimp", event_mailchimp_engagement, mailchimp_generation),
+                        ):
+                            if generation is None:
+                                continue
+                            plan = event_contact_delivery.get(con, provider, uid, opens)
+                            if (not plan or plan["generation"] != generation
+                                    or plan["event_revision"] != revision):
+                                continue
                             if (type(duration) in (int, float)
                                     and math.isfinite(duration)
                                     and duration > 0):
@@ -179,12 +216,7 @@ def observe_delivery(tx, database, origin, connect):
                                     1,
                                     min(now.timestamp(), datetime.fromisoformat(slot["end"]).timestamp()) - opens,
                                 )
-                            event_marketo_engagement.complete(
-                                con,
-                                marketo_generation,
-                                now.timestamp(),
-                                observed_duration,
-                            )
+                            module.complete(con, generation, now.timestamp(), observed_duration)
         except (Timeout, ValueError, requests.RequestException, KeyError):
             continue
 
@@ -1253,7 +1285,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return event["title"]
 
     event_mailchimp_registration.register_routes(app, tx, staff, mail_origin, mailchimp, read, selected_open, registration_intake)
-    stop_mailchimp = event_mailchimp_registration.start(app, tx, database, mailchimp, validate_hubspot_plan)
+    stop_mailchimp = event_mailchimp_registration.start(app, tx, database, mailchimp, validate_hubspot_plan, engagement_validate=validate_hubspot_engagement)
     stop_marketo = event_contact_delivery.start_marketo(
         app, tx, database, marketo, marketo_revision, validate_hubspot_plan,
         engagement_validate=validate_hubspot_engagement,
@@ -1399,8 +1431,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return scope, active
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
-    def marketo_activity_sharing(con, scope):
-        if not marketo_revision or not library_analytics.permitted():
+    def outbound_activity_sharing(con, scope):
+        if not library_analytics.permitted():
             return None
 
         admitted, _, sharing = viewer_enrollment(
@@ -1413,18 +1445,35 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if not admitted or not sharing:
             return None
 
-        row = con.execute(
-            "SELECT 1 FROM live_event_marketo_engagement j "
-            "JOIN live_event_contact_plan p ON p.generation=j.generation "
-            "WHERE j.sharing=? AND j.state='queued' AND p.provider='marketo' "
-            "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
-            "AND p.opens=? AND p.form_revision=?",
-            (sharing, marketo_revision, *scope),
-        ).fetchone()
+        if marketo_revision:
+            row = con.execute(
+                "SELECT 1 FROM live_event_marketo_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='marketo' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=?",
+                (sharing, marketo_revision, *scope),
+            ).fetchone()
+            if row:
+                return sharing
 
-        return sharing if row else None
+        mailchimp_connection = mailchimp.connection(con)
+        mailchimp_revision = mailchimp_connection["revision"] if mailchimp_connection else None
+        if mailchimp_revision:
+            row = con.execute(
+                "SELECT 1 FROM live_event_mailchimp_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='mailchimp' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=?",
+                (sharing, mailchimp_revision, *scope),
+            ).fetchone()
+            if row:
+                return sharing
 
-    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat, share_activity=marketo_activity_sharing)
+        return None
+
+    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat, share_activity=outbound_activity_sharing)
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access, database, start_voice, voice_audio)
@@ -2109,6 +2158,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             mailchimp_consent = ""
+            mailchimp_engagement_consent = ""
             mailchimp_plan = None
             if (
                 form
@@ -2129,6 +2179,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     mailchimp_plan = candidate
                     mailchimp_scope = ["mailchimp-outbound", scope, candidate["generation"]]
                     mailchimp_consent = forms.dumps(mailchimp_scope)
+                    if offer_sharing and json.loads(candidate["destination"]).get("engagement") is True:
+                        mailchimp_engagement_scope = ["mailchimp-engagement", scope, candidate["generation"]]
+                        mailchimp_engagement_consent = forms.dumps(mailchimp_engagement_scope)
             marketo_plan = None
             marketo_consent = ""
             marketo_engagement_consent = ""
@@ -2181,17 +2234,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         marketo_agreed = created and marketo_plan and valid_ticket(forms, request.form.get('marketo_consent', ''), mark_scope, 1200)
                         if marketo_agreed:
                             event_contact_delivery.enqueue(con,action,marketo_plan,registrant,int(now.timestamp()))
-                        if created and mailchimp_plan and valid_ticket(forms, request.form.get("mailchimp_consent",""),mailchimp_scope,1200):
+                        mailchimp_agreed = bool(created and mailchimp_plan and valid_ticket(forms, request.form.get("mailchimp_consent",""),mailchimp_scope,1200))
+                        if mailchimp_agreed:
                             event_contact_delivery.enqueue(con, action, mailchimp_plan, registrant,int(now.timestamp()))
                         engagement_agreed = bool(hubspot_engagement_consent) and valid_ticket(
                             forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
                         marketo_engagement_agreed = bool(marketo_agreed and marketo_engagement_consent and valid_ticket(forms, request.form.get("marketo_engagement_consent", ""), marketo_engagement_scope, 1200))
-                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed):
+                        mailchimp_engagement_agreed = bool(mailchimp_agreed and mailchimp_engagement_consent and valid_ticket(forms, request.form.get("mailchimp_engagement_consent", ""), mailchimp_engagement_scope, 1200))
+                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed or mailchimp_engagement_agreed):
                             sharing = event_registrants.share(con, registrant)
                             if engagement_agreed:
                                 event_hubspot_engagement.enqueue(con, action, contact_plan, registrant, sharing)
                             if marketo_engagement_agreed:
                                 event_marketo_engagement.enqueue(con, action, marketo_plan, registrant, sharing)
+                            if mailchimp_engagement_agreed:
+                                event_mailchimp_engagement.enqueue(con, action, mailchimp_plan, registrant, sharing)
 
                     admitted, sign_on, form_error = library_registration.admit(
                         con, "event", row["id"], form, scope, shown["id"],
@@ -2336,6 +2393,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      hubspot_consent=hubspot_consent,
                                      marketo_consent=marketo_consent,
                                      mailchimp_consent=mailchimp_consent,
+                                     mailchimp_engagement_consent=mailchimp_engagement_consent,
                                      marketo_engagement_consent=marketo_engagement_consent,
                                      hubspot_engagement_consent=hubspot_engagement_consent,
                                      unlock_token=frame_grant, event_access=access,
@@ -2435,6 +2493,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 event_registrants.stop_sharing(con, sharing)
                 event_hubspot_engagement.cancel(con, sharing=sharing)
                 event_marketo_engagement.cancel(con, sharing=sharing)
+                event_mailchimp_engagement.cancel(con, sharing=sharing)
         return private("", 204)
 
     @app.get("/event-media/<token>/<filename>")

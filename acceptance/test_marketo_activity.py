@@ -115,6 +115,7 @@ class MarketoActivityTest(unittest.TestCase):
         import event_webhooks
         import library_events
         import event_marketo_engagement
+        import event_mailchimp_engagement
 
         self.con.executescript(
             event_contact_delivery.SCHEMA
@@ -161,6 +162,21 @@ class MarketoActivityTest(unittest.TestCase):
         )
         event_marketo_engagement.enqueue(self.con, lambda *_: None, plan, "r", "s")
 
+        mailchimp_plan = event_contact_delivery.set_destination(
+            self.con,
+            "mailchimp",
+            "e",
+            opens,
+            provider_revision="p",
+            event_revision="r",
+            form_revision="f",
+            deadline=opens + 600,
+            destination={"audience": "audience", "engagement": True},
+        )
+        event_mailchimp_engagement.enqueue(
+            self.con, lambda *_: None, mailchimp_plan, "r", "s"
+        )
+
         @contextmanager
         def tx():
             yield self.con
@@ -173,6 +189,7 @@ class MarketoActivityTest(unittest.TestCase):
             duration=57,
         )
 
+        host.reset_mock()
         with TemporaryDirectory() as root:
             library_events.observe_delivery(
                 tx,
@@ -181,12 +198,20 @@ class MarketoActivityTest(unittest.TestCase):
                 lambda _: host,
             )
 
-        row = self.con.execute(
-            "SELECT duration FROM live_event_marketo_completion WHERE generation = ?",
+        marketo_row = self.con.execute(
+            "SELECT duration, completed FROM live_event_marketo_completion WHERE generation = ?",
             (plan["generation"],),
         ).fetchone()
-        self.assertIsNotNone(row)
-        self.assertEqual(row[0], 57)
+        mailchimp_row = self.con.execute(
+            "SELECT duration, completed FROM live_event_mailchimp_completion WHERE generation = ?",
+            (mailchimp_plan["generation"],),
+        ).fetchone()
+        self.assertIsNotNone(marketo_row)
+        self.assertIsNotNone(mailchimp_row)
+        self.assertEqual(marketo_row[0], 57)
+        self.assertEqual(mailchimp_row[0], 57)
+        self.assertEqual(marketo_row[1], mailchimp_row[1])
+        self.assertEqual(host.call.call_count, 1)
 
         count = self.con.execute("SELECT COUNT(*) FROM live_webhook_feed").fetchone()[0]
         self.assertEqual(count, 0)

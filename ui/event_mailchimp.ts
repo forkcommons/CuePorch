@@ -3,9 +3,9 @@ type Audience = { id: string; name: string };
 type AudiencePage = { audiences: Audience[]; next_offset: number | null };
 type MergeField = { tag: string; name: string; type: string; required: boolean; choices: string[] };
 type FieldPage = { audience: Audience & { marketing_permissions: boolean; double_optin: boolean }; fields: MergeField[]; next_offset: number | null };
-type Receipt = { available: boolean; enabled: boolean; state: string; audience?: string; mapping?: Record<string, string>; states: Record<string, number> };
+type Receipt = { available: boolean; enabled: boolean; state: string; audience?: string; mapping?: Record<string, string>; states: Record<string, number>; engagement?: boolean; engagement_states?: Record<string, number> };
 type FormField = { id: string; label: string; type: string; required: boolean; options?: string[] };
-type FormSettings = { enabled: boolean; first_name: string; last_name: string; fields: FormField[] };
+type FormSettings = { enabled: boolean; first_name: string; last_name: string; fields: FormField[]; attendance_analytics?: boolean };
 
 function formFields(form: FormSettings): FormField[] {
   const out: FormField[] = [];
@@ -93,6 +93,7 @@ export function setupMailchimp(request: Request) {
   const mapping = document.querySelector<HTMLDivElement>('#eventMailchimpMapping')!;
   const mappingStatus = document.querySelector<HTMLElement>('#eventMailchimpMappingStatus')!;
   const save = document.querySelector<HTMLButtonElement>('#eventMailchimpEnable')!;
+  const engagement = document.querySelector<HTMLInputElement>('#eventMailchimpEngagement')!;
   const stop = document.querySelector<HTMLButtonElement>('#eventMailchimpStop')!;
   const refresh = document.querySelector<HTMLButtonElement>('#eventMailchimpRefresh')!;
   const status = document.querySelector<HTMLElement>('#eventMailchimpStatus')!;
@@ -106,6 +107,7 @@ export function setupMailchimp(request: Request) {
     fields?: MergeField[];
     formEnabled: boolean;
     marketingPermissions: boolean;
+    attendanceAnalytics: boolean;
   };
 
   let selected: Selection | undefined;
@@ -122,6 +124,7 @@ export function setupMailchimp(request: Request) {
       !audience.value ||
       scope.fields === undefined ||
       mappingIssue(scope) !== null;
+    engagement.disabled = scope.busy || !scope.attendanceAnalytics;
     stop.disabled = scope.busy;
     refresh.disabled = scope.busy;
     more.hidden = scope.nextOffset == null;
@@ -153,10 +156,16 @@ export function setupMailchimp(request: Request) {
   function showReceipt(scope: Selection, receipt: Receipt): void {
     scope.receipt = receipt;
     panel.hidden = !receipt.available;
+    engagement.checked = receipt.engagement === true;
     if (receipt.enabled) {
       const counts = Object.entries(receipt.states)
         .filter(([, count]) => count > 0)
         .map(([state, count]) => `${state}: ${count}`);
+      if (receipt.engagement === true && receipt.engagement_states) {
+        const engagementCounts = Object.entries(receipt.engagement_states).filter(([, count]) => count !== 0).map(([state, count]) => `${state}: ${count}`).join(", ");
+        const engagementText = engagementCounts ? `Engagement ${engagementCounts}` : "";
+        if (engagementText) counts.push(engagementText);
+      }
       status.textContent = ['Mailchimp delivery enabled.', ...counts].join(' ');
     } else if (receipt.state === 'stale') {
       status.textContent = 'Mailchimp connection is stale. Reconnect to continue.';
@@ -185,6 +194,7 @@ export function setupMailchimp(request: Request) {
     mapping.replaceChildren();
     mappingStatus.textContent = '';
     scope.fields = undefined;
+    scope.attendanceAnalytics = false;
     const id = audience.value;
     if (!id) return;
     const [schema, reg] = await Promise.all([
@@ -196,6 +206,7 @@ export function setupMailchimp(request: Request) {
     scope.fields = schema.fields;
     scope.marketingPermissions = schema.marketingPermissions;
     scope.formEnabled = reg.settings.enabled;
+    scope.attendanceAnalytics = reg.settings.attendance_analytics === true;
     renderMapping(mapping, formFields(reg.settings), schema.fields, saved?.mapping ?? {});
   }
 
@@ -260,17 +271,25 @@ export function setupMailchimp(request: Request) {
     if (selected) syncMapping(selected);
   });
   refresh.addEventListener('click', () => mutate('GET'));
-  save.addEventListener('click', () =>
-    mutate('PUT', { audience: audience.value, mapping: readMapping(mapping) }),
-  );
+  save.addEventListener('click', () => {
+    const scope = selected;
+    if (scope) {
+      mutate('PUT', {
+        audience: audience.value,
+        mapping: readMapping(mapping),
+        engagement: scope.attendanceAnalytics === true && engagement.checked,
+      });
+    }
+  });
   stop.addEventListener('click', () => mutate('DELETE', {}));
 
   return (base: string, eventId: string) => {
     const scope: Selection = {
       base, eventId, busy: false, nextOffset: null,
-      formEnabled: false, marketingPermissions: false,
+      formEnabled: false, marketingPermissions: false, attendanceAnalytics: false,
     };
     selected = scope;
+    engagement.checked = false;
     panel.hidden = true;
     status.textContent = '';
     mappingStatus.textContent = '';

@@ -79,6 +79,12 @@
     {% if mailchimp_consent %}
     <label><input type="checkbox" name="mailchimp_consent" value="{{ mailchimp_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
     {% endif %}
+    {% if mailchimp_engagement_consent %}
+        <label>
+            <input type="checkbox" name="mailchimp_engagement_consent" value="{{ mailchimp_engagement_consent }}">
+            Also share my webinar attendance, live and replay watch time, named questions and poll responses with the organizer in Mailchimp.
+        </label>
+    {% endif %}
     {% if marketo_consent %}
     <label>
       <input type='checkbox' name='marketo_consent' value='{{ marketo_consent }}'>

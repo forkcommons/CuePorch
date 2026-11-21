@@ -87,6 +87,14 @@ def disable(con, provider, event, opens):
             import event_marketo_engagement
 
             event_marketo_engagement.cancel(con, generation=plan["generation"])
+    if provider == "mailchimp":
+        plan = get(con, provider, event, opens)
+        if plan:
+            destination = json.loads(plan["destination"])
+            if destination.get("engagement") is True:
+                import event_mailchimp_engagement
+
+                event_mailchimp_engagement.cancel(con, generation=plan["generation"])
     params = (provider, event, opens)
     con.execute(
         """
@@ -406,6 +414,11 @@ def receipt(con, provider, event, opens, revision):
         destination = json.loads(plan["destination"])
         result["audience"] = destination["audience"]
         result["mapping"] = {key: value["tag"] for key, value in destination["mapping"].items()}
+        result["engagement"] = destination.get("engagement") is True
+        if result["engagement"]:
+            import event_mailchimp_engagement
+
+            result["engagement_states"] = event_mailchimp_engagement.status(con, plan["generation"])
         return result
     if enabled:
         destination = json.loads(plan["destination"])

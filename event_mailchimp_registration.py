@@ -4,6 +4,7 @@ from flask import abort, request
 
 import event_attendance
 import event_contact_delivery as outbox
+import event_mailchimp_engagement
 import mailchimp_crm
 from browser_account_security import json_mutation, private, same_origin, secure_site
 
@@ -45,18 +46,23 @@ def deliver(tx, job, connection, validate, stop, clock):
     return "sent" if result["result"] == "delivered" else "skipped"
 
 
-def start(app, tx, database, connection, validate):
+def start(app, tx, database, connection, validate, *, engagement_validate=None):
     if not connection.configured:
         return lambda: None
 
     def tick(stop):
-        return outbox._run_one(
+        worked = outbox._run_one(
             tx,
             PROVIDER,
             lambda job: deliver(tx, job, connection, validate, stop, time),
             stop,
             time,
         )
+        if engagement_validate is not None and event_mailchimp_engagement.run_one(
+            tx, connection, engagement_validate, stop, time
+        ):
+            worked = True
+        return bool(worked)
 
     return outbox._start_worker(app, database, PROVIDER, tick)
 
@@ -65,6 +71,9 @@ def register_routes(
     app, tx, staff, origin, connection, read, selected_open, registration_intake
 ):
     def set_mailchimp_destination(uid, opens, body):
+        engagement = body.get("engagement", False)
+        if not isinstance(engagement, bool):
+            abort(422)
         list_id = body.get("audience")
         if not mailchimp_crm.audience_id(list_id):
             abort(422)
@@ -72,6 +81,8 @@ def register_routes(
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
             row_revision, form_revision = row["revision"], form["revision"]
+            if engagement and not form["attendance_analytics"]:
+                abort(409)
         audience = mailchimp_crm.audience(connection, revision, list_id)
         if audience.get("marketing_permissions") is True:
             abort(409)
@@ -97,7 +108,11 @@ def register_routes(
                 event_revision=row["revision"],
                 form_revision=form["revision"],
                 deadline=int(event_attendance.expires_at(slot)),
-                destination={"audience": list_id, "mapping": mapping},
+                destination={
+                    "audience": list_id,
+                    "mapping": mapping,
+                    "engagement": engagement,
+                },
             )
 
     @app.route(
