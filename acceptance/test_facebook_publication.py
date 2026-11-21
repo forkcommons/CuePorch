@@ -24,10 +24,12 @@ from werkzeug.serving import make_server
 
 from browser import chromium
 from test_drive_import import QuietHandler, service_worker
+from youtube_rtmps_fixture import check_destination_rtmps
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import facebook_upload as facebook
 import facebook_live
+import facebook_live_job
 from institution import create_app
 import social_publication
 
@@ -56,6 +58,7 @@ class FacebookPublication(unittest.TestCase):
             chunks = {}
             posts = []
             live_writes = []
+            live_now_writes = []
             exchanges = []
             checkpoints = dict(rate=0, interrupted=False, live_permission=False)
             operator = secrets.token_urlsafe(32)
@@ -137,8 +140,14 @@ class FacebookPublication(unittest.TestCase):
             def prepare_live(page_id):
                 assert page_id in {"101", "202"}
                 authenticated("fixture-station" if page_id == "101" else "fixture-arts")
-                live_writes.append(page_id)
                 body = request.get_json()
+                if body["status"] == "LIVE_NOW":
+                    assert body == {"title": "Facebook Live rehearsal", "status": "LIVE_NOW",
+                                    "stop_on_delete_stream": True}
+                    live_now_writes.append(page_id)
+                    return dict(id="902",
+                                secure_stream_url="rtmps://live-api-s.facebook.com:443/rtmp/fixture-facebook-auto")
+                live_writes.append(page_id)
                 assert set(body) == {"title", "status", "stop_on_delete_stream", "event_params"}
                 assert body["title"] == "Facebook Live rehearsal"
                 assert body["status"] == "SCHEDULED_UNPUBLISHED" and body["stop_on_delete_stream"] is True
@@ -302,6 +311,9 @@ class FacebookPublication(unittest.TestCase):
                 page.get_by_text("Simulcast destinations", exact=True).click()
                 page.get_by_role("button", name="Load Facebook Live Pages", exact=True).click()
                 page.get_by_role("combobox", name="Facebook Live Page", exact=True).select_option("101")
+                auto_control = page.get_by_role("checkbox", name="Start automatically when CuePorch is live")
+                expect(auto_control).to_be_checked()
+                auto_control.uncheck()
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("Facebook Live prepared.")
                 expect(page.get_by_text("Facebook Live for this date", exact=False)).to_be_visible()
@@ -324,6 +336,46 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual((202, {"state": "unconfirmed"}), (uncertain.status, uncertain.json()))
                 self.assertEqual(["101", "202"], live_writes)
 
+                auto_path = next_targets + "/facebook/auto"
+                page.goto(base + "/operator/live-events")
+                next_label = next_date["local"].replace("T", " ")
+                page.get_by_role("button", name=f"Open production for Facebook Live rehearsal at {next_label}",
+                                 exact=True).click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Load Facebook Live Pages", exact=True).click()
+                facebook_pages = page.get_by_role("combobox", name="Facebook Live Page", exact=True)
+                facebook_pages.select_option("101")
+                expect(page.get_by_role("checkbox", name="Start automatically when CuePorch is live")).to_be_checked()
+                page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
+                self.assertEqual(202, api.put(auto_path, headers=auth, data={"page": "202"}).status)
+                facebook_pages.select_option("202")
+                page.get_by_role("button", name="Cancel automatic start", exact=True).click()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("canceled")
+                opens = int(next_date["id"])
+                with closing(sqlite3.connect(database)) as db:
+                    self.assertEqual([], facebook_live_job.due(db, opens + 1))
+                    db.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                               (created["id"], opens))
+                    db.commit()
+                    self.assertEqual([], facebook_live_job.due(db, opens - 1))
+                stop()
+                stop = start_app()
+                roster = []
+                with patch.object(facebook_live_job, "time", lambda: opens + 1):
+                    deadline = monotonic() + 8
+                    while not roster and monotonic() < deadline:
+                        roster = api.get(next_targets, headers=auth).json()["destinations"]
+                        if not roster:
+                            sleep(.05)
+                self.assertEqual(["101"], live_now_writes)
+                self.assertEqual(["101", "202"], live_writes)
+                self.assertEqual(["facebook-live"], [item["provider"] for item in roster])
+                auto_result = api.get(next_targets, headers=auth)
+                self.assertNotIn("fixture-facebook-auto", auto_result.text())
+                check_destination_rtmps(root, database, roster[0]["id"], operator, facebook_live.INGEST_SERVER,
+                                        "fixture-facebook-auto")
+
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Facebook Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect Facebook Live", exact=True)).to_be_visible()
@@ -338,6 +390,8 @@ class FacebookPublication(unittest.TestCase):
               " rate-limit retry, optional approval and disconnect passed.")
         print("Facebook Live verified a separate grant, declined permission denial, safe Page list and independent disconnect.")
         print("Facebook Live prepared one occurrence through the browser and preserved an unconfirmed write across restart.")
+        print("Facebook Live auto start waited for readiness and the scheduled time, survived restart, honored cancellation,"
+              " and delivered decoded RTMPS.")
 
 
 if __name__ == "__main__":

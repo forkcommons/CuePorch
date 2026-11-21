@@ -83,6 +83,8 @@ let youtubeNext = null;
 const facebookForm = element("addFacebookLiveDestination");
 const facebookPage = element("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
+const facebookAutomatic = input("facebookAutomatic");
+const facebookCancel = button("cancelFacebookAuto");
 const facebookStatus = element("facebookLiveStatus");
 const linkedinForm = element("linkedinLiveSchedule");
 const linkedinAccount = element("linkedinAccount");
@@ -339,6 +341,8 @@ function choose(event, instance) {
     facebookForm.hidden = true;
     facebookPage.replaceChildren();
     facebookSubmit.disabled = true;
+    facebookAutomatic.checked = true;
+    facebookCancel.disabled = true;
     facebookStatus.textContent = "";
     linkedinForm.hidden = true;
     linkedinAccount.value = "company";
@@ -1003,6 +1007,7 @@ button("loadFacebookLivePages").onclick = () => void action(async () => {
         return;
     facebookPage.replaceChildren(...result.items.map(page => new Option(page.name, page.id)));
     facebookSubmit.disabled = !result.items.length;
+    facebookCancel.disabled = !result.items.length;
 });
 facebookForm.onsubmit = event => {
     event.preventDefault();
@@ -1010,13 +1015,17 @@ facebookForm.onsubmit = event => {
         return;
     const path = mediaPath("destinations/facebook");
     const page = facebookPage.value;
+    const automatic = facebookAutomatic.checked;
     void action(async () => {
         facebookSubmit.disabled = true;
         try {
-            const result = await request(path, "POST", { page });
-            if (!active || mediaPath("destinations/facebook") !== path)
+            const result = await request(automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", { page });
+            if (!active || mediaPath("destinations/facebook") !== path || facebookPage.value !== page)
                 return;
-            if (result.state === "prepared") {
+            if (result.state === "queued") {
+                facebookStatus.textContent = "Facebook Live will start when this occurrence is ready to stream.";
+            }
+            else if (result.state === "prepared") {
                 facebookStatus.textContent = "Facebook Live prepared. Preview and publish in Facebook Live Producer.";
                 await refreshDestinations();
             }
@@ -1025,10 +1034,30 @@ facebookForm.onsubmit = event => {
             }
         }
         finally {
-            facebookSubmit.disabled = !facebookPage.options.length;
+            if (active && mediaPath("destinations/facebook") === path) {
+                facebookSubmit.disabled = !facebookPage.options.length;
+            }
         }
     });
 };
+facebookCancel.onclick = () => void action(async () => {
+    if (!active || !facebookPage.value || facebookCancel.disabled)
+        return;
+    const path = mediaPath("destinations/facebook");
+    const page = facebookPage.value;
+    facebookCancel.disabled = true;
+    try {
+        await request(path + "/auto", "DELETE", { page });
+        if (!active || mediaPath("destinations/facebook") !== path || facebookPage.value !== page)
+            return;
+        facebookStatus.textContent = "Automatic Facebook Live start canceled.";
+    }
+    finally {
+        if (active && mediaPath("destinations/facebook") === path) {
+            facebookCancel.disabled = !facebookPage.options.length;
+        }
+    }
+});
 button("loadLinkedinCompany").onclick = () => void action(async () => {
     const selection = active;
     if (!selection)
