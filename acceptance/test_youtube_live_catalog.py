@@ -45,6 +45,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
             observed.update(broadcast_pages=[], broadcast_fetch=False, stream_fetch=False)
             observed.update(single_channel=False, show_created=False, writes=[])
             created_broadcast, created_stream = {}, {}
+            completed_broadcasts = {}
             cleanup.enter_context(patch("event_peer.host_available", return_value=True))
             raw_secrets = ("old-live-access", "fresh-live-access", "live-refresh", "fixture-secret")
             cleanup.enter_context(patch.multiple(
@@ -191,6 +192,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
             @remote.get("/liveBroadcasts")
             def live_broadcasts():
+                if request.args.get("id") in completed_broadcasts:
+                    return {"items": [completed_broadcasts[request.args["id"]]]}
                 if request.args.get("id") and request.args["id"] == created_broadcast.get("id"):
                     return {"items": [created_broadcast]}
                 if request.args["part"] == "id,snippet":
@@ -236,6 +239,9 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert datetime.fromisoformat(body["snippet"]["scheduledStartTime"]) < datetime.fromisoformat(
                     body["snippet"]["scheduledEndTime"])
                 broadcast_id = "series-broadcast" if observed.get("recurring_id") else "created-broadcast"
+                if observed.get("restart"):
+                    assert datetime.fromisoformat(body["snippet"]["scheduledStartTime"]).timestamp() > second + 10
+                    broadcast_id = "restart-broadcast"
                 created_broadcast.clear()
                 created_broadcast.update(body, id=broadcast_id)
                 created_broadcast["snippet"]["channelId"] = "UC-live-1"
@@ -252,14 +258,30 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert body["contentDetails"] == {"isReusable": False}
                 assert body["snippet"]["description"] == created_broadcast["snippet"]["description"]
                 stream_id = "series-stream" if observed.get("recurring_id") else "created-stream"
+                stream_key = "fixture-series-key" if observed.get("recurring_id") else "fixture-created-stream-key"
+                if observed.get("restart"):
+                    stream_id, stream_key = "restart-stream", "fixture-restart-key"
                 created_stream.update(body, id=stream_id)
                 created_stream["snippet"]["channelId"] = "UC-live-1"
                 created_stream["cdn"]["ingestionInfo"] = {
                     "rtmpsIngestionAddress": "rtmps://a.rtmps.youtube.com:443/live2",
-                    "streamName": "fixture-series-key" if observed.get("recurring_id") else "fixture-created-stream-key",
+                    "streamName": stream_key,
                 }
                 observed["writes"].append("stream")
                 return created_stream
+
+            @remote.post("/liveBroadcasts/transition")
+            def complete_broadcast():
+                assert request.headers["Authorization"] == "Bearer fresh-live-access"
+                assert request.args["id"] == created_broadcast["id"] == "series-broadcast"
+                assert request.args["broadcastStatus"] == "complete"
+                assert request.args["part"] == "id,snippet,status"
+                assert created_broadcast["status"]["lifeCycleStatus"] == "live"
+                if observed.get("unconfirmed_stop"):
+                    return {"error": "simulated outage before completing broadcast"}, 503
+                created_broadcast["status"]["lifeCycleStatus"] = "complete"
+                completed_broadcasts[created_broadcast["id"]] = dict(created_broadcast)
+                return {"error": "simulated loss after completing broadcast"}, 503
 
             @remote.post("/liveBroadcasts/bind")
             def bind_broadcast():
@@ -571,6 +593,44 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertEqual(["broadcast", "stream", "bind"] * 2, observed["writes"])
                 kept = destination_rows(api.get(later_targets, headers=operator_headers))
                 check_destination_rtmps(root, database, kept[0]["id"], operator, kept[0]["server"], "fixture-series-key")
+
+                with closing(sqlite3.connect(database)) as con:
+                    con.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                                (series_event["id"], second))
+                    con.commit()
+
+                class CurrentNow(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return datetime.fromtimestamp(second + 10, tz=timezone.utc)
+                with patch.object(event_simulcast, "datetime", CurrentNow):
+                    created_broadcast["status"]["lifeCycleStatus"] = "live"
+                    observed["restart"] = True
+                    old_path = later_targets + "/" + kept[0]["id"]
+                    observed["unconfirmed_stop"] = True
+                    blocked = api.put(old_path, headers=operator_headers, data={"enabled": False})
+                    self.assertEqual(409, blocked.status, blocked.text())
+                    blocked = api.put(old_path, headers=operator_headers, data={"enabled": True})
+                    self.assertEqual(409, blocked.status, blocked.text())
+                    self.assertFalse(destination_rows(api.get(later_targets, headers=operator_headers))[0]["enabled"])
+                    self.assertEqual(["broadcast", "stream", "bind"] * 2, observed["writes"])
+                    observed["unconfirmed_stop"] = False
+                    r = api.put(old_path, headers=operator_headers, data={"enabled": False})
+                    self.assertEqual(204, r.status, r.text())
+                    self.assertIn("series-broadcast", completed_broadcasts)
+                    r = api.put(old_path, headers=operator_headers, data={"enabled": True})
+                    self.assertEqual(202, r.status, r.text())
+                    stop_app()
+                    with patch("institution.library_worker.start", return_value=lambda: None):
+                        service.app = create_app(root, database, operator, "station")
+                    stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                    r = api.put(old_path, headers=operator_headers, data={"enabled": True})
+                    self.assertEqual(201, r.status, r.text())
+                    kept = destination_rows(api.get(later_targets, headers=operator_headers))
+                check_destination_rtmps(root, database, kept[0]["id"], operator, kept[0]["server"], "fixture-restart-key")
+                self.assertEqual(active_series, api.get(later_targets + series_suffix, headers=operator_headers).json())
+                self.assertNotEqual(kept[0]["id"], old_path.rsplit("/", 1)[-1])
+                self.assertEqual(["broadcast", "stream", "bind"] * 3, observed["writes"])
                 self.assertEqual([], destination_rows(api.get(skip_targets, headers=operator_headers)))
                 self.assertTrue(api.delete(later_targets + series_suffix, headers=operator_headers, data={"date": True}).ok)
                 self.assertFalse(api.get(later_targets + series_suffix, headers=operator_headers).json()["restorable"])

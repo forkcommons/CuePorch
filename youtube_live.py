@@ -140,10 +140,12 @@ def _create(connection, revision, resource, params, data, channel, action, befor
 def insert_broadcast(connection, revision, channel, title, starts, ends, privacy, marker, before_send=None):
     data = {
         "snippet": {"title": title, "description": marker,
-                    "scheduledStartTime": starts, "scheduledEndTime": ends},
+                    "scheduledStartTime": starts},
         "status": {"privacyStatus": privacy},
         "contentDetails": {"enableAutoStart": True, "enableAutoStop": True},
     }
+    if ends is not None:
+        data["snippet"]["scheduledEndTime"] = ends
     return _create(connection, revision, "liveBroadcasts", {"part": BROADCAST_PARTS},
                    data, channel, "broadcast creation", before_send)
 
@@ -198,7 +200,7 @@ def bind_created(connection, revision, broadcast, stream, channel, before_send=N
         raise YouTubeWriteUnconfirmed("stream binding")
 
 
-def broadcast_details(connection, revision, broadcast_id, channel_id):
+def broadcast_details(connection, revision, broadcast_id, channel_id=None):
     result = _get(connection, revision, "liveBroadcasts",
                   {"id": broadcast_id, "part": BROADCAST_PARTS}, "broadcast lookup")
     items = result.get("items")
@@ -206,10 +208,52 @@ def broadcast_details(connection, revision, broadcast_id, channel_id):
         abort(404, "That YouTube broadcast is unavailable.")
     item = items[0]
     snippet, status, details = item.get("snippet"), item.get("status"), item.get("contentDetails")
-    if (item.get("id") != broadcast_id or not isinstance(snippet, dict) or snippet.get("channelId") != channel_id
+    if (item.get("id") != broadcast_id or not isinstance(snippet, dict)
+            or (channel_id is not None and snippet.get("channelId") != channel_id)
             or not isinstance(status, dict) or not isinstance(details, dict)):
         abort(404, "That YouTube broadcast is unavailable.")
     return snippet, status, details
+
+
+def restart_details(connection, revision, broadcast):
+    if not isinstance(broadcast, str) or not IDENTIFIER.fullmatch(broadcast):
+        abort(400, "Invalid broadcast identifier.")
+    snippet, status, _ = broadcast_details(connection, revision, broadcast)
+    channel = snippet.get("channelId")
+    privacy = status.get("privacyStatus")
+    lifecycle = status.get("lifeCycleStatus")
+    if (not isinstance(channel, str) or not IDENTIFIER.fullmatch(channel)
+            or privacy not in PRIVACY
+            or not isinstance(lifecycle, str)):
+        abort(409, "That YouTube broadcast is invalid.")
+    return channel, privacy, lifecycle
+
+
+def finish_broadcast(connection, revision, broadcast, channel, before_send=None):
+    _, previous, _ = broadcast_details(connection, revision, broadcast, channel)
+    lifecycle = previous.get("lifeCycleStatus")
+    if lifecycle in ("complete", "revoked", "ready", "created"):
+        return lifecycle
+    if lifecycle not in ("live", "testing"):
+        abort(409, "YouTube is still changing the broadcast status. Try again shortly.")
+    params = {"broadcastStatus": "complete", "id": broadcast, "part": "id,snippet,status"}
+    try:
+        item = _create(connection, revision, "liveBroadcasts/transition", params, None,
+                       channel, "broadcast transition", before_send)
+        status = item.get("status")
+        if (item.get("id") == broadcast and isinstance(status, dict)
+                and status.get("lifeCycleStatus") in ("complete", "revoked")):
+            return status["lifeCycleStatus"]
+    except YouTubeWriteUnconfirmed:
+        pass
+    except HTTPException as error:
+        if error.code != 422:
+            raise
+    _, status, _ = broadcast_details(connection, revision, broadcast, channel)
+    new_lifecycle = status.get("lifeCycleStatus")
+    if new_lifecycle not in ("complete", "revoked"):
+        abort(409, "That YouTube broadcast is still active.")
+    return new_lifecycle
 
 
 def bound_target(connection, revision, broadcast_id, channel_id):
