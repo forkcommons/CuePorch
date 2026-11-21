@@ -1,3 +1,4 @@
+import hashlib
 import html
 import json
 import re
@@ -125,6 +126,46 @@ class BrowserRegistrationProvider(RegistrationProvider):
         raise AssertionError(f"Unknown listsafe2 path: {parts.path}")
 
 
+class BrowserEngagementProvider(BrowserRegistrationProvider):
+    def __init__(self, challenge=None, fault=None):
+        super().__init__(challenge=challenge, fault=fault)
+        self.events = []
+
+    def request(self, method, url, **kwargs):
+        parsed = urlsplit(url)
+        email = "screening@example.test"
+        member_hash = hashlib.md5(email.encode("utf-8")).hexdigest()
+        member_path = f"/3.0/lists/listsafe2/members/{member_hash}"
+        events_path = f"{member_path}/events"
+        if parsed.scheme != "https" or parsed.netloc != "api.mailchimp.com":
+            return super().request(method, url, **kwargs)
+        if parsed.path == member_path and method == "GET":
+            if any(write.get("email_address") == email for write in self.writes):
+                assert (kwargs.get("headers") or {}).get(
+                    "Authorization"
+                ) == "Bearer fixture-mailchimp-access"
+                return _resp(
+                    {
+                        "id": member_hash,
+                        "list_id": "listsafe2",
+                        "email_address": email,
+                        "status": "subscribed",
+                    }
+                )
+        if parsed.path == events_path and method == "POST":
+            assert (kwargs.get("headers") or {}).get(
+                "Authorization"
+            ) == "Bearer fixture-mailchimp-access"
+            payload = kwargs.get("json")
+            assert payload is not None
+            self.events.append(payload)
+            response = _resp({})
+            response.status_code = 204
+            response._content_consumed = True
+            return response
+        return super().request(method, url, **kwargs)
+
+
 class MailchimpRegistrationTest(unittest.TestCase):
     def test_mailchimp_registration_delivery(self):
         self.run_rehearsal(RegistrationProvider(), self.exercise)
@@ -136,7 +177,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
 
     def test_mailchimp_delivery_controls_engagement(self):
         self.run_rehearsal(
-            BrowserRegistrationProvider(),
+            BrowserEngagementProvider(),
             lambda app, operator, provider: self.exercise_browser(
                 app, operator, provider, engagement=True
             ),
@@ -152,6 +193,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
                 encoding="utf-8",
             )
             database = root / "workspace.sqlite"
+            provider.database = database
 
             cleanup.enter_context(
                 patch.dict(
@@ -204,7 +246,7 @@ class MailchimpRegistrationTest(unittest.TestCase):
         self.assertEqual(provider.exchanges, 1)
 
     def create_webinar(self, client, hdr, *, engagement=False):
-        start = datetime.now(UTC) + timedelta(minutes=6)
+        start = datetime.now(UTC) + timedelta(minutes=-6 if engagement else 6)
         end = start + timedelta(hours=1)
         schedule = {
             "timezone": "UTC",
@@ -465,6 +507,15 @@ class MailchimpRegistrationTest(unittest.TestCase):
                 expect(page.locator("#eventMailchimpStatus")).to_contain_text(
                     "Engagement waiting: 1"
                 )
+                grant = attendee.locator("#eventLobby").get_attribute("data-viewer-grant")
+                assert grant
+                self.record_browser_activity(attendee, base, headers, uid, opens, grant)
+                self.finish_browser_engagement(client, headers, provider, uid, opens)
+
+                page.get_by_role("button", name="Refresh Mailchimp delivery status").click()
+                expect(page.locator("#eventMailchimpStatus")).to_contain_text(
+                    "Engagement sent: 1"
+                )
             page.get_by_role("button", name="Stop Mailchimp delivery").click()
             expect(page.locator("#eventMailchimpStatus")).to_contain_text(
                 "Mailchimp delivery is off."
@@ -475,3 +526,193 @@ class MailchimpRegistrationTest(unittest.TestCase):
             )
             assert status.status_code == 200, status.data
             assert status.get_json()["enabled"] is False
+
+    def record_browser_activity(self, attendee, base, auth, uid, opens, grant):
+        root = base.rstrip("/")
+        real_path = f"/api/live-events/{uid}/{opens}/engagement"
+        aud_path = f"/events/mailchimp-webinar/{opens}/engagement"
+
+        def _send(method, path, headers, body=None):
+            kw = {"method": method, "headers": headers}
+            if body is not None:
+                kw["data"] = body
+            resp = attendee.request.fetch(f"{root}{path}", **kw)
+            assert resp.ok, (resp.status, resp.text())
+            return resp
+
+        def _aud_headers(session=None, dnt=False):
+            h = {"X-CuePorch-Event-Viewer": grant}
+            if session:
+                h["X-CuePorch-Engagement-Session"] = session
+            if dnt:
+                h["DNT"] = "1"
+            return h
+
+        def _new_session():
+            return _send("GET", aud_path, _aud_headers()).json()["session"]
+
+        def _create(session, text, name=None, anonymous=False, dnt=False):
+            body = {"feature": "qa", "type": "question", "question": text}
+            if name is not None:
+                body["name"] = name
+            if anonymous:
+                body["anonymous"] = True
+            data = _send("POST", aud_path, _aud_headers(session, dnt), body).json()
+            return next(q["id"] for q in data["qa"]["questions"] if q["question"] == text)
+
+        def _vote(session, qid, enabled, dnt=False):
+            return _send(
+                "POST",
+                aud_path,
+                _aud_headers(session, dnt),
+                {"feature": "qa", "type": "vote", "id": qid, "enabled": enabled},
+            )
+
+        _send("PUT", real_path, auth, {"feature": "qa", "enabled": True, "review": False, "anonymous": True})
+        poll = _send("POST", real_path, auth, {"feature": "poll", "type": "draft", "question": "Format?", "choices": ["Film", "Talk"]}).json()
+        poll_id = poll["polls"][0]["id"]
+        _send("POST", real_path, auth, {"feature": "poll", "type": "open", "id": poll_id})
+
+        s1 = _new_session()
+        q1 = _create(s1, "Can I screen this?", name="Casey")
+        _vote(s1, q1, True)
+
+        s2 = _new_session()
+        q2 = _create(s2, "Remove this vote", name="Casey", dnt=True)
+
+        s3 = _new_session()
+        q3 = _create(s3, "Unshared vote", name="Casey", dnt=True)
+
+        s4 = _new_session()
+        q4 = _create(s4, "Anonymous question", anonymous=True)
+
+        _vote(s1, q2, True)
+        _vote(s1, q2, False, dnt=True)
+        _vote(s1, q3, True, dnt=True)
+        _vote(s1, q4, True)
+        _send("POST", aud_path, _aud_headers(s1), {"feature": "poll", "id": poll_id, "choice": 0})
+
+    def finish_browser_engagement(self, client, headers, provider, uid, opens):
+        import sqlite3
+        import time
+        from contextlib import closing, contextmanager
+        from unittest.mock import Mock
+        import library_events
+
+        @contextmanager
+        def tx():
+            with closing(sqlite3.connect(provider.database, timeout=10)) as con:
+                con.row_factory = sqlite3.Row
+                with con:
+                    yield con
+
+        # Read the single queued engagement fixture row.
+        with tx() as con:
+            rows = con.execute(
+                "SELECT sharing, generation, state "
+                "FROM live_event_mailchimp_engagement "
+                "WHERE event = ? AND opens = ? AND state = 'queued'",
+                (uid, opens),
+            ).fetchall()
+        assert len(rows) == 1, f"expected exactly one queued fixture, got {len(rows)}"
+        sharing = rows[0]["sharing"]
+        generation = rows[0]["generation"]
+
+        # Seed the playback rows and the shared attendee session.
+        now = time.time()
+        with tx() as con:
+            con.execute(
+                "INSERT INTO live_playback "
+                "(id, event, opens, phase, sequence, played, playing, watched, seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"{uid}-live", uid, opens, "live", 0, 1, 0, 30000, now),
+            )
+            con.execute(
+                "INSERT INTO live_playback "
+                "(id, event, opens, phase, sequence, played, playing, watched, seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"{uid}-replay", uid, opens, "replay", 1, 1, 0, 12000, now),
+            )
+            con.execute(
+                "INSERT INTO live_attendee_session (session, sharing) VALUES (?, ?)",
+                (f"{uid}-live", sharing),
+            )
+            con.execute(
+                "INSERT INTO live_attendee_session (session, sharing) VALUES (?, ?)",
+                (f"{uid}-replay", sharing),
+            )
+
+        # Peer occurrence record (guarded so it's inserted once).
+        origin = "https://peer.example"
+        remote = "fixture-webinar"
+        with tx() as con:
+            exists = con.execute(
+                "SELECT 1 FROM live_occurrence "
+                "WHERE event = ? AND opens = ? AND origin = ?",
+                (uid, opens, origin),
+            ).fetchone()
+            if exists is None:
+                con.execute(
+                    "INSERT INTO live_occurrence "
+                    "(event, opens, origin, remote, delivery) VALUES (?, ?, ?, ?, ?)",
+                    (uid, opens, origin, remote, "ready"),
+                )
+
+        # Drive the real observe_delivery path with a mocked host response.
+        host = Mock()
+        host.call.return_value.json.return_value = {
+            "isLive": False,
+            "privacy": {"id": 3},
+            "state": {"id": 1},
+            "duration": 120,
+        }
+        library_events.observe_delivery(tx, provider.database, origin, lambda _: host)
+
+        # Completion is recorded, but nothing is emitted while approval is pending.
+        with tx() as con:
+            completion = con.execute(
+                "SELECT duration FROM live_event_mailchimp_completion WHERE generation=?",
+                (generation,),
+            ).fetchone()
+        assert completion is not None
+        assert completion["duration"] == 120
+        assert provider.events == []
+
+        # Flip approval off, then wait for the worker to deliver.
+        resp = client.put(
+            "/api/policy/event_engagement_sync",
+            json={"required": False},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+
+        deadline = time.monotonic() + 8.0
+        outbound = None
+        while time.monotonic() < deadline:
+            r = client.get(
+                f"/api/live-events/{uid}/{opens}/registration/mailchimp/outbound",
+                headers=headers,
+            )
+            if r.status_code == 200:
+                outbound = r.get_json()
+                if outbound.get("engagement_states") == {"sent": 1}:
+                    break
+            time.sleep(0.1)
+        assert outbound is not None
+        assert outbound["engagement_states"] == {"sent": 1}
+
+        # Exactly one outbound event, with the exact synthetic payload.
+        assert len(provider.events) == 1
+        sent = provider.events[0]
+        assert sent["name"] == "cueporch_webinar_engagement"
+        expected = {
+            "event_title": "Mailchimp Webinar",
+            "attended_live": "true",
+            "live_watch_ms": "30000",
+            "replay_watch_ms": "12000",
+            "live_watch_percent": "25",
+            "questions": "Can I screen this?",
+            "question_upvotes": "Can I screen this?",
+            "polls": "Format?: Film",
+        }
+        assert {key: sent["properties"][key] for key in expected} == expected

@@ -102,10 +102,13 @@ def audience_action(con, uid, opens, viewer, body):
         if question["archived"] or question["state"] not in ("published", "answered") or type(enabled) is not bool:
             abort(422, "Choose a visible question to vote on.")
         if enabled:
-            con.execute("INSERT OR IGNORE INTO live_question_vote VALUES(?,?)", (question["id"], viewer))
+            cursor = con.execute("INSERT OR IGNORE INTO live_question_vote VALUES(?,?)", (question["id"], viewer))
+            if cursor.rowcount == 1 and question["name"] is not None:
+                return question["id"]
+            return None
         else:
             con.execute("DELETE FROM live_question_vote WHERE question=? AND viewer=?", (question["id"], viewer))
-        return None
+            return question["id"]
     else:
         abort(422, "Choose an audience Q&A action.")
 

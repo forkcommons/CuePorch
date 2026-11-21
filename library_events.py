@@ -1431,7 +1431,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return scope, active
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
-    def outbound_activity_sharing(con, scope):
+    def outbound_activity_sharing(con, scope, *, mailchimp_only=False):
         if not library_analytics.permitted():
             return None
 
@@ -1445,7 +1445,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if not admitted or not sharing:
             return None
 
-        if marketo_revision:
+        if marketo_revision and not mailchimp_only:
             row = con.execute(
                 "SELECT 1 FROM live_event_marketo_engagement j "
                 "JOIN live_event_contact_plan p ON p.generation=j.generation "
@@ -1473,7 +1473,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
         return None
 
-    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat, share_activity=outbound_activity_sharing)
+    event_engagement.register(
+        app,
+        tx,
+        staff,
+        audience_session,
+        operator_chat,
+        audience_chat,
+        share_activity=outbound_activity_sharing,
+        share_upvotes=lambda con, scope: outbound_activity_sharing(
+            con, scope, mailchimp_only=True
+        ),
+    )
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access, database, start_voice, voice_audio)
@@ -2494,6 +2505,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 event_hubspot_engagement.cancel(con, sharing=sharing)
                 event_marketo_engagement.cancel(con, sharing=sharing)
                 event_mailchimp_engagement.cancel(con, sharing=sharing)
+                con.execute("DELETE FROM live_event_shared_qa_vote WHERE sharing=?", (sharing,))
         return private("", 204)
 
     @app.get("/event-media/<token>/<filename>")

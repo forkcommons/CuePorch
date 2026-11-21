@@ -238,6 +238,7 @@ def payload(con, job, attendee, title):
         "replay_watch_ms": str(snap["replay_ms"]),
         "live_watch_percent": str(round(pct)),
         "questions": "\n".join(snap["questions"])[:1000],
+        "question_upvotes": "\n".join(snap["upvotes"])[:1000],
         "polls": "\n".join(snap["polls"])[:1000],
         "registered_at": registered_at,
     }

@@ -2,6 +2,7 @@
 
 import csv
 from io import StringIO
+from time import time
 
 from flask import Response, abort, request
 
@@ -15,6 +16,10 @@ CREATE TABLE IF NOT EXISTS live_event_shared_activity(
  feature TEXT NOT NULL, activity TEXT NOT NULL, viewer TEXT NOT NULL, sharing TEXT NOT NULL,
  PRIMARY KEY(feature,activity,viewer));
 CREATE INDEX IF NOT EXISTS live_event_shared_activity_sharing ON live_event_shared_activity(sharing);
+CREATE TABLE IF NOT EXISTS live_event_shared_qa_vote(
+ question TEXT NOT NULL, viewer TEXT NOT NULL, sharing TEXT NOT NULL, sent REAL NOT NULL,
+ PRIMARY KEY(question,viewer));
+CREATE INDEX IF NOT EXISTS live_event_shared_qa_vote_sharing ON live_event_shared_qa_vote(sharing);
 """
 
 
@@ -90,6 +95,31 @@ def activity_snapshot(con, job, completed_at):
         (sharing, event, opens, completed_at, ROW_LIMIT),
     ).fetchall()
 
+    upvotes = [
+        row[0].strip()
+        for row in con.execute(
+            '''
+            SELECT q.question
+            FROM live_event_shared_qa_vote AS sqv
+            JOIN live_question AS q ON q.id = sqv.question
+            JOIN live_question_vote AS v
+              ON v.question = sqv.question
+             AND v.viewer = sqv.viewer
+            WHERE sqv.sharing = ?
+              AND q.event = ?
+              AND q.opens = ?
+              AND q.name IS NOT NULL
+              AND q.archived = 0
+              AND q.state IN ('published', 'answered')
+              AND q.sent <= ?
+              AND sqv.sent <= ?
+            ORDER BY sqv.sent, q.id
+            LIMIT ?
+            ''',
+            (sharing, event, opens, completed_at, completed_at, ROW_LIMIT),
+        )
+        if row[0] is not None
+    ]
     questions = []
     for row in question_rows:
         text = (row["question"] or "").strip()
@@ -120,6 +150,7 @@ def activity_snapshot(con, job, completed_at):
         "live_ms": live_ms,
         "replay_ms": replay_ms,
         "questions": questions,
+        "upvotes": upvotes,
         "polls": polls,
     }
 
@@ -133,7 +164,7 @@ def report(rows, filename):
     })
 
 
-def register(app, tx, staff, session, operator_access, audience_access, *, share_activity=None):
+def register(app, tx, staff, session, operator_access, audience_access, *, share_activity=None, share_upvotes=None):
     def overview(con, uid, opens, viewer=None, operator=False):
         return dict(qa=event_questions.overview(con, uid, opens, viewer, operator),
                     polls=event_polls.overview(con, uid, opens, viewer, operator))
@@ -198,7 +229,20 @@ def register(app, tx, staff, session, operator_access, audience_access, *, share
                     activity = event_polls.audience_action(con, uid, opens, viewer, body)
                 else:
                     abort(422, "Choose Q&A or a poll.")
-                if activity is not None and share_activity is not None:
+                if activity is not None and body["feature"] == "qa" and body["type"] == "vote":
+                    if not body["enabled"]:
+                        con.execute(
+                            "DELETE FROM live_event_shared_qa_vote WHERE question = ? AND viewer = ?",
+                            (activity, viewer),
+                        )
+                    elif share_upvotes is not None:
+                        sharing = share_upvotes(con, scope)
+                        if sharing:
+                            con.execute(
+                                "INSERT INTO live_event_shared_qa_vote(question, viewer, sharing, sent) VALUES (?, ?, ?, ?)",
+                                (activity, viewer, sharing, time()),
+                            )
+                elif activity is not None and share_activity is not None:
                     sharing = share_activity(con, scope)
                     if sharing:
                         con.execute(
