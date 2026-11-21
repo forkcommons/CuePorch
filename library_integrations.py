@@ -21,6 +21,7 @@ import event_hubspot_sync
 import event_salesforce_registration
 import event_hubspot_outbound
 import event_mailchimp_registration
+import facebook_live
 import facebook_upload
 import google_meet_recordings
 import constant_contact_crm
@@ -312,12 +313,14 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
+    facebook_live_connection = facebook_live.PageLiveConnection(tx, operator, sharing_access)
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, youtube_live_connection, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound
+    live_connections = {item.config.key: item for item in (youtube_live_connection, facebook_live_connection)}
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound | live_connections
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -446,7 +449,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                 category=("Marketing" if item.config.key in ("hubspot", "mailchimp", "constant-contact", "campaign-monitor", "keap", "salesforce") else
                           "Commerce" if item.config.key == "shopify" else
                           "Social publishing" if item.config.key in outbound else
-                          "Live events" if item.config.key == "youtube-live" else
+                          "Live events" if item.config.key in live_connections else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
                 description=("Import a contact segment into a webinar occurrence." if item.config.key == "hubspot" else
                              "Connect a Mailchimp account for registration sync." if item.config.key == "mailchimp" else
@@ -458,6 +461,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              if item.config.key == "shopify" else
                              "Connect a YouTube channel for event simulcasting."
                              if item.config.key == "youtube-live" else
+                             "Connect and check Facebook Pages with live streaming permissions."
+                             if item.config.key == "facebook-live" else
                              "Upload a native video from the Library to your channel."
                              if item.config.key in outbound else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
@@ -494,6 +499,16 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             youtube_live_connection, revision, request.args.get("cursor"),
         ))
 
+    @app.get("/api/integrations/facebook-live/pages")
+    def facebook_live_pages():
+        read_api()
+        with tx() as con:
+            if not sharing_access(con)["outbound"]:
+                abort(403, "Your workspace sharing policy restricts live Page access.")
+            if not facebook_live_connection.connection(con):
+                abort(409, "Connect Facebook Live to view Pages.")
+            return private(facebook_live_connection.public_pages(con))
+
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):
         if request.args.get("personal") == "1":
@@ -510,7 +525,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             credential_owner()
         if provider == "shopify":
             return connection.prepare(secure, current, context={"shop": body.get("shop")})
-        if provider == "youtube-live":
+        if provider in live_connections:
             member = None
             with tx() as con:
                 if request.headers.get("Authorization") == "Bearer " + SESSION_MARKER:
@@ -518,7 +533,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                     if not member or member["role"] not in MANAGERS:
                         abort(403)
                 if not sharing_access(con, member)["outbound"]:
-                    abort(403, "Your workspace sharing policy restricts connecting a live channel.")
+                    abort(403, "Your workspace sharing policy restricts connecting a live destination.")
             return connection.prepare(secure, current, context={
                 "member": member["id"] if member else None,
                 "origin": current,
