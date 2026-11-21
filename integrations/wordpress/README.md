@@ -20,6 +20,8 @@ The picker shows which WordPress site will receive the selected player URL. If C
 
 Select **Upload** in the CuePorch popup to add files to your Library. It uses the same upload defaults, folder settings, and approval policy as the CuePorch Library. A private or pending upload stays in CuePorch until its settings allow sharing. Uploading a file does not add it to the product.
 
+For a saved product with WordPress-hosted images, select **Create Product Video**, then **Create from product photos** in the CuePorch popup. CuePorch uses the saved title and up to eight featured and gallery images to make a short video. **Open draft in CuePorch editor** opens the private result. After its sharing settings permit an embed, choose it from the Library and update the product.
+
 ## Compatibility
 
 Use the classic WooCommerce product editor for product settings. On classic storefronts, gallery placement adds a video slide. On storefronts using the WooCommerce Product Gallery block, the hosted player appears in its own section immediately before or after the native gallery. The product-description iframe path is also available.

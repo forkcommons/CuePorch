@@ -32,6 +32,26 @@ function cueporch_woo_render_product_video_fields() {
     if ( get_option( 'cueporch_woo_origin' ) ) {
         echo '<p class="form-field">';
         echo '<button type="button" class="button" id="cueporchChooseVideo" data-origin="' . esc_attr( get_option( 'cueporch_woo_origin' ) ) . '">' . esc_html__( 'Choose from CuePorch', 'cueporch-video' ) . '</button>';
+        if ( current_user_can( 'edit_post', $product_id ) ) {
+            $source = wc_get_product( $product_id );
+            if ( $source instanceof WC_Product ) {
+                $photos = cueporch_woo_product_photo_candidates( $source );
+                if ( is_array( $photos ) && ! empty( $photos ) ) {
+                    $photos_json = wp_json_encode( $photos );
+                    if ( is_string( $photos_json ) && '' !== $photos_json ) {
+                        echo '<button'
+                            . ' type="button"'
+                            . ' id="cueporchCreateProductVideo"'
+                            . ' class="button"'
+                            . ' data-title="' . esc_attr( $source->get_name() ) . '"'
+                            . ' data-photos="' . esc_attr( $photos_json ) . '"'
+                            . '>'
+                            . esc_html__( 'Create Product Video', 'cueporch-video' )
+                            . '</button>';
+                    }
+                }
+            }
+        }
         echo ' <span id="cueporchPickerStatus" aria-live="polite"></span>';
         echo '</p>';
     }
@@ -159,4 +179,22 @@ function cueporch_woo_enqueue_editor_picker( $hook ) {
     }
     $ver = (string) filemtime( plugin_dir_path( __FILE__ ) . 'editor-picker.js' );
     wp_enqueue_script( 'cueporch-editor-picker', plugin_dir_url( __FILE__ ) . 'editor-picker.js', array(), $ver, true );
+}
+
+function cueporch_woo_product_photo_candidates(WC_Product $product): array {
+    if (!is_admin()) return [];
+    $ids = array_filter(array_merge([(int) $product->get_image_id()], array_map('intval', $product->get_gallery_image_ids())), fn($i) => $i > 0);
+    $ids = array_slice(array_values(array_unique($ids)), 0, 8);
+    $ok = ['image/jpeg', 'image/png', 'image/webp'];
+    $out = [];
+    foreach ($ids as $id) {
+        $mime = get_post_mime_type($id);
+        $src  = wp_get_attachment_image_src($id, 'large');
+        if (!$mime || !in_array($mime, $ok, true) || !$src || empty($src[0])) continue;
+        $path = wp_parse_url($src[0], PHP_URL_PATH);
+        $name = $path ? sanitize_file_name(basename($path)) : '';
+        if ($name === '') continue;
+        $out[] = ['name' => $name, 'mime' => $mime, 'url' => esc_url_raw($src[0])];
+    }
+    return $out;
 }

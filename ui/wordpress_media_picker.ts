@@ -1,5 +1,8 @@
+import { privateSettings } from "./library_privacy.js";
+import { createProductVideo } from "./product_video_recording.js";
 import {
   libraryUploader,
+  uploadLibraryFile,
   readUploadPrivacy,
   folderChoices,
   type UploadFolder,
@@ -45,6 +48,7 @@ function startPicker(): void {
   }
   destinationLabel.textContent = picker.destination;
   mountLibraryUploader();
+  mountProductCreation();
   void loadLibrary();
   search.addEventListener("input", () => renderWorks());
   authForm.addEventListener("submit", (ev: Event) => {
@@ -236,6 +240,141 @@ async function chooseWork(work: LibraryWork): Promise<void> {
     status.textContent =
       "This video is unavailable for embedding. Check its sharing settings.";
   }
+}
+
+async function saveProductVideoDraft(draft: {
+  id: string;
+  file: File;
+}): Promise<string> {
+  const { id, file } = draft;
+  const receipt = await uploadLibraryFile(
+    file,
+    id,
+    "",
+    token,
+    { ...privateSettings, password: "" },
+    (progress) => {
+      status.textContent =
+        progress == null
+          ? "Preparing product video…"
+          : `Uploading ${Math.round(progress)}%`;
+    },
+  );
+  if (
+    receipt.pending ||
+    receipt.visibility !== "private" ||
+    !workId.test(receipt.id)
+  )
+    throw new Error("receipt invalid");
+  return receipt.id;
+}
+
+function parseProductSource(
+  message: Record<string, unknown>,
+): { title: string; files: File[] } | null {
+  const rawTitle = message.title;
+  if (typeof rawTitle !== "string") return null;
+  const title = rawTitle.trim().slice(0, 100);
+  if (!title) return null;
+  const rows = message.photos;
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > 8) return null;
+  const allowed = ["image/jpeg", "image/png", "image/webp"];
+  const files: File[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") return null;
+    const {
+      name,
+      mediaType: type,
+      bytes,
+    } = row as { name?: unknown; mediaType?: unknown; bytes?: unknown };
+    if (typeof name !== "string" || !name || name.length > 180) return null;
+    if (typeof type !== "string" || !allowed.includes(type)) return null;
+    if (
+      !(bytes instanceof ArrayBuffer) ||
+      bytes.byteLength <= 0 ||
+      bytes.byteLength > 8 * 1024 * 1024
+    )
+      return null;
+    files.push(new File([bytes], name, { type }));
+  }
+  return { title, files };
+}
+
+function mountProductCreation(): void {
+  if (!picker) return;
+  const context = picker;
+  if (new URLSearchParams(location.search).get("mode") !== "create") return;
+  const section = document.getElementById("pickerProductCreate") as HTMLElement;
+  const button = document.getElementById(
+    "pickerCreateVideo",
+  ) as HTMLButtonElement;
+  const editLink = document.getElementById(
+    "pickerEditDraft",
+  ) as HTMLAnchorElement;
+  let staged: { id: string; file: File } | null = null;
+  let awaiting = false;
+
+  async function receiveSource(event: MessageEvent): Promise<void> {
+    if (!awaiting) return;
+    if (event.source !== context.opener || event.origin !== context.destination)
+      return;
+    if (event.data === null || typeof event.data !== "object") return;
+    const m = event.data as Record<string, unknown>;
+    if (
+      m.request !== context.request ||
+      (m.type !== "cueporch-wordpress-product-source" &&
+        m.type !== "cueporch-wordpress-product-error")
+    )
+      return;
+    awaiting = false;
+    const source = parseProductSource(m);
+    if (m.type === "cueporch-wordpress-product-error" || !source) {
+      status.textContent = "Invalid product source.";
+      button.disabled = false;
+      return;
+    }
+    try {
+      const file = await createProductVideo(source.title, source.files);
+      staged = { id: crypto.randomUUID(), file };
+      await uploadStaged();
+    } catch {
+      status.textContent = "Unable to decode product source.";
+      button.disabled = false;
+    }
+  }
+
+  function requestSource(): void {
+    button.disabled = true;
+    if (staged) {
+      void uploadStaged();
+      return;
+    }
+    awaiting = true;
+    context.opener.postMessage(
+      { type: "cueporch-wordpress-product-request", request: context.request },
+      context.destination,
+    );
+    status.textContent = "Reading WordPress photos";
+  }
+
+  async function uploadStaged(): Promise<void> {
+    if (!staged) return;
+    try {
+      const id = await saveProductVideoDraft(staged);
+      editLink.href = `/operator/videos/${id}/timeline`;
+      editLink.hidden = false;
+      status.textContent = "Draft saved privately";
+      button.disabled = true;
+    } catch {
+      button.disabled = false;
+      status.textContent = "Upload failed. Retry the same upload.";
+    }
+  }
+
+  button.addEventListener("click", requestSource);
+  window.addEventListener("message", (event) => void receiveSource(event));
+  section.hidden = false;
+  button.disabled = false;
 }
 
 startPicker();

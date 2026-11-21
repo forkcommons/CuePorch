@@ -150,6 +150,50 @@ def verify_woocommerce_player(iframe, expected_src):
     assert result["currentTime"] > 0
 
 
+def create_woocommerce_video(ap, base, operator):
+    before = ap.locator("#_cueporch_video_urls").input_value()
+    with ap.expect_popup() as pinfo:
+        ap.click("#cueporchCreateProductVideo")
+    popup = pinfo.value
+    popup.fill("#pickerKey", operator)
+    popup.click("#pickerAuth button")
+    def h(route): route.abort() if route.request.resource_type == 'fetch' else route.continue_()
+    ap.route('**/wp-content/uploads/**', h)
+    try:
+        popup.click('#pickerCreateVideo')
+        expect(popup.locator('#pickerStatus')).to_contain_text('Invalid product source.')
+        expect(popup.locator('#pickerCreateVideo')).to_be_enabled()
+    finally:
+        ap.unroute('**/wp-content/uploads/**', h)
+    popup.click("#pickerCreateVideo")
+    draft = popup.locator("#pickerEditDraft")
+    expect(draft).to_be_visible(timeout=45000)
+    href = draft.get_attribute("href") or ""
+    parts = urlparse(href).path.strip("/").split("/")
+    assert parts[:2] == ["operator", "videos"] and parts[3] == "timeline", href
+    uid = parts[2]
+    r = popup.context.request.get(
+        f"{base}/api/library/work/{uid}/privacy",
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    data = r.json()
+    assert data.get("visibility") == "private" and data.get("embed_url") is None
+    assert ap.locator("#_cueporch_video_urls").input_value() == before
+    request = popup.context.request
+    headers = {'Authorization': f'Bearer {operator}'}
+    project = request.get(f'{base}/api/library/work/{uid}/timeline', headers=headers)
+    expect(project).to_be_ok()
+    resp = request.post(f'{base}/api/library/work/{uid}/timeline/preview', headers=headers, data={'cut': project.json()['current']})
+    expect(resp).to_be_ok()
+    preview = resp.json()['preview']
+    popup.evaluate("src => { const v = document.createElement('video'); v.id = 'owned-preview-video'; v.src = src; v.muted = true; v.playsInline = true; v.autoplay = true; document.body.appendChild(v); v.play(); }", f'{base}{preview}')
+    popup.wait_for_function("() => { const v = document.querySelector('#owned-preview-video'); return !!v && v.videoWidth === 640 && v.videoHeight === 360 && v.currentTime >= 0.2; }", timeout=10000)
+    expect(popup.locator('#owned-preview-video')).to_have_js_property('videoWidth', 640)
+    expect(popup.locator('#owned-preview-video')).to_have_js_property('videoHeight', 360)
+    popup.close()
+    return uid
+
+
 def verify_private_picker_upload(popup, clip):
     popup.click("#uploadLibrary")
     popup.set_input_files("#libraryFiles", {
@@ -231,6 +275,7 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid, clip
             ap.goto(f"{storefront}/wp-admin/post.php?post={product_id}&action=edit")
             if mode == "tab":
                 ap.fill("#_cueporch_video_urls", "")
+                create_woocommerce_video(ap, base, operator)
                 select_in_cueporch_picker(ap, base, operator, uid, clip)
             else:
                 ap.fill("#_cueporch_video_urls", watch)
