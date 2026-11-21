@@ -122,7 +122,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         lambda con, work: library_privacy.operator_sharing(con, work, permits),
     )
     replace_video = library_versions.register(app, tx, staff, get_work, root, remember_work)
-    review_links.register(app, tx, staff, get_work, title_for, root, replace_video)
+    review_links.register(app, tx, staff, get_work, title_for, root, replace_video, read_works)
 
     @app.get("/api/library/work/<uid>")
     def work_info(uid):

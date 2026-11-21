@@ -143,6 +143,8 @@ For any of the meeting archives, select a different **Library destination** and 
 
 When workspace mail is configured, CuePorch emails a completion link after it prepares the private copy. Team administrators receive the notice at their verified workspace address. The link opens the regular signed-in video workspace and follows that video's access rules.
 
+Open a Library folder and choose **Folder review links** to send reviewers one link for the folder and its subfolders. Set a password, expiration, downloads and earlier-version access as needed. A reviewer opens the folder link, then chooses a video to play or discuss. Videos moved into the folder become available through the link. Moving a video out removes that access. Choose **Disable** to revoke the folder link and its open review sessions.
+
 Open a Library folder and choose **Slack notifications**. Select uploads, review comments or approvals. With the workspace Slack app configured, choose **Choose channel in Slack**, select a channel and allow access. You can also paste a channel’s incoming webhook and save. Posts link to the video in CuePorch and its team access rules still apply. The folder dialog shows recent delivery results. Choose **Disconnect Slack** to clear this folder’s connection and queued deliveries. Manage the app installation in Slack. [Create a Slack incoming webhook](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/)
 
 Contributors and Contributors Plus can choose an editable folder on the **Team Library** page and select **Slack notifications**. Direct and group edit access includes the folder's visible subfolders. CuePorch checks the current grant again when you return from Slack.

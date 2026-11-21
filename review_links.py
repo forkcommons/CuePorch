@@ -7,10 +7,12 @@ import re
 import secrets
 import time
 
-from flask import Response, abort, render_template, request, send_file, url_for
+from flask import Response, abort, redirect, render_template, request, send_file, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import folder_reviews
 import review_feedback
+from library_trash import hidden
 from library_languages import tracks_for
 import media_bandwidth
 import review_notifications
@@ -37,6 +39,7 @@ CREATE TABLE IF NOT EXISTS review_unlock_limit(
     + review_notifications.SCHEMA
     + review_push.SCHEMA
     + review_settings.SCHEMA
+    + folder_reviews.SCHEMA
 )
 
 REVIEW_LIFETIME = 30 * 86400
@@ -47,10 +50,12 @@ def session_digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def register(app, tx, staff, get_work, title_for, root, replace_video):
+def register(app, tx, staff, get_work, title_for, root, replace_video, read_works):
     def locate(con, work, uid):
         row = con.execute(
-            "SELECT * FROM review_link WHERE id=? AND work=?", (uid, work)
+            """SELECT * FROM review_link WHERE id=? AND work=?
+               AND NOT EXISTS (SELECT 1 FROM review_folder_item WHERE link=review_link.id)""",
+            (uid, work),
         ).fetchone()
         if row is None:
             abort(404)
@@ -101,6 +106,75 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 abort(400, "Use a valid review permission.")
         return name.strip(), expires, password
 
+    def new_review_link(con, uid, work, body):
+        defaults, default_hash = review_settings.read_defaults(con)
+        choices = (
+            defaults
+            | {"expires": time.time() + defaults["lifetime_seconds"]}
+            | body
+        )
+        name, expires, password = link_fields(choices)
+        password_hash = (
+            (generate_password_hash(password) if password else None)
+            if "password" in body
+            else default_hash
+        )
+        review_settings.insert_link(
+            con, uid, work, name, expires, password_hash, choices
+        )
+
+    def visible_folder(con, folder):
+        if hidden(con, "folder", folder) or con.execute(
+            "SELECT 1 FROM library_folder WHERE id=?", (folder,)
+        ).fetchone() is None:
+            abort(404)
+
+    @app.get("/api/library/folders/<folder>/review-links")
+    def list_folder_reviews(folder):
+        staff()
+        with tx() as con:
+            visible_folder(con, folder)
+            return [
+                project(con, row)
+                for row in con.execute(
+                    "SELECT rl.* FROM review_link rl JOIN review_folder rf "
+                    "ON rf.id=rl.id WHERE rf.folder=? ORDER BY rl.created DESC",
+                    (folder,),
+                )
+            ]
+
+    @app.post("/api/library/folders/<folder>/review-links")
+    def create_folder_review(folder):
+        staff()
+        request.max_content_length = 16384
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        uid = secrets.token_urlsafe(32)
+        with tx() as con:
+            visible_folder(con, folder)
+            new_review_link(con, uid, "", body)
+            con.execute("INSERT INTO review_folder VALUES(?,?)", (uid, folder))
+            return project(con, locate(con, "", uid)), 201
+
+    @app.put("/api/library/folders/<folder>/review-links/<uid>")
+    def toggle_folder_review(folder, uid):
+        staff()
+        request.max_content_length = 16384
+        body = request.get_json()
+        if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
+            abort(400)
+        with tx() as con:
+            visible_folder(con, folder)
+            row = folder_reviews.folder_for(con, uid)
+            if row is None or row["folder"] != folder:
+                abort(404)
+            con.execute("UPDATE review_link SET enabled=? WHERE id=?",
+                        (int(body["enabled"]), uid))
+            if not body["enabled"]:
+                con.execute("DELETE FROM review_session WHERE link=?", (uid,))
+            return project(con, locate(con, "", uid))
+
     @app.get("/api/library/work/<work>/review-links")
     def list_reviews(work):
         staff()
@@ -109,7 +183,9 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             return [
                 project(con, row)
                 for row in con.execute(
-                    "SELECT * FROM review_link WHERE work=? ORDER BY created DESC",
+                    """SELECT * FROM review_link WHERE work=?
+                       AND NOT EXISTS (SELECT 1 FROM review_folder_item WHERE link=review_link.id)
+                       ORDER BY created DESC""",
                     (work,),
                 )
             ]
@@ -124,21 +200,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         uid = secrets.token_urlsafe(32)
         with tx() as con:
             get_work(con, work)
-            defaults, default_hash = review_settings.read_defaults(con)
-            choices = (
-                defaults
-                | {"expires": time.time() + defaults["lifetime_seconds"]}
-                | body
-            )
-            name, expires, password = link_fields(choices)
-            password_hash = (
-                (generate_password_hash(password) if password else None)
-                if "password" in body
-                else default_hash
-            )
-            review_settings.insert_link(
-                con, uid, work, name, expires, password_hash, choices
-            )
+            new_review_link(con, uid, work, body)
             return project(con, locate(con, work, uid)), 201
 
     @app.put("/api/library/work/<work>/review-links/<uid>")
@@ -231,13 +293,25 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             con.execute("DELETE FROM review_link WHERE id=?", (uid,))
         return "", 204
 
-    def active(con, uid):
+    def active_link(con, uid):
+        now = time.time()
         row = con.execute(
             "SELECT * FROM review_link WHERE id=? AND enabled=1 AND expires>?",
-            (uid, time.time()),
+            (uid, now),
         ).fetchone()
-        if not row:
+        if not row or not folder_reviews.scope_active(con, uid, now):
             abort(404)
+        return row
+
+    def active_folder_review(con, uid):
+        parent = folder_reviews.folder_for(con, uid)
+        if parent is None:
+            abort(404)
+        visible_folder(con, parent["folder"])
+        return active_link(con, uid), parent["folder"]
+
+    def active(con, uid):
+        row = active_link(con, uid)
         if con.execute(
             "SELECT 1 FROM case_hold WHERE work=? AND active=1", (row["work"],)
         ).fetchone():
@@ -258,7 +332,34 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         token = request.cookies.get("cueporch_review_preview", "")
         return session_digest("review replacement:" + token)
 
+    def folder_cookie(uid):
+        return "cueporch_folder_review_" + uid
+
+    def folder_session(con, uid):
+        token = request.cookies.get(folder_cookie(uid), "")
+        return bool(
+            token
+            and con.execute(
+                "SELECT 1 FROM review_session WHERE digest=? AND link=? AND expires>?",
+                (session_digest(token), uid, time.time()),
+            ).fetchone()
+        )
+
+    def create_review_session(con, row, uid):
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        expires = min(row["expires"], now + SESSION_LIFETIME)
+        con.execute("DELETE FROM review_session WHERE expires<=?", (now,))
+        con.execute(
+            "INSERT INTO review_session VALUES (?,?,?)",
+            (session_digest(token), uid, expires),
+        )
+        return token, expires - now
+
     def authorized(con, row):
+        parent = folder_reviews.parent_for(con, row["id"])
+        if parent is not None:
+            return folder_session(con, parent)
         if preview_session(con, row["id"]):
             return True
         if not row["password_hash"]:
@@ -281,7 +382,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
         page.cache_control.private = True
         return page
 
-    def set_review_cookie(response, name, token, uid, seconds):
+    def set_review_cookie(response, name, token, uid, seconds, *, path=None):
         response.set_cookie(
             name,
             token,
@@ -290,7 +391,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             or os.environ.get("CUEPORCH_PUBLIC_URL", "").startswith("https://"),
             httponly=True,
             samesite="Lax",
-            path="/review/" + uid,
+            path=path or "/review/" + uid,
         )
         return response
 
@@ -396,11 +497,72 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             abort(404)
         return confidential(app.send_static_file("ui/review_notification_worker.js"))
 
+    def folder_landing(con, uid, row, folder):
+        opened = folder_session(con, uid)
+        if row["password_hash"] and not opened:
+            return confidential(render_template("review.html", locked=True, uid=uid))
+        allowed = folder_reviews.members(con, folder)
+        works = [
+            {"id": work["id"], "title": title_for(con, work)}
+            for work in read_works()
+            if work["id"] in allowed and playable_versions(work, row)
+        ]
+        works.sort(key=lambda work: (work["title"].casefold(), work["id"]))
+        page = confidential(
+            render_template("folder_review.html", title=row["name"], uid=uid, works=works)
+        )
+        if not opened:
+            token, seconds = create_review_session(con, row, uid)
+            set_review_cookie(page, folder_cookie(uid), token, uid, seconds, path="/review")
+        return page
+
+    @app.get('/review/<uid>/item/<work>')
+    def folder_review_item(uid, work):
+        with tx() as con:
+            row, folder = active_folder_review(con, uid)
+            if not folder_session(con, uid):
+                abort(403)
+            if work not in folder_reviews.members(con, folder, work):
+                abort(404)
+            if not playable_versions(get_work(con, work), row):
+                abort(404)
+
+            link_row = con.execute(
+                "SELECT link FROM review_folder_item WHERE parent=? AND work=?",
+                (uid, work)
+            ).fetchone()
+
+            if link_row:
+                child = link_row['link']
+            else:
+                child = secrets.token_urlsafe(32)
+                review_settings.insert_link(
+                    con,
+                    child,
+                    work,
+                    row['name'],
+                    row['expires'],
+                    None,
+                    project(con, row) | {'show_other_videos': False}
+                )
+                con.execute(
+                    "INSERT INTO review_folder_item (parent, work, link) VALUES (?, ?, ?)",
+                    (uid, work, child)
+                )
+
+            return confidential(redirect(url_for('review_page', uid=child), code=303))
+
     @app.get("/review/<uid>")
     def review_page(uid):
         with tx() as con:
+            if folder_reviews.folder_for(con, uid):
+                folder_review, folder = active_folder_review(con, uid)
+                return folder_landing(con, uid, folder_review, folder)
             row, work = active(con, uid)
+            parent = folder_reviews.parent_for(con, uid)
             if not authorized(con, row):
+                if parent:
+                    abort(403)
                 return confidential(
                     render_template(
                         "review.html",
@@ -445,6 +607,7 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                 "review.html",
                 uid=uid,
                 title=title,
+                folder_parent=parent,
                 selected=selected,
                 versions=versions,
                 allow_download=row["allow_download"],
@@ -563,7 +726,10 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             abort(400)
         now = time.time()
         with tx() as con:
-            row, _ = active(con, uid)
+            if folder_reviews.parent_for(con, uid):
+                abort(403)
+            folder_scope = folder_reviews.folder_for(con, uid) is not None
+            row, _ = active_folder_review(con, uid) if folder_scope else active(con, uid)
             password_hash = row["password_hash"]
             if not password_hash:
                 abort(400)
@@ -595,17 +761,11 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
                     403,
                 )
             )
-        token = secrets.token_urlsafe(32)
         with tx() as con:
-            row, _ = active(con, uid)
+            row, _ = active_folder_review(con, uid) if folder_scope else active(con, uid)
             if row["password_hash"] != password_hash:
                 abort(409, "The review password changed. Open the review again.")
-            expires = min(row["expires"], now + SESSION_LIFETIME)
-            con.execute("DELETE FROM review_session WHERE expires<=?", (now,))
-            con.execute(
-                "INSERT INTO review_session VALUES (?,?,?)",
-                (session_digest(token), uid, expires),
-            )
+            token, seconds = create_review_session(con, row, uid)
             con.execute("DELETE FROM review_unlock_limit WHERE link=?", (uid,))
         query = {"version": version} if re.fullmatch(r"[a-f0-9]{64}", version) else {}
         path = url_for("review_page", uid=uid, **query)
@@ -613,8 +773,9 @@ def register(app, tx, staff, get_work, title_for, root, replace_video):
             path += "#" + fragment
         return set_review_cookie(
             confidential(("", 303, {"Location": path})),
-            "cueporch_review",
+            folder_cookie(uid) if folder_scope else "cueporch_review",
             token,
             uid,
-            expires - now,
+            seconds,
+            path="/review" if folder_scope else None,
         )

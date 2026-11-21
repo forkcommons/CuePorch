@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }} · Folder review</title>
+  <link rel="stylesheet" href="/static/cueporch.css">
+</head>
+<body>
+  <main class="review-page">
+    <h1>{{ title }}</h1>
+    {% if works %}
+    <ul aria-label="Videos for review">
+      {% for work in works %}
+      <li><a href="{{ url_for('folder_review_item', uid=uid, work=work.id) }}">{{ work.title }}</a></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>No videos are available for review.</p>
+    {% endif %}
+  </main>
+</body>
+</html>
