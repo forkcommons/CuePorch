@@ -8,6 +8,7 @@
 </head>
 <body{% if appearance and appearance.dark %} class="review-dark"{% endif %}>
   <main class="review-page">
+    {% if folder_parent %}<a href="{{ url_for('review_page', uid=folder_parent) }}">Back to folder review</a>{% endif %}
     {% if appearance and appearance.logo %}<img class="review-logo" src="{{ url_for('review_logo', uid=uid) }}" alt="Review logo">{% endif %}
     <h1>{{ title or "Video review" }}</h1>
     {% if operator_preview %}<p class="review-preview-notice">You are previewing the recipient’s review page.</p>{% endif %}

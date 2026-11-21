@@ -1,4 +1,5 @@
 import { editFolderSlack as showFolderSlack } from "./folder_slack.js";
+import { editFolderReviews } from "./folder_reviews.js";
 import { renderCommentText } from "./review_comment_text.js";
 import { folderChoices, libraryUploader, readUploadPrivacy } from "./library_upload.js";
 import { saveEmbedMap } from "./embed_map.js";
@@ -39,6 +40,7 @@ const view = document.querySelector("#view");
 const editFolder = document.querySelector("#editFolder");
 const folderPrivacy = document.querySelector("#folderPrivacy");
 const folderSlack = document.querySelector("#folderSlack");
+const folderReviews = document.querySelector("#folderReviews");
 const folderHubSpot = document.querySelector("#folderHubSpot");
 const translateFolder = document.querySelector("#translateFolder");
 const destination = document.querySelector("#destination");
@@ -148,7 +150,7 @@ function renderTree() {
         section === "Library" ? folder?.name || "Library" : section;
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     folderPrivacy.hidden = !folder;
-    folderSlack.hidden = !folder;
+    folderSlack.hidden = folderReviews.hidden = !folder;
     folderHubSpot.hidden = !folder;
     translateFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
@@ -157,6 +159,10 @@ function renderTree() {
         action(deleteFolder, () => removeItems("folder", [folder.id]));
         action(folderPrivacy, () => editFolderPrivacy(folder));
         action(folderSlack, () => editFolderSlack(folder));
+        action(folderReviews, () => editFolderReviews(folder, {
+            request, checked: completed, openDialog: openWorkDialog, status: workDialogStatus,
+            publicBase: document.body.dataset.publicUrl || location.origin,
+        }));
         action(folderHubSpot, () => editFolderHubSpot(folder));
         action(translateFolder, async () => requestTranslations([], folder));
     }

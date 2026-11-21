@@ -17,6 +17,8 @@ from filelock import FileLock, Timeout
 from flask import abort
 from py_vapid import Vapid
 
+import folder_reviews
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_push_key (
  id INTEGER PRIMARY KEY CHECK(id=1), private TEXT NOT NULL);
@@ -202,6 +204,7 @@ def start(app, tx, database):
                 not job["endpoint"]
                 or not job["enabled"]
                 or job["expires"] <= now
+                or not folder_reviews.scope_active(con, job["link"], now)
                 or job["mode"] == "off"
                 or job["held"]
                 or job["read"]

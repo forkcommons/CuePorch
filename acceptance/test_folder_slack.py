@@ -229,7 +229,9 @@ class FolderSlack(unittest.TestCase):
                     self.assertIn(f"{base}/team/video/{nested}|Abrir en CuePorch>", event["text"])
                 self.assertNotIn(nested, delivered[8]["text"])
                 dialog.get_by_label("Send Slack notifications").uncheck()
-                dialog.get_by_role("button", name="Save Slack settings").click()
+                with page.expect_response(lambda response: response.url == path and response.request.method == "PUT") as saved:
+                    dialog.get_by_role("button", name="Save Slack settings").click()
+                self.assertTrue(saved.value.ok)
                 expect(dialog.get_by_role("status")).to_have_text("Slack settings saved.")
                 self.assertFalse(api.get(path, headers=auth).json()["enabled"])
                 upload(child)
