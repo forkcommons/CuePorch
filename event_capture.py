@@ -471,7 +471,7 @@ def finish_process(process, grace):
 
 
 class RedundantRelay:
-    def __init__(self, encoder, lease, playback, height, end_at, stop, publishers):
+    def __init__(self, encoder, lease, playback, height, end_at, stop, publishers, recording=None):
         self.lease = lease
         self.playback = playback
         self.stop = stop
@@ -482,6 +482,7 @@ class RedundantRelay:
         self.end_at = end_at
         self.connected = dict(primary=False, backup=False)
         self.feeds = {role: BackupInput(publisher, playback.path, height) for role, publisher in publishers.items()}
+        self.recording = recording
         self.program = event_backup.Program(playback.path, playback.window)
         self.destination = ingest_address(encoder)
         Thread(target=self.run, name="CuePorch redundant programme", daemon=True).start()
@@ -500,11 +501,19 @@ class RedundantRelay:
                 self.relay(address)
         finally:
             self.stop.set()
-            for feed in self.feeds.values():
-                feed.finish()
-            self.playback.close()
-            self.lease.release()
-            self.done.set()
+            try:
+                for feed in self.feeds.values():
+                    feed.finish()
+                if self.recording is not None:
+                    self.recording.collect(self.playback.path)
+            finally:
+                try:
+                    if self.recording is not None:
+                        self.recording.finish()
+                finally:
+                    self.playback.close()
+                    self.lease.release()
+                    self.done.set()
 
     def relay(self, address):
         arguments = [
@@ -521,6 +530,8 @@ class RedundantRelay:
                 ready = {name: feed.poll(now) for name, feed in self.feeds.items()}
                 self.connected = {name: bool(fragments) for name, fragments in ready.items()}
                 self.program.update(ready)
+                if self.recording is not None:
+                    self.recording.collect(self.playback.path)
                 if self.playback.live() and (not self.progress or self.process.poll() is not None):
                     self.progress = EncoderProgress(arguments, subprocess.DEVNULL, self.playback.path)
                 self.stop.wait(.2)
@@ -533,10 +544,10 @@ class RedundantRelay:
 
 
 class RedundantRtmpRelay(RedundantRelay):
-    def __init__(self, encoder, config, lease, playback, height, end_at):
+    def __init__(self, encoder, config, lease, playback, height, end_at, recording=None):
         stop = Event()
         publishers = {role: RtmpPublisher(config, stop) for role in ("primary", "backup")}
-        super().__init__(encoder, lease, playback, height, end_at, stop, publishers)
+        super().__init__(encoder, lease, playback, height, end_at, stop, publishers, recording)
 
     def credentials(self):
         return self.feeds["primary"].publisher.credentials() | dict(
@@ -671,7 +682,7 @@ class Studio:
     def rtmp(self, uid, opens, encoder, config, window, height=None, end_at=None, recording=None):
         def receive(lease, playback):
             if height is not None:
-                return RedundantRtmpRelay(encoder, config, lease, playback, height, end_at)
+                return RedundantRtmpRelay(encoder, config, lease, playback, height, end_at, recording)
             return RtmpRelay(encoder, config, lease, playback, recording)
         return self.prepare(uid, opens, receive, playback_window=window).credentials()
 

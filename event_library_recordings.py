@@ -217,9 +217,23 @@ class Recordings:
         self.replay_thread.join(timeout=8)
 
 
+def _archive_is_discontinuous(*manifests):
+    for path in manifests:
+        try:
+            if "#EXT-X-DISCONTINUITY" in path.read_text(encoding="ascii"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def remux_archive(directory, destination, stopping):
+    # Rebase timestamps when the redundant encoder switched clock domains.
+    timing = (["-dts_delta_threshold", "0.25"]
+              if _archive_is_discontinuous(directory / "2.m3u8", directory / "1.m3u8")
+              else ["-copyts", "-start_at_zero"])
     result = run_media([
-        "ffmpeg", "-nostdin", "-v", "error", "-copyts", "-start_at_zero",
+        "ffmpeg", "-nostdin", "-v", "error", *timing,
         *event_replay_spool.HLS_INPUT, str(directory / "2.m3u8"),
         *event_replay_spool.HLS_INPUT, str(directory / "1.m3u8"),
         "-map", "0:V:0", "-map", "0:a:0?", "-map", "1:a:0", "-c", "copy",
