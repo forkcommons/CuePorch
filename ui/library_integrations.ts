@@ -223,6 +223,13 @@ function render() {
               return row;
             }));
           }), pages);
+        } else if (item.id === "linkedin-live") {
+          const companyLine = document.createElement("p");
+          card.append(button("Show LinkedIn Company Page", async () => {
+            companyLine.textContent = "";
+            const result = await api<{id: string}>(pathFor(item, "company"));
+            companyLine.textContent = "Company Page " + result.id;
+          }), companyLine);
         } else if (item.category !== "Marketing") card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {

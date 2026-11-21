@@ -25,6 +25,7 @@ from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
+import linkedin_live
 import linkedin_upload as linkedin
 import social_publication
 from workspace_oauth import provider_request
@@ -50,12 +51,15 @@ class LinkedInPublication(unittest.TestCase):
             service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
             base = f"http://127.0.0.1:{service.server_port}"
             callback = base + "/integration/oauth/linkedin/callback"
+            live_callback = base + "/integration/oauth/linkedin-live/callback"
             database = root / "workspace.sqlite"
             owner = "urn:li:organization:12345"
             received = {}
             posts = []
             failed_once = set()
             ready = set()
+            approved_live_pages = set()
+            page_offsets = []
             operator = secrets.token_urlsafe(32)
 
             def signed_request(method, url, **kwargs):
@@ -66,10 +70,17 @@ class LinkedInPublication(unittest.TestCase):
             cleanup.enter_context(patch.multiple(linkedin, OAUTH=replace(
                 linkedin.OAUTH, authorization_url=origin + "/oauth/authorize", token_url=origin + "/oauth/token",
             ), API=origin + "/rest", POLL_SECONDS=1, provider_request=signed_request))
+            cleanup.enter_context(patch.multiple(linkedin_live, OAUTH=replace(
+                linkedin_live.OAUTH, authorization_url=origin + "/oauth/authorize",
+                token_url=origin + "/oauth/token",
+            ), API=origin + "/rest"))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_LINKEDIN_CLIENT_ID": "cueporch",
                 "CUEPORCH_LINKEDIN_CLIENT_SECRET": "fixture-secret", "CUEPORCH_LINKEDIN_COMPANY_ID": "12345",
+                "CUEPORCH_LINKEDIN_LIVE_CLIENT_ID": "cueporch-live",
+                "CUEPORCH_LINKEDIN_LIVE_CLIENT_SECRET": "fixture-live-secret",
+                "CUEPORCH_LINKEDIN_LIVE_COMPANY_ID": "12345",
             }))
 
             def start_app():
@@ -89,12 +100,23 @@ class LinkedInPublication(unittest.TestCase):
 
             @remote.get("/oauth/authorize")
             def authorize():
+                if request.args["client_id"] == "cueporch-live":
+                    assert request.args["redirect_uri"] == live_callback
+                    assert request.args["scope"] == linkedin_live.OAUTH.scope
+                    return redirect(live_callback + "?" + urlencode(
+                        dict(state=request.args["state"], code="linkedin-live-code")))
                 assert request.args["client_id"] == "cueporch" and request.args["redirect_uri"] == callback
                 assert request.args["scope"] == "w_organization_social" and "code_challenge" not in request.args
                 return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code="linkedin-code")))
 
             @remote.post("/oauth/token")
             def token():
+                if request.form["code"] == "linkedin-live-code":
+                    assert request.form["client_secret"] == "fixture-live-secret"
+                    assert request.form["redirect_uri"] == live_callback
+                    assert request.form["grant_type"] == "authorization_code"
+                    return dict(access_token="fixture-linkedin-live", scope=linkedin_live.OAUTH.scope,
+                                expires_in=5184000)
                 assert request.form["client_secret"] == "fixture-secret" and request.form["code"] == "linkedin-code"
                 assert request.form["redirect_uri"] == callback and request.form["grant_type"] == "authorization_code"
                 return dict(access_token="fixture-linkedin", scope="w_organization_social", expires_in=5184000)
@@ -102,9 +124,26 @@ class LinkedInPublication(unittest.TestCase):
             @remote.before_request
             def check_headers():
                 if request.path.startswith("/rest/"):
-                    assert request.headers["Authorization"] == "Bearer fixture-linkedin"
+                    token = ("fixture-linkedin-live" if request.path == "/rest/organizationAcls"
+                             else "fixture-linkedin")
+                    assert request.headers["Authorization"] == "Bearer " + token
                     for key, value in linkedin.HEADERS.items():
                         assert request.headers[key] == value
+
+            @remote.get("/rest/organizationAcls")
+            def organization_acls():
+                offset = int(request.args["start"])
+                assert request.args.to_dict() == dict(
+                    q="roleAssignee", role="ADMINISTRATOR", state="APPROVED", count="10", start=str(offset))
+                page_offsets.append(offset)
+                if offset == 0:
+                    return dict(elements=[
+                        dict(role="ADMINISTRATOR", state="APPROVED", organization="urn:li:organization:999"),
+                        dict(role="ADMINISTRATOR", state="REQUESTED", organization=owner),
+                    ], paging=dict(links=[dict(rel="next", href="https://invalid.example/ignored")]))
+                assert offset == 10
+                rows = [dict(role="ADMINISTRATOR", state="APPROVED", organizationTarget=owner)]
+                return dict(elements=rows if owner in approved_live_pages else [], paging=dict(links=[]))
 
             @remote.post("/rest/videos")
             def videos():
@@ -247,6 +286,20 @@ class LinkedInPublication(unittest.TestCase):
                 second = api.get(endpoint, headers=auth).json()["jobs"][0]
                 self.assertEqual(("unconfirmed", None, False), (second["state"], second["link"], second["cancelable"]))
                 page.goto(base + "/operator/integrations")
+                catalog = base + "/api/integrations/linkedin-live/company"
+                self.assertEqual(403, api.get(catalog).status)
+                self.assertEqual(409, api.get(catalog, headers=auth).status)
+                page.get_by_role("button", name="Connect LinkedIn Live", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("LinkedIn Live is connected.")
+                self.assertEqual(403, api.get(catalog, headers=auth).status)
+                approved_live_pages.add(owner)
+                page.get_by_role("button", name="Show LinkedIn Company Page", exact=True).click()
+                expect(page.get_by_text("Company Page 12345", exact=True)).to_be_visible()
+                self.assertEqual([0, 10, 0, 10], page_offsets)
+                self.assertNotIn("fixture-linkedin-live", api.get(base + "/api/integrations", headers=auth).text())
+                page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True).click()
+                expect(page.get_by_role("button", name="Connect LinkedIn Live", exact=True)).to_be_visible()
+                expect(page.get_by_role("button", name="Disconnect LinkedIn Company Page", exact=True)).to_be_visible()
                 page.get_by_role("button", name="Disconnect LinkedIn Company Page", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_have_text(
                     "Disconnected here. You can remove CuePorch access in your LinkedIn Company Page account.")
@@ -256,6 +309,7 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual(["Fixture1", "Fixture2"], posts)
         print("LinkedIn Company Page OAuth, multipart restart and ordered ETags, opted-in approval, public posting,"
               " exact playback, ambiguous post result and disconnect passed.")
+        print("Separate LinkedIn Live grant, paginated Page admin verification, and independent disconnect passed.")
 
 
 if __name__ == "__main__":

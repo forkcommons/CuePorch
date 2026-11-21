@@ -32,6 +32,7 @@ import mailchimp_crm
 import library_mailchimp_forms
 import library_list_registration
 import marketo_crm
+import linkedin_live
 import linkedin_upload
 import mail_relay
 import social_publication
@@ -311,13 +312,14 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
+    linkedin_live_connection = linkedin_live.LiveConnection(tx, operator, sharing_access)
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    live_connections = {item.config.key: item for item in (youtube_live_connection, facebook_live_connection)}
+    live_connections = {item.config.key: item for item in (youtube_live_connection, facebook_live_connection, linkedin_live_connection)}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound | live_connections
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
@@ -461,6 +463,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              if item.config.key == "youtube-live" else
                              "Connect and check Facebook Pages with live streaming permissions."
                              if item.config.key == "facebook-live" else
+                             "Connect and check a LinkedIn Live Company Page."
+                             if item.config.key == "linkedin-live" else
                              "Upload a native video from the Library to your channel."
                              if item.config.key in outbound else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
@@ -506,6 +510,15 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             if not facebook_live_connection.connection(con):
                 abort(409, "Connect Facebook Live to view Pages.")
             return private(facebook_live_connection.public_pages(con))
+
+    @app.get("/api/integrations/linkedin-live/company")
+    def linkedin_live_company():
+        read_api()
+        with tx() as con:
+            if not sharing_access(con)["outbound"]:
+                abort(403, "Your workspace sharing policy restricts live company access.")
+        revision = linkedin_live_connection.revision()
+        return private(linkedin_live_connection.authorized_company(revision))
 
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):
