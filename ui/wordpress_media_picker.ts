@@ -1,3 +1,10 @@
+import {
+  libraryUploader,
+  readUploadPrivacy,
+  folderChoices,
+  type UploadFolder,
+} from "./library_upload.js";
+
 type LibraryWork = {
   id: string;
   title: string;
@@ -17,6 +24,7 @@ const search = document.getElementById("pickerSearch") as HTMLInputElement;
 const results = document.getElementById("pickerResults") as HTMLElement;
 
 let works: LibraryWork[] = [];
+let folders: UploadFolder[] = [];
 let token = "";
 try {
   if (typeof sessionStorage !== "undefined") {
@@ -36,6 +44,7 @@ function startPicker(): void {
     return;
   }
   destinationLabel.textContent = picker.destination;
+  mountLibraryUploader();
   void loadLibrary();
   search.addEventListener("input", () => renderWorks());
   authForm.addEventListener("submit", (ev: Event) => {
@@ -90,6 +99,10 @@ function pickerTarget(): {
 }
 
 async function getJson<T>(path: string): Promise<T> {
+  return (await loadLibraryResponse(path)).json() as Promise<T>;
+}
+
+async function loadLibraryResponse(path: string): Promise<Response> {
   if (path !== "/api/library" && !path.startsWith("/api/library/"))
     throw Object.assign(new Error("Invalid path"), { status: 400 });
   const response = await fetch(path, {
@@ -103,7 +116,21 @@ async function getJson<T>(path: string): Promise<T> {
     throw Object.assign(new Error("Request failed"), {
       status: response.status,
     });
-  return response.json() as Promise<T>;
+  return response;
+}
+
+function mountLibraryUploader(): void {
+  libraryUploader({
+    available: () => !library.hidden,
+    folder: () => null,
+    folderOptions: (select) => folderChoices(select, folders),
+    credential: () => token,
+    defaults: (folder) => readUploadPrivacy(folder, loadLibraryResponse),
+    reload: async () => {
+      works = await getJson<LibraryWork[]>("/api/library");
+      renderWorks();
+    },
+  });
 }
 
 async function loadLibrary(): Promise<void> {
@@ -112,7 +139,10 @@ async function loadLibrary(): Promise<void> {
   status.textContent = "Loading library…";
   status.setAttribute("aria-busy", "true");
   try {
-    works = await getJson<LibraryWork[]>("/api/library");
+    [works, folders] = await Promise.all([
+      getJson<LibraryWork[]>("/api/library"),
+      getJson<UploadFolder[]>("/api/library/folders").catch(() => []),
+    ]);
     renderWorks();
     library.hidden = false;
     keyInput.value = "";

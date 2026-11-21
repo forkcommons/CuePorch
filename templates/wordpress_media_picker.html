@@ -34,6 +34,7 @@
       </form>
 
       <section id="pickerLibrary" class="cue-picker-library" hidden>
+        <button type="button" id="uploadLibrary">Upload</button>
         <label for="pickerSearch">Search videos</label>
         <input
           id="pickerSearch"
@@ -48,6 +49,7 @@
         <ul id="pickerResults" class="cue-picker-results"></ul>
       </section>
     </main>
+    {% include "library_upload_dialog.html" %}
     <script type="module" src="/static/ui/wordpress_media_picker.js"></script>
   </body>
 </html>
