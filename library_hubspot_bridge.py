@@ -408,7 +408,7 @@ def scan_one(tx, consult, clock):
     return True
 
 
-def start(app, tx, database, connection, consult, *, clock=None):
+def start(app, tx, database, connection, consult, *, clock=None, reconcile=None):
     from threading import Event, Thread
     from time import time
     from filelock import FileLock, Timeout
@@ -421,6 +421,8 @@ def start(app, tx, database, connection, consult, *, clock=None):
         while not stop.is_set():
             try:
                 with FileLock(str(database) + ".hubspot-media-bridge.lock", timeout=0):
+                    if reconcile is not None and reconcile(clock):
+                        continue
                     if run_one(tx, connection, consult, stop, clock) or scan_one(
                         tx, consult, clock
                     ):
@@ -460,9 +462,12 @@ def register(
     title_for,
     permits,
     enforce_sharing,
+    *,
+    credential_owner,
 ):
     from flask import request, abort
     import hubspot_media_bridge as bridge
+    import library_hubspot_folders as folders
     from browser_account_security import (
         private,
         secure_site,
@@ -484,17 +489,17 @@ def register(
     )
 
     def consult(con, uid, external):
-        return approved_props(
-            con, uid, external, origin, read_works, title_for, permits
-        )
+        work = next((work for work in read_works() if work["id"] == uid), None)
+        return approved_props(con, uid, external, origin, work, title_for, permits)
 
-    @app.route(
-        "/api/library/work/<uuid:uid>/hubspot-media-bridge",
-        methods=["GET", "PUT", "DELETE"],
-    )
-    def hubspot_media_bridge(uid):
-        uid = str(uid)
-        staff()
+    def worker_consult(con, uid, external):
+        if folders.is_managed(con, uid):
+            selected = folders.plan(con)
+            if not (selected and folders.active_member(con, uid, selected["folder"])):
+                return None
+        return consult(con, uid, external)
+
+    def check_request():
         secure = secure_site(origin)
         same_origin(secure)
         if (
@@ -503,14 +508,41 @@ def register(
             != origin
         ):
             abort(403)
-        external = external_id(origin, uid)
-
         if request.method != "GET":
-            json_mutation(secure, "X-CuePorch-Integration")
+            return json_mutation(secure, "X-CuePorch-Integration")
+        return None
+
+    folders.register_folder(
+        app,
+        tx,
+        credential_owner,
+        check_request,
+        configured,
+        connection,
+        kind,
+        enforce_sharing,
+    )
+
+    @app.route(
+        "/api/library/work/<uuid:uid>/hubspot-media-bridge",
+        methods=["GET", "PUT", "DELETE"],
+    )
+    def hubspot_media_bridge(uid):
+        uid = str(uid)
+        staff()
+        check_request()
+        external = external_id(origin, uid)
 
         with tx() as con:
             row = get(con, uid)
             saved = connection.connection(con) if configured else None
+            is_managed = folders.is_managed(con, uid)
+            selected = folders.plan(con) if is_managed else None
+            active = bool(
+                is_managed
+                and selected
+                and folders.active_member(con, uid, selected["folder"])
+            )
             eligible = bool(
                 configured and saved and consult(con, uid, external) is not None
             )
@@ -522,6 +554,7 @@ def register(
                         configured=configured,
                         connected=bool(saved),
                         eligible=eligible,
+                        managed=active,
                     )
                 )
 
@@ -532,6 +565,10 @@ def register(
                 if not (saved and eligible):
                     abort(409)
                 enforce_sharing(con, feature="outbound")
+                if is_managed and not active:
+                    if row is None or row["state"] != "archived":
+                        abort(409)
+                    folders.remove_member(con, uid)
                 row = queue_publish(
                     con, action, uid, saved["revision"], kind, external, time()
                 )
@@ -543,11 +580,31 @@ def register(
                     and row["media_type"] == kind
                 ):
                     abort(409)
+                if is_managed and active:
+                    abort(409)
                 row = queue_archive(con, uid, time())
             return snapshot(row)
 
+    def reconcile_folder(clock):
+        def batch():
+            manifest = {work["id"]: work for work in read_works()}
+            return lambda con, uid, external: approved_props(
+                con, uid, external, origin, manifest.get(uid), title_for, permits
+            )
+
+        return folders.reconcile(tx, clock, connection, kind, origin, batch, action)
+
     return (
-        start(app, tx, database, connection, consult) if configured else (lambda: None)
+        start(
+            app,
+            tx,
+            database,
+            connection,
+            worker_consult,
+            reconcile=reconcile_folder,
+        )
+        if configured
+        else (lambda: None)
     )
 
 
@@ -557,15 +614,10 @@ def external_id(origin, uid):
     return "cueporch-" + sha256(f"{origin}/{uid}".encode()).hexdigest()
 
 
-def approved_props(con, uid, external, origin, read_works, title_for, permits):
+def approved_props(con, uid, external, origin, work, title_for, permits):
     import library_privacy
     import library_embed
 
-    work = None
-    for w in read_works():
-        if w["id"] == uid:
-            work = w
-            break
     if work is None:
         return None
     if work.get("asset_type", "video") != "video":

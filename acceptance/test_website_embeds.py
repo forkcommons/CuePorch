@@ -96,7 +96,9 @@ class BridgeProvider:
                 "properties": {key: props.get(key) for key in keys},
             }
             self.creates += 1
-            return self.response(502, {"message": "fixture lost acknowledgment"})
+            if self.creates == 1:
+                return self.response(502, {"message": "fixture lost acknowledgment"})
+            return self.response(201, self.record)
 
         if method == "PATCH" and url == base + "/712":
             body = kwargs.get("json") or {}
@@ -342,6 +344,119 @@ class WebsiteEmbeds(unittest.TestCase):
         assert props["hs_title"]
         assert props["hs_external_id"]
 
+    def prepare_bridge_folder(self, page, base, h, clip, manual_uid):
+        from uuid import uuid4
+
+        upload_id = str(uuid4())
+        r = page.request.post(
+            f"{base}/api/library/uploads",
+            headers=h,
+            multipart={
+                "upload_id": upload_id,
+                "file": {
+                    "name": "folder-clip.mp4",
+                    "mimeType": "video/mp4",
+                    "buffer": clip.read_bytes(),
+                },
+            },
+        )
+        assert r.status == 201, r.text()
+        uid = r.json()["id"]
+        assert uid != manual_uid, f"upload returned same uid as manual_uid: {uid}"
+
+        r = page.request.put(
+            f"{base}/api/library/work/{uid}/privacy",
+            headers=h,
+            data={
+                "visibility": "public",
+                "embed": "anywhere",
+                "domains": [],
+                "download": False,
+            },
+        )
+        assert r.ok, r.text()
+
+        r = page.request.post(
+            f"{base}/api/library/folders",
+            headers=h,
+            data={"name": "Media Bridge test", "color": "#22aaff", "parent": None},
+        )
+        assert r.status == 201, r.text()
+        folder_id = r.json()["id"]
+
+        r = page.request.put(
+            f"{base}/api/library/placement",
+            headers=h,
+            data={"works": [uid, manual_uid], "folder": folder_id},
+        )
+        assert r.ok, r.text()
+
+        return uid, folder_id
+
+    def verify_bridge_folder(self, page, base, h, clip, manual_uid, bridge):
+        from playwright.sync_api import expect
+
+        uid, folder_id = self.prepare_bridge_folder(page, base, h, clip, manual_uid)
+
+        page.goto(f"{base}/operator/library")
+        page.get_by_role("button", name="Load library", exact=True).click()
+        page.get_by_role("navigation", name="Folders").get_by_role(
+            "button", name="Media Bridge test", exact=True
+        ).click()
+        page.get_by_role("button", name="HubSpot Media Bridge", exact=True).click()
+
+        dialog = page.get_by_role("dialog", name="HubSpot Media Bridge")
+        dialog.get_by_role(
+            "button", name="Sync this folder to HubSpot", exact=True
+        ).click()
+        expect(
+            page.get_by_text(
+                "HubSpot sync is active for Media Bridge test.", exact=True
+            )
+        ).to_be_visible()
+
+        record = self.bridge_wait(page, base, h, uid, "published")
+        assert record["managed"] is True
+        assert bridge.creates == 2
+        assert (
+            bridge.record["properties"]["hs_details_page_link"]
+            == f"{base}/watch/work/{uid}"
+        )
+
+        resp = page.request.put(
+            f"{base}/api/library/placement",
+            headers=h,
+            data={"works": [uid], "folder": None},
+        )
+        assert resp.ok
+
+        bridge.time_offset += 16
+        self.bridge_wait(page, base, h, uid, "archived")
+        assert bridge.archives == 2
+        assert bridge.record is None
+
+        resp = page.request.put(
+            f"{base}/api/library/placement",
+            headers=h,
+            data={"works": [uid], "folder": folder_id},
+        )
+        assert resp.ok
+
+        bridge.time_offset += 16
+        self.bridge_wait(page, base, h, uid, "published")
+        assert bridge.creates == 3
+
+        dialog.get_by_role(
+            "button", name="Stop HubSpot folder sync", exact=True
+        ).click()
+        self.bridge_wait(page, base, h, uid, "archived")
+        assert bridge.archives == 3
+        assert bridge.record is None
+
+        manual_record = self.bridge_wait(page, base, h, manual_uid, "archived")
+        assert manual_record is not None
+        assert manual_record["managed"] is False
+
     def exercise(self, browser, base, consumer_url, consumer, operator, clip, bridge):
         import json
         from uuid import uuid4
@@ -478,3 +593,4 @@ class WebsiteEmbeds(unittest.TestCase):
         )
         if old_media:
             assert api.get(old_media).status == 404
+        self.verify_bridge_folder(page, base, h, clip, uid, bridge)

@@ -38,6 +38,7 @@ const view = document.querySelector("#view");
 const editFolder = document.querySelector("#editFolder");
 const folderPrivacy = document.querySelector("#folderPrivacy");
 const folderSlack = document.querySelector("#folderSlack");
+const folderHubSpot = document.querySelector("#folderHubSpot");
 const translateFolder = document.querySelector("#translateFolder");
 const destination = document.querySelector("#destination");
 const move = document.querySelector("#move");
@@ -147,6 +148,7 @@ function renderTree() {
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     folderPrivacy.hidden = !folder;
     folderSlack.hidden = !folder;
+    folderHubSpot.hidden = !folder;
     translateFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
@@ -154,6 +156,7 @@ function renderTree() {
         action(deleteFolder, () => removeItems("folder", [folder.id]));
         action(folderPrivacy, () => editFolderPrivacy(folder));
         action(folderSlack, () => editFolderSlack(folder));
+        action(folderHubSpot, () => editFolderHubSpot(folder));
         action(translateFolder, async () => requestTranslations([], folder));
     }
     folderOptions(destination);
@@ -847,6 +850,47 @@ async function editFolderPrivacy(folder) {
     fields.form.onsubmit = (event) => { event.preventDefault(); void save(true); };
     remove.onclick = () => { void save(false); };
 }
+async function editFolderHubSpot(folder) {
+    const path = "/api/library/hubspot-media-bridge/folder";
+    const response = await request(path);
+    const bridge = await (await completed(response)).json();
+    const localSync = bridge.active && bridge.folder === folder.id;
+    openWorkDialog("HubSpot Media Bridge");
+    const status = document.createElement("p");
+    status.setAttribute("role", "status");
+    status.textContent = !bridge.configured
+        ? "Configure HubSpot Media Bridge to sync library folders."
+        : !bridge.connected
+            ? "Connect HubSpot to sync this folder."
+            : localSync
+                ? `HubSpot sync is active for ${folder.name}.`
+                : bridge.active
+                    ? bridge.folder
+                        ? `HubSpot sync is active for a different folder. Syncing ${folder.name} will replace it as the HubSpot folder.`
+                        : "HubSpot sync is active."
+                    : bridge.folder
+                        ? "The saved folder uses a different HubSpot connection."
+                        : `${folder.name} will become the HubSpot folder.`;
+    workDialogBody.append(status);
+    if (bridge.configured && bridge.connected && (!bridge.folder || bridge.active) && !localSync) {
+        const sync = document.createElement("button");
+        sync.textContent = "Sync this folder to HubSpot";
+        action(sync, async () => {
+            await completed(await request(path, "PUT", { folder: folder.id }, { "X-CuePorch-Integration": "1" }));
+            await editFolderHubSpot(folder);
+        });
+        workDialogBody.append(sync);
+    }
+    else if (localSync) {
+        const stop = document.createElement("button");
+        stop.textContent = "Stop HubSpot folder sync";
+        action(stop, async () => {
+            await completed(await request(path, "DELETE", {}, { "X-CuePorch-Integration": "1" }));
+            await editFolderHubSpot(folder);
+        });
+        workDialogBody.append(stop);
+    }
+}
 async function editFolderSlack(folder) {
     const path = `/api/library/folders/${folder.id}/slack`;
     const settings = await (await completed(await request(path))).json();
@@ -1037,7 +1081,7 @@ async function mediaBridgeControls(work) {
     if (!eligible || !connected || state === "queued" || state === "waiting") {
         addButton.hidden = true;
     }
-    if (state === "off" || state === "archived" || !connected) {
+    if (state === "off" || state === "archived" || !connected || receipt.managed) {
         removeButton.hidden = true;
     }
     action(addButton, async () => {

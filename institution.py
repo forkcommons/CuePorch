@@ -67,6 +67,7 @@ import library_events
 import library_folder_privacy
 import library_folders
 import library_hubspot_bridge
+import library_hubspot_folders
 import library_file_links
 import folder_slack
 import library_languages
@@ -209,6 +210,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + registration_return.SCHEMA
             + library_events.SCHEMA
             + library_hubspot_bridge.SCHEMA
+            + library_hubspot_folders.SCHEMA
             + event_api.SCHEMA
             + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
@@ -1400,7 +1402,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
                                                sharing_access, hubspot)
-    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing)
+    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)
