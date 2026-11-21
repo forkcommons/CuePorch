@@ -31,8 +31,11 @@
     <div class="video-workspace">
       <section aria-labelledby="timelinePreviewTitle">
         <h2 id="timelinePreviewTitle">Preview</h2>
-        <video id="timelinePreview" controls playsinline hidden aria-label="Timeline source video"></video>
-        <div id="timelineCardPreview" hidden></div>
+        <div id="timelinePreviewCanvas" class="timeline-preview-canvas">
+          <video id="timelinePreview" controls playsinline hidden aria-label="Timeline source video"></video>
+          <div id="timelineCardPreview" hidden></div>
+          <img id="timelineGraphicPreview" alt="" hidden>
+        </div>
         <p id="timelineSourceName"></p>
         <div class="video-work-actions">
           <button id="splitTimeline" type="button" disabled>Split at preview time</button>
@@ -46,6 +49,32 @@
             <option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option>
           </select></label>
           <label>Background color <input type="color" id="timelineColor"></label>
+        </fieldset>
+        <fieldset>
+          <legend>Graphics</legend>
+          <label for="timelineGraphicSearch">Find graphic</label>
+          <input id="timelineGraphicSearch" type="search">
+          <label for="timelineGraphicCategory">Graphic category</label>
+          <select id="timelineGraphicCategory">
+            <option value="">All categories</option>
+          </select>
+          <label for="timelineGraphic">Graphic</label>
+          <select id="timelineGraphic"></select>
+          <label for="timelineGraphicPosition">Placement</label>
+          <select id="timelineGraphicPosition">
+            <option value="top-left">Top left</option>
+            <option value="top-right">Top right</option>
+            <option value="center">Center</option>
+            <option value="bottom-left">Bottom left</option>
+            <option value="bottom-right">Bottom right</option>
+          </select>
+          <label>Graphic color <input type="color" id="timelineGraphicColor" value="#e5a323"></label>
+          <label>Graphic text <input id="timelineGraphicText" type="text" maxlength="60"></label>
+          <div class="video-work-actions">
+            <button id="applyTimelineGraphic" type="button" disabled>Apply graphic</button>
+            <button id="clearTimelineGraphic" type="button" disabled>Clear graphic</button>
+          </div>
+          <p id="timelineGraphicStatus" role="status"></p>
         </fieldset>
         <fieldset>
           <legend>Brand kit</legend>

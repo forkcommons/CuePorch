@@ -20,17 +20,24 @@ from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
+from export_institution import export
 
 
 class TimelineTemplates(unittest.TestCase):
     def test_templates(self):
+        self.run_fixture(check_timeline_templates)
+
+    def test_graphics(self):
+        self.run_fixture(check_timeline_graphics)
+
+    def run_fixture(self, check):
         with ExitStack() as cleanup:
-            root = Path(cleanup.enter_context(TemporaryDirectory()))
-            (root / "objects").mkdir()
+            root = Path(cleanup.enter_context(TemporaryDirectory())) / "collection"
+            (root / "objects").mkdir(parents=True)
             (root / "manifest.json").write_text(
                 json.dumps(dict(institution="station", schema=1, works=[]))
             )
-            database = root / "workspace.sqlite"
+            database = root.parent / "workspace.sqlite"
             sqlite3.connect(database).close()
             operator = secrets.token_urlsafe(32)
 
@@ -55,7 +62,7 @@ class TimelineTemplates(unittest.TestCase):
             )
             cleanup.enter_context(service_worker(service))
 
-            clip = root / "blue.mp4"
+            clip = root.parent / "blue.mp4"
             subprocess.run(
                 [
                     "ffmpeg",
@@ -91,7 +98,7 @@ class TimelineTemplates(unittest.TestCase):
                 page.add_init_script(
                     f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)})"
                 )
-                check_timeline_templates(page, base, auth, uid, root)
+                check(page, base, auth, uid, root)
 
 
 def check_timeline_templates(page, base, auth, uid, tmp):
@@ -189,3 +196,94 @@ def check_timeline_templates(page, base, auth, uid, tmp):
             target = opening_bg if kind == "opening" else closing_bg
             rgb = avg(t, 696, 8)
             assert all(abs(rgb[i] - target[i]) <= 18 for i in range(3)), (kind, rgb, target)
+
+
+def check_timeline_graphics(page, base, auth, uid, root):
+    work = f"{base}/api/library/work/{uid}"
+
+    guest = requests.get(base + "/api/library/timeline-graphics", timeout=15)
+    assert guest.status_code == 403, guest.status_code
+
+    r = requests.get(base + "/api/library/timeline-graphics", headers=auth, timeout=15)
+    r.raise_for_status()
+    body = r.json()
+    assets = body["assets"]
+    assert isinstance(assets, list) and len(assets) == 9, assets
+    assert any(a.get("id") == "frame" for a in assets), assets
+
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    clips = page.locator("#timelineClips > li")
+    expect(clips).to_have_count(1, timeout=30000)
+    clip_button = clips.first.get_by_role("button", name="blue")
+    if clip_button.count() == 0:
+        clip_button = clips.first.locator("button").first
+    clip_button.click()
+    expect(page.locator("#timelinePreview")).to_be_visible(timeout=30000)
+
+    page.select_option("#timelineGraphic", "frame")
+    page.fill("#timelineGraphicColor", "#ee9900")
+    page.click("#applyTimelineGraphic")
+    expect(page.locator("#timelineGraphicPreview")).to_be_visible(timeout=30000)
+    expect(page.locator("text=Draft saved.")).to_be_visible(timeout=30000)
+
+    page.click("#undoTimeline")
+    expect(page.locator("#timelineGraphicPreview")).to_be_hidden(timeout=30000)
+    page.click("#redoTimeline")
+    clip_button.click()
+    expect(page.locator("#timelineGraphicPreview")).to_be_visible(timeout=30000)
+    page.click("#saveTimeline")
+    expect(page.locator("text=Draft saved.")).to_be_visible(timeout=30000)
+
+    page.reload()
+    expect(clips).to_have_count(1, timeout=30000)
+    clip_button = clips.first.get_by_role("button", name="blue")
+    if clip_button.count() == 0:
+        clip_button = clips.first.locator("button").first
+    clip_button.click()
+    expect(page.locator("#timelineGraphic")).to_have_value("frame")
+    expect(page.locator("#timelineGraphicPreview")).to_be_visible(timeout=30000)
+
+    page.click("#renderTimeline")
+    expect(page.locator("text=New version saved.")).to_be_visible(timeout=60000)
+
+    manifest = json.loads((root / "manifest.json").read_text())
+    work_entry = next(
+        w for w in manifest["works"] if w.get("id") == uid or w.get("uid") == uid
+    )
+    expected_assets = [{"id": "frame", "source": "cueporch-built-in", "revision": 1}]
+    assert work_entry["editor_assets"] == expected_assets, work_entry.get("editor_assets")
+
+    with TemporaryDirectory() as export_tmp:
+        export_target = Path(export_tmp) / "portable"
+        export(root, root.parent / "workspace.sqlite", export_target)
+        portable = json.loads((export_target / "collection" / "manifest.json").read_text())
+        portable_work = next(
+            w for w in portable["works"] if w.get("id") == uid or w.get("uid") == uid
+        )
+        assert portable_work["editor_assets"] == expected_assets, portable_work.get("editor_assets")
+
+    cur = requests.get(work + "/timeline", headers=auth, timeout=15).json()["current"]
+    pv = requests.post(work + "/timeline/preview", json={"cut": cur}, headers=auth, timeout=60)
+    pv.raise_for_status()
+    graphic = root / "graphic.mp4"
+    with requests.get(base + pv.json()["preview"], headers=auth, timeout=300, stream=True) as resp:
+        resp.raise_for_status()
+        with graphic.open("wb") as f:
+            for chunk in resp.iter_content(1 << 15):
+                f.write(chunk)
+
+    def avg(t, x, y):
+        raw = subprocess.check_output([
+            "ffmpeg", "-v", "error", "-ss", str(t), "-i", str(graphic),
+            "-vf", f"crop=2:2:{x}:{y}", "-frames:v", "1",
+            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"
+        ])
+        assert len(raw) >= 3, (t, x, y, len(raw))
+        n = len(raw) // 3
+        return tuple(sum(raw[i::3]) // n for i in range(3))
+
+    rgb = avg(0.5, 4, 4)
+    assert all(abs(actual - expected) <= 24 for actual, expected in zip(rgb, (0xee, 0x99, 0x00))), rgb
+
+    rgb = avg(1.0, 640, 360)
+    assert rgb[2] > 180 and rgb[0] < 80 and rgb[1] < 80, rgb
