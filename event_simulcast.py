@@ -1447,9 +1447,105 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             destinations.append(item)
         return dict(available=available, destinations=destinations)
 
+    def toggle_started_facebook(uid, opens, destination, enabled, key):
+        page = key[2]
+        connection, provider_owner, create_live = facebook_provider(page)
+        title = page_name = None
+
+        def check(con):
+            nonlocal title, page_name
+            enforce_sharing(con, feature="outbound")
+            _, title, _, grant, page_name = facebook_access(con, uid, opens, page)
+            if grant != revision:
+                abort(409, "Reconnect Facebook to enable this destination.")
+            if not con.execute("""SELECT 1 FROM live_occurrence
+                WHERE event=? AND opens=? AND delivery='ready'""", (uid, opens)).fetchone():
+                abort(409, "The occurrence is no longer ready to stream.")
+            if not con.execute("SELECT 1 FROM live_simulcast_destination WHERE id=? AND enabled=0",
+                               (destination,)).fetchone():
+                abort(409, "The Facebook destination changed. Reload destinations.")
+
+        def before_send():
+            with tx() as con:
+                check(con)
+
+        def save(con, target):
+            check_provider_capacity(con, uid, opens)
+            bound = target | {"title": (page_name or "").strip() or "Facebook Live"}
+            return save_provider_destination(con, uid, opens, connection.key, revision, target["id"], bound)
+
+        try:
+            with facebook_lease(key):
+                with tx() as con:
+                    row = con.execute("""
+                        SELECT c.revision,c.state,d.remote,d.enabled,a.privacy,a.state
+                        FROM facebook_live_creation c
+                        JOIN live_simulcast_destination d
+                          ON d.id=c.destination AND d.id=? AND d.event=c.event AND d.opens=c.opens
+                         AND d.revision=c.revision AND d.provider=?
+                        LEFT JOIN facebook_live_auto a
+                          ON a.event=c.event AND a.opens=c.opens AND a.page=c.page
+                        WHERE c.event=? AND c.opens=? AND c.page=?
+                    """, (destination, connection.key, uid, opens, page)).fetchone()
+                    if not row:
+                        abort(404)
+                    revision, state, remote, dest_enabled, privacy, auto_state = row
+                    if enabled and dest_enabled:
+                        return "", 204
+                    if enabled:
+                        if state != "prepared":
+                            abort(409, "Facebook has not confirmed the broadcast. Check Live Producer.")
+                        check(con)
+                    else:
+                        con.execute("""UPDATE live_simulcast_destination
+                            SET enabled=0 WHERE id=? AND event=? AND opens=?""",
+                            (destination, uid, opens))
+                connection.finish_live(revision, provider_owner, remote)
+                if not enabled:
+                    return "", 204
+                options = {"privacy": privacy} if page.startswith("profile:") else {}
+                if auto_state == "canceled":
+                    options["preview_now"] = True
+                else:
+                    options["live_now"] = True
+
+                def fresh_broadcast():
+                    target = create_live(revision, provider_owner, title, opens, before_send, **options)
+                    if target["id"] == remote:
+                        raise facebook_live.FacebookLiveUnconfirmed
+                    return target
+
+                result, _ = facebook_live_job.provision(
+                    tx, check,
+                    fresh_broadcast,
+                    save, uid, opens, page, revision, replace=destination)
+                if result["state"] != "prepared":
+                    abort(409, "Facebook has not confirmed the broadcast. Check Live Producer.")
+                return "", 204
+        except Timeout:
+            abort(409, "Facebook is busy. Try again.")
+        except facebook_live.FacebookLiveUnconfirmed:
+            abort(409, "Facebook has not confirmed that the broadcast ended. Check Live Producer.")
+
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/<destination>", methods=["PUT", "DELETE"])
     def event_destination(uid, opens, destination):
         staff()
+        if request.method == "PUT":
+            early = request.get_json()
+            enabled = early.get("enabled") if isinstance(early, dict) else None
+            only_date = early.get("only_date", False) if isinstance(early, dict) else False
+            if type(enabled) is bool and only_date is False and datetime.now(timezone.utc).timestamp() >= opens:
+                with tx() as con:
+                    fb = con.execute(
+                        "SELECT f.page FROM live_simulcast_destination d"
+                        " JOIN live_occurrence o ON o.event=d.event AND o.opens=d.opens"
+                        " JOIN facebook_live_creation f ON f.destination=d.id"
+                        " WHERE d.id=? AND d.event=? AND d.opens=? AND d.provider IN ('facebook-live','facebook-profile-live')"
+                        " AND o.delivery='ready'",
+                        (destination, uid, opens),
+                    ).fetchone()
+                if fb:
+                    return toggle_started_facebook(uid, opens, destination, enabled, (uid, opens, fb["page"]))
         with tx() as con:
             available = event_access(con, uid, opens)
             saved = con.execute(
@@ -1462,6 +1558,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if not saved:
                 abort(404)
             if request.method == "DELETE":
+                if con.execute("SELECT 1 FROM facebook_live_creation WHERE destination=? AND state='sending'",
+                               (destination,)).fetchone():
+                    abort(409, "Facebook is still confirming this broadcast.")
                 con.execute("DELETE FROM live_simulcast_key_skip WHERE destination=?", (destination,))
                 con.execute("DELETE FROM live_simulcast_key_series WHERE destination=?", (destination,))
                 con.execute("DELETE FROM live_simulcast_destination WHERE id=?", (destination,))
