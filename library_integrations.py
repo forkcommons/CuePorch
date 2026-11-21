@@ -552,6 +552,16 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             abort(400)
         return private(marketo_crm.programs(marketo, int(offset)))
 
+    @app.get("/api/integrations/marketo/static-lists")
+    def marketo_static_lists():
+        read_api()
+        if marketo is None:
+            abort(404)
+        offset = request.args.get("offset", "0")
+        if not re.fullmatch(r"[0-9]{1,9}", offset):
+            abort(400)
+        return private(marketo_crm.static_lists(marketo, int(offset)))
+
     @app.get("/api/integrations/marketo/lead-fields")
     def marketo_lead_fields():
         read_api()

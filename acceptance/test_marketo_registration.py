@@ -143,6 +143,8 @@ class MarketoBrowser(unittest.TestCase):
         auth = {"Authorization": "Bearer " + operator}
         created = self.create_event(page, base, auth)
         event_id, opens = created["id"], created["occurrences"][1]["id"]
+        self.verify_static_list_import(page, base, auth, event_id, opens, provider)
+
         page.goto(base + "/operator/live-events")
         page.get_by_role("button", name="Open production for Marketo rehearsal").nth(
             1
@@ -172,6 +174,61 @@ class MarketoBrowser(unittest.TestCase):
             and receipt["mapping"]["field_genre"] == "favoriteGenre"
         )
         self.verify_delivery(page, base, auth, created, opens, outbound_url, provider)
+
+    def verify_static_list_import(self, page, base, auth, event_id, opens, provider):
+        from contextlib import closing
+
+        anon = page.request.get(base + "/api/integrations/marketo/static-lists")
+        assert anon.status != 200, anon.text()
+        authed = page.request.get(
+            base + "/api/integrations/marketo/static-lists", headers=auth
+        )
+        assert authed.status == 200, authed.text()
+        assert authed.json() == {
+            "lists": [{"id": 7, "name": "Screening"}],
+            "next_offset": None,
+        }
+        url = base + f"/api/live-events/{event_id}/{opens}/registration/marketo"
+        headers = dict(auth, **{"Origin": base, "X-CuePorch-Integration": "1"})
+        payload = {"list": 7, "mapping": {"field_genre": "favoriteGenre"}}
+        bad = page.request.post(url, headers=headers, data=payload)
+        assert bad.status == 502, bad.text()
+        with closing(sqlite3.connect(provider.database)) as conn:
+            rows = conn.execute(
+                "SELECT opens,email,source,answers FROM live_event_registrant WHERE event=?",
+                (event_id,),
+            ).fetchall()
+            assert rows == []
+        provider.healthy_import = True
+        first = page.request.post(url, headers=headers, data=payload)
+        assert first.status == 200, first.text()
+        assert first.json() == {
+            "added": 1,
+            "duplicates": 1,
+            "skipped": 1,
+            "existing": 0,
+            "occurrence": opens,
+        }
+        second = page.request.post(url, headers=headers, data=payload)
+        assert second.status == 200, second.text()
+        assert second.json() == {
+            "added": 0,
+            "duplicates": 1,
+            "skipped": 1,
+            "existing": 1,
+            "occurrence": opens,
+        }
+        with closing(sqlite3.connect(provider.database)) as conn:
+            rows = conn.execute(
+                "SELECT opens,email,source,answers FROM live_event_registrant WHERE event=?",
+                (event_id,),
+            ).fetchall()
+        assert len(rows) == 1
+        opens_val, email, source, answers = rows[0]
+        assert opens_val == opens
+        assert email == "import@example.test"
+        assert source == "marketo"
+        assert json.loads(answers)["field_genre"] == "Documentary"
 
     def register_viewer(
         self, browser, base, opens, email, consent, *, engagement=False
@@ -579,6 +636,44 @@ class MarketoProvider:
                     ],
                 }
             )
+        if method == "GET" and path in (
+            "/rest/asset/v1/staticLists.json",
+            "/rest/asset/v1/staticList/7.json",
+        ):
+            return _resp(dict(success=True, result=[dict(id=7, name="Screening")]))
+        if method == "GET" and path == "/rest/v1/lists/7/leads.json":
+            params = kwargs.get("params", {})
+            tok = params.get("nextPageToken")
+            if not tok:
+                return _resp(
+                    dict(
+                        success=True,
+                        result=[
+                            dict(
+                                id=10,
+                                email="import@example.test",
+                                firstName="Alex",
+                                favoriteGenre="Documentary",
+                            )
+                        ],
+                        nextPageToken="page2",
+                    )
+                )
+            assert params.get("batchSize") == 300
+            assert "favoriteGenre" in (params.get("fields") or "")
+            assert tok == "page2"
+            rows = [
+                dict(
+                    id=11,
+                    email="IMPORT@example.test",
+                    firstName="Alex",
+                    favoriteGenre="Documentary",
+                ),
+                dict(id=12, email="skipped@example.test", firstName="Sam"),
+            ]
+            nxt = None if getattr(self, "healthy_import", False) else "page2"
+            return _resp(dict(success=True, result=rows, nextPageToken=nxt))
+
         if path == "/rest/v1/leads.json":
             return self.lead(method, kwargs)
         if path == "/rest/v1/programs/members/schema/fields.json":

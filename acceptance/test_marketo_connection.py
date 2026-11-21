@@ -122,6 +122,80 @@ class TestMarketoConnection(unittest.TestCase):
         with self.assertRaises(BadGateway):
             marketo_crm.program(connection, 52)
 
+    def test_static_list_discovery(self):
+        from unittest.mock import Mock
+        from werkzeug.exceptions import BadGateway, NotFound
+        import marketo_crm
+
+        valid = {"id": 12345, "name": "Valid List"}
+        first_page = [valid] + [{"id": i, "name": ""} for i in range(1, 50)]
+        connection = Mock()
+        connection.api = Mock(
+            side_effect=[
+                {"result": first_page},
+                {"result": []},
+                {"result": [valid]},
+                {"result": [valid]},
+                {"result": []},
+            ]
+        )
+
+        first_result = marketo_crm.static_lists(connection, offset=50)
+        self.assertEqual(set(first_result.keys()), {"lists", "next_offset"})
+        self.assertEqual(first_result["lists"], [valid])
+        self.assertEqual(first_result["next_offset"], 100)
+
+        second_result = marketo_crm.static_lists(connection, offset=100)
+        self.assertEqual(set(second_result.keys()), {"lists", "next_offset"})
+        self.assertEqual(second_result["lists"], [])
+        self.assertIsNone(second_result["next_offset"])
+
+        first_call = connection.api.call_args_list[0]
+        self.assertEqual(first_call[0], ("GET", "/rest/asset/v1/staticLists.json"))
+        first_params = first_call[1]["params"]
+        self.assertEqual(first_params["offset"], 50)
+        self.assertEqual(first_params["maxReturn"], 50)
+        self.assertEqual(
+            set(first_params.keys()), {"offset", "maxReturn", "earliestUpdatedAt"}
+        )
+        self.assertRegex(
+            first_params["earliestUpdatedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+        )
+
+        second_call = connection.api.call_args_list[1]
+        self.assertEqual(second_call[0], ("GET", "/rest/asset/v1/staticLists.json"))
+        second_params = second_call[1]["params"]
+        self.assertEqual(second_params["offset"], 100)
+        self.assertEqual(second_params["maxReturn"], 50)
+        self.assertEqual(
+            set(second_params.keys()), {"offset", "maxReturn", "earliestUpdatedAt"}
+        )
+        self.assertRegex(
+            second_params["earliestUpdatedAt"],
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        )
+
+        list_result = marketo_crm.static_list(connection, 12345)
+        self.assertEqual(list_result, valid)
+        self.assertEqual(list_result["id"], 12345)
+
+        valid_call = connection.api.call_args_list[2]
+        self.assertEqual(valid_call[0], ("GET", "/rest/asset/v1/staticList/12345.json"))
+
+        with self.assertRaises(BadGateway):
+            marketo_crm.static_list(connection, 999)
+        wrong_id_call = connection.api.call_args_list[3]
+        self.assertEqual(
+            wrong_id_call[0], ("GET", "/rest/asset/v1/staticList/999.json")
+        )
+
+        with self.assertRaises(NotFound):
+            marketo_crm.static_list(connection, 555)
+        not_found_call = connection.api.call_args_list[4]
+        self.assertEqual(
+            not_found_call[0], ("GET", "/rest/asset/v1/staticList/555.json")
+        )
+
     def marketo_mock(self, method, url, **kwargs):
         if method == "POST" and url == "https://mock.mktorest.com/identity/oauth/token":
             assert kwargs.get("params") == {

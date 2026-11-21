@@ -663,3 +663,168 @@ def save_member_engagement(
     ):
         raise BadGateway("unexpected result")
     return True
+
+
+def _static_list(row):
+    if type(row) is not dict:
+        return None
+    list_id = row.get("id")
+    name = row.get("name")
+    if type(list_id) is not int or list_id <= 0:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return {"id": list_id, "name": name}
+
+
+def static_lists(connection, offset=0):
+    from datetime import datetime, timedelta, timezone
+
+    if type(offset) is not int or offset < 0:
+        raise ValueError()
+    earliest = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    response = connection.api(
+        "GET",
+        "/rest/asset/v1/staticLists.json",
+        params={"maxReturn": 50, "offset": offset, "earliestUpdatedAt": earliest},
+    )
+    if type(response) is not dict or type(response.get("result")) is not list:
+        raise BadGateway()
+    raw = response["result"]
+    if len(raw) > 50:
+        raise BadGateway()
+    lists = []
+    for row in raw:
+        item = _static_list(row)
+        if item is not None:
+            lists.append(item)
+    return {"lists": lists, "next_offset": offset + 50 if len(raw) == 50 else None}
+
+
+def static_list(connection, list_id):
+    from werkzeug.exceptions import NotFound
+
+    if type(list_id) is not int or list_id <= 0:
+        raise ValueError()
+    response = connection.api("GET", f"/rest/asset/v1/staticList/{list_id}.json")
+    if type(response) is not dict or type(response.get("result")) is not list:
+        raise BadGateway()
+    raw = response["result"]
+    if len(raw) == 0:
+        raise NotFound()
+    if len(raw) > 1:
+        raise BadGateway()
+    item = _static_list(raw[0])
+    if item is None or item["id"] != list_id:
+        raise BadGateway()
+    return item
+
+
+def static_list_members(connection, list_id, *, fields=()):
+    if type(list_id) is not int or list_id <= 0:
+        raise ValueError("list_id must be a positive strict int")
+    if not isinstance(fields, (tuple, list)):
+        raise ValueError("fields must be a tuple or list")
+    checked_fields = []
+    for field in fields:
+        if (
+            not isinstance(field, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", field) is None
+        ):
+            raise ValueError("invalid field")
+        checked_fields.append(field)
+    all_fields = ["id", "email", "firstName", "lastName"]
+    for field in checked_fields:
+        if field not in all_fields:
+            all_fields.append(field)
+    params_base = {"batchSize": 300, "fields": ",".join(all_fields)}
+    path = f"/rest/v1/lists/{list_id}/leads.json"
+    rows = []
+    page_token = None
+    seen_tokens = set()
+    for _ in range(1000):
+        params = dict(params_base)
+        if page_token is not None:
+            params["nextPageToken"] = page_token
+        body = connection.api("GET", path, params=params)
+        if not isinstance(body, dict):
+            raise BadGateway("response body must be a dict")
+        result = body.get("result")
+        if not isinstance(result, list) or len(result) > 300:
+            raise BadGateway("result must be a list of at most 300 items")
+        for row in result:
+            if not isinstance(row, dict):
+                raise BadGateway("result item must be a dict")
+            row_id = row.get("id")
+            if type(row_id) is not int or row_id <= 0:
+                raise BadGateway("result item id must be a positive strict int")
+            rows.append(row)
+        more_present = "moreResult" in body
+        more_result = body.get("moreResult")
+        if more_present and not isinstance(more_result, bool):
+            raise BadGateway("moreResult must be a bool")
+        if "nextPageToken" in body:
+            page_token = body["nextPageToken"]
+            if page_token is not None:
+                if (
+                    not isinstance(page_token, str)
+                    or len(page_token) == 0
+                    or len(page_token) > 2048
+                    or not page_token.isprintable()
+                ):
+                    raise BadGateway("invalid nextPageToken")
+        else:
+            page_token = None
+        if more_present and more_result is False:
+            break
+        if more_present and more_result is True and page_token is None:
+            raise BadGateway("moreResult true requires nextPageToken")
+        if page_token is None:
+            break
+        if page_token in seen_tokens:
+            raise BadGateway("repeated nextPageToken")
+        seen_tokens.add(page_token)
+    else:
+        raise BadGateway("too many pages")
+    return rows
+
+
+def static_list_attendee(member, mapping):
+    import math
+
+    from library_registration import EMAIL
+
+    def clean_text(value, limit):
+        if not isinstance(value, str):
+            return ""
+        value = value.strip()
+        if len(value) > limit or not value.isprintable():
+            return ""
+        return value
+
+    email = clean_text(member.get("email"), 254)
+    if not EMAIL.fullmatch(email):
+        return None
+    attendee = {
+        "email": email,
+        "first_name": clean_text(member.get("firstName"), 80),
+        "last_name": clean_text(member.get("lastName"), 80),
+    }
+    for key, descriptor in mapping.items():
+        value = member.get(descriptor["name"])
+        field_type = descriptor["type"]
+        if field_type == "boolean":
+            if type(value) is bool:
+                attendee[key] = value
+        elif field_type in ("integer", "float", "currency"):
+            if type(value) is int or (
+                field_type != "integer"
+                and type(value) is float
+                and math.isfinite(value)
+            ):
+                attendee[key] = str(value)
+        elif isinstance(value, str) and value.isprintable():
+            attendee[key] = value
+    return attendee

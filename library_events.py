@@ -880,6 +880,77 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} HubSpot contacts")
         return private(dict(result, skipped=skipped, occurrence=opens))
 
+    def enroll_marketo_members(con, row, slot, form, members, mapping, *, source):
+        added = 0
+        existing = 0
+        duplicates = 0
+        skipped = 0
+        seen = set()
+        for member in members:
+            fields = marketo_crm.static_list_attendee(member, mapping)
+            if fields is None:
+                skipped += 1
+                continue
+            key = fields["email"].casefold()
+            if key in seen:
+                duplicates += 1
+                continue
+            found = con.execute(
+                'SELECT 1 FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?',
+                (row["id"], slot["id"], key),
+            ).fetchone()
+            if found is not None:
+                existing += 1
+                seen.add(key)
+                continue
+            values = dict(fields)
+            for k, v in values.items():
+                if isinstance(v, bool):
+                    values[k] = "yes" if v else "no"
+            error, _ = library_registration.answers_from(form, values)
+            if error:
+                skipped += 1
+                continue
+            _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source=source)
+            if enrolled:
+                added += 1
+            seen.add(key)
+        return dict(added=added, existing=existing, duplicates=duplicates, skipped=skipped)
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/marketo")
+    def import_marketo_registration(uid, opens):
+        actor = staff()
+        from browser_account_security import json_mutation
+        body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
+        if marketo is None:
+            abort(404)
+        list_id = body.get("list")
+        mapping = body.get("mapping", {})
+        if isinstance(list_id, bool) or not isinstance(list_id, int) or list_id <= 0:
+            abort(422)
+        if not isinstance(mapping, dict):
+            abort(422)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            event_revision = row["revision"]
+            form_revision = form["revision"]
+        marketo_crm.static_list(marketo, list_id)
+        if mapping:
+            try:
+                mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
+            except ValueError:
+                abort(422)
+        fields = [entry["name"] for entry in mapping.values()]
+        members = marketo_crm.static_list_members(marketo, list_id, fields=fields)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            if row["revision"] != event_revision or form["revision"] != form_revision:
+                abort(409)
+            result = enroll_marketo_members(con, row, slot, form, members, mapping, source="marketo")
+            if result.get("added"):
+                note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {result['added']} Marketo attendees")
+        return private(dict(result, occurrence=opens))
+
     def validate_hubspot_plan(con, job):
         row, slot, form = registration_intake(con, job["event"], job["opens"])
         if (
