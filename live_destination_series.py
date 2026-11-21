@@ -101,6 +101,19 @@ def save(con, event, provider, owner, revision, event_revision, opens, options):
     )
 
 
+def unfinished_youtube(con, row, opens):
+    if row["provider"] != "youtube-live":
+        return False
+    return con.execute(
+        """SELECT 1 FROM youtube_live_creation
+           WHERE event=? AND opens=? AND event_revision=? AND revision=?
+             AND channel=? AND privacy=? AND destination IS NULL
+             AND phase IN ('broadcast_pending', 'broadcast_confirmed', 'stream_pending', 'stream_confirmed')""",
+        (row["event"], opens, row["event_revision"], row["revision"],
+         row["owner"], json.loads(row["options"])["privacy"]),
+    ).fetchone() is not None
+
+
 def due(con, now):
     rows = con.execute("""
         SELECT s.*, e.settings FROM live_destination_series s
@@ -114,7 +127,8 @@ def due(con, now):
         sched = json.loads(row['settings'])['schedule']
         for slot in event_schedule.occurrences(sched, now, end):
             opens = slot['id']
-            if not (cutoff < opens and opens > row['after_opens']):
+            # After the scheduled start, resume only a broadcast creation already sent to YouTube.
+            if opens <= row['after_opens'] or (opens <= cutoff and not unfinished_youtube(con, row, opens)):
                 continue
             q = "SELECT 1 FROM live_destination_series_skip WHERE event=? AND provider=? AND owner=? AND opens=?"
             if con.execute(q, (row['event'], row['provider'], row['owner'], opens)).fetchone():

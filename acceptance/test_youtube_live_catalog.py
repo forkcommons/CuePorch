@@ -571,15 +571,37 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertEqual(active_series | {"skipped": True, "restorable": True},
                                  api.get(skip_targets + series_suffix, headers=operator_headers).json())
                 observed["recurring_id"] = True
+                observed["show_created"] = False
                 real_due = live_destination_series.due
                 clock_at = datetime.fromtimestamp(second, tz=timezone.utc) - timedelta(minutes=10)
                 stop_app()
-                with patch.object(live_destination_series, "due", side_effect=lambda con, _: real_due(con, clock_at)):
-                    with patch("institution.library_worker.start", return_value=lambda: None):
-                        service.app = create_app(root, database, operator, "station")
+
+                class SeriesClock(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return clock_at.astimezone(tz) if tz else clock_at.replace(tzinfo=None)
+
+                with (patch.object(live_destination_series, "due", side_effect=lambda con, _: real_due(con, clock_at)),
+                      patch.object(event_simulcast, "datetime", SeriesClock),
+                      patch("institution.library_worker.start", return_value=lambda: None)):
+                    service.app = create_app(root, database, operator, "station")
+                    stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                    wait_until(lambda: len(observed["writes"]) >= 4, 12,
+                               "The scheduler did not send the recurring broadcast request.")
+                    stop_app()
+                    self.assertEqual(["broadcast", "stream", "bind", "broadcast"], observed["writes"])
+                    with closing(sqlite3.connect(database)) as connection:
+                        row = connection.execute(
+                            "SELECT phase,broadcast FROM youtube_live_creation WHERE event=? AND opens=?",
+                            (series_event["id"], second)).fetchone()
+                        self.assertEqual(("broadcast_pending", None), tuple(row))
+
+                    clock_at = datetime.fromtimestamp(second + 10, tz=timezone.utc)
+                    observed["show_created"] = True
+                    service.app = create_app(root, database, operator, "station")
                     stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
                     wait_until(lambda: bool(destination_rows(api.get(later_targets, headers=operator_headers))),
-                               12, "The scheduler did not prepare the later YouTube broadcast.")
+                               12, "The restarted scheduler did not reconcile the YouTube broadcast after start.")
                     clock_at = datetime.fromtimestamp(third, tz=timezone.utc) - timedelta(minutes=10)
                     with closing(sqlite3.connect(database)) as connection:
                         connection.row_factory = sqlite3.Row
