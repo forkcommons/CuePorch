@@ -529,6 +529,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         name = digest(b"CuePorch LinkedIn schedule", ":".join(map(str, key)).encode(), "sha256").hex()
         return linkedin_lease_dir / (name + ".lock")
 
+    def check_linkedin_restart(con, key):
+        if con.execute(linkedin_live_job.RESTART, key).fetchone():
+            abort(409, "LinkedIn is confirming a replacement. Use Turn on to check again.")
+
     def linked_owner(connection, revision):
         if connection is linkedin_member_live_connection:
             profile = connection.authorized_profile(revision)
@@ -1248,6 +1252,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             abort(403, "Choose the connected LinkedIn Live account.")
 
         def check(con):
+            check_linkedin_restart(con, (uid, opens, owner_key))
             if access(con) != (event_revision, revision, title, start_ms):
                 abort(409, "The event or LinkedIn connection changed. Reload destinations.")
 
@@ -1321,6 +1326,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 with tx() as con:
                     if access(con) != scope:
                         abort(409, "The event or LinkedIn Live connection changed.")
+                    check_linkedin_restart(con, key)
                     if series:
                         live_destination_series.ensure_recurring(con, uid)
                     prior = con.execute(linkedin_live_job.READ, key).fetchone()
@@ -1377,6 +1383,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         key = (uid, opens, owner_key)
 
         def access(con):
+            check_linkedin_restart(con, key)
             if interactive:
                 enforce_sharing(con, feature="outbound")
             elif con.execute("""SELECT 1 FROM live_destination_series_skip
@@ -1431,6 +1438,73 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 )
         except Timeout:
             return {"state": "pending"}, 202
+
+    def restart_linkedin(uid, opens, destination, owner_key):
+        key = (uid, opens, owner_key)
+        connection = linkedin_connections[linkedin_live_job.provider_for(owner_key)]
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            event_revision, title, _ = creation_access(con, uid, opens)
+            saved = connection.connection(con)
+            old = con.execute("""SELECT d.revision FROM live_simulcast_destination d
+                    JOIN live_occurrence o ON o.event=d.event AND o.opens=d.opens
+                    WHERE d.id=? AND d.event=? AND d.opens=? AND d.provider=? AND d.enabled=0
+                    AND o.delivery='ready'""", (destination, uid, opens, connection.key)).fetchone()
+            if not old or not saved or saved["revision"] != old["revision"]:
+                abort(409, "The LinkedIn destination or connection changed. Reload destinations.")
+            elapsed = datetime.now(timezone.utc).timestamp() - opens
+            if not 0 <= elapsed <= 7200:
+                abort(409, "Restart LinkedIn delivery during the active occurrence.")
+            return event_revision, old["revision"], title.strip()[:75]
+
+        def check(con):
+            if access(con) != (event_revision, revision, title):
+                abort(409, "The event or LinkedIn connection changed.")
+
+        def before_send():
+            staff()
+            with tx() as con:
+                check(con)
+
+        def save(con, target):
+            creation = con.execute(linkedin_live_job.READ, key).fetchone()
+            if creation["video"] == receipt["old_video"] or target["asset"] == receipt["old_asset"]:
+                abort(502, "LinkedIn returned the previous broadcast or stream.")
+            con.execute("DELETE FROM live_simulcast_destination WHERE id=?", (destination,))
+            check_provider_capacity(con, uid, opens)
+            new = save_provider_destination(con, uid, opens, connection.key, revision, creation["video"],
+                                            target | {"title": connection.config.name})
+            con.execute("DELETE FROM linkedin_live_restart WHERE replaces=?", (destination,))
+            return new
+
+        try:
+            with FileLock(linkedin_lease(key), timeout=0):
+                with tx() as con:
+                    event_revision, revision, title = access(con)
+                actual_owner, owner = linked_owner(connection, revision)
+                if actual_owner != owner_key:
+                    abort(409, "The authorized LinkedIn Live account changed.")
+                with tx() as con:
+                    check(con)
+                    receipt = linkedin_live_job.start_replacement(con, key, destination)
+                if receipt is None:
+                    return private(dict(state="pending"), 202)
+                start_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + 60_000
+                result, status = linkedin_live_job.provision(
+                    tx, check,
+                    lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
+                    lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
+                    uid, opens, owner_key, event_revision, revision, False,
+                )
+                if result["state"] == "scheduled":
+                    result, status = linkedin_live_job.prepare_ingest(
+                        tx, check, lambda: connection.register_ingest(revision, owner, before_send),
+                        save, key, revision,
+                    )
+                return private(result, status)
+        except Timeout:
+            return private(dict(state="pending"), 202)
 
     linkedin_delivery = linkedin_live_job.Broadcasts(
         app, tx, linkedin_connections, outputs, linkedin_lease, linkedin_eligible, prepare_linkedin,
@@ -1642,6 +1716,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         " AND o.delivery='ready'",
                         (destination, uid, opens),
                     ).fetchone()
+                    linkedin = con.execute("""SELECT COALESCE(i.company,r.company) AS owner
+                        FROM live_simulcast_destination d
+                        LEFT JOIN linkedin_live_ingest i ON i.destination=d.id
+                        LEFT JOIN linkedin_live_restart r ON r.replaces=d.id
+                        WHERE d.id=? AND d.event=? AND d.opens=? AND d.enabled=0
+                        AND d.provider IN ('linkedin-live','linkedin-member-live')""",
+                                           (destination, uid, opens)).fetchone() if enabled else None
                 if youtube is not None:
                     if not enabled:
                         return turn_off_youtube(uid, opens, destination)
@@ -1649,6 +1730,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         return prepare_youtube(uid, opens, None, restart=destination)
                 if fb:
                     return toggle_started_facebook(uid, opens, destination, enabled, (uid, opens, fb["page"]))
+                if linkedin and linkedin["owner"]:
+                    return restart_linkedin(uid, opens, destination, linkedin["owner"])
         with tx() as con:
             available = event_access(con, uid, opens)
             saved = con.execute(
@@ -1661,6 +1744,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if not saved:
                 abort(404)
             if request.method == "DELETE":
+                if con.execute("SELECT 1 FROM linkedin_live_restart WHERE replaces=?",
+                               (destination,)).fetchone():
+                    abort(409, "LinkedIn is confirming a replacement. Use Turn on to check again.")
                 if con.execute("SELECT 1 FROM youtube_live_restart WHERE replaces=?",
                                (destination,)).fetchone():
                     abort(409, "YouTube is still confirming the replacement. Use Turn on to check again.")
@@ -1686,7 +1772,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     if not available:
                         abort(409, "Destinations require a public event without audience registration.")
                     if saved["provider"] in linkedin_connections:
-                        abort(409, "A disabled LinkedIn Live stream cannot be restarted in the same occurrence.")
+                        abort(409, "Restart LinkedIn delivery during the active occurrence.")
                     if saved["provider"] is not None:
                         provider = live_connections.get(saved["provider"])
                         connection = provider.connection(con) if provider else None
