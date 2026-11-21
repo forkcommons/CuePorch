@@ -67,12 +67,59 @@ const speed = document.querySelector<HTMLSelectElement>("#reviewSpeed")!;
 const previousFrame = document.querySelector<HTMLButtonElement>("#previousFrame")!;
 const nextFrame = document.querySelector<HTMLButtonElement>("#nextFrame")!;
 let frameRate = Number(player.dataset.frameRate);
-const step = (direction: number) => {
-  if (!(frameRate > 0) || !Number.isFinite(player.duration)) return;
+let stepping = false;
+const frameCache = new Map<string, number[]>();
+
+async function loadReviewFrames(source: string, position: number): Promise<number[] | undefined> {
+  const endpoint = player.dataset.frames;
+  if (!endpoint) return undefined;
+  const url = new URL(endpoint, location.href);
+  const rendition = new URL(source).searchParams.get("rendition");
+  if (rendition) url.searchParams.set("rendition", rendition);
+  url.searchParams.set("at", String(Math.floor(position / 10) * 10));
+  const cached = frameCache.get(url.href);
+  if (cached) return cached;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return undefined;
+    const {frames} = await response.json();
+    if (!Array.isArray(frames) || !frames.every((value, i) =>
+      Number.isFinite(value) && value >= 0 && (i === 0 || value > frames[i - 1]))) return undefined;
+    if (frameCache.size >= 4) frameCache.delete(frameCache.keys().next().value!);
+    frameCache.set(url.href, frames);
+    return frames;
+  } catch {
+    return undefined;
+  }
+}
+
+async function step(direction: number) {
+  if (stepping || !(frameRate > 0) || !Number.isFinite(player.duration)) return;
+  stepping = true;
   player.pause();
-  const next = Math.round(player.currentTime * frameRate) + direction;
-  player.currentTime = Math.max(0, Math.min(next / frameRate, player.duration));
-};
+  const source = player.src;
+  const position = player.currentTime;
+  try {
+    const frames = await loadReviewFrames(source, position);
+    if (player.src !== source || !player.paused || Math.abs(player.currentTime - position) > .002) return;
+
+    previousFrame.title = nextFrame.title = frames?.length ? "" : "Approximate frame step";
+    if (!frames?.length) {
+      const next = Math.round(position * frameRate) + direction;
+      player.currentTime = Math.max(0, Math.min(next / frameRate, player.duration));
+      return;
+    }
+    let index = -1;
+    while (index + 1 < frames.length && frames[index + 1] <= position + .000001) index++;
+    const target = index + direction;
+    if (target < 0 || target >= frames.length) return;
+    // Seek just inside the frame so browser timestamp rounding does not land on its predecessor.
+    const gap = target + 1 < frames.length ? frames[target + 1] - frames[target] : Infinity;
+    player.currentTime = Math.min(player.duration, frames[target] + Math.min(.001, gap / 3));
+  } finally {
+    stepping = false;
+  }
+}
 previousFrame.onclick = () => step(-1);
 nextFrame.onclick = () => step(1);
 loop.onchange = () => { player.loop = loop.checked; };

@@ -95,9 +95,17 @@ def check_review_links(page, base, auth, work, review_update):
         assert player.evaluate("v => [v.playbackRate, v.loop]") == [1.5, True]
         player.evaluate("v => {v.pause(); v.currentTime = 1;}")
         visitor.get_by_role("button", name="Next frame", exact=True).click()
-        assert abs(player.evaluate("v => v.currentTime") - (25 / 24)) < 0.008
+        visitor.wait_for_function(
+            "target => { const video = document.querySelector('#reviewTourPlayer'); "
+            "return !video.seeking && Math.abs(video.currentTime - target) < .008; }",
+            arg=25 / 24, timeout=5000,
+        )
         visitor.get_by_role("button", name="Previous frame", exact=True).click()
-        assert abs(player.evaluate("v => v.currentTime") - 1) < 0.008
+        visitor.wait_for_function(
+            "target => { const video = document.querySelector('#reviewTourPlayer'); "
+            "return !video.seeking && Math.abs(video.currentTime - target) < .008; }",
+            arg=1, timeout=5000,
+        )
         player.evaluate("v => {v.pause(); v.currentTime = 1.25;}")
         visitor.get_by_role("button", name="Use current time", exact=True).click()
         visitor.get_by_label("Name", exact=True).fill("A reviewer")
