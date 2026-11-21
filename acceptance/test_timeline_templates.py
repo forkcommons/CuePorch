@@ -27,6 +27,9 @@ class TimelineTemplates(unittest.TestCase):
     def test_templates(self):
         self.run_fixture(check_timeline_templates)
 
+    def test_text_layers(self):
+        self.run_fixture(check_timeline_text_layers)
+
     def test_graphics(self):
         self.run_fixture(check_timeline_graphics)
 
@@ -227,6 +230,86 @@ def check_timeline_templates(page, base, auth, uid, tmp):
             target = opening_bg if kind == "opening" else closing_bg
             rgb = avg(t, 696, 8)
             assert all(abs(rgb[i] - target[i]) <= 18 for i in range(3)), (kind, rgb, target)
+
+
+def check_timeline_text_layers(page, base, auth, uid, root):
+    from io import BytesIO
+    from PIL import Image
+
+    work_url = f"{base}/api/library/work/{uid}/timeline"
+
+    def apply_and_wait(button_id, expected):
+        def matches(response):
+            if response.url != work_url or response.request.method != "PUT":
+                return False
+            clips = response.request.post_data_json["settings"]["clips"]
+            return [[layer["text"] for layer in clip.get("text_layers", [])] for clip in clips] == expected
+
+        with page.expect_response(matches) as pending:
+            page.locator(button_id).click()
+        assert pending.value.ok
+        return pending.value.json()
+
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    choose_clip = page.locator("#timelineClips").get_by_role("button", name="blue", exact=True)
+    choose_clip.click()
+    expect(page.locator("#timelineSourceName")).to_have_text("blue")
+    page.locator("#timelineLayerStyle").select_option("headline")
+    page.locator("#timelineLayerText").fill("Community bulletin")
+    page.locator("#timelineLayerEffect").select_option("fade")
+    page.locator("#timelineLayerColor").fill("#ffff00")
+    page.locator("#timelineLayerFont").select_option("serif")
+    page.locator("#timelineLayerShadow").check()
+    draft = apply_and_wait("#applyTimelineText", [["Community bulletin"]])
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+    expect(page.locator("#timelineTextPreview")).to_be_visible()
+
+    layer = draft["settings"]["clips"][0]["text_layers"][0]
+    assert layer["style"] == "headline" and layer["text"] == "Community bulletin"
+    preview_url = base + "/api/library/timeline-texts/preview"
+    assert layer["font"] == "serif" and layer["shadow"] is True
+    body = {"ratio": "16:9", "text": [layer]}
+    assert requests.post(preview_url, json=body, timeout=15).status_code == 403
+    assert requests.post(preview_url, headers=auth, json=body | {"text": [{"text": "Example", "style": []}]}, timeout=15).status_code == 422
+    res = requests.post(preview_url, headers=auth, json=body, timeout=15)
+    res.raise_for_status()
+    with Image.open(BytesIO(res.content)) as preview:
+        assert preview.is_animated and preview.size == (480, 270)
+
+    page.locator("#timelineLayerSelect").select_option("")
+    page.locator("#timelineLayerStyle").select_option("caption")
+    page.locator("#timelineLayerText").fill("Circle")
+    page.locator("#timelineLayerEffect").select_option("circle")
+    page.locator("#timelineLayerPosition").select_option("bottom")
+    saved = apply_and_wait("#applyTimelineText", [["Community bulletin", "Circle"]])
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+
+    assert [item["effect"] for item in saved["settings"]["clips"][0]["text_layers"]] == ["fade", "circle"]
+
+    page.reload()
+    choose_clip.click()
+    page.locator("#timelineLayerSelect").select_option(label="Community bulletin")
+    expect(page.locator("#timelineLayerStyle")).to_have_value("headline")
+    expect(page.locator("#timelineLayerFont")).to_have_value("serif")
+    page.locator("#timelineLayerSelect").select_option(label="Circle")
+    apply_and_wait("#clearTimelineText", [["Community bulletin"]])
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+
+    page.locator("#timelineTemplateInsertClosing").click()
+    page.locator("#timelineClips > li").last.get_by_role("button").first.click()
+    page.locator("#timelineLayerStyle").select_option("subheadline")
+    page.locator("#timelineLayerText").fill("Thank you")
+    page.locator("#timelineLayerEffect").select_option("underline")
+    saved = apply_and_wait("#applyTimelineText", [["Community bulletin"], ["Thank you"]])
+    expect(page.locator("#timelineTextPreview")).to_be_visible()
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+
+    clip, scene = saved["settings"]["clips"]
+    assert [item["text"] for item in clip["text_layers"]] == ["Community bulletin"]
+    assert scene["text_layers"][0]["effect"] == "underline"
+
+    page.locator("#renderTimeline").click()
+    expect(page.locator("#timelineStatus")).to_have_text("New version saved.", timeout=60000)
 
 
 def check_timeline_graphics(page, base, auth, uid, root):

@@ -77,6 +77,8 @@ def build():
         "--add-data",
         str(ROOT / "static") + ":static",
         "--add-data",
+        str(ROOT / "docs/assets/fonts") + ":static/fonts",
+        "--add-data",
         str(ROOT / "live_caption_worker.py") + ":.",
         "--add-binary",
         str(scratch / ("ffmpeg.exe" if WINDOWS else "ffmpeg")) + ":media-tools",

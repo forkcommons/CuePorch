@@ -25,6 +25,7 @@ import timeline_cards
 import timeline_graphics
 import timeline_stickers
 from timeline_render import Clip, Music, Sticker, render
+from timeline_text_motion import prepare_text
 
 
 SCHEMA = """
@@ -177,17 +178,21 @@ def register(app, tx, staff, get_work, root, remember_work):
                     img = timeline_graphics.draw_graphic(item["graphic"], SIZES[settings["ratio"]])
                     graphic_path = scratch / (uuid.uuid4().hex + ".png")
                     img.save(graphic_path)
+                text_path = None
+                if item.get("text_layers"):
+                    text_path = prepare_text(item["text_layers"], SIZES[settings["ratio"]],
+                                             scratch / (uuid.uuid4().hex + ".png"))
                 if cut is None:
                     path = scratch / (uuid.uuid4().hex + ".png")
                     timeline_cards.draw_card(path, item["card"], SIZES[settings["ratio"]])
                     clips.append(Clip(str(path), 0, item["end"], False, still=True,
                                       graphic=str(graphic_path) if graphic_path else None,
-                                      sticker=sticker))
+                                      sticker=sticker, text=text_path))
                 else:
                     file, info = video_source(root, cut)
                     clips.append(Clip(file, item["start"], item["end"], bool(info["audio"]),
                                       graphic=str(graphic_path) if graphic_path else None,
-                                      sticker=sticker))
+                                      sticker=sticker, text=text_path))
             source_credits, music_credit = attribution
             editor_assets = []
             seen = set()

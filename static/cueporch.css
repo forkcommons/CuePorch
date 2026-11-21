@@ -168,11 +168,12 @@ body:not(.watch-catalog) .viewer-watch-nav { margin-block-end: 1.2rem; }
 .video-workspace aside input:not([type=checkbox]), .video-workspace aside textarea { width: 100%; }
 .video-workspace video { max-height: 36rem; }
 .timeline-preview-canvas { position: relative; width: min(100%, 42rem); }
-.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker) { aspect-ratio: var(--timeline-aspect, 16 / 9); background: var(--timeline-background, #182629); }
+.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker, .has-timeline-text) { aspect-ratio: var(--timeline-aspect, 16 / 9); background: var(--timeline-background, #182629); }
 .timeline-preview-canvas > #timelineGraphicPreview,
-.timeline-preview-canvas > #timelineStickerPreview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
-.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker) > video { width: 100%; height: 100%; object-fit: contain; }
-.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker) > #timelineCardPreview:not([hidden]) { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
+.timeline-preview-canvas > #timelineStickerPreview,
+.timeline-preview-canvas > #timelineTextPreview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; object-fit: contain; }
+.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker, .has-timeline-text) > video { width: 100%; height: 100%; object-fit: contain; }
+.timeline-preview-canvas:is(.has-timeline-graphic, .has-timeline-sticker, .has-timeline-text) > #timelineCardPreview:not([hidden]) { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
 #videoEditor video { max-height: 30rem; }
 #trimPosition { width: min(100%, 32rem); }
 .trim-cues { list-style: none; padding: 0; max-height: 24rem; overflow: auto; }
