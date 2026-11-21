@@ -150,7 +150,10 @@ class Connection:
         except (InvalidToken, ValueError):
             abort(409, "Disconnect and reconnect using the current workspace credentials.")
 
-    def exchange(self, fields, previous_refresh=None):
+    def scope_allowed(self, scope):
+        return isinstance(scope, str) and set(self.config.scope.split()) <= set(scope.split())
+
+    def exchange_kwargs(self, fields):
         request_kwargs = {}
         if self.config.token_basic_query:
             request_kwargs = dict(
@@ -165,6 +168,10 @@ class Connection:
             request_kwargs = dict(data=fields)
         else:
             request_kwargs = dict(data=fields | self.client_fields())
+        return request_kwargs
+
+    def exchange(self, fields, previous_refresh=None):
+        request_kwargs = self.exchange_kwargs(fields)
         with provider_request("POST", self.config.token_url, **request_kwargs) as response:
             if response.status_code == 429:
                 check_provider(response)
@@ -184,7 +191,7 @@ class Connection:
         if not (isinstance(access, str) and 1 <= len(access) <= 4096 and access.isascii()
                 and access.isprintable() and valid_refresh
                 and (nonexpiring or (type(expires) is int and 1 <= expires <= 90 * 86400))
-                and isinstance(scope, str) and set(self.config.scope.split()) <= set(scope.split())
+                and self.scope_allowed(scope)
                 and str(token_type).casefold() == "bearer"):
             abort(502, "The provider did not grant the access requested for this integration.")
         return dict(access=access, refresh=refresh, expires=None if nonexpiring else int(time.time()) + expires)
