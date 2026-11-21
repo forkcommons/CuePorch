@@ -515,7 +515,8 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, youtube_live_connection, marketo=None):
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, youtube_live_connection,
+             facebook_live_connection, marketo=None):
     marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
@@ -1561,45 +1562,43 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         selected_open(event, opens)
         return can_simulcast(con, uid, event)
 
-    def youtube_creation_access(con, uid, opens):
+    def provider_creation_access(con, uid, opens):
         row, event = read(con, uid)
         slot = selected_open(event, opens)
         current = occurrence(con, uid, opens)
         if (not can_simulcast(con, uid, event) or publication(con, row, event) != "eligible"
                 or datetime.fromisoformat(slot["end"]) <= datetime.now(timezone.utc)
                 or (current and current["delivery"] in ("withdrawing", "withdrawn", "replay"))):
-            abort(409, "Creating a YouTube broadcast requires an eligible public event that has not ended.")
+            abort(409, "Creating a provider broadcast requires an eligible public event that has not ended.")
         return row["revision"], event["title"], slot
 
     def outgoing_programs(con):
         now = datetime.now(timezone.utc)
         candidates = {}
-        connection = youtube_live_connection.connection(con)
-        youtube_revision = connection["revision"] if connection else None
         rows = con.execute("""SELECT o.*,e.settings FROM live_occurrence o JOIN live_event e ON e.id=o.event
             JOIN action a ON a.id=e.publication WHERE o.delivery='ready' AND o.opens<=? AND a.status='eligible'
             AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1
-            AND (d.opens IS NULL OR d.opens=o.opens)
-            AND (d.provider IS NULL OR (d.provider='youtube-live' AND d.revision=?)))""",
-                           (int(now.timestamp()), youtube_revision))
+            AND (d.opens IS NULL OR d.opens=o.opens))""", (int(now.timestamp()),))
         for row in rows:
             uid, opens = row["event"], row["opens"]
             event = json.loads(row["settings"])
             slot = find_open(event, opens)
             if slot and datetime.fromisoformat(slot["end"]) > now and can_simulcast(con, uid, event):
                 targets = con.execute(
-                    "SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1"
-                    " AND (opens IS NULL OR opens=?)"
-                    " AND (provider IS NULL OR (provider='youtube-live' AND revision=?))",
-                    (uid, opens, youtube_revision),
+                    """SELECT d.* FROM live_simulcast_destination d
+                       LEFT JOIN workspace_integration_connection p ON p.provider=d.provider AND p.revision=d.revision
+                       WHERE d.event=? AND d.enabled=1 AND (d.opens IS NULL OR d.opens=?)
+                       AND (d.provider IS NULL OR p.provider IS NOT NULL)""",
+                    (uid, opens),
                 ).fetchall()
-                candidates[uid, opens] = (row["origin"], row["remote"], targets, None)
+                if targets:
+                    candidates[uid, opens] = (row["origin"], row["remote"], targets, None)
         return candidates
 
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
     event_simulcast.register(
         app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing,
-        youtube_live_connection, youtube_creation_access,
+        youtube_live_connection, facebook_live_connection, provider_creation_access,
     )
 
     def released_previews(con):

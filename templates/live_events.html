@@ -476,6 +476,12 @@
           </form>
           <p id="youtubeBroadcastStatus" role="status"></p>
         </section>
+        <form id="addFacebookLiveDestination" hidden>
+          <button type="button" id="loadFacebookLivePages">Load Facebook Live Pages</button>
+          <label>Facebook Live Page <select id="facebookLivePage" name="page"></select></label>
+          <button type="submit" id="prepareFacebookLive" disabled>Prepare Facebook Live</button>
+          <p id="facebookLiveStatus" role="status"></p>
+        </form>
         <form id="addDestination">
           <label>Destination type <select name="preset">
             <option value="custom">Custom RTMP or RTMPS</option>

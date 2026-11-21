@@ -21,7 +21,6 @@ import event_hubspot_sync
 import event_salesforce_registration
 import event_hubspot_outbound
 import event_mailchimp_registration
-import facebook_live
 import facebook_upload
 import google_meet_recordings
 import constant_contact_crm
@@ -290,7 +289,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, facebook_live_connection, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -313,7 +312,6 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
-    facebook_live_connection = facebook_live.PageLiveConnection(tx, operator, sharing_access)
     x_account = x_upload.AccountConnection(tx, operator)
     tiktok = tiktok_business.AdvertiserConnection(tx, operator)
     shopify = shopify_product_media.StoreConnection(tx, operator)
