@@ -950,15 +950,17 @@ async function refreshDestinations(result) {
         const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
             ? item.provider_phase : item.state;
         const reusable = item.reusable;
+        const customSeries = !reusable && !item.provider && item.opens === null && !!active && active.event.event.schedule.repeat !== "none";
+        const enabled = customSeries ? item.configured_enabled : item.enabled;
         row.textContent = `${item.name}${reusable ? " · Reusable" : ""}${reusable ? ` · This date ${item.enabled ? "on" : "off"}` : ""}${scope} · ${item.server} · ${labels[state] || state}`;
         const control = document.createElement("button");
         control.type = "button";
-        control.textContent = item.enabled ? "Turn off" : "Turn on";
-        control.setAttribute("aria-label", `Turn ${item.enabled ? "off" : "on"} ${item.name}`);
+        control.textContent = enabled ? "Turn off" : "Turn on";
+        control.setAttribute("aria-label", `Turn ${enabled ? "off" : "on"} ${item.name}`);
         control.disabled = item.state === "disconnected"
-            || (!item.enabled && (!result.available || linkedin));
+            || (!enabled && (!result.available || linkedin));
         control.onclick = () => void action(async () => {
-            await request(mediaPath(`destinations/${item.id}`), "PUT", { enabled: !item.enabled });
+            await request(mediaPath(`destinations/${item.id}`), "PUT", { enabled: !enabled });
             await refreshDestinations();
         });
         const remove = document.createElement("button");
@@ -970,6 +972,18 @@ async function refreshDestinations(result) {
             await refreshDestinations();
         });
         row.append(control, remove);
+        if (customSeries) {
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            const text = item.skipped ? "Use this date" : "Skip this date";
+            toggle.textContent = text;
+            toggle.setAttribute("aria-label", `${text} for ${item.name}`);
+            toggle.onclick = () => void action(async () => {
+                await request(mediaPath(`destinations/${item.id}`), "PUT", { enabled: item.skipped, only_date: true });
+                await refreshDestinations();
+            });
+            row.append(toggle);
+        }
         return row;
     }));
 }

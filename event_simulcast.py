@@ -1332,7 +1332,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         )
             rows = con.execute(
                 """SELECT d.id,d.name,d.server,(d.enabled AND k.destination IS NULL) AS enabled,
-                   s.destination IS NOT NULL AS reusable,d.opens,d.provider,d.revision,d.preset,i.phase AS provider_phase
+                   s.destination IS NOT NULL AS reusable,d.opens,d.provider,d.revision,d.preset,i.phase AS provider_phase,
+                   d.enabled AS configured_enabled,k.destination IS NOT NULL AS skipped
                    FROM live_simulcast_destination d
                    LEFT JOIN linkedin_live_ingest i ON i.destination=d.id
                    LEFT JOIN live_simulcast_key_series s ON s.destination=d.id
@@ -1346,6 +1347,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         for row in rows:
             item = dict(row)
             item["reusable"] = bool(item["reusable"])
+            item["configured_enabled"] = bool(item["configured_enabled"])
+            item["skipped"] = bool(item["skipped"])
             revision = item.pop("revision")
             if item["provider"] is not None and revision != revisions.get(item["provider"]):
                 item["state"] = "disconnected"
@@ -1362,7 +1365,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         with tx() as con:
             available = event_access(con, uid, opens)
             saved = con.execute(
-                "SELECT d.id,d.provider,d.revision,s.destination IS NOT NULL AS reusable"
+                "SELECT d.id,d.provider,d.revision,d.opens,s.destination IS NOT NULL AS reusable"
                 " FROM live_simulcast_destination d LEFT JOIN live_simulcast_key_series s ON s.destination=d.id"
                 " WHERE d.id=? AND d.event=? AND (d.opens IS NULL OR d.opens=?)"
                 " AND (s.start_opens IS NULL OR s.start_opens<=?)",
@@ -1378,6 +1381,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 body = request.get_json()
                 if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
                     abort(422, "Set whether this destination is enabled.")
+                only_date = body.get("only_date", False)
+                if type(only_date) is not bool:
+                    abort(422, "Choose whether to change only this occurrence.")
+                if only_date:
+                    if saved["provider"] is not None or saved["opens"] is not None or saved["reusable"]:
+                        abort(422, "Selected-date overrides require a custom destination shared across the event.")
+                    live_destination_series.ensure_recurring(con, uid)
                 if body["enabled"]:
                     enforce_sharing(con, feature="outbound")
                     if not available:
@@ -1389,7 +1399,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         connection = provider.connection(con) if provider else None
                         if not connection or connection["revision"] != saved["revision"]:
                             abort(409, "Reconnect the provider to enable this destination.")
-                if saved["reusable"]:
+                if saved["reusable"] or only_date:
                     if body["enabled"]:
                         con.execute(
                             "DELETE FROM live_simulcast_key_skip WHERE destination=? AND opens=?",

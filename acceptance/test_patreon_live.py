@@ -146,6 +146,19 @@ class PatreonLive(unittest.TestCase):
         assert current_by_name["Members live"]["opens"] == int(first["id"])
         assert current_by_name["Station feed"]["opens"] is None
 
+        station_id = current_by_name["Station feed"]["id"]
+        page.get_by_role("button", name="Skip this date for Station feed").click()
+        expect(page.get_by_role("button", name="Use this date for Station feed")).to_be_visible()
+        current_after = {row["name"]: row for row in request.get(targets, headers=auth).json()["destinations"]}
+        next_after = {row["name"]: row for row in request.get(next_targets, headers=auth).json()["destinations"]}
+        assert current_after["Station feed"]["id"] == station_id
+        assert current_after["Station feed"]["skipped"] and not current_after["Station feed"]["enabled"]
+        assert current_after["Members live"]["enabled"]
+        assert not next_after["Station feed"]["skipped"] and next_after["Station feed"]["enabled"]
+        page.get_by_role("button", name="Use this date for Station feed").click()
+        expect(page.get_by_role("button", name="Skip this date for Station feed")).to_be_visible()
+        expect(page.get_by_role("button", name="Turn off Station feed", exact=True)).to_be_enabled()
+
         member_id = current_by_name["Members live"]["id"]
 
         assert (
