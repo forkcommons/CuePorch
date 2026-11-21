@@ -42,6 +42,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
             callback = base + "/integration/oauth/youtube-live/callback"
             observed = dict(refresh=False, revoked=False, uploaded=False)
             observed.update(broadcast_pages=[], broadcast_fetch=False, stream_fetch=False)
+            observed.update(single_channel=False, show_created=False, writes=[])
+            created_broadcast, created_stream = {}, {}
             cleanup.enter_context(patch("event_peer.host_available", return_value=True))
             raw_secrets = ("old-live-access", "fresh-live-access", "live-refresh", "fixture-secret")
             cleanup.enter_context(patch.multiple(
@@ -144,6 +146,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 assert auth == "Bearer fresh-live-access"
                 if request.args.get("pageToken") == "live-page-2":
                     return {"items": [{"id": "UC-live-2", "snippet": {"title": "Porch Live Two"}}]}
+                if observed["single_channel"]:
+                    return {"items": [{"id": "UC-live-1", "snippet": {"title": "Porch Live One"}}]}
                 return {
                     "items": [{"id": "UC-live-1", "snippet": {"title": "Porch Live One"}}],
                     "nextPageToken": "live-page-2",
@@ -185,6 +189,11 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
             @remote.get("/liveBroadcasts")
             def live_broadcasts():
+                if request.args.get("id") == "created-broadcast":
+                    return {"items": [created_broadcast]}
+                if request.args["part"] == "id,snippet":
+                    assert request.args["mine"] == "true"
+                    return {"items": [created_broadcast] if observed["show_created"] else []}
                 if request.args.get("id"):
                     assert request.args["id"] == "fixture-broadcast"
                     observed["broadcast_fetch"] = True
@@ -198,6 +207,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
             @remote.get("/liveStreams")
             def live_streams():
+                if request.args.get("id") == "created-stream":
+                    return {"items": [created_stream]}
                 assert request.args["id"] == "fixture-stream"
                 observed["stream_fetch"] = True
                 return {"items": [{
@@ -211,6 +222,51 @@ class YouTubeLiveCatalog(unittest.TestCase):
                         },
                     },
                 }]}
+
+            @remote.post("/liveBroadcasts")
+            def insert_broadcast():
+                assert request.headers["Authorization"] == "Bearer fresh-live-access"
+                assert request.args["part"] == "id,snippet,status,contentDetails"
+                body = request.get_json()
+                assert body["status"]["privacyStatus"] == "private"
+                assert body["contentDetails"] == {"enableAutoStart": True, "enableAutoStop": True}
+                assert body["snippet"]["description"].startswith("Created by CuePorch (")
+                assert datetime.fromisoformat(body["snippet"]["scheduledStartTime"]) < datetime.fromisoformat(
+                    body["snippet"]["scheduledEndTime"])
+                created_broadcast.update(body, id="created-broadcast")
+                created_broadcast["snippet"]["channelId"] = "UC-live-1"
+                created_broadcast["status"]["lifeCycleStatus"] = "created"
+                observed["writes"].append("broadcast")
+                return {"error": "simulated loss after creating broadcast"}, 503
+
+            @remote.post("/liveStreams")
+            def insert_stream():
+                assert request.headers["Authorization"] == "Bearer fresh-live-access"
+                assert request.args["part"] == "id,snippet,cdn,contentDetails"
+                body = request.get_json()
+                assert body["cdn"] == {"resolution": "variable", "frameRate": "variable", "ingestionType": "rtmp"}
+                assert body["contentDetails"] == {"isReusable": False}
+                assert body["snippet"]["description"] == created_broadcast["snippet"]["description"]
+                created_stream.update(body, id="created-stream")
+                created_stream["snippet"]["channelId"] = "UC-live-1"
+                created_stream["cdn"]["ingestionInfo"] = {
+                    "rtmpsIngestionAddress": "rtmps://a.rtmps.youtube.com:443/live2",
+                    "streamName": "fixture-created-stream-key",
+                }
+                observed["writes"].append("stream")
+                return created_stream
+
+            @remote.post("/liveBroadcasts/bind")
+            def bind_broadcast():
+                assert request.headers["Authorization"] == "Bearer fresh-live-access"
+                assert request.args["part"] == "id,snippet,contentDetails"
+                assert request.args["id"] == created_broadcast["id"]
+                assert request.args["streamId"] == created_stream["id"]
+                assert not request.get_data()
+                created_broadcast["status"]["lifeCycleStatus"] = "ready"
+                created_broadcast["contentDetails"]["boundStreamId"] = "created-stream"
+                observed["writes"].append("bind")
+                return {"error": "simulated loss after binding"}, 503
 
             cleanup.enter_context(service_worker(provider))
             cleanup.enter_context(service_worker(service))
@@ -344,6 +400,58 @@ class YouTubeLiveCatalog(unittest.TestCase):
 
                 wait_until(lambda: destination["id"] in scheduler_targets, 10, "The released YouTube destination was not selected.")
                 check_youtube_rtmps(root, database, destination["id"], operator)
+
+                observed["single_channel"] = True
+                start = now + timedelta(hours=1)
+                future = {
+                    "title": "Future channel broadcast", "slug": "future-channel-broadcast",
+                    "visibility": "public", "type": "live", "latency": "standard", "save_replay": False,
+                    "schedule": dict(schedule, count=1, start=start.strftime("%Y-%m-%dT%H:%M"),
+                                     end=(start + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")),
+                }
+                scheduled = api.post(base + "/api/live-events", headers=operator_headers, data=future)
+                self.assertTrue(scheduled.ok, scheduled.text())
+                creation = base + f"/api/live-events/{scheduled.json()['id']}/{int(start.timestamp())}/destinations/youtube/create"
+                self.assertEqual(403, api.post(creation, data={}).status)
+
+                creation_page = browser.new_page()
+                creation_page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)});")
+                creation_page.goto(base + "/operator/live-events")
+                creation_page.get_by_role("button", name="Open production for Future channel broadcast", exact=False).first.click()
+                creation_page.get_by_text("Simulcast destinations", exact=True).click()
+                creation_page.get_by_role("button", name="Create YouTube broadcast").click()
+                check_status = creation_page.get_by_role("button", name="Check creation status")
+                expect(check_status).to_be_enabled()
+                self.assertEqual(["broadcast"], observed["writes"])
+
+                stop_app()
+                with patch("institution.library_worker.start", return_value=lambda: None):
+                    service.app = create_app(root, database, operator, "station")
+                stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                observed["show_created"] = True
+                check_status.click()
+                expect(check_status).to_be_enabled()
+                self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
+                check_status.click()
+                expect(creation_page.get_by_text("YouTube broadcast created.")).to_be_visible()
+                expect(creation_page.get_by_role("button", name="Turn off Future channel broadcast")).to_be_enabled()
+                repeat = api.post(creation, headers=operator_headers, data={})
+                self.assertEqual(200, repeat.status)
+                self.assertEqual("complete", repeat.json()["state"])
+                self.assertNotIn("fixture-created-stream-key", repeat.text() + creation_page.content())
+                self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
+                creation_page.close()
+
+                policy = api.put(base + "/api/policy/publication", headers=operator_headers, data={"required": True})
+                self.assertTrue(policy.ok, policy.text())
+                held = api.post(base + "/api/live-events", headers=operator_headers,
+                                data=dict(future, title="Needs publication approval", slug="needs-publication-approval"))
+                self.assertTrue(held.ok, held.text())
+                held_path = base + f"/api/live-events/{held.json()['id']}/{int(start.timestamp())}/destinations/youtube/create"
+                refused = api.post(held_path, headers=operator_headers, data={})
+                self.assertEqual(409, refused.status)
+                self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
+
                 page.get_by_role("button", name="Disconnect YouTube Live", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("YouTube Live disconnected.", timeout=15000)
                 self.assertTrue(observed["revoked"])
@@ -392,6 +500,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                     headers={"Authorization": "Bearer " + operator, "X-CuePorch-Team": "1"})
                 self.assertEqual(channels.status, 409)
         print("YouTube Live OAuth PKCE, catalog page one/two via browser, 409 after disconnect and revoke passed.")
+        print("YouTube creation, restart reconciliation, stream binding, repeat and configurable publication gating passed.")
 
 
 if __name__ == "__main__":

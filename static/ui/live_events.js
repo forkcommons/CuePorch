@@ -77,6 +77,8 @@ const youtubeStatus = element("youtubeBroadcastStatus");
 const youtubeMore = button("youtubeBroadcastsMore");
 const youtubeForm = element("addYouTubeDestination");
 const youtubeSubmit = button("addYouTubeDestinationButton");
+const youtubeCreate = element("createYouTubeBroadcast");
+const youtubeCreateButton = button("createYouTubeBroadcastButton");
 let youtubeNext = null;
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
@@ -298,6 +300,8 @@ function choose(event, instance) {
     youtubeMore.hidden = true;
     youtubeStatus.textContent = "";
     youtubeSubmit.disabled = true;
+    youtubeCreate.reset();
+    youtubeCreateButton.textContent = "Create YouTube broadcast";
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -906,6 +910,33 @@ youtubeForm.onsubmit = event => {
         await request(mediaPath("destinations/youtube"), "POST", { broadcast: selected.value, channel: selected.dataset.channel });
         youtubeStatus.textContent = "YouTube destination added.";
         await refreshDestinations();
+    });
+};
+youtubeCreate.onsubmit = event => {
+    event.preventDefault();
+    if (!active || youtubeCreateButton.disabled)
+        return;
+    const path = mediaPath("destinations/youtube/create");
+    const privacy = new FormData(youtubeCreate).get("privacy");
+    youtubeCreateButton.disabled = true;
+    void action(async () => {
+        try {
+            const result = await request(path, "POST", { privacy });
+            if (!active || mediaPath("destinations/youtube/create") !== path)
+                return;
+            if (result.state === "complete") {
+                youtubeStatus.textContent = "YouTube broadcast created.";
+                youtubeCreateButton.textContent = "Create YouTube broadcast";
+                await refreshDestinations();
+            }
+            else {
+                youtubeStatus.textContent = "Waiting for YouTube to confirm the broadcast.";
+                youtubeCreateButton.textContent = "Check creation status";
+            }
+        }
+        finally {
+            youtubeCreateButton.disabled = false;
+        }
     });
 };
 destinationForm.onsubmit = event => {
