@@ -9,6 +9,7 @@ import contextlib
 import hmac
 import io
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -24,7 +25,13 @@ import installed_simulcast as sim
 
 
 def check_youtube_rtmps(root, database, destination_id, operator):
-    scratch = root / "youtube-egress"
+    check_destination_rtmps(root, database, destination_id, operator,
+                            "rtmps://a.rtmps.youtube.com:443/live2", "fixture-live-stream-key")
+
+
+def check_destination_rtmps(root, database, destination_id, operator, expected_server, stream_key,
+                            expected_profile=None):
+    scratch = root / (expected_profile or "youtube-egress")
     scratch.mkdir()
 
     ffmpeg = shutil.which("ffmpeg")
@@ -85,15 +92,16 @@ def check_youtube_rtmps(root, database, destination_id, operator):
     program.configure([row])
     lease = scratch / "lease"
 
-    with sim.receive(ffmpeg, port, "fixture-live-stream-key", flv) as recv:
+    with sim.receive(ffmpeg, port, stream_key, flv) as recv:
         with sim.tls_bridge(port, (cert, tls_key)) as (tls_port, handshake):
             original_init = event_simulcast.Leg.__init__
 
-            def patched_init(self, server, key, audio_required):
-                assert server == "rtmps://a.rtmps.youtube.com:443/live2"
-                assert key == "fixture-live-stream-key"
+            def patched_init(self, server, key, audio_required, *, profile=None):
+                assert server == expected_server
+                assert key == stream_key
+                assert profile == expected_profile
                 loopback_url = f"rtmps://127.0.0.1:{tls_port}/live"
-                return original_init(self, loopback_url, key, audio_required)
+                return original_init(self, loopback_url, key, audio_required, profile=profile)
 
             with mock.patch.object(event_simulcast.Leg, "__init__", patched_init):
                 with mock.patch.dict(os.environ, {"SSL_CERT_FILE": str(cert)}):
@@ -115,4 +123,14 @@ def check_youtube_rtmps(root, database, destination_id, operator):
         recv.wait(timeout=8)
 
     sim.decode(ffmpeg, flv)
-    print("Selected YouTube destination delivered decodable audio and video over verified local TLS.")
+    if expected_profile == "linkedin-live":
+        decoded = subprocess.run([ffmpeg, "-hide_banner", "-nostdin", "-i", str(flv),
+                                  "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"],
+                                 capture_output=True, text=True, timeout=12, creationflags=flags)
+        assert decoded.returncode == 0, decoded.stderr[-1500:]
+        assert re.search(r"Video: h264 \((?:Constrained Baseline|Baseline)\)[^\n]*1280x720[^\n]*30 fps",
+                         decoded.stderr), decoded.stderr
+        assert re.search(r"Audio: aac[^\n]*48000 Hz, stereo", decoded.stderr), decoded.stderr
+        print("LinkedIn Live preset delivered decodable 720p30 H.264 Baseline and stereo AAC over verified local TLS.")
+    else:
+        print("Selected YouTube destination delivered decodable audio and video over verified local TLS.")

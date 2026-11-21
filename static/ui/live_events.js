@@ -864,7 +864,9 @@ async function refreshDestinations(result) {
         waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
         retrying: "Reconnecting", disabled: "Off", disconnected: "Disconnected",
     };
-    const presetLabels = { instagram: "Instagram Live", tiktok: "TikTok LIVE", x: "X Live" };
+    const presetLabels = {
+        instagram: "Instagram Live", tiktok: "TikTok LIVE", x: "X Live", linkedin: "LinkedIn Live",
+    };
     destinationList.replaceChildren(...result.destinations.map(item => {
         const row = document.createElement("li");
         const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
@@ -1061,7 +1063,7 @@ const socialDestinationHelp = element("socialDestinationHelp");
 function syncPresetHelp() {
     const preset = presetSelect.value;
     patreonDestinationHelp.hidden = preset !== "patreon";
-    socialDestinationHelp.hidden = !["instagram", "tiktok", "x"].includes(preset);
+    socialDestinationHelp.hidden = !["instagram", "tiktok", "x", "linkedin"].includes(preset);
 }
 presetSelect.addEventListener("change", syncPresetHelp);
 destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));

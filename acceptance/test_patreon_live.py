@@ -18,6 +18,7 @@ from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
+from youtube_rtmps_fixture import check_destination_rtmps
 
 
 class PatreonLive(unittest.TestCase):
@@ -170,7 +171,7 @@ class PatreonLive(unittest.TestCase):
 
         assert request.delete(targets + "/" + member_id, headers=auth).status == 204
 
-        presets = {"instagram": "Instagram Live", "tiktok": "TikTok LIVE", "x": "X Live"}
+        presets = {"instagram": "Instagram Live", "tiktok": "TikTok LIVE", "x": "X Live", "linkedin": "LinkedIn Live"}
         for preset, label in presets.items():
             form.get_by_label("Destination type").select_option(preset)
             expect(page.locator("#socialDestinationHelp")).to_be_visible()
@@ -185,6 +186,9 @@ class PatreonLive(unittest.TestCase):
         invalid = request.post(targets, headers=auth, data={"name": "Bad", "preset": "unknown",
                                "server": "rtmp://127.0.0.1:41998/live", "key": "fixture-unknown-key"})
         assert invalid.status == 422
+        clear_transport = request.post(targets, headers=auth, data={"name": "Insecure LinkedIn", "preset": "linkedin",
+                                       "server": "rtmp://127.0.0.1:41999/live", "key": "fixture-linkedin-key"})
+        assert clear_transport.status == 422
         current = request.get(targets, headers=auth)
         assert current.ok
         current_by_name = {row["name"]: row for row in current.json()["destinations"]}
@@ -208,7 +212,10 @@ class PatreonLive(unittest.TestCase):
                                 "server": "rtmps://127.0.0.1:41999/live", "key": "fixture-private-key"},
         )
         assert denied.status == 409
-        print("Browser verified Instagram, TikTok and X RTMP presets, occurrence isolation and credential exclusion.", flush=True)
+        check_destination_rtmps(database.parent, database, current_by_name["LinkedIn Live"]["id"], operator,
+                                "rtmps://127.0.0.1:41999/live", "fixture-linkedin-key", "linkedin-live")
+        print("Browser verified Instagram, TikTok, X and LinkedIn presets, occurrence isolation and credential exclusion.",
+              flush=True)
 
 
 if __name__ == "__main__":

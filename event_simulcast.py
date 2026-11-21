@@ -91,6 +91,10 @@ def destination_scope(body, server, opens):
         if not server.startswith("rtmps://"):
             abort(422, "Patreon destinations require an RTMPS server URL. Enter an RTMPS server or choose the custom option.")
         return opens
+    if preset == "linkedin":
+        if not server.startswith("rtmps://"):
+            abort(422, "LinkedIn Live destinations require an RTMPS server URL.")
+        return opens
     if preset in ("instagram", "tiktok", "x"):
         return opens
     abort(422, "Choose a supported destination preset or use the custom option.")
@@ -268,7 +272,7 @@ def end_process(process):
 
 
 class Leg:
-    def __init__(self, server, key, audio_required):
+    def __init__(self, server, key, audio_required, *, profile=None):
         self.pending = Queue(maxsize=48)
         self.stopping = Event()
         tls = []
@@ -277,10 +281,21 @@ class Leg:
                    "-ca_file", os.environ.get("SSL_CERT_FILE") or requests.certs.where()]
         probe = ["-probesize", "1048576", "-analyzeduration", "5000000"] if audio_required else [
             "-probesize", "262144", "-analyzeduration", "1000000"]
+        codec = ["-c", "copy"]
+        if profile == "linkedin-live":
+            codec = [
+                "-vf", "fps=30,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                       "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+                "-preset", "veryfast", "-tune", "zerolatency", "-bf", "0",
+                "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+                "-b:v", "4500k", "-maxrate", "4500k", "-bufsize", "9000k",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k",
+            ]
         self.encoder = EncoderProgress([
             "-fflags", "+genpts", *probe,
             "-protocol_whitelist", "pipe", "-f", "mpegts", "-i", "pipe:0",
-            "-map", "0:v:0", "-map", "0:a:0" if audio_required else "0:a:0?", "-c", "copy", "-rw_timeout", "6000000",
+            "-map", "0:v:0", "-map", "0:a:0" if audio_required else "0:a:0?", *codec, "-rw_timeout", "6000000",
             *tls, "-rtmp_playpath", key, "-f", "flv", "-flush_packets", "1", server,
         ], subprocess.PIPE)
         self.thread = Thread(target=self.feed, name="CuePorch RTMP destination", daemon=True)
@@ -355,7 +370,13 @@ class Program:
                 continue
             try:
                 key = self.cipher.decrypt(row["secret"]).decode("utf-8")
-                self.legs[uid] = Leg(row["server"], key, audio_required)
+                fields = row.keys()
+                linkedin = (("preset" in fields and row["preset"] == "linkedin")
+                            or ("provider" in fields and row["provider"] == "linkedin-live"))
+                if linkedin:
+                    self.legs[uid] = Leg(row["server"], key, audio_required, profile="linkedin-live")
+                else:
+                    self.legs[uid] = Leg(row["server"], key, audio_required)
                 self.status(uid, "connecting")
             except (InvalidToken, OSError, ValueError):
                 self.next_connect[uid] = now + RECONNECT_SECONDS
