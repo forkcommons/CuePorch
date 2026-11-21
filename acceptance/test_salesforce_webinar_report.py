@@ -12,6 +12,7 @@ import event_salesforce_registration
 import library_events
 import salesforce_outbound as delivery
 import test_salesforce_roster as roster
+import test_mailchimp_registration
 
 from event_media import Gateway, local_hls
 from test_salesforce_outbound import Provider, EMAIL, REVISION
@@ -41,6 +42,18 @@ def _description(object_name, field_specs):
 
 
 _OBJECT_SPECS = {
+    delivery.WEBINAR_POLL: [
+        (delivery.EXTERNAL_KEY, True),
+        ("Registrant__c", False),
+        ("Question__c", False),
+        ("Answer__c", False),
+    ],
+    delivery.WEBINAR_QA: [
+        (delivery.EXTERNAL_KEY, True),
+        ("Registrant__c", False),
+        ("Question__c", False),
+        ("Answer__c", False),
+    ],
     "Lead": [
         (delivery.LEAD_KEY, True),
         ("Email", False),
@@ -220,10 +233,10 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
                         directory, filename
                     ),
                 ):
-            self.play_fixture(app, opens)
+            self.play_fixture(app, headers, uid, opens)
         self.verify_report(client, headers, provider, uid, opens, url)
 
-    def play_fixture(self, app, opens):
+    def play_fixture(self, app, headers, uid, opens):
         server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietHandler)
         with service_worker(server), sync_playwright() as playwright, chromium(playwright) as browser:
             page = browser.new_page()
@@ -239,6 +252,7 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
                 "Submitted registration answers and captured campaign source details are included."
             )).to_be_visible()
             page.check("input[name=salesforce_consent]")
+            expect(page.get_by_text("plus my poll answers, named questions and upvotes on named questions")).to_be_visible()
             page.check("input[name=salesforce_engagement_consent]")
             page.click("form button[type=submit]")
             expect(page.locator("#eventStatus")).to_have_text("Live")
@@ -256,6 +270,12 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
                 and r.request.post_data_json.get("watched", 0) > 0
             ):
                 video.evaluate("video => video.pause()")
+            grant = page.locator("#eventLobby").get_attribute("data-viewer-grant")
+            assert grant
+            base = f"http://127.0.0.1:{server.server_port}"
+            test_mailchimp_registration.MailchimpRegistrationTest.record_browser_activity(
+                self, page, base, headers, uid, opens, grant, slug="salesforce-live-reporting"
+            )
 
     def verify_report(self, client, headers, provider, uid, opens, url):
         def receipt():
@@ -297,6 +317,7 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
         self.assertNotIn("PATCH", provider.outbound.writes)
 
 
+        provider.outbound.lost.add(delivery.WEBINAR_QA)
         provider.now = report_at + 1
         deadline = monotonic() + 8
         while "PATCH" not in provider.outbound.writes and monotonic() < deadline:
@@ -305,6 +326,34 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
         registrants = [record for (name, _), record in provider.outbound.objects.items() if name == delivery.REGISTRANT]
         (registrant,) = registrants
         assert registrant["Status__c"] == "Attended Live" and registrant["Watch_Percent__c"] == round(min(100, watched / 60))
+        actual = [
+            (
+                object_name,
+                record["Registrant__c"],
+                record["Question__c"],
+                record["Answer__c"],
+            )
+            for (object_name, _), record in provider.outbound.objects.items()
+            if object_name in (delivery.WEBINAR_QA, delivery.WEBINAR_POLL)
+        ]
+        self.assertCountEqual(
+            actual,
+            [
+                (delivery.WEBINAR_QA, registrant["Id"], "Can I screen this?", "Asked"),
+                (delivery.WEBINAR_QA, registrant["Id"], "Can I screen this?", "Upvoted"),
+                (delivery.WEBINAR_POLL, registrant["Id"], "Format?", "Film"),
+            ],
+        )
+        saved_writes = list(provider.outbound.writes)
+        provider.now = report_at + 1501
+        deadline = monotonic() + 8
+        while monotonic() < deadline:
+            if receipt()["engagement_states"].get("sent") == 1:
+                break
+            sleep(0.1)
+        else:
+            self.fail("timed out waiting for sent state after cutoff")
+        self.assertEqual(provider.outbound.writes, saved_writes)
         related_fields = [
             (record["Registrant__c"], record["Field_Name__c"], record["Field_Type__c"], record["Value__c"])
             for (name, _), record in provider.outbound.objects.items()

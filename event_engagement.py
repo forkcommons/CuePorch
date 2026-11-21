@@ -95,11 +95,11 @@ def activity_snapshot(con, job, completed_at):
         (sharing, event, opens, completed_at, ROW_LIMIT),
     ).fetchall()
 
-    upvotes = [
-        row[0].strip()
+    upvote_records = [
+        (row["id"], row["question"].strip(), "Upvoted")
         for row in con.execute(
             '''
-            SELECT q.question
+            SELECT q.id, q.question
             FROM live_event_shared_qa_vote AS sqv
             JOIN live_question AS q ON q.id = sqv.question
             JOIN live_question_vote AS v
@@ -118,15 +118,18 @@ def activity_snapshot(con, job, completed_at):
             ''',
             (sharing, event, opens, completed_at, completed_at, ROW_LIMIT),
         )
-        if row[0] is not None
+        if row["question"] is not None
     ]
     questions = []
+    question_records = []
     for row in question_rows:
         text = (row["question"] or "").strip()
         if text:
             questions.append(text)
+            question_records.append((row["id"], text, "Asked"))
 
     polls = []
+    poll_records = []
     for row in poll_rows:
         try:
             choices = json.loads(row["choices"])
@@ -144,14 +147,18 @@ def activity_snapshot(con, job, completed_at):
         answer = choices[index].strip()
         if question and answer:
             polls.append(f"{question}: {answer}")
+            poll_records.append((row["id"], question, answer))
 
     return {
         "attended_live": attended_live,
         "live_ms": live_ms,
         "replay_ms": replay_ms,
         "questions": questions,
-        "upvotes": upvotes,
+        "upvotes": [text for _, text, _ in upvote_records],
+        "upvote_records": upvote_records,
         "polls": polls,
+        "question_records": question_records,
+        "poll_records": poll_records,
     }
 
 def report(rows, filename):

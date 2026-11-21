@@ -1477,7 +1477,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return scope, active
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
-    def outbound_activity_sharing(con, scope, *, mailchimp_only=False):
+    def outbound_activity_sharing(con, scope, *, include_marketo=True):
         if not library_analytics.permitted():
             return None
 
@@ -1491,7 +1491,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if not admitted or not sharing:
             return None
 
-        if marketo_revision and not mailchimp_only:
+        salesforce_revision = event_salesforce_registration.connection_revision(con, salesforce)
+        if salesforce_revision:
+            matched = con.execute(
+                "SELECT 1 FROM live_event_salesforce_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='salesforce' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=? "
+                "AND json_extract(p.destination, '$.engagement_details')=1",
+                (sharing, salesforce_revision, *scope),
+            ).fetchone()
+            if matched:
+                return sharing
+        if marketo_revision and include_marketo:
             row = con.execute(
                 "SELECT 1 FROM live_event_marketo_engagement j "
                 "JOIN live_event_contact_plan p ON p.generation=j.generation "
@@ -1528,7 +1541,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         audience_chat,
         share_activity=outbound_activity_sharing,
         share_upvotes=lambda con, scope: outbound_activity_sharing(
-            con, scope, mailchimp_only=True
+            con, scope, include_marketo=False
         ),
     )
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
@@ -2218,6 +2231,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             salesforce_related_fields = False
             salesforce_consent = ""
             salesforce_engagement_consent = ""
+            salesforce_engagement_details = False
             mailchimp_consent = ""
             mailchimp_engagement_consent = ""
             mailchimp_plan = None
@@ -2235,6 +2249,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     salesforce_destination = json.loads(salesforce_plan["destination"])
                     salesforce_related_fields = salesforce_destination.get("related_fields") is True
                     if offer_sharing and salesforce_destination.get("engagement") is True:
+                        salesforce_engagement_details = salesforce_destination.get("engagement_details") is True
                         salesforce_engagement_scope = ["salesforce-engagement", scope, salesforce_plan["generation"]]
                         salesforce_engagement_consent = forms.dumps(salesforce_engagement_scope)
                 current = mailchimp.connection(con)
@@ -2471,6 +2486,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      salesforce_consent=salesforce_consent,
                                      salesforce_related_fields=salesforce_related_fields,
                                      salesforce_engagement_consent=salesforce_engagement_consent,
+                                     salesforce_engagement_details=salesforce_engagement_details,
                                      marketo_consent=marketo_consent,
                                      mailchimp_consent=mailchimp_consent,
                                      mailchimp_engagement_consent=mailchimp_engagement_consent,

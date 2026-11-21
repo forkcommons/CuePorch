@@ -4,6 +4,8 @@
         <members>CuePorch_Media__c</members>
         <members>CuePorch_Registrant__c</members>
         <members>CuePorch_Registration_Field__c</members>
+        <members>CuePorch_Webinar_Poll__c</members>
+        <members>CuePorch_Webinar_QA__c</members>
         <name>CustomObject</name>
     </types>
     <types>

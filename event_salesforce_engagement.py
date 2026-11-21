@@ -241,9 +241,9 @@ def scope(con, job, connection, validate, stop):
     if hit is None:
         abort(409)
 
-    return (plan["provider_revision"], dest["campaign"], hit["email"])
+    return (plan["provider_revision"], dest["campaign"], hit["email"], dest.get("engagement_details") is True)
 
-def payload(con, job, now):
+def payload(con, job, now, *, include_details=False):
     from event_engagement import activity_snapshot
 
     snap = activity_snapshot(con, job, now)
@@ -263,13 +263,17 @@ def payload(con, job, now):
     else:
         status = None
 
-    return {'status': status, 'watch_percent': watch_percent}
+    result = {'status': status, 'watch_percent': watch_percent}
+    if include_details:
+        result['poll_records'] = snap['poll_records']
+        result['question_records'] = snap['question_records'] + snap['upvote_records']
+    return result
 
 def deliver(tx, job, connection, validate, stop, clock):
     with tx() as con:
         expected = scope(con, job, connection, validate, stop)
-        fields = payload(con, job, clock())
-    revision, campaign, email = expected
+        revision, campaign, email, include_details = expected
+        fields = payload(con, job, clock(), include_details=include_details)
     def before_write():
         with tx() as fresh:
             if scope(fresh, job, connection, validate, stop) != expected:

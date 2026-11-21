@@ -65,7 +65,7 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
         cid = salesforce_crm.campaign(connection, revision, body.get("campaign"))["id"]
         related_fields = salesforce_registration_fields.configured(form)
         salesforce_outbound.validate_installation(
-            connection, revision, related_fields=related_fields)
+            connection, revision, related_fields=related_fields, engagement_details=engagement)
         if engagement:
             salesforce_outbound.validate_engagement_installation(connection, revision, kind='webinar')
 
@@ -78,6 +78,7 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
                 "campaign": cid,
                 "company": company,
                 "engagement": engagement,
+                "engagement_details": engagement,
                 "related_fields": bool(related_fields),
             }
             outbox.set_destination(

@@ -76,6 +76,8 @@ def _create_record(connection, revision, object_name, fields, before_write):
 MEDIA = "CuePorch_Media__c"
 REGISTRANT = "CuePorch_Registrant__c"
 REGISTRATION_FIELD = "CuePorch_Registration_Field__c"
+WEBINAR_POLL = "CuePorch_Webinar_Poll__c"
+WEBINAR_QA = "CuePorch_Webinar_QA__c"
 EXTERNAL_KEY = "External_Key__c"
 _ID_RE = "[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?"
 _KEY_RE = "[a-f0-9]{64}"
@@ -119,7 +121,7 @@ def _confirmed_record(record, key, expected, created_id=None):
 
 
 def ensure_record(connection, revision, object_name, key, fields, expected, before_write):
-    if object_name not in (MEDIA, REGISTRANT, REGISTRATION_FIELD) or not (isinstance(key, str) and re.fullmatch(_KEY_RE, key)):
+    if object_name not in (MEDIA, REGISTRANT, REGISTRATION_FIELD, WEBINAR_POLL, WEBINAR_QA) or not (isinstance(key, str) and re.fullmatch(_KEY_RE, key)):
         abort(502)
     path = "/sobjects/" + object_name + "/" + EXTERNAL_KEY + "/" + key
     record = _read_record(connection, revision, path)
@@ -175,7 +177,7 @@ def publish_registration(connection, revision, *, campaign, kind, title,
                       {"Registrant__c": registrant_id}, before_write)
     return "sent"
 
-def validate_installation(connection, revision, *, related_fields=False):
+def validate_installation(connection, revision, *, related_fields=False, engagement_details=False):
     expected = (
         ("Lead", LEAD_KEY, (LEAD_KEY, "Email", "Company", "LastName", "FirstName")),
         (MEDIA, EXTERNAL_KEY, (EXTERNAL_KEY, "Name", "Campaign__c", "Kind__c")),
@@ -185,6 +187,9 @@ def validate_installation(connection, revision, *, related_fields=False):
         expected += (
             (REGISTRATION_FIELD, EXTERNAL_KEY, (EXTERNAL_KEY, "Registrant__c", "Field_Name__c", "Field_Type__c", "Value__c")),
         )
+    if engagement_details:
+        fields = (EXTERNAL_KEY, "Registrant__c", "Question__c", "Answer__c")
+        expected += ((WEBINAR_POLL, EXTERNAL_KEY, fields), (WEBINAR_QA, EXTERNAL_KEY, fields))
     for object_name, unique_key, required_fields in expected:
         try:
             result = salesforce_crm._get(connection, revision, "/sobjects/" + object_name + "/describe")
@@ -317,6 +322,39 @@ def _existing_engagement_record(connection, revision, *, campaign, kind, source_
     record = _confirmed_record(record, registrar_key, expected)
     return record, registrant_path, registrar_key, expected
 
+def _write_engagement_details(connection, revision, record, registrar_key, poll_records, question_records, before_write):
+    engagement_sources = (
+        (WEBINAR_POLL, poll_records),
+        (WEBINAR_QA, question_records),
+    )
+
+    for object_name, records in engagement_sources:
+        for activity_id, question, answer in records:
+            external_key = sha256(
+                "\x00".join(
+                    str(value)
+                    for value in (object_name, registrar_key, activity_id, answer)
+                ).encode("utf-8")
+            ).hexdigest()
+
+            fields = {
+                "Registrant__c": record["Id"],
+                "Question__c": question,
+                "Answer__c": answer,
+            }
+            expected = {
+                "Registrant__c": record["Id"],
+            }
+
+            ensure_record(
+                connection,
+                revision,
+                object_name,
+                external_key,
+                fields,
+                expected,
+                before_write,
+            )
 def publish_engagement(
     connection,
     revision,
@@ -330,11 +368,13 @@ def publish_engagement(
     status=None,
     watch_percent=None,
     video_views=None,
+    poll_records=(),
+    question_records=(),
 ):
     if (
         kind not in ('video', 'webinar')
         or (kind == 'webinar' and video_views is not None)
-        or (kind == 'video' and status is not None)
+        or (kind == 'video' and (status is not None or poll_records or question_records))
     ):
         abort(422)
     existing = _existing_engagement_record(
@@ -355,6 +395,9 @@ def publish_engagement(
         watch_percent=watch_percent,
         video_views=video_views,
     )
+    _write_engagement_details(
+        connection, revision, record, key, poll_records, question_records, before_write
+    )
     if not changes:
         return 'sent'
     _patch_registrant(connection, revision, record['Id'], changes, before_write)
@@ -374,6 +417,7 @@ def publish_engagement(
     ):
         abort(502)
     return 'sent'
+
 
 def validate_engagement_installation(connection, revision, *, kind):
     required = {

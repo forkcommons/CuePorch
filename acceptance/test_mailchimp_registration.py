@@ -617,10 +617,10 @@ class MailchimpRegistrationTest(unittest.TestCase):
             assert status.status_code == 200, status.data
             assert status.get_json()["enabled"] is False
 
-    def record_browser_activity(self, attendee, base, auth, uid, opens, grant):
+    def record_browser_activity(self, attendee, base, auth, uid, opens, grant, *, slug="mailchimp-webinar"):
         root = base.rstrip("/")
         real_path = f"/api/live-events/{uid}/{opens}/engagement"
-        aud_path = f"/events/mailchimp-webinar/{opens}/engagement"
+        aud_path = f"/events/{slug}/{opens}/engagement"
 
         def _send(method, path, headers, body=None):
             kw = {"method": method, "headers": headers}
