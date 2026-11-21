@@ -423,6 +423,15 @@ class FacebookPublication(unittest.TestCase):
                                  api.get(skipped_path + "/facebook/auto?page=101", headers=auth).json())
                 restored_date = api.delete(skipped_path + "/facebook/auto", headers=auth, data={"page": "101"})
                 self.assertEqual(200, restored_date.status, restored_date.text())
+                queued_last = api.put(last_path + "/facebook/auto", headers=auth,
+                                      data={"page": "101", "series": True})
+                self.assertEqual(202, queued_last.status, queued_last.text())
+                self.assertEqual({"state": "queued", "series": True},
+                                 api.get(inherited_path + "/facebook/auto?page=101", headers=auth).json())
+                self.assertEqual({"state": "idle", "series": True, "restorable": True},
+                                 api.get(skipped_path + "/facebook/auto?page=101", headers=auth).json())
+                deleted_last = api.delete(last_path + "/facebook/auto", headers=auth, data={"page": "101"})
+                self.assertEqual(200, deleted_last.status, deleted_last.text())
                 with closing(sqlite3.connect(database)) as db:
                     db.executemany("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
                                    [(created["id"], int(date["id"])) for date in (inherited, skipped)])

@@ -1037,7 +1037,11 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     con.execute("""INSERT INTO facebook_live_series (event,page,revision,event_revision,after_opens,privacy)
                         VALUES(?,?,?,?,?,?)
                         ON CONFLICT(event,page) DO UPDATE SET revision=excluded.revision,
-                        event_revision=excluded.event_revision,after_opens=excluded.after_opens,
+                        event_revision=excluded.event_revision,
+                        after_opens=CASE
+                            WHEN revision=excluded.revision AND event_revision=excluded.event_revision AND privacy IS excluded.privacy
+                            THEN MIN(after_opens,excluded.after_opens)
+                            ELSE excluded.after_opens END,
                         privacy=excluded.privacy""",
                                 (uid, key[2], revision, event_revision, opens, privacy))
                 facebook_live_job.queue(con, key, revision, event_revision, privacy=privacy)
