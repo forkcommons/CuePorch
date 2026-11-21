@@ -482,6 +482,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         stop_hubspot()
         stop_hubspot_outbound()
         stop_marketo()
+        stop_marketo_sync()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -917,6 +918,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             seen.add(key)
         return dict(added=added, existing=existing, duplicates=duplicates, skipped=skipped)
 
+    def marketo_import_target(body, form):
+        list_id = body.get("list")
+        mapping = body.get("mapping", {})
+        if isinstance(list_id, bool) or not isinstance(list_id, int) or list_id <= 0:
+            abort(422)
+        if not isinstance(mapping, dict):
+            abort(422)
+        marketo_crm.static_list(marketo, list_id)
+        if mapping:
+            try:
+                mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
+            except ValueError:
+                abort(422)
+        return list_id, mapping
+
     @app.post("/api/live-events/<uid>/<int:opens>/registration/marketo")
     def import_marketo_registration(uid, opens):
         actor = staff()
@@ -924,22 +940,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
         if marketo is None:
             abort(404)
-        list_id = body.get("list")
-        mapping = body.get("mapping", {})
-        if isinstance(list_id, bool) or not isinstance(list_id, int) or list_id <= 0:
-            abort(422)
-        if not isinstance(mapping, dict):
-            abort(422)
+
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
             event_revision = row["revision"]
             form_revision = form["revision"]
-        marketo_crm.static_list(marketo, list_id)
-        if mapping:
-            try:
-                mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
-            except ValueError:
-                abort(422)
+        list_id, mapping = marketo_import_target(body, form)
         fields = [entry["name"] for entry in mapping.values()]
         members = marketo_crm.static_list_members(marketo, list_id, fields=fields)
         with tx() as con:
@@ -951,6 +957,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {result['added']} Marketo attendees")
         return private(dict(result, occurrence=opens))
 
+
     def validate_hubspot_plan(con, job):
         row, slot, form = registration_intake(con, job["event"], job["opens"])
         if (
@@ -960,6 +967,60 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409, "The event or registration form changed.")
         return row, slot, form
 
+
+    def authorize_marketo_sync(con, revision):
+        if marketo_revision is None or revision != marketo_revision:
+            abort(409)
+
+
+    def fetch_marketo_sync(job):
+        target = json.loads(job["segment"])
+        mapping = target["mapping"]
+        members = marketo_crm.static_list_members(
+            marketo,
+            target["list"],
+            fields=[entry["name"] for entry in mapping.values()],
+        )
+        return members, mapping
+
+
+    def apply_marketo_sync(con, job, members, mapping):
+        row, slot, form = validate_hubspot_plan(con, job)
+        result = enroll_marketo_members(
+            con,
+            row,
+            slot,
+            form,
+            members,
+            mapping,
+            source="marketo-scheduled",
+        )
+        if result["added"]:
+            note(
+                con,
+                job["actor"],
+                "live_event_attendees_imported",
+                job["event"],
+                f"{job['opens']}, {result['added']} Marketo attendees",
+            )
+        return dict(result, occurrence=job["opens"])
+
+    def marketo_sync_receipt(job):
+        receipt = event_hubspot_sync.receipt(job)
+        if job:
+            target = json.loads(receipt.pop("segment"))
+            receipt["list"] = target["list"]
+            receipt["mapping"] = {
+                key: descriptor["name"]
+                for key, descriptor in target["mapping"].items()
+            }
+            if job["connection"] != marketo_revision:
+                receipt.update(
+                    enabled=False,
+                    state="problem",
+                    problem="Marketo configuration changed. Enable synchronization again.",
+                )
+        return dict(receipt, available=marketo is not None)
 
     def apply_hubspot_plan(con, job, contacts, skipped, membership):
         row, slot, form = validate_hubspot_plan(con, job)
@@ -975,6 +1036,44 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 f"{job['opens']}, {len(contacts)} HubSpot contacts",
             )
         return dict(result, skipped=skipped, occurrence=job["opens"], removed=removed, restored=restored)
+
+    def save_marketo_sync(uid, opens, actor, body):
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+        list_id, mapping = marketo_import_target(body, form)
+        with tx() as con:
+            current_row, current_slot, current_form = registration_intake(con, uid, opens)
+            if current_row["revision"] != row["revision"] or current_form["revision"] != form["revision"]:
+                abort(409)
+            now = int(datetime.now(timezone.utc).timestamp())
+            closes = event_attendance.expires_at(current_slot)
+            if now >= min(closes, opens + 7200):
+                abort(409)
+            zone = json.loads(current_row["settings"])["schedule"]["timezone"]
+            first_due = max(now, event_hubspot_sync.local_midnight(opens, zone))
+            return event_hubspot_sync.set_sync(con, uid, opens, segment=json.dumps({"list": list_id, "mapping": mapping}), connection=marketo_revision, actor=actor, event_revision=current_row["revision"], form_revision=current_form["revision"], closes=closes, zone=zone, now=now, first_due=first_due, provider="marketo")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/marketo/sync", methods=["GET", "PUT", "DELETE"])
+    def schedule_marketo_registration(uid, opens):
+        actor = staff()
+        secure = secure_site(mail_origin)
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(marketo_sync_receipt(event_hubspot_sync.get(con, uid, opens, provider="marketo")))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_sync.remove(con, uid, opens, provider="marketo")
+            return private(marketo_sync_receipt(None))
+        if marketo is None:
+            abort(404)
+        return private(marketo_sync_receipt(save_marketo_sync(uid, opens, actor, body)))
 
     @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/sync", methods=["GET", "PUT", "DELETE"])
     def schedule_hubspot_registration(uid, opens):
@@ -1157,6 +1256,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     )
     stop_hubspot = event_hubspot_sync.start(
         app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
+    )
+    stop_marketo_sync = (
+        event_hubspot_sync.start(
+            app,
+            tx,
+            database,
+            marketo,
+            validate_hubspot_plan,
+            apply_marketo_sync,
+            provider="marketo",
+            fetch=fetch_marketo_sync,
+            authorize=authorize_marketo_sync,
+        )
+        if marketo is not None
+        else lambda: None
     )
     stop_hubspot_outbound = event_hubspot_outbound.start(
         app, tx, database, hubspot, validate_hubspot_plan,

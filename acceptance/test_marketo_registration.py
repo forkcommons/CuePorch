@@ -53,6 +53,18 @@ class MarketoBrowser(unittest.TestCase):
             cleanup.enter_context(
                 patch("marketo_crm.provider_request", provider.request)
             )
+            import event_hubspot_sync
+
+            original_start_sync = event_hubspot_sync.start
+
+            def start_sync(*args, **kwargs):
+                if kwargs.get("provider") == "marketo":
+                    kwargs["clock"] = lambda: getattr(
+                        provider, "sync_clock", time.time()
+                    )
+                return original_start_sync(*args, **kwargs)
+
+            cleanup.enter_context(patch.object(event_hubspot_sync, "start", start_sync))
             original_start_marketo = event_contact_delivery.start_marketo
             cleanup.enter_context(
                 patch.object(
@@ -86,11 +98,15 @@ class MarketoBrowser(unittest.TestCase):
                 while stops:
                     stops.pop()()
 
+            def restart():
+                stop_app()
+                start_app()
+
             cleanup.callback(stop_app)
             start_app()
             cleanup.enter_context(service_worker(service))
             with sync_playwright() as playwright, chromium(playwright) as browser:
-                self.exercise(browser, base, operator, provider)
+                self.exercise(browser, base, operator, provider, restart)
 
     def create_event(self, page, base, auth):
         start = datetime.now(timezone.utc) + timedelta(minutes=6)
@@ -135,7 +151,7 @@ class MarketoBrowser(unittest.TestCase):
         assert ru.ok
         return created
 
-    def exercise(self, browser, base, operator, provider):
+    def exercise(self, browser, base, operator, provider, restart):
         page = browser.new_page()
         page.add_init_script(
             "sessionStorage.setItem('cueporchOperator', %s)" % json.dumps(operator)
@@ -144,6 +160,10 @@ class MarketoBrowser(unittest.TestCase):
         created = self.create_event(page, base, auth)
         event_id, opens = created["id"], created["occurrences"][1]["id"]
         self.verify_static_list_import(page, base, auth, event_id, opens, provider)
+
+        self.verify_scheduled_import(
+            page, base, auth, event_id, opens, provider, restart
+        )
 
         page.goto(base + "/operator/live-events")
         page.get_by_role("button", name="Open production for Marketo rehearsal").nth(
@@ -174,6 +194,81 @@ class MarketoBrowser(unittest.TestCase):
             and receipt["mapping"]["field_genre"] == "favoriteGenre"
         )
         self.verify_delivery(page, base, auth, created, opens, outbound_url, provider)
+
+    def verify_scheduled_import(
+        self, page, base, auth, event_id, opens, provider, restart
+    ):
+        import contextlib
+
+        url = f"{base}/api/live-events/{event_id}/{opens}/registration/marketo/sync"
+        hdrs = {**auth, "Origin": base, "X-CuePorch-Integration": "1"}
+        midnight = int(
+            datetime.fromtimestamp(opens, timezone.utc)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
+        retry_at = midnight + 15
+
+        def get():
+            r = page.request.get(url, headers=hdrs)
+            assert r.ok, r.text()
+            return r.json()
+
+        def poll(pred):
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                j = get()
+                if pred(j):
+                    return j
+                time.sleep(0.1)
+            raise AssertionError(j)
+
+        provider.scheduled_member, provider.healthy_import = True, False
+        r = page.request.put(
+            url,
+            headers=hdrs,
+            data={"list": 7, "mapping": {"field_genre": "favoriteGenre"}},
+        )
+        assert r.ok, r.text()
+        b = r.json()
+        assert b["list"] == 7 and b["next_at"] == midnight
+
+        provider.sync_clock = midnight
+        poll(lambda j: j["state"] == "retry" and j["next_at"] == retry_at)
+        restart()
+        saved = get()
+        assert saved["state"] == "retry" and saved["next_at"] == retry_at
+
+        provider.healthy_import, provider.sync_clock = True, retry_at
+        r = poll(lambda j: j.get("last_at") == retry_at)
+        assert r["last_result"]["added"] == 1 and r["last_result"]["existing"] == 1
+
+        with contextlib.closing(sqlite3.connect(provider.database)) as c:
+            rows = c.execute(
+                "SELECT email, source FROM live_event_registrant WHERE event=? AND opens=?",
+                (event_id, opens),
+            ).fetchall()
+        assert ("scheduled@example.test", "marketo-scheduled") in rows
+
+        nxt = min(t for t in (opens - 3600, opens, opens + 900) if t > retry_at)
+        assert r["next_at"] == nxt
+
+        for tick in (opens - 3600, opens, opens + 900):
+            if tick > retry_at:
+                provider.sync_clock = tick
+                current = poll(lambda status: status.get("last_at") == tick)
+                assert (
+                    current["last_result"]["added"] == 0
+                    and current["last_result"]["existing"] == 2
+                )
+        assert current["next_at"] == opens + 1800
+
+        provider.sync_clock = opens + 50 * 60
+        poll(lambda j: j["state"] == "complete" and j["next_at"] is None)
+
+        d = page.request.delete(url, headers=hdrs, data={})
+        assert d.ok, d.text()
+        assert get()["state"] == "off"
 
     def verify_static_list_import(self, page, base, auth, event_id, opens, provider):
         from contextlib import closing
@@ -671,6 +766,16 @@ class MarketoProvider:
                 ),
                 dict(id=12, email="skipped@example.test", firstName="Sam"),
             ]
+            if getattr(self, "scheduled_member", False):
+                rows.append(
+                    {
+                        "id": 13,
+                        "email": "scheduled@example.test",
+                        "firstName": "Riley",
+                        "favoriteGenre": "Experimental",
+                    }
+                )
+
             nxt = None if getattr(self, "healthy_import", False) else "page2"
             return _resp(dict(success=True, result=rows, nextPageToken=nxt))
 
