@@ -25,6 +25,8 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import library_hubspot_media_events as media_events
+from browser_account_security import json_mutation, secure_site
 import library_video_questions
 import content_rating
 import media_bandwidth
@@ -330,7 +332,7 @@ def apply_settings(con, action, work, settings, password_hash):
 
 def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
              operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
-             questions_enabled):
+             questions_enabled, *, hubspot, hubspot_origins):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -554,6 +556,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 rating["session"] = rating_serializer.dumps(
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
+            hubspot_origin = None
+            if context and surface == "embed" and hubspot_origins:
+                if media_events.eligible(con, work, context[0], hubspot_origins, hubspot, permits):
+                    hubspot_origin = context[0]
             analytics = None
             if context:
                 analytics = analytics_serializer.dumps(
@@ -585,7 +591,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             descriptor_labels=content_rating.DESCRIPTORS,
                             panorama=panorama if panorama != "flat" else None,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
-                            presentation=presentation, poster=poster, rating=rating, analytics=analytics, questions=questions,
+                            presentation=presentation, poster=poster, rating=rating, analytics=analytics, hubspot_origin=hubspot_origin, questions=questions,
                             share=share_paths(uid, row)["watch"], registration=registration_view,
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
@@ -718,6 +724,41 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if video_version_key(work) != version:
                 abort(404)
             return library_ratings.rate(con, work, nonce, mode, body.get("score"))
+
+    @app.route("/viewer-analytics/<session>/hubspot", methods=["PUT", "POST", "DELETE"])
+    def viewer_hubspot_analytics(session):
+        if not hubspot_origins:
+            abort(404)
+        try:
+            token, version, surface, nonce, *context = analytics_serializer.loads(session, max_age=14400)
+        except (BadSignature, ValueError):
+            abort(404)
+        if not context:
+            abort(404)
+        if surface != "embed":
+            abort(404)
+        source = context[0][0]
+        if source not in hubspot_origins:
+            abort(404)
+        request.max_content_length = 65536
+        body = json_mutation(secure_site(team_origin), "X-CuePorch-HubSpot-View")
+        with tx() as con:
+            if request.method == "DELETE" or not library_analytics.permitted():
+                media_events.withdraw(con, nonce)
+                return "", 403 if request.method == "PUT" else 204
+            work, _, _, _ = authorized_playback(con, token)
+            if video_version_key(work) != version:
+                abort(404)
+            catalog = media_events.eligible(con, work, source, hubspot_origins, hubspot, permits)
+            if not catalog:
+                abort(404)
+            if request.method == "PUT":
+                media_events.enable(con, hubspot, nonce, work, version, catalog, source, body, time.time())
+            elif request.method == "POST":
+                duration_ms = round((work.get("duration_seconds") or 0) * 1000)
+                seq, intervals, played = media_events.sample_fields(body, duration_ms)
+                media_events.observe(con, nonce, seq, intervals, duration_ms, played, time.time(), action)
+            return "", 204
 
     @app.post("/viewer-analytics/<session>")
     def viewer_analytics(session):

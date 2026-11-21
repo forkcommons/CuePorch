@@ -15,6 +15,12 @@ hs cms upload integrations/hubspot/cueporch-email.module cueporch-media/cueporch
 
 Add the appropriate module in HubSpot's page or email editor. In its video field, select **Media integration** and choose the CuePorch content. [HubSpot module examples](https://github.com/HubSpot/cms-media-bridge) · [HubSpot CMS CLI commands](https://developers.hubspot.com/changelog/october-2025-developer-rollup)
 
+## Share named playback with HubSpot
+
+Set `CUEPORCH_HUBSPOT_CMS_ORIGINS` to the exact HTTPS origins of your published HubSpot pages, separated by commas. Include the scheme and host. Leave the setting empty to disable named playback. Enable HubSpot consent on the publisher page. After the viewer grants analytics consent and selects **Share my playback with this publisher in HubSpot**, CuePorch can send a play and 0%, 25%, 50%, 75%, and 100% progress events for the eligible video. CuePorch honors browser privacy signals. Turning sharing off cancels pending sends for that view.
+
+Delivery is automatic by default. Turn on **Event engagement sync** approval in CuePorch to hold events for operator review.
+
 ## Verification
 
 A simulated HubSpot field and template context rendered both source modules. A headless browser played the page module on a separate origin and exercised the email link and poster markup. CuePorch still checks playback permissions at its own origin. HubSpot editor import and preview await a configured tenant.

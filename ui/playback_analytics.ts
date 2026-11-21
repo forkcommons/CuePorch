@@ -1,7 +1,7 @@
 import {browserIdentity} from "./browser_analytics.js";
 
 // Keep observations for one media item across playlist changes.
-export function playbackObservation(endpoint: string, anonymous = false) {
+export function playbackObservation(endpoint: string, anonymous = false, hubspot = false) {
   const viewer = anonymous ? undefined : browserIdentity();
   let sequence = 0;
   let played = false;
@@ -14,13 +14,14 @@ export function playbackObservation(endpoint: string, anonymous = false) {
   return (video: HTMLVideoElement, resume = false) => {
     const controller = new AbortController();
     const listeners = {signal: controller.signal};
-    let started = resume && (!video.paused || video.played.length > 0);
+    let started = resume && (!video.paused || (!hubspot && video.played.length > 0));
     played ||= started;
-    completed ||= resume && video.ended;
+    completed ||= resume && !hubspot && video.ended;
     let position = video.currentTime;
     let last = performance.now();
     let lastSent = 0;
     let switching = false;
+    const freshIntervals: [number, number][] = [];
     const textTracks = Array.from(video.querySelectorAll("track"));
     let audio = audioKey();
     let caption = captionKey();
@@ -41,6 +42,18 @@ export function playbackObservation(endpoint: string, anonymous = false) {
       const expected = (now - last) / 1000 * Math.abs(video.playbackRate) + .25;
       if (started && !switching && !video.seeking && delta > 0 && delta <= expected) {
         watched += delta;
+        if (hubspot) {
+          const begin = Math.round(position * 1000);
+          const end = Math.round(video.currentTime * 1000);
+          if (end > begin) {
+            const previous = freshIntervals[freshIntervals.length - 1];
+            if (previous && begin >= previous[0] && begin <= previous[1]) {
+              previous[1] = Math.max(previous[1], end);
+            } else if (freshIntervals.length < 512) {
+              freshIntervals.push([begin, end]);
+            }
+          }
+        }
         if (caption !== "unknown") captionTime.set(caption, (captionTime.get(caption) ?? 0) + delta);
         const key = `${audio}|${caption}`;
         const pair = trackTime.get(key);
@@ -55,8 +68,8 @@ export function playbackObservation(endpoint: string, anonymous = false) {
 
     function coveredIntervals() {
       const playedIntervals = video.played;
-      const fragments = [...previousIntervals];
-      for (let i = 0; started && i < Math.min(playedIntervals.length, 512); i++) {
+      const fragments = [...previousIntervals, ...freshIntervals];
+      for (let i = 0; !hubspot && started && i < Math.min(playedIntervals.length, 512); i++) {
         const start = Math.round(playedIntervals.start(i) * 1000);
         const end = Math.round(playedIntervals.end(i) * 1000);
         if (end > start) fragments.push([start, end]);
@@ -79,7 +92,7 @@ export function playbackObservation(endpoint: string, anonymous = false) {
       void fetch(endpoint, {
         method: "POST",
         keepalive: body.length < 60_000,
-        headers: {"Content-Type": "application/json"},
+        headers: {"Content-Type": "application/json", ...(hubspot ? {"X-CuePorch-HubSpot-View": "1"} : {})},
         body,
       }).catch(() => {});
     }
@@ -113,8 +126,8 @@ export function playbackObservation(endpoint: string, anonymous = false) {
     window.addEventListener("pagehide", () => { sample(); if (started) send(); }, listeners);
     send();
 
-    return () => {
-      if (started) {
+    return (report = true) => {
+      if (started && report) {
         sample();
         previousIntervals = coveredIntervals();
         send();

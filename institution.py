@@ -68,6 +68,7 @@ import library_folder_privacy
 import library_folders
 import library_hubspot_bridge
 import library_hubspot_folders
+import library_hubspot_media_events
 import library_file_links
 import folder_slack
 import library_languages
@@ -211,6 +212,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_events.SCHEMA
             + library_hubspot_bridge.SCHEMA
             + library_hubspot_folders.SCHEMA
+            + library_hubspot_media_events.SCHEMA
             + event_api.SCHEMA
             + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
@@ -835,7 +837,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 if step == event_hubspot_engagement.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
-                            SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued')""", (step,))
+                            SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued'
+                            UNION SELECT action FROM library_hubspot_media_event WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1384,6 +1387,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     analytics_reports.register(app, tx, staff, read_library_works)
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
+    hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor, hubspot)
@@ -1402,7 +1406,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
                                                sharing_access, hubspot)
-    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner)
+    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner, hubspot_origins=hubspot_origins)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,
                                 can_edit, action, sharing_access, enforce_sharing)
@@ -1413,6 +1417,8 @@ def create_app(root, database, operator, institution, simulation=None):
         vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
         operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
         questions_enabled,
+        hubspot=hubspot,
+        hubspot_origins=hubspot_origins,
     )
 
     @app.get("/api/library")

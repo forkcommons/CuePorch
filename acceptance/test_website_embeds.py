@@ -25,6 +25,7 @@ class BridgeProvider:
     def __init__(self):
         self.record = None
         self.creates = 0
+        self.events = []
         self.updates = 0
         self.archives = 0
 
@@ -37,6 +38,35 @@ class BridgeProvider:
         r._content = json.dumps(data).encode("utf-8") if data is not None else b""
         r._content_consumed = True
         return r
+
+    def event(self, url, body):
+        kind = url.rsplit("/", 1)[-1]
+        base = {
+            "mediaType",
+            "occurredTimestamp",
+            "sessionId",
+            "externalId",
+            "pageId",
+            "contactUtk",
+        }
+        if kind == "media-played":
+            assert set(body.keys()) == base | {"state"}
+        elif kind == "media-played-percent":
+            assert set(body.keys()) == base | {"playedPercent"}
+        else:
+            raise AssertionError("unexpected kind: %r" % (kind,))
+        assert body["mediaType"] == "VIDEO"
+        assert body["pageId"] == 4321
+        assert body["contactUtk"] == "a" * 32
+        assert body["externalId"] == self.record["properties"]["hs_external_id"]
+        if kind == "media-played":
+            assert body["state"] == "STARTED"
+        else:
+            assert body["playedPercent"] in (0, 25, 50, 75, 100)
+        self.events.append((kind, body))
+        return self.response(
+            200, {"sessionId": body["sessionId"], "mediaType": "VIDEO"}
+        )
 
     def request(self, method, url, **kwargs):
         method = method.upper()
@@ -56,6 +86,11 @@ class BridgeProvider:
 
         headers = kwargs.get("headers") or {}
         assert headers.get("Authorization") == "Bearer bridge-access"
+        if method == "POST" and url in (
+            "https://api.hubapi.com/media-bridge/2026-09/events/media-played",
+            "https://api.hubapi.com/media-bridge/2026-09/events/media-played-percent",
+        ):
+            return self.event(url, kwargs["json"])
 
         if method == "POST" and url == base + "/search":
             body = kwargs.get("json") or {}
@@ -196,6 +231,7 @@ class WebsiteEmbeds(unittest.TestCase):
                         "CUEPORCH_HUBSPOT_CLIENT_ID": "bridge-client",
                         "CUEPORCH_HUBSPOT_CLIENT_SECRET": "bridge-secret",
                         "CUEPORCH_HUBSPOT_MEDIA_TYPE": "a123_Videos",
+                        "CUEPORCH_HUBSPOT_CMS_ORIGINS": consumer_url,
                     },
                 )
             )
@@ -479,7 +515,7 @@ class WebsiteEmbeds(unittest.TestCase):
         template = env.from_string(
             (module_dir / "module.html").read_text(encoding="utf-8")
         )
-        return template.render(module=module)
+        return template.render(module=module, content={"id": 4321})
 
     def verify_hubspot_email(self, page, payload):
         from playwright.sync_api import expect
@@ -526,6 +562,125 @@ class WebsiteEmbeds(unittest.TestCase):
         )
         page.set_content(html_blank)
         expect(page.get_by_role("link")).to_have_count(0)
+
+    def render_named_campaign(self, payload):
+        from pathlib import Path
+
+        module_path = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "hubspot"
+            / "cueporch-video.module"
+            / "module.js"
+        )
+        compiled_js = module_path.read_text(encoding="utf-8")
+
+        bootstrap = (
+            "<script>"
+            "window._hsp=[];"
+            "window.testHubSpotConsent=(allowed)=>{"
+            "for(const [event,call] of window._hsp){"
+            'if(event==="addPrivacyConsentListener")'
+            "call({categories:{analytics:allowed}});"
+            "}"
+            "};"
+            'document.cookie="hubspotutk="+("a".repeat(32))+"; path=/; SameSite=Lax";'
+            "</script>"
+        )
+
+        return (
+            bootstrap
+            + self.render_hubspot_module("cueporch-video.module", payload)
+            + "<script>"
+            + compiled_js
+            + "</script>"
+        )
+
+    def verify_named_media(self, page, video, base, h, bridge):
+        from playwright.sync_api import expect
+
+        checkbox = page.get_by_role(
+            "checkbox",
+            name="Share my playback with this publisher in HubSpot",
+            exact=True,
+        )
+        expect(checkbox).to_be_hidden()
+        assert bridge.events == []
+        resp = page.request.put(
+            base + "/api/policy/event_engagement_sync",
+            headers=h,
+            data={"required": True},
+        )
+        assert resp.ok
+        video.evaluate("e => { e.pause(); e.currentTime = 0; }")
+        page.evaluate("window.testHubSpotConsent(true)")
+        checkbox.check()
+        expect(page.get_by_text("Playback sharing active.", exact=True)).to_be_visible()
+        video.evaluate("e => e.play()")
+        expect(video).to_have_js_property("ended", True, timeout=15000)
+        assert bridge.events == []
+        resp = page.request.put(
+            base + "/api/policy/event_engagement_sync",
+            headers=h,
+            data={"required": False},
+        )
+        assert resp.ok
+        self.expect_named_receipts(page, bridge)
+        self.verify_named_withdrawal(page, base, h, bridge)
+
+    def verify_named_withdrawal(self, page, base, h, bridge):
+        cb = page.get_by_role("checkbox", name="Share my playback with this publisher")
+        cb.uncheck()
+        page.get_by_text("Playback sharing stopped.", exact=True).wait_for()
+        page.reload()
+        video = page.frame_locator("iframe").locator("video")
+        video.evaluate("v => { v.muted = true; }")
+        r = page.request.put(
+            base + "/api/policy/event_engagement_sync",
+            headers=h,
+            data={"required": True},
+        )
+        assert r.ok
+        page.evaluate("window.testHubSpotConsent(true)")
+        cb = page.get_by_role("checkbox", name="Share my playback with this publisher")
+        cb.check()
+        page.get_by_text("Playback sharing active.", exact=True).wait_for()
+        with page.expect_response(
+            lambda resp: (
+                resp.request.method == "POST"
+                and resp.url.endswith("/hubspot")
+                and resp.status == 204
+            )
+        ) as resp_info:
+            video.evaluate("v => { v.play(); }")
+        assert resp_info.value.status == 204
+        page.evaluate("window.testHubSpotConsent(false)")
+        page.wait_for_function(
+            """() => { const cb = document.querySelector('input[type="checkbox"]'); return document.body.innerText.includes('Playback sharing stopped.') || !cb || cb.closest('label')?.hidden; }"""
+        )
+        r = page.request.put(
+            base + "/api/policy/event_engagement_sync",
+            headers=h,
+            data={"required": False},
+        )
+        assert r.ok
+        assert len(bridge.events) == 6
+
+    def expect_named_receipts(self, page, bridge):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(bridge.events) < 6:
+            page.wait_for_timeout(100)
+        diag = [(kind, body.get("playedPercent")) for kind, body in bridge.events]
+        assert len(bridge.events) == 6, diag
+        first_kind, first_body = bridge.events[0]
+        assert first_kind == "media-played"
+        assert first_body.get("state") == "STARTED"
+        rest = bridge.events[1:]
+        assert all(kind == "media-played-percent" for kind, _ in rest)
+        assert [body.get("playedPercent") for _, body in rest] == [0, 25, 50, 75, 100]
+        assert len({body.get("sessionId") for _, body in bridge.events}) == 1
+        stamps = [body.get("occurredTimestamp") for _, body in bridge.events]
+        assert stamps == sorted(stamps)
 
     def exercise(self, browser, base, consumer_url, consumer, operator, clip, bridge):
         import json
@@ -581,7 +736,7 @@ class WebsiteEmbeds(unittest.TestCase):
         )
         assert m.status == 404
         self.verify_hubspot_email(page, dj)
-        consumer["code"] = self.render_hubspot_module("cueporch-video.module", dj)
+        consumer["code"] = self.render_named_campaign(dj)
         page.goto(consumer_url)
         v = page.frame_locator("iframe").locator("video")
         expect(v).to_be_visible()
@@ -590,6 +745,7 @@ class WebsiteEmbeds(unittest.TestCase):
         t0 = v.evaluate("e => e.currentTime")
         page.wait_for_timeout(500)
         assert v.evaluate("e => e.currentTime") > t0
+        self.verify_named_media(page, v, base, h, bridge)
 
         old_src = v.evaluate("e => e.currentSrc || e.src")
         old_media = None if old_src.startswith("blob:") else old_src

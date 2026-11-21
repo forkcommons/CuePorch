@@ -408,7 +408,17 @@ def scan_one(tx, consult, clock):
     return True
 
 
-def start(app, tx, database, connection, consult, *, clock=None, reconcile=None):
+def start(
+    app,
+    tx,
+    database,
+    connection,
+    consult,
+    *,
+    clock=None,
+    reconcile=None,
+    analytics=None,
+):
     from threading import Event, Thread
     from time import time
     from filelock import FileLock, Timeout
@@ -426,6 +436,8 @@ def start(app, tx, database, connection, consult, *, clock=None, reconcile=None)
                     if run_one(tx, connection, consult, stop, clock) or scan_one(
                         tx, consult, clock
                     ):
+                        continue
+                    if analytics is not None and analytics(stop, clock):
                         continue
                 stop.wait(1)
             except Timeout:
@@ -464,10 +476,12 @@ def register(
     enforce_sharing,
     *,
     credential_owner,
+    hubspot_origins,
 ):
     from flask import request, abort
     import hubspot_media_bridge as bridge
     import library_hubspot_folders as folders
+    import library_hubspot_media_events as media_events
     from browser_account_security import (
         private,
         secure_site,
@@ -602,6 +616,13 @@ def register(
             connection,
             worker_consult,
             reconcile=reconcile_folder,
+            analytics=(
+                lambda stop, clock: media_events.run_one(
+                    tx, connection, hubspot_origins, permits, read_works, stop, clock
+                )
+            )
+            if hubspot_origins
+            else None,
         )
         if configured
         else (lambda: None)

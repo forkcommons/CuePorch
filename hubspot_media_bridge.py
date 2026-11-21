@@ -117,3 +117,25 @@ def archive_object(connection, revision, media_type, remote_id, *, before_write)
             return None
         hubspot_crm.check_provider(response)
         abort(502)
+
+
+def send_media_event(connection, revision, kind, payload, *, before_write):
+    """POST a media-bridge event for the given kind and verify the echoed session."""
+    if kind not in ("media-played", "media-played-percent"):
+        abort(400)
+
+    url = f"{hubspot_crm.ORIGIN}/media-bridge/2026-09/events/{kind}"
+
+    before_write()
+
+    with connection.api(revision, "POST", url, json=payload) as response:
+        if response.status_code == 200:
+            body = hubspot_crm.response_object(response)
+            if body.get("sessionId") != payload.get("sessionId") or body.get(
+                "mediaType"
+            ) != payload.get("mediaType"):
+                abort(502)
+            return None
+
+        hubspot_crm.check_provider(response)
+        abort(502)
