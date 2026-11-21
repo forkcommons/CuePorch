@@ -18,6 +18,7 @@ from browser_account_security import is_loopback
 import folder_slack_queue
 import library_analytics
 import library_details
+import library_mailchimp_forms
 import library_peer_handoff
 import library_privacy as privacy
 import library_registration
@@ -268,6 +269,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 con.execute("DELETE FROM video_showcase WHERE id=?", (uid,))
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
                 con.execute("DELETE FROM viewer_registrant WHERE kind='showcase' AND subject=?", (uid,))
+                library_mailchimp_forms.stop(con,"showcase",uid)
                 return "", 204
             if request.method == "POST":
                 new_id = uuid.uuid4().hex
@@ -422,7 +424,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     admitted, sign_on, form_error = library_registration.admit(con, "showcase", row["id"], form, scope)
                 if form and not admitted:
                     form_token = registration.dumps(scope)
-                    registration_view = library_registration.presentation(con, form, sign_on)
+                    registration_view = library_registration.presentation(con, form, sign_on, mailchimp_target=("showcase", row["id"], scope))
                 logo = brand_image(con, values["logo"])
                 if not form_token:
                     feature_image = brand_image(con, values["feature_image"])

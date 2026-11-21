@@ -76,6 +76,10 @@
     <label><input type="checkbox" name="hubspot_consent" value="{{ hubspot_consent }}">
       Share my email address and name with the organizer in HubSpot for this event.</label>
     {% endif %}
+    {% set delivery_consent = registration.mailchimp_form_consent %}
+    {% if delivery_consent %}
+        <label><input type="checkbox" name="mailchimp_form_consent" value="{{ delivery_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
+    {% endif %}
     {% if mailchimp_consent %}
     <label><input type="checkbox" name="mailchimp_consent" value="{{ mailchimp_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
     {% endif %}

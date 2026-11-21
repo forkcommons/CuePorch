@@ -571,7 +571,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if duration and start >= duration:
                 start = 0
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
-            registration_view = library_registration.presentation(con, form, sign_on) if form_token else None
+            registration_view = library_registration.presentation(con, form, sign_on, mailchimp_target=("video", uid, enrollment_scope)) if form_token else None
         oembed_discovery = (
             library_embed.oembed_url(team_origin, uid)
             if not embed and mode == "public" and settings["embed"] == "anywhere"

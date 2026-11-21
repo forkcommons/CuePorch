@@ -276,13 +276,13 @@ def deliver_marketo(tx, job, connection, revision, validate, stop, clock):
     return "sent"
 
 
-def _run_one(tx, provider, deliver, stop, clock):
+def run_job(tx, select, deliver, finish, stop, clock):
     from werkzeug.exceptions import HTTPException
 
     if stop.is_set():
         return False
     with tx() as con:
-        job = next_job(con, provider, int(clock()))
+        job = select(con, int(clock()))
     if job is None:
         return False
     attempts, due = job["attempts"] + 1, None
@@ -304,12 +304,25 @@ def _run_one(tx, provider, deliver, stop, clock):
     except (ValueError, KeyError):
         state = "problem"
     with tx() as con:
+        finish(con, job["id"], state, due, attempts)
+    return True
+
+
+def _run_one(tx, provider, deliver, stop, clock):
+    def finish(con, job_id, state, due, attempts):
         con.execute(
             "UPDATE live_event_contact_delivery SET state=?, due=?, attempts=? "
             "WHERE id=? AND state='queued'",
-            (state, due, attempts, job["id"]),
+            (state, due, attempts, job_id),
         )
-    return True
+    return run_job(
+        tx,
+        lambda con, ts: next_job(con, provider, ts),
+        deliver,
+        finish,
+        stop,
+        clock,
+    )
 
 
 def run_one_marketo(tx, connection, revision, validate, stop, clock):

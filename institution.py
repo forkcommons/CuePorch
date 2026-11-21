@@ -86,6 +86,7 @@ import library_trash
 import library_upload
 import hubspot_crm
 import mailchimp_crm
+import library_mailchimp_forms
 import marketo_crm
 import event_hubspot_outbound
 import event_contact_delivery
@@ -211,6 +212,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
+            + library_mailchimp_forms.SCHEMA
             + registration_return.SCHEMA
             + library_events.SCHEMA
             + library_hubspot_bridge.SCHEMA
@@ -838,6 +840,7 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM live_event_hubspot_delivery WHERE state='queued'
+                            UNION SELECT id FROM library_mailchimp_form_delivery WHERE state='queued'
                             UNION SELECT id FROM live_event_contact_delivery WHERE state='queued')""", (step,))
                 if step == event_hubspot_engagement.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
@@ -1394,6 +1397,23 @@ def create_app(root, database, operator, institution, simulation=None):
     analytics_reports.register(app, tx, staff, read_library_works)
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
     mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
+    def active_mailchimp_form(con, kind, uid):
+        if kind == "showcase":
+            library_showcases.get_showcase(con, uid)
+        elif kind == "video":
+            item = next((i for i in read_library_works() if i.get("id") == uid), None)
+            if item is None:
+                abort(404)
+            if item.get("asset_type", "video") != "video":
+                abort(404)
+            if library_privacy.blocked(con, uid):
+                abort(404)
+        else:
+            abort(404)
+        return library_registration.active(con, kind, uid)
+    app.extensions["mailchimp_form_consent"] = library_mailchimp_forms.Consent(mailchimp, action, operator)
+    library_mailchimp_forms.register_routes(app, tx, staff, team_origin, mailchimp, active_mailchimp_form)
+    app.extensions["stop_mailchimp_forms"] = library_mailchimp_forms.start(app, tx, database, mailchimp, active_mailchimp_form)
     marketo = marketo_crm.configured_connection()
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

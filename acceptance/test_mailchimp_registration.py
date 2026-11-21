@@ -716,3 +716,232 @@ class MailchimpRegistrationTest(unittest.TestCase):
             "polls": "Format?: Film",
         }
         assert {key: sent["properties"][key] for key in expected} == expected
+
+    def test_mailchimp_embedded_video_and_showcase_forms(self):
+        self.run_rehearsal(BrowserRegistrationProvider(), self.exercise_library_forms)
+
+    def exercise_library_forms(self, app, operator, provider):
+        from io import BytesIO
+        import subprocess
+        from uuid import uuid4
+
+        client = app.test_client()
+        auth = {"Authorization": "Bearer " + operator, "X-CuePorch-Integration": "1"}
+
+        fixture_dir = Path(provider.database).parent
+        fixture = fixture_dir / "fixture.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=320x180:rate=24",
+                "-t",
+                "1",
+                "-c:v",
+                "libx264",
+                str(fixture),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        mp4 = fixture.read_bytes()
+
+        def upload():
+            resp = client.post(
+                "/api/library/uploads",
+                headers=auth,
+                content_type="multipart/form-data",
+                data={
+                    "file": (BytesIO(mp4), "fixture.mp4"),
+                    "upload_id": str(uuid4()),
+                    "privacy": json.dumps(
+                        {"visibility": "public", "embed": "anywhere"}
+                    ),
+                },
+            )
+            assert resp.status_code in (200, 201), resp.data
+            return resp.get_json()["id"]
+
+        video = upload()
+        member = upload()
+
+        resp = client.post("/api/showcases", headers=auth, json={})
+        assert resp.status_code in (200, 201), resp.data
+        sid = resp.get_json()["id"]
+        current = client.get(f"/api/showcases/{sid}", headers=auth).get_json()
+        settings = current["settings"] | {
+            "title": "Station arts",
+            "visibility": "public",
+            "videos": [member],
+        }
+        resp = client.put(
+            f"/api/showcases/{sid}",
+            headers=auth,
+            json={
+                "slug": "mailchimp-gallery",
+                "revision": current["revision"],
+                "settings": settings,
+            },
+        )
+        assert resp.status_code in (200, 201), resp.data
+
+        field = {
+            "id": "field_genre",
+            "type": "select",
+            "label": "Genre",
+            "required": True,
+            "options": ["Documentary", "Experimental"],
+        }
+
+        def enable_form(path, destinations):
+            cur = client.get(path, headers=auth).get_json()
+            body = {
+                "revision": cur["revision"],
+                "settings": cur["settings"] | {"enabled": True, "fields": [field]},
+            }
+            resp = client.put(path, headers=auth, json=body)
+            assert resp.status_code in (200, 201), resp.data
+            resp = client.put(
+                f"{path}/mailchimp/outbound",
+                headers=auth,
+                json={"destinations": destinations},
+            )
+            assert resp.status_code in (200, 201), resp.data
+            rec = client.get(f"{path}/mailchimp/outbound", headers=auth).get_json()
+            assert rec["enabled"] is True
+            assert [d["audience"] for d in rec["destinations"]] == [
+                d["audience"] for d in destinations
+            ]
+
+        work_path = f"/api/library/work/{video}/registration"
+        show_path = f"/api/showcases/{sid}/registration"
+        enable_form(
+            work_path,
+            [
+                {"audience": "listsafe1", "mapping": {"field_genre": "GENRE"}},
+                {"audience": "listsafe2", "mapping": {"field_genre": "GENRE"}},
+            ],
+        )
+        enable_form(
+            show_path,
+            [
+                {"audience": "listsafe2", "mapping": {"field_genre": "GENRE"}},
+            ],
+        )
+
+        def hidden_value(text, name):
+            for tag in re.findall(r"<input[^>]*>", text):
+                if f'name="{name}"' in tag:
+                    match = re.search(r'value="([^"]+)"', tag)
+                    if match:
+                        return html.unescape(match.group(1))
+            raise AssertionError(f"missing {name}")
+
+        def viewer(path, headers=None):
+            resp = client.get(path, headers=headers)
+            assert resp.status_code == 200, resp.data
+            return resp.get_data(as_text=True)
+
+        def form_data(enrollment, consent, email, genre="Documentary"):
+            data = {
+                "enrollment": enrollment,
+                "email": email,
+                "first_name": "Test",
+                "last_name": "Viewer",
+                "field_genre": genre,
+            }
+            if consent is not False:
+                data["mailchimp_form_consent"] = consent
+            return data
+
+        def wait_receipt(path, audiences, states=None, timeout=10):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                rec = client.get(f"{path}/mailchimp/outbound", headers=auth).get_json()
+                dests = rec.get("destinations", [])
+                if (
+                    len(dests) == len(audiences)
+                    and [d.get("audience") for d in dests] == audiences
+                ):
+                    if all(d.get("states") == (states or {"sent": 1}) for d in dests):
+                        return rec
+                time.sleep(0.1)
+            raise AssertionError(f"timeout for {path}")
+
+        iframe_headers = {"Sec-Fetch-Dest": "iframe"}
+        embed_path = f"/embed/work/{video}"
+        embed_html = viewer(embed_path, iframe_headers)
+        enrollment = hidden_value(embed_html, "enrollment")
+        consent = hidden_value(embed_html, "mailchimp_form_consent")
+
+        no_consent_email = f"video-no-{time.time_ns()}@example.com"
+        resp = client.post(
+            embed_path,
+            data=form_data(enrollment, False, no_consent_email),
+            headers=iframe_headers,
+        )
+        assert "<video" in resp.get_data(as_text=True)
+        assert len(provider.writes) == 0
+
+        video_email = f"video-{time.time_ns()}@example.com"
+        resp = client.post(
+            embed_path,
+            data=form_data(enrollment, consent, video_email),
+            headers=iframe_headers,
+        )
+        assert resp.status_code in (200, 201, 302), resp.data
+        wait_receipt(work_path, ["listsafe1", "listsafe2"])
+        duplicate = client.post(
+            embed_path,
+            data=form_data(enrollment, consent, video_email),
+            headers=iframe_headers,
+        )
+        assert duplicate.status_code == 200
+        wait_receipt(work_path, ["listsafe1", "listsafe2"])
+
+        show_html = viewer("/showcases/mailchimp-gallery")
+        show_enrollment = hidden_value(show_html, "enrollment")
+        show_consent = hidden_value(show_html, "mailchimp_form_consent")
+        resp = client.post(
+            "/showcases/mailchimp-gallery",
+            data=form_data(show_enrollment, consent, no_consent_email),
+        )
+        assert resp.status_code == 200
+        assert (
+            client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()[
+                "destinations"
+            ][0]["states"]
+            == {}
+        )
+        show_email = f"show-{time.time_ns()}@example.com"
+
+        resp = client.put(
+            "/api/policy/event_contact_sync", headers=auth, json={"required": True}
+        )
+        assert resp.status_code in (200, 201), resp.data
+        resp = client.post(
+            "/showcases/mailchimp-gallery",
+            data=form_data(show_enrollment, show_consent, show_email),
+        )
+        assert resp.status_code in (200, 201, 302), resp.data
+        rec = client.get(f"{show_path}/mailchimp/outbound", headers=auth).get_json()
+        assert any(d.get("states") == {"waiting": 1} for d in rec["destinations"])
+
+        resp = client.put(
+            "/api/policy/event_contact_sync", headers=auth, json={"required": False}
+        )
+        assert resp.status_code in (200, 201), resp.data
+        wait_receipt(show_path, ["listsafe2"])
+
+        writes = sorted(provider.writes, key=lambda w: w["email_address"])
+        assert [w["email_address"] for w in writes] == sorted(
+            [video_email, video_email, show_email]
+        )
+        assert all(w["status_if_new"] == "pending" for w in writes)
+        assert all(w["merge_fields"] == {"GENRE": "Documentary"} for w in writes)

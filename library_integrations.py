@@ -24,6 +24,7 @@ import facebook_upload
 import google_meet_recordings
 import hubspot_crm
 import mailchimp_crm
+import library_mailchimp_forms
 import marketo_crm
 import linkedin_upload
 import mail_relay
@@ -520,7 +521,9 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
         elif provider == "mailchimp":
-            cleanup = event_mailchimp_registration.disconnect
+            def cleanup(con):
+                event_mailchimp_registration.disconnect(con)
+                library_mailchimp_forms.disconnect(con)
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)
