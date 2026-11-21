@@ -5,6 +5,66 @@ import constant_contact_crm as contact
 from test_marketo_connection import _resp
 
 
+_U1 = "11111111-1111-1111-1111-111111111111"
+_U2 = "22222222-2222-2222-2222-222222222222"
+
+
+class WorkspaceProvider:
+    def __init__(self, redirect_uri):
+        self.redirect_uri = redirect_uri
+        self.exchanges = 0
+        self.refreshes = 0
+        self.reads = 0
+
+    def request(self, method, url, **kwargs):
+        if method == "POST" and url == contact.OAUTH.token_url:
+            assert kwargs.get("auth") == ("cid", "sec")
+            p = kwargs.get("params") or {}
+            if p["grant_type"] == "authorization_code":
+                assert p == {
+                    "grant_type": "authorization_code",
+                    "code": "fixture-code",
+                    "redirect_uri": self.redirect_uri,
+                }
+                self.exchanges += 1
+                a, r = "fixture-a1", "fixture-r1"
+            else:
+                assert p == {
+                    "grant_type": "refresh_token",
+                    "refresh_token": "fixture-r1",
+                }
+                self.refreshes += 1
+                a, r = "fixture-a2", "fixture-r2"
+            return _resp({
+                "access_token": a,
+                "refresh_token": r,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": contact.OAUTH.scope,
+            })
+        if method == "GET" and url == contact.API_BASE + "/contact_lists":
+            self.reads += 1
+            h = (kwargs.get("headers") or {}).get("Authorization")
+            if h == "Bearer fixture-a1":
+                resp = _resp({})
+                resp.status_code = 401
+                resp._content_consumed = True
+                return resp
+            assert h == "Bearer fixture-a2"
+            p = kwargs.get("params") or {}
+            if p == {"limit": 50, "status": "active", "channel_type": "email"}:
+                return _resp({
+                    "lists": [{"list_id": _U1, "name": "Station audience"}],
+                    "_links": {"next": {"href": "/v3/contact_lists?cursor=next-1"}},
+                })
+            assert p == {"cursor": "next-1"}
+            return _resp({
+                "lists": [{"list_id": _U2, "name": "Arts audience"}],
+                "_links": {},
+            })
+        raise AssertionError(f"unexpected request {method} {url}")
+
+
 class TestConstantContactConnection(unittest.TestCase):
     def test_token_exchange(self):
         tok1 = {"access_token": "a1", "refresh_token": "r1", "expires_in": 3600,
@@ -110,3 +170,120 @@ class TestConstantContactConnection(unittest.TestCase):
         with self.assertRaises(BadGateway):
             contact.contact_lists(connection, "rev")
         self.assertEqual(3, connection.api.call_count)
+
+    def test_workspace_connection_in_browser(self):
+        from contextlib import ExitStack, closing
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        import sqlite3
+        import json
+        import os
+        from institution import create_app
+        from browser import chromium
+        from playwright.sync_api import sync_playwright
+        from test_drive_import import QuietHandler, service_worker
+        from werkzeug.serving import make_server
+
+        with ExitStack() as stack:
+            root = Path(stack.enter_context(TemporaryDirectory()))
+            database = root / "station.sqlite3"
+            (root / "manifest.json").write_text(json.dumps({"institution": "station", "schema": 1, "works": []}))
+            stack.enter_context(patch.dict(os.environ, {
+                "CUEPORCH_PUBLIC_URL": "",
+                "CUEPORCH_CONSTANT_CONTACT_CLIENT_ID": "cid",
+                "CUEPORCH_CONSTANT_CONTACT_CLIENT_SECRET": "sec",
+            }))
+            stack.enter_context(patch("institution.library_worker.start", return_value=lambda: None))
+            provider = WorkspaceProvider("")
+            stack.enter_context(patch.object(workspace_oauth, "provider_request", side_effect=provider.request))
+            operator = "t" * 48
+            (root / "objects").mkdir()
+            app = create_app(root, database, operator, "station")
+            for name, stop in app.extensions.items():
+                if name.startswith("stop_") and callable(stop):
+                    stack.callback(stop)
+            server = make_server("127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True)
+            base = f"http://127.0.0.1:{server.server_port}"
+            provider.redirect_uri = base + "/integration/oauth/constant-contact/callback"
+            with service_worker(server), sync_playwright() as pw, chromium(pw) as browser:
+                page = browser.new_page()
+                callback_url = self.authorize_workspace(page, base, operator, provider)
+                with closing(sqlite3.connect(str(database))) as conn:
+                    row = conn.execute(
+                        "SELECT token FROM workspace_integration_connection WHERE provider = ?",
+                        ("constant-contact",),
+                    ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertIsInstance(row[0], bytes)
+                self.assertNotIn(b"fixture-a1", row[0])
+                self.verify_connected_workspace(page, base, operator, provider, callback_url)
+                with closing(sqlite3.connect(str(database))) as conn:
+                    row = conn.execute(
+                        "SELECT token FROM workspace_integration_connection WHERE provider = ?",
+                        ("constant-contact",),
+                    ).fetchone()
+                self.assertIsNone(row)
+
+    def authorize_workspace(self, page, base, operator, provider):
+        import json
+        from urllib.parse import parse_qs, urlencode, urlsplit
+        from playwright.sync_api import expect
+
+        page.add_init_script("sessionStorage.setItem('cueporchOperator', " + json.dumps(operator) + ")")
+
+        callback_url = None
+
+        def authorize(route):
+            nonlocal callback_url
+            params = parse_qs(urlsplit(route.request.url).query)
+            assert params["redirect_uri"][0] == provider.redirect_uri
+            assert params["scope"][0] == contact.OAUTH.scope
+            assert params["client_id"][0] == "cid"
+            assert params.get("response_type", [None])[0] == "code"
+            state = params["state"][0]
+            callback_url = provider.redirect_uri + "?" + urlencode({"state": state, "code": "fixture-code"})
+            route.fulfill(status=302, headers={"location": callback_url})
+
+        page.route(contact.OAUTH.authorization_url + "**", authorize)
+
+        page.goto(base + "/operator/integrations")
+        page.get_by_role("button", name="Connect Constant Contact", exact=True).click()
+        expect(page.get_by_role("button", name="Disconnect Constant Contact", exact=True)).to_be_visible()
+
+        assert callback_url is not None
+        return callback_url
+
+    def verify_connected_workspace(self, page, base, operator, provider, callback_url):
+        from playwright.sync_api import expect
+
+        root = base + "/api/integrations/constant-contact/lists"
+        auth = {"Authorization": "Bearer " + operator}
+
+        response = page.request.get(root)
+        self.assertEqual(response.status, 403)
+        first_response = page.request.get(root, headers=auth)
+        self.assertEqual(first_response.status, 200)
+        first_json = first_response.json()
+        self.assertEqual(first_json["lists"][0]["name"], "Station audience")
+        self.assertEqual(first_json["next_cursor"], "next-1")
+        second_response = page.request.get(root, headers=auth, params={"cursor": "next-1"})
+        self.assertEqual(second_response.status, 200)
+        second_json = second_response.json()
+        self.assertEqual(second_json["lists"][0]["name"], "Arts audience")
+        self.assertEqual(second_json["next_cursor"], None)
+        self.assertEqual((provider.exchanges, provider.refreshes, provider.reads), (1, 1, 3))
+        response = page.request.get(callback_url)
+        self.assertEqual(response.status, 403)
+
+        card = page.locator("#integrationList li").filter(
+            has=page.get_by_role("heading", name="Constant Contact", exact=True)
+        )
+        expect(card.get_by_text("Browse videos")).to_have_count(0)
+
+        card.get_by_role("button", name="Disconnect Constant Contact").click()
+        expect(page.get_by_role("button", name="Connect Constant Contact")).to_be_visible()
+
+        reads = provider.reads
+        response = page.request.get(root, headers=auth)
+        self.assertEqual(response.status, 409)
+        self.assertEqual(provider.reads, reads)

@@ -167,7 +167,7 @@ function render() {
                     library.textContent = "Choose a video in Library";
                     card.append(library);
                 }
-                else if (item.id !== "mailchimp")
+                else if (item.category !== "Marketing")
                     card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
             }
             card.append(button(`Disconnect ${item.name}`, async () => {
