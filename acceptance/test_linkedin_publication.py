@@ -588,7 +588,7 @@ class LinkedInPublication(unittest.TestCase):
 
                 starts_later = starts + timedelta(days=1)
                 catalog_time.append(int(starts_later.timestamp()) * 1000)
-                schedule = dict(timezone="UTC", repeat="none",
+                schedule = dict(timezone="UTC", repeat="days", count=2,
                                 start=starts_later.strftime("%Y-%m-%dT%H:%M"),
                                 end=(starts_later + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"))
                 existing_event = event | dict(title="Pick an existing LinkedIn event", slug="existing-linkedin", schedule=schedule)
@@ -601,7 +601,7 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual(409, api.post(selected_path, headers=auth, data={"id": "3456", "start": 0}).status)
                 page.goto(base + "/operator/live-events")
                 page.get_by_role("button", name="Open production for Pick an existing LinkedIn event",
-                                 exact=False).click()
+                                 exact=False).first.click()
                 page.get_by_text("Simulcast destinations", exact=True).click()
                 page.get_by_role("button", name="Load existing LinkedIn events", exact=True).click()
                 options = page.get_by_role("combobox", name="Existing LinkedIn event", exact=True)
@@ -612,6 +612,11 @@ class LinkedInPublication(unittest.TestCase):
                 page.get_by_role("button", name="Use existing LinkedIn event", exact=True).click()
                 expect(page.locator("#linkedinLivePost")).to_have_attribute(
                     "href", "https://www.linkedin.com/feed/update/urn:li:ugcPost:7654/")
+                later_series = (f"{base}/api/live-events/{item['id']}/{item['occurrences'][1]['id']}"
+                                "/destinations/linkedin/series")
+                self.assertEqual({"active": True, "inherited": True, "skipped": False},
+                                 api.get(later_series, headers=auth).json())
+                self.assertTrue(api.delete(later_series, headers=auth, data={"date": False}).ok)
                 repeat_choice = api.post(selected_path, headers=auth, data={"id": "3456", "start": 15})
                 self.assertEqual(200, repeat_choice.status, repeat_choice.text())
                 self.assertIs(repeat_choice.json()["auto_prepare"], True)

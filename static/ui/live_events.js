@@ -83,6 +83,8 @@ const youtubeSeriesLabel = element("youtubeSeriesLabel");
 const youtubeSeriesInput = element("youtubeSeries");
 const youtubeSeriesSkip = button("youtubeSeriesSkip");
 const youtubeSeriesStop = button("youtubeSeriesStop");
+const youtubeAddSeriesLabel = element("youtubeAddSeriesLabel");
+const youtubeAddSeries = element("youtubeAddSeries");
 let youtubeNext = null;
 const facebookForm = element("addFacebookLiveDestination");
 const facebookPage = element("facebookLivePage");
@@ -363,6 +365,8 @@ function choose(event, instance) {
     youtubeMore.hidden = true;
     youtubeStatus.textContent = "";
     youtubeSubmit.disabled = true;
+    youtubeAddSeriesLabel.hidden = event.event.schedule.repeat === "none";
+    youtubeAddSeries.checked = false;
     youtubeCreate.reset();
     youtubeCreateButton.textContent = "Create YouTube broadcast";
     youtubeSeriesLabel.hidden = event.event.schedule.repeat === "none";
@@ -1088,9 +1092,10 @@ youtubeForm.onsubmit = event => {
     if (!selected?.dataset.channel)
         return;
     void action(async () => {
-        await request(mediaPath("destinations/youtube"), "POST", { broadcast: selected.value, channel: selected.dataset.channel });
+        await request(mediaPath("destinations/youtube"), "POST", { broadcast: selected.value, channel: selected.dataset.channel, series: !youtubeAddSeriesLabel.hidden && youtubeAddSeries.checked });
         youtubeStatus.textContent = "YouTube destination added.";
         await refreshDestinations();
+        await refreshYouTubeSeries();
     });
 };
 youtubeCreate.onsubmit = event => {
@@ -1360,7 +1365,11 @@ existingLinkedinChoose.onclick = () => void action(async () => {
         return;
     const result = await request(mediaPath(`destinations/${linkedinProvider()}/existing`), "POST", {
         id: option.value, start: Number(option.dataset.start), auto_prepare: linkedinAutomaticDelivery.checked,
+        series: !linkedinSeriesLabel.hidden && linkedinSeries.checked,
     });
+    if (selection !== active || revision !== linkedinAccountRevision)
+        return;
+    await refreshLinkedinSeries();
     if (selection !== active || revision !== linkedinAccountRevision)
         return;
     const urn = result.post_urn ?? "";
