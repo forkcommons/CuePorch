@@ -4,6 +4,7 @@ import { privateSettings } from "./library_privacy.js";
 import type { BrandKit, BrandKits } from "./brand_kits.js";
 import {showTimelineCard, type CardClip} from "./timeline_templates.js";
 import { createTimelineGraphicPreview, mountTimelineGraphics, type TimelineGraphic, type GraphicAsset } from "./timeline_graphics.js";
+import { mountTimelineStock, type StockRights } from "./timeline_stock.js";
 
 interface MediaClip { work: string; cut: string; start: number; end: number }
 type Clip = (MediaClip | CardClip) & {graphic?: TimelineGraphic};
@@ -14,7 +15,7 @@ interface Music { work: string; cut?: string; start: number; gain: number }
 interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null; brand?: BrandKit | null }
 interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
 interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null }
-interface Media { id: string; title: string; asset_type?: string; folder: string | null }
+interface Media { id: string; title: string; asset_type?: string; folder: string | null; stock_asset?: StockRights | null }
 interface Cue { start: number; end: number; text: string }
 
 const node = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -609,6 +610,25 @@ async function open() {
   if (project.job) showJob(project.job, true);
   void loadTimelineTemplates();
   void loadTimelineGraphics();
+  void mountTimelineStock({
+    items: () => [...media.values()],
+    credential: () => key.value,
+    folder: () => "",
+    refresh: async () => {
+      const items = await call<Media[]>("/api/library");
+      media = new Map(items.map(item => [item.id, item]));
+      listSources();
+      select("timelineMusic").replaceChildren(
+        new Option("None", ""),
+        ...items.filter(item => item.asset_type === "audio").map(item => new Option(item.title, item.id)),
+      );
+      paint();
+    },
+    use: async item => {
+      if (item.asset_type === "audio") change({ ...state, music: { work: item.id, start: 0, gain: 25 } });
+      else await appendClip(item.id);
+    },
+  });
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value) run(open);

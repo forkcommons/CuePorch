@@ -79,6 +79,8 @@ def import_collection(source, destination):
                 "asset_type",
                 "source_creator",
                 "source_upload_sha256",
+                "stock_asset",
+                "source_upload_stock",
             ):
                 if field in row:
                     record[field] = row[field]

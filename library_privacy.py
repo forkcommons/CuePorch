@@ -30,6 +30,7 @@ import library_hubspot_media_events as media_events
 from browser_account_security import json_mutation, secure_site
 import library_video_questions
 import content_rating
+import stock_assets
 import media_bandwidth
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
@@ -593,6 +594,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             creator=creator,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
                             audio_tracks=library_audio.tracks_for(work) if can_watch else [],
+                            stock_credits=stock_assets.public_credits(work) if can_watch else [],
                             audio_labels=library_audio.KINDS,
                             wrong_password=locked and request.method == "POST",
                             unlock_token=unlock_token, details=None if embed else details, start=start,

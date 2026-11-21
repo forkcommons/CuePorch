@@ -30,6 +30,9 @@ class TimelineTemplates(unittest.TestCase):
     def test_graphics(self):
         self.run_fixture(check_timeline_graphics)
 
+    def test_stock(self):
+        self.run_fixture(check_timeline_stock)
+
     def run_fixture(self, check):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory())) / "collection"
@@ -287,3 +290,201 @@ def check_timeline_graphics(page, base, auth, uid, root):
 
     rgb = avg(1.0, 640, 360)
     assert rgb[2] > 180 and rgb[0] < 80 and rgb[1] < 80, rgb
+
+
+def check_timeline_stock(page, base, auth, uid, root):
+    import subprocess
+
+    wave_path = root.parent / "wave.wav"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=1",
+            "-ac", "2", "-ar", "44100",
+            str(wave_path),
+        ],
+        check=True,
+    )
+
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    page.get_by_text("Add a licensed file").click()
+    page.locator("#timelineStockFile").set_input_files(str(wave_path))
+    page.locator("#timelineStockUploadCategory").fill("Music")
+    page.locator("#timelineStockUploadMood").fill("Calm")
+    page.locator("#timelineStockUploadGenre").fill("Ambient")
+    page.locator("#timelineStockLicense").select_option("CC-BY-4.0")
+    page.locator("#timelineStockAuthor").fill("Studio Fixture")
+    page.locator("#timelineStockSource").fill("https://example.test/fixture")
+    page.locator("#timelineStockUploadButton").click()
+    expect(page.locator("#timelineStockCredit")).to_contain_text("Studio Fixture")
+
+    page.locator("#timelineStockKind").select_option("audio")
+    page.locator("#timelineStockMood").select_option("Calm")
+    chosen_asset = page.locator("#timelineStockAsset").input_value()
+    page.locator("#timelineStockUse").click()
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+
+    resp = requests.get(f"{base}/api/library/work/{uid}/timeline", headers=auth, timeout=15)
+    resp.raise_for_status()
+    payload = resp.json()
+    assert payload["settings"]["music"]["work"] == chosen_asset
+
+    page.locator("#renderTimeline").click()
+    expect(page.locator("#timelineStatus")).to_have_text("New version saved.", timeout=60000)
+
+    check_stock_output(base, auth, uid, root)
+
+    editing = requests.get(
+        f"{base}/api/library/work/{uid}/editing",
+        headers=auth,
+        timeout=15,
+    ).json()
+    key = editing["version"]
+    trim = requests.post(
+        f"{base}/api/library/work/{uid}/editing/trim",
+        headers=auth,
+        json=dict(version=key, start=0, end=700),
+        timeout=30,
+    )
+    trim.raise_for_status()
+    check_stock_output(base, auth, uid, root)
+
+    response = requests.put(
+        base + f"/api/library/work/{uid}/privacy",
+        headers=auth,
+        json=dict(visibility="public", embed="anywhere", domains=[], download=True),
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    page.goto(base + f"/watch/work/{uid}")
+    page.get_by_text("Media credits", exact=True).click()
+
+    details = page.locator("details").filter(has_text="Media credits")
+    expect(details).to_contain_text("Studio Fixture")
+    expect(details.get_by_role("link", name="Source")).to_have_attribute(
+        "href", "https://example.test/fixture"
+    )
+    expect(details.get_by_role("link", name="License")).to_have_attribute(
+        "href", "https://creativecommons.org/licenses/by/4.0/"
+    )
+
+    check_stock_upload_validation(base, auth, root.parent / "blue.mp4")
+
+
+def check_stock_output(base, auth, uid, root):
+    root = Path(root)
+
+    manifest_path = root / "manifest.json"
+    assert manifest_path.exists(), "manifest.json missing"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    works = manifest.get("works") or []
+
+    local_work = None
+    for w in works:
+        if w.get("id") == uid:
+            local_work = w
+            break
+    assert local_work is not None, f"uid {uid} not present in local manifest"
+
+    editor_assets = local_work.get("editor_assets") or []
+    stock = [a for a in editor_assets if a.get("source") == "cueporch-stock"]
+    assert len(stock) == 1, "expected exactly one cueporch-stock editor_asset"
+    asset = stock[0]
+    assert asset.get("credit") == "Studio Fixture", f"unexpected credit: {asset.get('credit')!r}"
+    assert asset.get("license") == "CC-BY-4.0", f"unexpected license: {asset.get('license')!r}"
+    assert asset.get("source_url") == "https://example.test/fixture", (
+        f"unexpected source_url: {asset.get('source_url')!r}"
+    )
+    assert not asset.get("permission_note"), f"unexpected permission_note: {asset.get('permission_note')!r}"
+
+    files = local_work.get("files") or []
+    orig_files = [f for f in files if f.get("role") == "original"]
+    play_files = [f for f in files if f.get("role") == "playback"]
+    assert orig_files, "missing original file"
+    assert play_files, "missing playback file"
+
+    for f in files:
+        role = f.get("role")
+        sha = f.get("sha256")
+        assert role in ("original", "playback"), f"unexpected role: {role!r}"
+        assert sha, f"missing sha256 for role {role}"
+        path = root / "objects" / sha
+        assert path.exists(), f"missing {role} object: {sha}"
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", str(path)],
+            capture_output=True,
+        )
+        text = proc.stderr.decode("utf-8", errors="replace")
+        assert "Credit: Studio Fixture" in text, f"missing credit comment in {role} {sha}"
+
+    orig_sha = orig_files[0]["sha256"]
+    orig_path = root / "objects" / orig_sha
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-i", str(orig_path),
+            "-t", "0.2", "-f", "s16le", "-ac", "1", "-ar", "44100", "pipe:1",
+        ],
+        capture_output=True,
+    )
+    decoded = proc.stdout
+    assert decoded, "ffmpeg produced no decoded audio from original"
+    assert any(b != 0 for b in decoded), "decoded audio has zero energy"
+
+    with TemporaryDirectory() as tmp:
+        target = Path(tmp) / "stock-export"
+        assert not target.resolve().is_relative_to(root.resolve()), (
+            "temporary target unexpectedly inside root"
+        )
+        export(root, root.parent / "workspace.sqlite", target)
+        exported_manifest_path = target / "collection" / "manifest.json"
+        assert exported_manifest_path.exists(), (
+            "export did not produce collection/manifest.json"
+        )
+        exported = json.loads(exported_manifest_path.read_text(encoding="utf-8"))
+        exported_work = None
+        for w in exported.get("works") or []:
+            if w.get("id") == uid:
+                exported_work = w
+                break
+        assert exported_work is not None, f"exported manifest missing uid {uid}"
+
+        local_file_sig = sorted((f.get("role"), f.get("sha256")) for f in files)
+        export_file_sig = sorted(
+            (f.get("role"), f.get("sha256")) for f in (exported_work.get("files") or [])
+        )
+        assert local_file_sig == export_file_sig, "exported files do not match local files"
+
+        local_asset_sig = sorted(
+            (a.get("source"), a.get("credit"), a.get("license"), a.get("source_url"))
+            for a in editor_assets
+        )
+        export_asset_sig = sorted(
+            (a.get("source"), a.get("credit"), a.get("license"), a.get("source_url"))
+            for a in (exported_work.get("editor_assets") or [])
+        )
+        assert local_asset_sig == export_asset_sig, "exported editor_assets do not match"
+
+
+def check_stock_upload_validation(base, auth, clip):
+    identity = str(uuid.uuid4())
+    def post(identity, metadata):
+        return requests.post(base+"/api/library/uploads",headers=auth, files={"file":(clip.name,clip.read_bytes(),"video/mp4")},data={"upload_id":identity,"stock_asset":json.dumps(metadata)},timeout=20)
+    valid = {"category":"Fixture","credit":"Station Fixture","license":"permission","permission_note":"private-note-fixture"}
+    r = post(identity, valid)
+    assert r.status_code == 201
+    asset_id = r.json()["id"]
+    assert post(identity, valid).status_code == 200
+    assert post(identity, {**valid, "credit":"Changed Credit"}).status_code == 409
+    assert post(str(uuid.uuid4()), {**valid, "license":["permission"]}).status_code == 422
+    cc = {"category":"Fixture","credit":"Station Fixture","license":"CC-BY-4.0"}
+    assert post(str(uuid.uuid4()), cc).status_code == 422
+    assert post(str(uuid.uuid4()), {**cc, "source_url":"javascript:alert(1)"}).status_code == 422
+    library = requests.get(base+"/api/library", headers=auth, timeout=20).json()
+    records = library.get("items", library) if isinstance(library, dict) else library
+    record = next(item for item in records if item["id"] == asset_id)
+    stock = record["stock_asset"]
+    if isinstance(stock, str):
+        stock = json.loads(stock)
+    assert "permission_note" not in stock

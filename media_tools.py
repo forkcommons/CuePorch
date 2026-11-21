@@ -33,7 +33,7 @@ def run_media(args, timeout=None, stopping=None):
                 process.communicate()
 
 
-def prepare_screening(source, target, input_format=None, *, interval=None, full_resolution=False, stopping=None):
+def prepare_screening(source, target, input_format=None, *, interval=None, full_resolution=False, stopping=None, credit_metadata=None):
     decoder = ["-f", input_format] if input_format else []
     clip = []
     if interval is not None:
@@ -49,13 +49,14 @@ def prepare_screening(source, target, input_format=None, *, interval=None, full_
             *decoder,
             "-i",
             str(source),
+            *(["-protocol_whitelist", "file,pipe", "-f", "ffmetadata", "-i", str(credit_metadata)] if credit_metadata else []),
             *clip,
             "-map",
             "0:V:0",
             "-map",
             "0:a:0?",
             "-map_metadata",
-            "-1",
+            "1" if credit_metadata else "-1",
             "-vf",
             f"scale=w='trunc({width}/2)*2':h=-2" if full_resolution else "scale=w='min(1280,iw)':h=-2",
             "-c:v",

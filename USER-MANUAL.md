@@ -300,6 +300,8 @@ In **Timeline editor**, browse 35 original presets by category, search, or shape
 
 Select a timeline clip, then open **Graphics** to search or filter the built-in options. Choose a graphic and set its color, position and text where supported. Apply or clear the graphic and check the preview. A clip can have one optional graphic. CuePorch autosaves the draft, and you can use **Undo** before choosing **Render as a new version**. The portable export records the built-in graphics used in each rendered version.
 
+**Licensed stock intake** in **Timeline editor** lets you search by category, type, mood, or genre and upload video or audio privately to your shelf. Add a stock item with its license details such as CC0 1.0, CC BY 4.0 with a source link, or recorded permission with a note. A video adds a clip to the timeline and an audio item sets the background source. CuePorch retains the source and credit in the render and export and displays viewer credits where available.
+
 ### Record Studio
 
 Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background.

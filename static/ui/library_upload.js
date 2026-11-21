@@ -20,13 +20,15 @@ export async function readUploadPrivacy(folder, load) {
     }
     return { ...privateSettings, ...await (await load("/api/library/upload-defaults")).json() };
 }
-export function uploadLibraryFile(file, id, folder, credential, options, progress, endpoint = "/api/library/uploads") {
+export function uploadLibraryFile(file, id, folder, credential, options, progress, endpoint = "/api/library/uploads", stockAsset) {
     const data = new FormData();
     data.set("file", file);
     data.set("upload_id", id);
     data.set("folder", folder);
     if (options)
         data.set("privacy", JSON.stringify(options));
+    if (stockAsset)
+        data.set("stock_asset", JSON.stringify(stockAsset));
     return new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
         request.upload.onprogress = (event) => {

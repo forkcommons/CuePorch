@@ -93,6 +93,10 @@
     {% if options.api %}<script type="module" src="/static/ui/embedded_video.js"></script>{% endif %}
     {% if audio_tracks and (not appearance or appearance.audio_tracks) %}<script type="module" src="/static/ui/archive_audio.js"></script>{% endif %}
     {% if download %}<p><a data-audio-download href="{{ url_for('shared_video', token=token, download=1) }}">Download video</a></p>{% endif %}
+    {% if stock_credits %}<details><summary>Media credits</summary><ul>
+      {% for asset in stock_credits %}<li>{{ asset.title }}{% if asset.credit %} — {{ asset.credit }}{% endif %}{% if asset.source_url %} <a href="{{ asset.source_url }}">Source</a>{% endif %}{% if asset.license_url %} <a href="{{ asset.license_url }}">License</a>{% elif asset.license %} {{ asset.license }}{% endif %}{% if asset.modified %} Adapted in this video{% endif %}</li>
+      {% endfor %}
+    </ul></details>{% endif %}
     {% if details %}
       {% if details.description and (not appearance or appearance.description) %}<p>{{ details.description }}</p>{% endif %}
       {% if details.rating == 'mature' %}

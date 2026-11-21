@@ -19,6 +19,7 @@ from library_interactivity import readable_chapters
 from library_languages import save_blob, tracks_for, track_language
 from library_timeline import find_cut, SIZES, video_source
 from media_tools import prepare_screening
+from stock_assets import stock_credit, write_credit_metadata
 import subtitles
 import timeline_cards
 import timeline_graphics
@@ -127,18 +128,25 @@ def register(app, tx, staff, get_work, root, remember_work):
             source_work = get_work(con, item["work"])
             sources.append((item, source_work, find_cut(source_work, item["cut"])))
         music = render_input["music"]
+        music_credit = None
         if music:
-            source = find_cut(get_work(con, music["work"]), music["cut"])
+            music_work = get_work(con, music["work"])
+            source = find_cut(music_work, music["cut"])
+            music_credit = stock_credit(music_work, source)
             asset = next(file for file in source["files"] if file["role"] == "original")
             music = Music(root / "objects" / asset["sha256"], music["start"], music["gain"])
-        return render_input, sources, music
+        source_credits = tuple(
+            None if cut is None else stock_credit(source_work, cut)
+            for _, source_work, cut in sources
+        )
+        return render_input, sources, music, (source_credits, music_credit)
 
     def process(job):
         with tx() as con:
             loaded = load_job(con, job)
         if isinstance(loaded, str):
             return loaded
-        settings, sources, music = loaded
+        settings, sources, music, attribution = loaded
         with TemporaryDirectory(dir=root / "objects", prefix="timeline-") as name:
             scratch = Path(name)
             clips = []
@@ -157,23 +165,33 @@ def register(app, tx, staff, get_work, root, remember_work):
                     file, info = video_source(root, cut)
                     clips.append(Clip(file, item["start"], item["end"], bool(info["audio"]),
                                       graphic=str(graphic_path) if graphic_path else None))
-            original, screening = scratch / "timeline.mp4", scratch / "screening.mp4"
-            duration = render(original, clips, SIZES[settings["ratio"]], settings["color"], music, stopping)
-            prepare_screening(original, screening, stopping=stopping)
-            captions, chapters = combined_attachments(root, sources)
+            source_credits, music_credit = attribution
             editor_assets = []
             seen = set()
-            for item, _, cut in sources:
+
+            def add_asset(entry):
+                if not entry:
+                    return
+                key = (entry.get("source"), entry.get("id"), entry.get("revision"))
+                if key in seen:
+                    return
+                seen.add(key)
+                editor_assets.append(entry)
+
+            for idx, (item, _, cut) in enumerate(sources):
                 for entry in (cut or {}).get("editor_assets", []):
-                    if entry["id"] not in seen:
-                        seen.add(entry["id"])
-                        editor_assets.append(entry)
+                    add_asset(entry)
                 if "graphic" in item:
-                    entry = {"id": item["graphic"]["id"], "source": "cueporch-built-in", "revision": 1}
-                    if entry["id"] not in seen:
-                        seen.add(entry["id"])
-                        editor_assets.append(entry)
-            replacement = VideoReplacement(original, screening, duration, captions, chapters,
+                    add_asset({"id": item["graphic"]["id"], "source": "cueporch-built-in", "revision": 1})
+                add_asset(source_credits[idx])
+            add_asset(music_credit)
+            metadata = write_credit_metadata(scratch / "credits.ffmeta", editor_assets)
+            original_path, screening_path = scratch / "timeline.mp4", scratch / "screening.mp4"
+            duration = render(original_path, clips, SIZES[settings["ratio"]], settings["color"], music, stopping,
+                              credit_metadata=metadata)
+            prepare_screening(original_path, screening_path, stopping=stopping, credit_metadata=metadata)
+            captions, chapters = combined_attachments(root, sources)
+            replacement = VideoReplacement(original_path, screening_path, duration, captions, chapters,
                                            editor_job=job["id"], editor_assets=editor_assets or None)
             with tx() as con:
                 get_work(con, job["work"])

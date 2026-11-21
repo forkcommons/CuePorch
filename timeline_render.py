@@ -23,7 +23,7 @@ class Music:
     gain: int
 
 
-def render(target, clips, size, color, music=None, stopping=None):
+def render(target, clips, size, color, music=None, stopping=None, *, credit_metadata=None):
     if not clips:
         raise ValueError("Add at least one clip to the timeline.")
     width, height = size
@@ -80,12 +80,16 @@ def render(target, clips, size, color, music=None, stopping=None):
             "[speech][music]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.97[audio]"
         )
         audio_out = "[audio]"
+    metadata_output = []
+    if credit_metadata is not None:
+        sources += ["-protocol_whitelist", "file,pipe", "-f", "ffmetadata", "-i", str(credit_metadata)]
+        metadata_output = ["-map_metadata", str(video_input + int(music is not None))]
     result = run_media(
         [
             "ffmpeg", "-nostdin", "-v", "error", *sources, "-filter_complex_threads", "2",
             "-filter_complex", ";".join(filters), "-map", "[assembled]", "-map", audio_out,
             "-t", duration, "-c:v", "libx264", "-threads", "2", "-crf", "20",
-            "-c:a", "aac", "-movflags", "+faststart", str(target),
+            "-c:a", "aac", "-movflags", "+faststart", *metadata_output, str(target),
         ],
         timeout=max(180, 12 * total / 1000), stopping=stopping,
     )
