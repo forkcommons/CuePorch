@@ -850,6 +850,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             UNION SELECT id FROM library_constant_contact_form_delivery WHERE state='queued' AND write_started=0
                             UNION SELECT id FROM library_campaign_monitor_form_delivery WHERE state='queued' AND write_started=0
                             UNION SELECT id FROM library_keap_form_delivery WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM library_salesforce_form_delivery WHERE state='queued'
                             UNION SELECT id FROM live_event_contact_delivery WHERE state='queued')""", (step,))
                 if step == event_hubspot_engagement.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
@@ -1410,7 +1411,7 @@ def create_app(root, database, operator, institution, simulation=None):
     campaign_monitor = campaign_monitor_crm.CampaignMonitorConnection(tx, operator)
     keap = keap_crm.KeapConnection(tx, operator)
     salesforce = salesforce_crm.SalesforceConnection(tx, operator)
-    def active_mailchimp_form(con, kind, uid):
+    def active_mailchimp_form(con, kind, uid, include_title=False):
         if kind == "showcase":
             library_showcases.get_showcase(con, uid)
         elif kind == "video":
@@ -1423,7 +1424,15 @@ def create_app(root, database, operator, institution, simulation=None):
                 abort(404)
         else:
             abort(404)
-        return library_registration.active(con, kind, uid)
+        form = library_registration.active(con, kind, uid)
+        if kind == "video" and include_title and form:
+            return dict(form, salesforce_title=library_actions.title_for(con, item))
+        return form
+
+    def active_salesforce_form(con, kind, uid):
+        if kind != "video":
+            abort(404)
+        return active_mailchimp_form(con, kind, uid, include_title=True)
     app.extensions["mailchimp_form_consent"] = library_mailchimp_forms.Consent(mailchimp, action, operator)
     library_mailchimp_forms.register_routes(app, tx, staff, team_origin, mailchimp, active_mailchimp_form)
     app.extensions["stop_mailchimp_forms"] = library_mailchimp_forms.start(app, tx, database, mailchimp, active_mailchimp_form)
@@ -1436,6 +1445,9 @@ def create_app(root, database, operator, institution, simulation=None):
     app.extensions["keap_form_consent"] = library_list_registration.Consent(keap, action, operator, provider=library_list_registration.KEAP)
     library_list_registration.register_routes(app, tx, staff, team_origin, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
     app.extensions["stop_keap_forms"] = library_list_registration.start(app, tx, database, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
+    app.extensions["salesforce_form_consent"] = library_list_registration.Consent(salesforce, action, operator, provider=library_list_registration.SALESFORCE)
+    library_list_registration.register_routes(app, tx, staff, team_origin, salesforce, active_salesforce_form, provider=library_list_registration.SALESFORCE)
+    app.extensions["stop_salesforce_forms"] = library_list_registration.start(app, tx, database, salesforce, active_salesforce_form, provider=library_list_registration.SALESFORCE)
     marketo = marketo_crm.configured_connection()
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),

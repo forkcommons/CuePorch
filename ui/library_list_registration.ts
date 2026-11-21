@@ -1,6 +1,6 @@
 import { checked } from "./team_api.js";
 
-type Provider = "constant-contact" | "campaign-monitor" | "keap";
+type Provider = "constant-contact" | "campaign-monitor" | "keap" | "salesforce";
 
 type Receipt = {
   available: boolean;
@@ -8,6 +8,7 @@ type Receipt = {
   state: "off" | "connected" | "stale";
   list_id: string | null;
   list_name: string | null;
+  company?: string;
   states: Record<string, number>;
 };
 
@@ -60,16 +61,26 @@ async function request<T>(
 }
 
 function receiptStatus(receipt: Receipt, ready: boolean, provider: Provider): string {
-  const name = provider === "constant-contact" ? "Constant Contact" : provider === "campaign-monitor" ? "Campaign Monitor" : "Keap";
+  const names: Record<Provider, string> = {
+    "constant-contact": "Constant Contact",
+    "campaign-monitor": "Campaign Monitor",
+    keap: "Keap",
+    salesforce: "Salesforce",
+  };
+  const name = names[provider];
   let status: string;
   if (receipt.state === "stale") {
     status = provider === "keap"
       ? `Reconnect ${name} and choose a tag again.`
-      : `Reconnect ${name} and choose a list again.`;
+      : provider === "salesforce"
+        ? "Reconnect Salesforce and choose a campaign again."
+        : `Reconnect ${name} and choose a list again.`;
   } else if (!receipt.available) {
     status = `Connect ${name} in Integrations.`;
   } else if (!ready) {
-    status = "Save an enabled registration form with first and last name fields.";
+    status = provider === "salesforce"
+      ? "Save an enabled registration form."
+      : "Save an enabled registration form with first and last name fields.";
   } else if (receipt.state === "connected") {
     status = `${name} delivery is enabled.`;
   } else {
@@ -93,13 +104,16 @@ export function setupLibraryListDelivery(
     ? "registrationConstantContact"
     : provider === "campaign-monitor"
       ? "registrationCampaignMonitor"
-      : "registrationKeap";
+      : provider === "salesforce"
+        ? "registrationSalesforce"
+        : "registrationKeap";
   const control = <T extends HTMLElement>(suffix: string) =>
     panel.querySelector<T>("#" + prefix + suffix);
   const load = control<HTMLButtonElement>("Load")!;
   const more = provider === "campaign-monitor" ? null : control<HTMLButtonElement>("More")!;
   const client = provider === "campaign-monitor" ? control<HTMLSelectElement>("Client")! : null;
   const picker = control<HTMLSelectElement>("List")!;
+  const company = provider === "salesforce" ? control<HTMLInputElement>("Company")! : null;
   const save = control<HTMLButtonElement>("Save")!;
   const reload = control<HTMLButtonElement>("Refresh")!;
   const stop = control<HTMLButtonElement>("Stop")!;
@@ -109,7 +123,7 @@ export function setupLibraryListDelivery(
   return async (endpoint: string, settings: Settings) => {
     const scope = ++generation;
     const active = () => generation === scope && isCurrent(endpoint);
-    const ready = settings.enabled && settings.first_name !== "off" && settings.last_name !== "off";
+    const ready = settings.enabled && (provider === "salesforce" || (settings.first_name !== "off" && settings.last_name !== "off"));
     const lists = new Map<string, string>();
     let receipt: Receipt | undefined;
     let nextCursor: string | null = null;
@@ -129,8 +143,9 @@ export function setupLibraryListDelivery(
         more.disabled = disabled;
       }
       if (client) client.disabled = disabled;
+      if (company) company.disabled = disabled;
       picker.disabled = disabled || picker.options.length <= 1;
-      save.disabled = disabled || !picker.value;
+      save.disabled = disabled || !picker.value || (company !== null && !company.value.trim());
       reload.disabled = busy;
       stop.hidden = !receipt || receipt.state === "off";
       stop.disabled = busy;
@@ -142,7 +157,7 @@ export function setupLibraryListDelivery(
         options.set(receipt.list_id, receipt.list_name);
       }
       picker.replaceChildren(
-        new Option(provider === "keap" ? "Choose a tag" : "Choose a list", ""),
+        new Option(provider === "keap" ? "Choose a tag" : provider === "salesforce" ? "Choose a campaign" : "Choose a list", ""),
         ...Array.from(options, ([id, name]) => new Option(name, id)),
       );
       picker.value = options.has(selected) ? selected : "";
@@ -170,6 +185,7 @@ export function setupLibraryListDelivery(
       const updated = await request<Receipt>(credential, endpoint, method, body);
       if (!active()) return;
       receipt = updated;
+      if (company) company.value = receipt.company ?? "Individual";
       savedListVisible = true;
       panel.hidden = !receipt.available && receipt.state === "off";
       drawLists(receipt.list_id ?? "");
@@ -177,12 +193,23 @@ export function setupLibraryListDelivery(
 
     async function loadLists(cursor?: string) {
       const query = cursor ? "?" + new URLSearchParams({cursor}) : "";
-      const path = provider === "keap"
-        ? "/api/integrations/keap/tags"
-        : "/api/integrations/constant-contact/lists";
-      const page = await request<ListPage>(
-        credential, path + query,
-      );
+      const page: ListPage = provider === "salesforce"
+        ? await request<{
+          campaigns: ListPage["lists"];
+          next_cursor: string | null;
+        }>(
+          credential,
+          "/api/integrations/salesforce/campaigns" + query,
+        ).then((result) => ({
+          lists: result.campaigns,
+          next_cursor: result.next_cursor,
+        }))
+        : await request<ListPage>(
+          credential,
+          (provider === "keap"
+            ? "/api/integrations/keap/tags"
+            : "/api/integrations/constant-contact/lists") + query,
+        );
       if (!active()) return;
       if (!cursor) lists.clear();
       for (const list of page.lists) lists.set(list.id, list.name);
@@ -225,11 +252,13 @@ export function setupLibraryListDelivery(
 
     panel.hidden = true;
     status.textContent = "";
+    if (company) company.value = "Individual";
     lists.clear();
     nextCursor = null;
     savedListVisible = true;
     drawLists("");
     picker.onchange = drawControls;
+    if (company) company.oninput = drawControls;
     load.onclick = () => {
       if (provider === "campaign-monitor") {
         void run(() => loadClients());
@@ -256,7 +285,9 @@ export function setupLibraryListDelivery(
     }
     save.onclick = () => {
       const listId = picker.value;
-      if (listId) void run(() => readReceipt("PUT", {list_id: listId}));
+      if (!listId) return;
+      const body = company ? {list_id: listId, company: company.value.trim()} : {list_id: listId};
+      void run(() => readReceipt("PUT", body));
     };
     reload.onclick = () => void run(() => readReceipt());
     stop.onclick = () => void run(() => readReceipt("DELETE", {}));

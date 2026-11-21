@@ -548,6 +548,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             def cleanup(con):
                 event_hubspot_sync.disconnect(con, provider="salesforce")
                 event_salesforce_registration.disconnect(con)
+                library_list_registration.disconnect(con, provider=library_list_registration.SALESFORCE)
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)

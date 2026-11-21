@@ -58,6 +58,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     ["constant-contact", "#registrationConstantContact"],
     ["campaign-monitor", "#registrationCampaignMonitor"],
     ["keap", "#registrationKeap"],
+    ["salesforce", "#registrationSalesforce"],
   ] as const).flatMap(([provider, id]) => {
     const panel = form.querySelector<HTMLElement>(id);
     return panel && registrationEndpoint

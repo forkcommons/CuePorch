@@ -1,6 +1,7 @@
 import hmac
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from types import ModuleType
 from uuid import uuid4
@@ -12,6 +13,8 @@ import campaign_monitor_crm
 import constant_contact_crm
 import event_contact_delivery
 import keap_crm
+import salesforce_crm
+import salesforce_outbound
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,16 @@ CAMPAIGN_MONITOR = Provider(
     80,
 )
 KEAP = Provider("keap", "Keap", "library_keap_form", keap_crm, keap_crm._valid_id, 75, 40)
-PROVIDERS = (CONSTANT_CONTACT, CAMPAIGN_MONITOR, KEAP)
+SALESFORCE = Provider(
+    "salesforce",
+    "Salesforce",
+    "library_salesforce_form",
+    salesforce_crm,
+    salesforce_crm.campaign_id,
+    254,
+    80,
+)
+PROVIDERS = (CONSTANT_CONTACT, CAMPAIGN_MONITOR, KEAP, SALESFORCE)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS {plan} (
@@ -63,6 +75,7 @@ CREATE TABLE IF NOT EXISTS {plan} (
     form_revision TEXT NOT NULL,
     list_id TEXT NOT NULL,
     list_name TEXT NOT NULL,
+    {plan_extra}
     PRIMARY KEY (kind, subject)
 );
 
@@ -81,6 +94,7 @@ CREATE TABLE IF NOT EXISTS {delivery} (
     write_started INTEGER NOT NULL DEFAULT 0,
     activity_id TEXT,
     poll_deadline INTEGER,
+    {delivery_extra}
     UNIQUE (generation, recipient_key)
 );
 
@@ -93,6 +107,12 @@ SCHEMA = "".join(
         plan=provider.plan,
         delivery=provider.delivery,
         prefix=provider.table,
+        plan_extra=(
+            "company TEXT NOT NULL," if provider is SALESFORCE else ""
+        ),
+        delivery_extra=(
+            "registered INTEGER NOT NULL," if provider is SALESFORCE else ""
+        ),
     )
     for provider in PROVIDERS
 )
@@ -150,13 +170,17 @@ def scope(con, job, connection, validate, stop, provider=CONSTANT_CONTACT):
     if form["revision"] != plan["form_revision"]:
         abort(409)
     connection.authorize(con, plan["provider_revision"])
-    return dict(row), plan
+    result = dict(row)
+    if provider is SALESFORCE:
+        result["source_title"] = form["salesforce_title"]
+    return result, plan
 
 
 def save(con, kind, subject, provider_revision, form_revision, destination, provider=CONSTANT_CONTACT):
     row = get(con, kind, subject, provider)
     list_id, list_name = destination["id"], destination["name"]
     if (row
+            and (provider != SALESFORCE or row["company"] == destination["company"])
             and row["provider_revision"] == provider_revision
             and row["form_revision"] == form_revision
             and row["list_id"] == list_id):
@@ -166,12 +190,21 @@ def save(con, kind, subject, provider_revision, form_revision, destination, prov
         )
         return
     stop(con, kind, subject, provider)
-    con.execute(
-        f"INSERT INTO {provider.plan} "
-        "(kind, subject, generation, provider_revision, form_revision, list_id, list_name) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (kind, subject, uuid4().hex, provider_revision, form_revision, list_id, list_name),
-    )
+    if provider == SALESFORCE:
+        con.execute(
+            f"INSERT INTO {provider.plan} "
+            "(kind, subject, generation, provider_revision, form_revision, list_id, list_name, company) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (kind, subject, uuid4().hex, provider_revision, form_revision, list_id, list_name,
+             destination["company"]),
+        )
+    else:
+        con.execute(
+            f"INSERT INTO {provider.plan} "
+            "(kind, subject, generation, provider_revision, form_revision, list_id, list_name) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (kind, subject, uuid4().hex, provider_revision, form_revision, list_id, list_name),
+        )
 
 
 def stop(con, kind, subject, provider=CONSTANT_CONTACT):
@@ -263,7 +296,7 @@ def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTA
 
     first_name = _name("first_name")
     last_name = _name("last_name")
-    if first_name is None or last_name is None:
+    if provider is not SALESFORCE and (first_name is None or last_name is None):
         return None
 
     recipient_key = hmac.digest(
@@ -274,8 +307,10 @@ def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTA
     cur = con.cursor()
     cur.execute(
         f"INSERT OR IGNORE INTO {provider.delivery} "
-        "(id, kind, subject, generation, recipient_key, email, first_name, last_name, due, state) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, kind, subject, generation, recipient_key, email, first_name, last_name, due, state"
+        f"{', registered' if provider is SALESFORCE else ''}) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+        f"{', ?' if provider is SALESFORCE else ''})",
         (
             job_id,
             plan["kind"],
@@ -287,7 +322,7 @@ def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTA
             last_name,
             now,
             "queued",
-        ),
+        ) + ((now,) if provider is SALESFORCE else ()),
     )
 
     if cur.rowcount:
@@ -391,14 +426,28 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
     with tx() as con:
         list_id = body.get("list_id")
         if not provider.list_id(list_id):
-            abort(422, f"Choose a {provider.label} list.")
+            noun = "campaign" if provider == SALESFORCE else "list"
+            abort(422, f"Choose a {provider.label} {noun}.")
         form = validate(con, kind, uid)
-        if (not form or form["first_name"] == "off" or
-                form["last_name"] == "off"):
+        if not form:
+            abort(409, "Save an active form.")
+        if (provider != SALESFORCE and
+                (form["first_name"] == "off" or form["last_name"] == "off")):
             abort(409, "Enable the form with first and last name fields.")
         prior = get(con, kind, uid, provider=provider)
 
-    destination = provider.adapter.contact_list(connection, revision, list_id)
+    if provider == SALESFORCE:
+        company = body.get("company", "Individual")
+        if not isinstance(company, str):
+            abort(422, "Company must be a nonblank printable string of at most 255 characters.")
+        company = company.strip()
+        if not company or len(company) > 255 or not company.isprintable():
+            abort(422, "Company must be a nonblank printable string of at most 255 characters.")
+        campaign = salesforce_crm.campaign(connection, revision, list_id)
+        salesforce_outbound.validate_installation(connection, revision)
+        destination = {"id": campaign["id"], "name": campaign["name"], "company": company}
+    else:
+        destination = provider.adapter.contact_list(connection, revision, list_id)
 
     with tx() as con:
         connection.authorize(con, revision)
@@ -435,7 +484,7 @@ def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
         f"FROM {provider.delivery} d "
         "LEFT JOIN action a ON a.id=d.id WHERE d.generation=? GROUP BY receipt_state",
         (plan["generation"],)).fetchall()
-    return {
+    receipt = {
         "available": available,
         "enabled": enabled,
         "state": "connected",
@@ -443,6 +492,9 @@ def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
         "list_name": plan["list_name"],
         "states": {r["receipt_state"]: r["count"] for r in rows},
     }
+    if provider == SALESFORCE:
+        receipt["company"] = plan["company"]
+    return receipt
 
 
 def register_routes(app, tx, staff, origin, connection, validate, provider=CONSTANT_CONTACT):
@@ -539,6 +591,26 @@ def deliver(tx, job, connection, validate, stop_event, clock, provider=CONSTANT_
     with tx() as con:
         row, plan = scope(con, job, connection, validate, stop_event, provider=provider)
 
+    if provider is SALESFORCE:
+        def before_write():
+            with tx() as con:
+                return scope(con, job, connection, validate, stop_event, provider=provider)
+
+        return salesforce_outbound.publish_registration(
+            connection,
+            plan["provider_revision"],
+            campaign=plan["list_id"],
+            kind="video",
+            title=row["source_title"],
+            source_ref=row["subject"],
+            registrant=row["recipient_key"],
+            registered_at=datetime.fromtimestamp(row["registered"], timezone.utc).isoformat(timespec="seconds"),
+            address=row["email"],
+            answers={"first_name": row["first_name"], "last_name": row["last_name"]},
+            company=plan["company"],
+            before_write=before_write,
+        )
+
     if provider is KEAP:
         return _deliver_keap(tx, job, row, plan, connection, validate, stop_event, clock, provider)
 
@@ -630,6 +702,7 @@ def run_one(tx, connection, validate, stop_event, clock=time.time, provider=CONS
         finish,
         stop_event,
         clock,
+        retry_ambiguous=(provider is SALESFORCE),
     )
 
 

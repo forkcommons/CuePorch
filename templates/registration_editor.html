@@ -104,6 +104,21 @@
         <button type="button" id="registrationKeapStop" hidden>Stop Keap delivery</button>
         <p id="registrationKeapStatus" role="status"></p>
       </fieldset>
+      {% if video_registration_editor %}
+      <fieldset id="registrationSalesforce" hidden>
+        <legend>Salesforce delivery</legend>
+        <button type="button" id="registrationSalesforceLoad">Load Salesforce campaigns</button>
+        <button type="button" id="registrationSalesforceMore">More Salesforce campaigns</button>
+        <label for="registrationSalesforceList">Salesforce campaign</label>
+        <select id="registrationSalesforceList"></select>
+        <label for="registrationSalesforceCompany">Company</label>
+        <input id="registrationSalesforceCompany" type="text" maxlength="255" value="Individual">
+        <button type="button" id="registrationSalesforceSave">Save Salesforce delivery</button>
+        <button type="button" id="registrationSalesforceRefresh">Refresh Salesforce delivery</button>
+        <button type="button" id="registrationSalesforceStop">Stop Salesforce delivery</button>
+        <p id="registrationSalesforceStatus" role="status"></p>
+      </fieldset>
+      {% endif %}
       {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>

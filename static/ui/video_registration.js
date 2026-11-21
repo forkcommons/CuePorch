@@ -11,6 +11,7 @@ export function setupRegistration(call, download, credential, saved, registratio
         ["constant-contact", "#registrationConstantContact"],
         ["campaign-monitor", "#registrationCampaignMonitor"],
         ["keap", "#registrationKeap"],
+        ["salesforce", "#registrationSalesforce"],
     ].flatMap(([provider, id]) => {
         const panel = form.querySelector(id);
         return panel && registrationEndpoint
