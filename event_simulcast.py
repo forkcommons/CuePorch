@@ -951,27 +951,26 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             enforce_sharing(con, feature="outbound")
             event_revision, _, _, revision, _ = facebook_access(con, uid, opens, page)
             key = (uid, opens, page, revision)
-            creation = con.execute("""SELECT state FROM facebook_live_creation
-                WHERE event=? AND opens=? AND page=? AND revision=?""", key).fetchone()
+            creation = con.execute("""SELECT state,revision FROM facebook_live_creation
+                WHERE event=? AND opens=? AND page=?""", key[:3]).fetchone()
             automatic = con.execute("""SELECT state,revision,event_revision,privacy FROM facebook_live_auto
                 WHERE event=? AND opens=? AND page=?""", key[:3]).fetchone()
             series = con.execute("""SELECT after_opens,privacy FROM facebook_live_series
                 WHERE event=? AND page=? AND revision=? AND event_revision=?""",
                                  (uid, page, revision, event_revision)).fetchone()
         auto_current = automatic is not None and (automatic["revision"], automatic["event_revision"]) == (revision, event_revision)
+        effective_auto = automatic is not None and (auto_current or automatic["state"] == "canceled")
+        series_valid = series is not None and opens > series["after_opens"]
         if creation:
-            state = "prepared" if creation["state"] == "prepared" else "unconfirmed"
-        elif automatic:
-            state = "idle"
-            if auto_current:
-                state = {"queued": "queued", "attempted": "failed"}.get(automatic["state"], "idle")
+            state = "prepared" if creation["revision"] == revision and creation["state"] == "prepared" else "unconfirmed"
+        elif effective_auto:
+            state = {"queued": "queued", "attempted": "failed"}.get(automatic["state"], "idle") if auto_current else "idle"
         else:
-            state = "queued" if series and opens > series["after_opens"] else "idle"
+            state = "queued" if series_valid else "idle"
         restorable = bool(
             not creation
-            and series is not None
-            and opens > series["after_opens"]
-            and auto_current
+            and series_valid
+            and automatic is not None
             and automatic["state"] == "canceled"
         )
         result = dict(state=state, series=series is not None)
@@ -980,9 +979,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         if profile:
             if restorable:
                 privacy = series["privacy"]
-            elif auto_current:
+            elif effective_auto:
                 privacy = automatic["privacy"]
-            elif series and opens > series["after_opens"]:
+            elif series_valid:
                 privacy = series["privacy"]
             else:
                 privacy = None
@@ -1026,8 +1025,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if restore:
                     if not con.execute("SELECT 1 FROM facebook_live_series WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<?", (uid, key[2], revision, event_revision, opens)).fetchone():
                         abort(409, "No automatic starts to restore.")
-                    con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=? AND revision=? AND event_revision=? AND state='canceled'", (uid, opens, key[2], revision, event_revision))
-                    if con.execute("SELECT 1 FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key).fetchone():
+                    con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=? AND state='canceled'", (uid, opens, key[2]))
+                    if con.execute("SELECT 1 FROM facebook_live_auto WHERE event=? AND opens=? AND page=? AND revision=? AND event_revision=? AND state IN ('queued','attempted')", (uid, opens, key[2], revision, event_revision)).fetchone():
                         abort(409, "An explicit automatic start is already set for this occurrence.")
                     return private(dict(state="queued"), 202)
                 check_provider_capacity(con, uid, opens)

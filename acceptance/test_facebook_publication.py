@@ -521,6 +521,42 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual({"state": "idle", "series": False},
                                  api.get(last_path + "/facebook-profile/auto?page=707", headers=auth).json())
 
+                last_opens, skipped_opens = int(last["id"]), int(skipped["id"])
+                profile_auto = "/facebook-profile/auto"
+                explicit = api.put(last_path + profile_auto, headers=auth,
+                                   data={"page": "707", "privacy": "SELF"})
+                self.assertEqual(202, explicit.status, explicit.text())
+                with closing(sqlite3.connect(database)) as db:
+                    db.execute("UPDATE facebook_live_auto SET event_revision='stale' "
+                               "WHERE event=? AND page='profile:707' AND opens IN (?,?)",
+                               (created["id"], last_opens, skipped_opens))
+                    db.commit()
+                enabled = api.put(next_targets + profile_auto, headers=auth,
+                                  data={"page": "707", "series": True, "privacy": "ALL_FRIENDS"})
+                self.assertEqual(202, enabled.status, enabled.text())
+                self.assertEqual({"state": "queued", "series": True, "privacy": "ALL_FRIENDS"},
+                                 api.get(last_path + profile_auto + "?page=707", headers=auth).json())
+                self.assertEqual({"state": "idle", "series": True, "privacy": "ALL_FRIENDS", "restorable": True},
+                                 api.get(skipped_path + profile_auto + "?page=707", headers=auth).json())
+                with closing(sqlite3.connect(database)) as db:
+                    db.row_factory = sqlite3.Row
+                    db.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                               (created["id"], last_opens))
+                    due = [row for row in facebook_live_job.due(db, last_opens)
+                           if row["event"] == created["id"] and row["page"] == "profile:707"
+                           and row["opens"] in (skipped_opens, last_opens)]
+                    self.assertEqual([(last_opens, "ALL_FRIENDS", 1)],
+                                     [(row["opens"], row["privacy"], row["series"]) for row in due])
+                    key = (created["id"], last_opens, "profile:707")
+                    self.assertTrue(facebook_live_job.claim(db, key, due[0]))
+                    self.assertFalse(facebook_live_job.claim(db, key, due[0]))
+                    db.rollback()
+                restored = api.put(skipped_path + profile_auto, headers=auth, data={"page": "707", "restore": True})
+                self.assertEqual(202, restored.status, restored.text())
+                self.assertEqual({"state": "queued", "series": True, "privacy": "ALL_FRIENDS"},
+                                 api.get(skipped_path + profile_auto + "?page=707", headers=auth).json())
+                stopped = api.delete(last_path + profile_auto, headers=auth, data={"page": "707", "series": True})
+                self.assertEqual(200, stopped.status, stopped.text())
                 manual_profile = api.post(last_path + "/facebook-profile", headers=auth,
                                           data={"page": "707", "privacy": "SELF"})
                 self.assertEqual(201, manual_profile.status, manual_profile.text())
