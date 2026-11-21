@@ -64,6 +64,13 @@ _OBJECT_SPECS = {
         ("Watch_Percent__c", False),
         ("Video_Views__c", False),
     ],
+    delivery.REGISTRATION_FIELD: [
+        (delivery.EXTERNAL_KEY, True),
+        ("Registrant__c", False),
+        ("Field_Name__c", False),
+        ("Field_Type__c", False),
+        ("Value__c", False),
+    ],
 }
 
 
@@ -143,6 +150,12 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
         options = client.get(registration, headers=headers).get_json()
         options["settings"]["enabled"] = True
         options["settings"]["attendance_analytics"] = True
+        options["settings"]["collect_utm"] = True
+        options["settings"]["fields"] = [
+            {"id": "field_industry", "type": "select", "label": "Industry", "options": ["Arts"]},
+            {"id": "field_channel", "type": "hidden", "label": "Channel",
+             "parameter": "channel", "default_value": "General"},
+        ]
         self.assertEqual(client.put(registration, headers=headers, json=options).status_code, 200)
 
         url = f"/api/live-events/{event['id']}/{opens}/registration/salesforce/outbound"
@@ -214,10 +227,17 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
         server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietHandler)
         with service_worker(server), sync_playwright() as playwright, chromium(playwright) as browser:
             page = browser.new_page()
-            page.goto(f"http://127.0.0.1:{server.server_port}/events/salesforce-live-reporting?occurrence={opens}")
+            page.goto(
+                f"http://127.0.0.1:{server.server_port}/events/salesforce-live-reporting"
+                f"?occurrence={opens}&utm_source=arts-news&reg_channel=Festival&not_allowed=secret"
+            )
             page.fill("input[name=email]", EMAIL)
             page.fill("input[name=first_name]", "Ada")
             page.fill("input[name=last_name]", "Example")
+            page.select_option("select[name=field_industry]", "Arts")
+            expect(page.get_by_text(
+                "Submitted registration answers and captured campaign source details are included."
+            )).to_be_visible()
             page.check("input[name=salesforce_consent]")
             page.check("input[name=salesforce_engagement_consent]")
             page.click("form button[type=submit]")
@@ -285,3 +305,13 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
         registrants = [record for (name, _), record in provider.outbound.objects.items() if name == delivery.REGISTRANT]
         (registrant,) = registrants
         assert registrant["Status__c"] == "Attended Live" and registrant["Watch_Percent__c"] == round(min(100, watched / 60))
+        related_fields = [
+            (record["Registrant__c"], record["Field_Name__c"], record["Field_Type__c"], record["Value__c"])
+            for (name, _), record in provider.outbound.objects.items()
+            if name == delivery.REGISTRATION_FIELD
+        ]
+        self.assertCountEqual(related_fields, [
+            (registrant["Id"], "Industry", "Registration Field", "Arts"),
+            (registrant["Id"], "Channel", "Hidden Field", "Festival"),
+            (registrant["Id"], "utm_source", "UTM Field", "arts-news"),
+        ])

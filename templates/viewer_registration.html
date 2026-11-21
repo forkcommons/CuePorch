@@ -109,6 +109,9 @@
       <input type="checkbox" name="salesforce_consent" value="{{ salesforce_consent }}">
       Share my name, email address and registration time with the organizer in Salesforce Sales Cloud.
     </label>
+    {% if salesforce_related_fields %}
+    <p>Submitted registration answers and captured campaign source details are included.</p>
+    {% endif %}
     {% endif %}
     {% if salesforce_engagement_consent %}
     <label>

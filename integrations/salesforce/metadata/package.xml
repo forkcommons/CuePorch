@@ -3,6 +3,7 @@
     <types>
         <members>CuePorch_Media__c</members>
         <members>CuePorch_Registrant__c</members>
+        <members>CuePorch_Registration_Field__c</members>
         <name>CustomObject</name>
     </types>
     <types>

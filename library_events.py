@@ -2215,6 +2215,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             salesforce_plan = None
+            salesforce_related_fields = False
             salesforce_consent = ""
             salesforce_engagement_consent = ""
             mailchimp_consent = ""
@@ -2231,7 +2232,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if salesforce_plan:
                     salesforce_scope = ["salesforce-outbound", scope, salesforce_plan["generation"]]
                     salesforce_consent = forms.dumps(salesforce_scope)
-                    if offer_sharing and json.loads(salesforce_plan["destination"]).get("engagement") is True:
+                    salesforce_destination = json.loads(salesforce_plan["destination"])
+                    salesforce_related_fields = salesforce_destination.get("related_fields") is True
+                    if offer_sharing and salesforce_destination.get("engagement") is True:
                         salesforce_engagement_scope = ["salesforce-engagement", scope, salesforce_plan["generation"]]
                         salesforce_engagement_consent = forms.dumps(salesforce_engagement_scope)
                 current = mailchimp.connection(con)
@@ -2298,7 +2301,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         registrant, created = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
                         salesforce_agreed = bool(salesforce_plan and valid_ticket(forms, request.form.get("salesforce_consent", ""), salesforce_scope, 1200))
                         if salesforce_agreed:
-                            event_salesforce_registration.enqueue(con, action, salesforce_plan, registrant, answers, int(now.timestamp()))
+                            event_salesforce_registration.enqueue(con, action, salesforce_plan, registrant, answers, int(now.timestamp()), form=form)
                         if (created and contact_plan
                                 and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
                             event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
@@ -2466,6 +2469,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
                                      salesforce_consent=salesforce_consent,
+                                     salesforce_related_fields=salesforce_related_fields,
                                      salesforce_engagement_consent=salesforce_engagement_consent,
                                      marketo_consent=marketo_consent,
                                      mailchimp_consent=mailchimp_consent,

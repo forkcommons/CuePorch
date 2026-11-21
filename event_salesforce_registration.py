@@ -10,6 +10,7 @@ import event_contact_delivery as outbox
 import event_salesforce_engagement
 import salesforce_crm
 import salesforce_outbound
+import salesforce_registration_fields
 
 PROVIDER = "salesforce"
 
@@ -62,7 +63,9 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
             abort(409, 'Enable attendee analytics on the registration form first.')
 
         cid = salesforce_crm.campaign(connection, revision, body.get("campaign"))["id"]
-        salesforce_outbound.validate_installation(connection, revision)
+        related_fields = salesforce_registration_fields.configured(form)
+        salesforce_outbound.validate_installation(
+            connection, revision, related_fields=related_fields)
         if engagement:
             salesforce_outbound.validate_engagement_installation(connection, revision, kind='webinar')
 
@@ -71,7 +74,12 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
             row_again, slot_again, form_again = registration_intake(con, uid, opens)
             if row_again["revision"] != row["revision"] or form_again["revision"] != form["revision"]:
                 abort(409)
-            destination = {"campaign": cid, "company": company, "engagement": engagement}
+            destination = {
+                "campaign": cid,
+                "company": company,
+                "engagement": engagement,
+                "related_fields": bool(related_fields),
+            }
             outbox.set_destination(
                 con,
                 PROVIDER,
@@ -120,17 +128,26 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
             return private(outbox.receipt(
                 con, PROVIDER, uid, opens, plan['provider_revision']))
 
-def enqueue(con, action, plan, registrant, answers, now):
+def enqueue(con, action, plan, registrant, answers, now, form=None):
     delivery = outbox.enqueue(con, action, plan, registrant, now)
     if delivery:
+        payload = {
+            "first_name": answers.get("first_name"),
+            "last_name": answers.get("last_name"),
+            "registered_at": datetime.fromtimestamp(
+                now, timezone.utc).isoformat(timespec="seconds"),
+        }
+        if (
+            form is not None
+            and json.loads(plan["destination"]).get("related_fields") is True
+        ):
+            payload["related_fields"] = salesforce_registration_fields.selected(
+                form, answers)
+        else:
+            payload["related_fields"] = []
         con.execute(
             "INSERT INTO live_event_salesforce_payload (delivery, answers) VALUES (?,?)",
-            (delivery, json.dumps({
-                "first_name": answers.get("first_name"),
-                "last_name": answers.get("last_name"),
-                "registered_at": datetime.fromtimestamp(
-                    now, timezone.utc).isoformat(timespec="seconds"),
-            })),
+            (delivery, json.dumps(payload)),
         )
 
 
@@ -154,6 +171,7 @@ def deliver(tx, job, connection, validate, stop, clock):
         source_ref=f"{job['event']}:{job['opens']}",
         registrant=job["registrant"], registered_at=answers["registered_at"],
         address=email, answers=answers, company=destination["company"],
+        related_fields=answers.get("related_fields", ()),
         before_write=before_write)
 
 

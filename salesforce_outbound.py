@@ -75,6 +75,7 @@ def _create_record(connection, revision, object_name, fields, before_write):
 
 MEDIA = "CuePorch_Media__c"
 REGISTRANT = "CuePorch_Registrant__c"
+REGISTRATION_FIELD = "CuePorch_Registration_Field__c"
 EXTERNAL_KEY = "External_Key__c"
 _ID_RE = "[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?"
 _KEY_RE = "[a-f0-9]{64}"
@@ -118,7 +119,7 @@ def _confirmed_record(record, key, expected, created_id=None):
 
 
 def ensure_record(connection, revision, object_name, key, fields, expected, before_write):
-    if object_name not in (MEDIA, REGISTRANT) or not (isinstance(key, str) and re.fullmatch(_KEY_RE, key)):
+    if object_name not in (MEDIA, REGISTRANT, REGISTRATION_FIELD) or not (isinstance(key, str) and re.fullmatch(_KEY_RE, key)):
         abort(502)
     path = "/sobjects/" + object_name + "/" + EXTERNAL_KEY + "/" + key
     record = _read_record(connection, revision, path)
@@ -139,7 +140,7 @@ def registration_keys(campaign, kind, source_ref, registrant):
 
 def publish_registration(connection, revision, *, campaign, kind, title,
                          source_ref, registrant, registered_at, address,
-                         answers, company, before_write):
+                         answers, company, before_write, related_fields=()):
     campaign = salesforce_crm.campaign(connection, revision, campaign)["id"]
     person = ensure_person(connection, revision, address, answers, company,
                            before_write)
@@ -164,16 +165,26 @@ def publish_registration(connection, revision, *, campaign, kind, title,
     fields = {k: v for k, v in expected.items() if v is not None}
     fields["Status__c"] = "Registered"
     fields["Registered_At__c"] = registered_at
-    ensure_record(connection, revision, REGISTRANT, registrar_key, fields,
+    registrant_id = ensure_record(connection, revision, REGISTRANT, registrar_key, fields,
                   expected, before_write)
+    for field_id, field_name, field_type, value in related_fields:
+        child_key = sha256("\0".join(("cueporch-registration-field", registrar_key, field_id)).encode()).hexdigest()
+        ensure_record(connection, revision, REGISTRATION_FIELD, child_key,
+                      {"Registrant__c": registrant_id, "Field_Name__c": field_name,
+                       "Field_Type__c": field_type, "Value__c": value},
+                      {"Registrant__c": registrant_id}, before_write)
     return "sent"
 
-def validate_installation(connection, revision):
+def validate_installation(connection, revision, *, related_fields=False):
     expected = (
         ("Lead", LEAD_KEY, (LEAD_KEY, "Email", "Company", "LastName", "FirstName")),
         (MEDIA, EXTERNAL_KEY, (EXTERNAL_KEY, "Name", "Campaign__c", "Kind__c")),
         (REGISTRANT, EXTERNAL_KEY, (EXTERNAL_KEY, "Media__c", "Lead__c", "Contact__c", "Status__c", "Registered_At__c")),
     )
+    if related_fields:
+        expected += (
+            (REGISTRATION_FIELD, EXTERNAL_KEY, (EXTERNAL_KEY, "Registrant__c", "Field_Name__c", "Field_Type__c", "Value__c")),
+        )
     for object_name, unique_key, required_fields in expected:
         try:
             result = salesforce_crm._get(connection, revision, "/sobjects/" + object_name + "/describe")
