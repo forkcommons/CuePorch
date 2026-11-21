@@ -4,6 +4,7 @@ from base64 import urlsafe_b64encode
 from contextlib import suppress
 from datetime import datetime, timezone
 from hmac import digest
+import json
 import os
 from queue import Empty, Full, Queue
 import re
@@ -789,28 +790,49 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             key = (uid, opens, page, revision)
             creation = con.execute("""SELECT state FROM facebook_live_creation
                 WHERE event=? AND opens=? AND page=? AND revision=?""", key).fetchone()
-            automatic = con.execute("""SELECT state FROM facebook_live_auto
-                WHERE event=? AND opens=? AND page=? AND revision=? AND event_revision=?""",
-                                    (*key, event_revision)).fetchone()
+            automatic = con.execute("""SELECT state,revision,event_revision FROM facebook_live_auto
+                WHERE event=? AND opens=? AND page=?""", key[:3]).fetchone()
+            series = con.execute("""SELECT after_opens FROM facebook_live_series
+                WHERE event=? AND page=? AND revision=? AND event_revision=?""",
+                                 (uid, page, revision, event_revision)).fetchone()
         if creation:
-            return private(dict(state="prepared" if creation["state"] == "prepared" else "unconfirmed"))
-        return private(dict(state="idle" if not automatic else
-                            "queued" if automatic["state"] == "queued" else "failed"))
+            state = "prepared" if creation["state"] == "prepared" else "unconfirmed"
+        elif automatic:
+            state = "idle"
+            if (automatic["revision"], automatic["event_revision"]) == (revision, event_revision):
+                state = {"queued": "queued", "attempted": "failed"}.get(automatic["state"], "idle")
+        else:
+            state = "queued" if series and opens > series["after_opens"] else "idle"
+        return private(dict(state=state, series=series is not None))
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto", methods=["PUT", "DELETE"])
     def configure_facebook_auto(uid, opens):
         staff()
         key = (uid, opens, facebook_page())
+        series = request.get_json().get("series", False)
+        if type(series) is not bool:
+            abort(422, "Choose whether to apply automatic starts to future dates.")
         try:
             with facebook_lease(key), tx() as con:
                 enforce_sharing(con, feature="outbound")
+                if request.method == "DELETE" and series:
+                    con.execute("DELETE FROM facebook_live_series WHERE event=? AND page=?", (uid, key[2]))
+                    return private(dict(state="canceled"))
                 if con.execute("SELECT 1 FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key).fetchone():
                     abort(409, "A Facebook broadcast already exists or has an unconfirmed result for this occurrence.")
-                if request.method == "DELETE":
-                    con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key)
-                    return private(dict(state="canceled"))
                 event_revision, _, _, revision, _ = facebook_access(con, *key)
+                if request.method == "DELETE":
+                    facebook_live_job.queue(con, key, revision, event_revision, state="canceled")
+                    return private(dict(state="canceled"))
                 check_provider_capacity(con, uid, opens)
+                if series:
+                    settings = con.execute("SELECT settings FROM live_event WHERE id=?", (uid,)).fetchone()["settings"]
+                    if json.loads(settings)["schedule"]["repeat"] == "none":
+                        abort(409, "Choose a recurring event to set up future broadcasts.")
+                    con.execute("""INSERT INTO facebook_live_series VALUES(?,?,?,?,?)
+                        ON CONFLICT(event,page) DO UPDATE SET revision=excluded.revision,
+                        event_revision=excluded.event_revision,after_opens=excluded.after_opens""",
+                                (uid, key[2], revision, event_revision, opens))
                 facebook_live_job.queue(con, key, revision, event_revision)
         except Timeout:
             abort(409, "Another request is preparing this Facebook broadcast.")
@@ -835,6 +857,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if live_now and not con.execute("""SELECT 1 FROM live_occurrence
                 WHERE event=? AND opens=? AND delivery='ready'""", key[:2]).fetchone():
                 abort(409, "The occurrence is no longer ready to stream.")
+            if live_now and automatic["series"] and not con.execute("""SELECT 1 FROM facebook_live_series
+                WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<?""",
+                (uid, page, revision, event_revision, opens)).fetchone():
+                abort(409, "Automatic starts for future dates are no longer enabled.")
 
         def before_send():
             if not live_now:
@@ -855,11 +881,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if not live_now:
                     with tx() as con:
                         check(con)
-                        con.execute("DELETE FROM facebook_live_auto WHERE event=? AND opens=? AND page=?", key)
+                        facebook_live_job.queue(con, key, revision, event_revision, state="canceled")
                 return facebook_live_job.provision(
                     tx, check, lambda: facebook_live_connection.create_page_live(
                         revision, page, title, opens, before_send, live_now=live_now),
-                    save, *key, revision, claim_auto=(lambda con: facebook_live_job.claim(con, key)) if live_now else None,
+                    save, *key, revision,
+                    claim_auto=(lambda con: facebook_live_job.claim(con, key, automatic)) if live_now else None,
                 )
         except Timeout:
             return {"state": "unconfirmed"}, 202

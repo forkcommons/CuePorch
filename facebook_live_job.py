@@ -17,25 +17,40 @@ CREATE TABLE IF NOT EXISTS facebook_live_creation(
 CREATE TABLE IF NOT EXISTS facebook_live_auto(
  event TEXT NOT NULL, opens INTEGER NOT NULL, page TEXT NOT NULL, revision TEXT NOT NULL,
  event_revision TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(event,opens,page));
+CREATE TABLE IF NOT EXISTS facebook_live_series(
+ event TEXT NOT NULL, page TEXT NOT NULL, revision TEXT NOT NULL, event_revision TEXT NOT NULL,
+ after_opens INTEGER NOT NULL, PRIMARY KEY(event,page));
 """
 
 
-def queue(con, key, revision, event_revision):
-    con.execute("""INSERT INTO facebook_live_auto VALUES(?,?,?,?,?,'queued')
+def queue(con, key, revision, event_revision, *, state="queued"):
+    con.execute("""INSERT INTO facebook_live_auto VALUES(?,?,?,?,?,?)
         ON CONFLICT(event,opens,page) DO UPDATE SET revision=excluded.revision,
-        event_revision=excluded.event_revision,state='queued'""", (*key, revision, event_revision))
+        event_revision=excluded.event_revision,state=excluded.state""", (*key, revision, event_revision, state))
 
 
 def due(con, now):
-    return con.execute("""SELECT a.* FROM facebook_live_auto a
+    return con.execute("""SELECT a.*,0 AS series FROM facebook_live_auto a
         JOIN live_event e ON e.id=a.event AND e.revision=a.event_revision
         JOIN live_occurrence o ON o.event=a.event AND o.opens=a.opens AND o.delivery='ready'
         JOIN workspace_integration_connection w ON w.provider='facebook-live' AND w.revision=a.revision
         LEFT JOIN facebook_live_creation c ON c.event=a.event AND c.opens=a.opens AND c.page=a.page
-        WHERE a.state='queued' AND a.opens<=? AND c.event IS NULL ORDER BY a.opens""", (now,)).fetchall()
+        WHERE a.state='queued' AND a.opens<=? AND c.event IS NULL
+        UNION ALL
+        SELECT s.event,o.opens,s.page,s.revision,s.event_revision,'queued',1
+        FROM facebook_live_series s
+        JOIN live_event e ON e.id=s.event AND e.revision=s.event_revision
+        JOIN live_occurrence o ON o.event=s.event AND o.delivery='ready' AND o.opens>s.after_opens
+        JOIN workspace_integration_connection w ON w.provider='facebook-live' AND w.revision=s.revision
+        LEFT JOIN facebook_live_auto a ON a.event=s.event AND a.opens=o.opens AND a.page=s.page
+        LEFT JOIN facebook_live_creation c ON c.event=s.event AND c.opens=o.opens AND c.page=s.page
+        WHERE o.opens<=? AND a.event IS NULL AND c.event IS NULL ORDER BY opens""", (now, now)).fetchall()
 
 
-def claim(con, key):
+def claim(con, key, automatic):
+    if automatic["series"]:
+        return con.execute("""INSERT OR IGNORE INTO facebook_live_auto VALUES(?,?,?,?,?,'attempted')""",
+                           (*key, automatic["revision"], automatic["event_revision"])).rowcount == 1
     return con.execute("""UPDATE facebook_live_auto SET state='attempted'
         WHERE event=? AND opens=? AND page=? AND state='queued'""", key).rowcount == 1
 

@@ -85,6 +85,9 @@ const facebookPage = element("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookAutomatic = input("facebookAutomatic");
 const facebookCancel = button("cancelFacebookAuto");
+const facebookSeries = input("facebookSeries");
+const facebookSeriesControls = element("facebookSeriesControls");
+const facebookSeriesStop = button("facebookSeriesStop");
 const facebookStatus = element("facebookLiveStatus");
 let facebookStatusRevision = 0;
 const linkedinForm = element("linkedinLiveSchedule");
@@ -344,6 +347,10 @@ function choose(event, instance) {
     facebookSubmit.disabled = true;
     facebookAutomatic.checked = true;
     facebookCancel.disabled = true;
+    facebookSeriesControls.hidden = event.event.schedule.repeat === "none";
+    facebookSeries.checked = false;
+    facebookSeries.disabled = false;
+    facebookSeriesStop.disabled = true;
     facebookStatusRevision++;
     facebookStatus.textContent = "";
     linkedinForm.hidden = true;
@@ -1008,6 +1015,7 @@ async function refreshFacebookAutoStatus() {
     const page = facebookPage.value;
     facebookStatus.textContent = "";
     facebookCancel.disabled = true;
+    facebookSeriesStop.disabled = true;
     const result = await request(`${path}/auto?page=${encodeURIComponent(page)}`);
     if (revision !== facebookStatusRevision)
         return;
@@ -1019,8 +1027,10 @@ async function refreshFacebookAutoStatus() {
     };
     facebookStatus.textContent = labels[result.state] ?? "";
     facebookCancel.disabled = !["queued", "failed"].includes(result.state);
+    facebookSeriesStop.disabled = !result.series;
 }
 facebookPage.onchange = () => void action(refreshFacebookAutoStatus);
+facebookAutomatic.onchange = () => { facebookSeries.disabled = !facebookAutomatic.checked; };
 button("loadFacebookLivePages").onclick = () => void action(async () => {
     if (!active)
         return;
@@ -1039,16 +1049,21 @@ facebookForm.onsubmit = event => {
     const path = mediaPath("destinations/facebook");
     const page = facebookPage.value;
     const automatic = facebookAutomatic.checked;
+    const series = automatic && !facebookSeriesControls.hidden && facebookSeries.checked;
     const revision = ++facebookStatusRevision;
     void action(async () => {
         facebookSubmit.disabled = true;
         try {
-            const result = await request(automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", { page });
+            const result = await request(automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", { page, series });
             if (revision !== facebookStatusRevision)
                 return;
             facebookCancel.disabled = result.state !== "queued";
             if (result.state === "queued") {
                 facebookStatus.textContent = "Facebook Live will start when this occurrence is ready to stream.";
+                if (series) {
+                    facebookSeries.checked = false;
+                    facebookSeriesStop.disabled = false;
+                }
             }
             else if (result.state === "prepared") {
                 facebookStatus.textContent = "Facebook Live prepared. Preview and publish in Facebook Live Producer.";
@@ -1081,6 +1096,25 @@ facebookCancel.onclick = () => void action(async () => {
     catch (error) {
         if (revision === facebookStatusRevision)
             facebookCancel.disabled = false;
+        throw error;
+    }
+});
+facebookSeriesStop.onclick = () => void action(async () => {
+    if (!active || !facebookPage.value || facebookSeriesStop.disabled)
+        return;
+    const revision = ++facebookStatusRevision;
+    const path = mediaPath("destinations/facebook");
+    const page = facebookPage.value;
+    facebookSeriesStop.disabled = true;
+    try {
+        await request(path + "/auto", "DELETE", { page, series: true });
+        if (revision !== facebookStatusRevision)
+            return;
+        await refreshFacebookAutoStatus();
+    }
+    catch (error) {
+        if (revision === facebookStatusRevision)
+            facebookSeriesStop.disabled = false;
         throw error;
     }
 });

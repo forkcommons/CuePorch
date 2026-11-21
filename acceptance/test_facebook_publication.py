@@ -145,7 +145,7 @@ class FacebookPublication(unittest.TestCase):
                     assert body == {"title": "Facebook Live rehearsal", "status": "LIVE_NOW",
                                     "stop_on_delete_stream": True}
                     live_now_writes.append(page_id)
-                    return dict(id="902",
+                    return dict(id=str(901 + len(live_now_writes)),
                                 secure_stream_url="rtmps://live-api-s.facebook.com:443/rtmp/fixture-facebook-auto")
                 live_writes.append(page_id)
                 assert set(body) == {"title", "status", "stop_on_delete_stream", "event_params"}
@@ -295,13 +295,13 @@ class FacebookPublication(unittest.TestCase):
                 starts = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(second=0, microsecond=0)
                 event = dict(title="Facebook Live rehearsal", slug="facebook-live-rehearsal", visibility="public",
                              type="live", latency="standard", save_replay=False,
-                             schedule=dict(timezone="UTC", repeat="days", count=2,
+                             schedule=dict(timezone="UTC", repeat="days", count=5,
                                            start=starts.strftime("%Y-%m-%dT%H:%M"),
                                            end=(starts + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")))
                 response = api.post(base + "/api/live-events", headers=auth, data=event)
                 self.assertTrue(response.ok, response.text())
                 created = response.json()
-                first, next_date = created["occurrences"]
+                first, next_date, inherited, skipped, last = created["occurrences"]
                 event_path = base + f"/api/live-events/{created['id']}"
                 targets = event_path + f"/{first['id']}/destinations"
                 next_targets = event_path + f"/{next_date['id']}/destinations"
@@ -346,6 +346,7 @@ class FacebookPublication(unittest.TestCase):
                 facebook_pages = page.get_by_role("combobox", name="Facebook Live Page", exact=True)
                 facebook_pages.select_option("101")
                 expect(page.get_by_role("checkbox", name="Start automatically when CuePorch is live")).to_be_checked()
+                page.get_by_role("checkbox", name="Also start future dates automatically", exact=True).check()
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
                 page.reload()
@@ -360,7 +361,8 @@ class FacebookPublication(unittest.TestCase):
                 facebook_pages.select_option("202")
                 page.get_by_role("button", name="Cancel automatic start", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("canceled")
-                self.assertEqual({"state": "idle"}, api.get(auto_path + "?page=202", headers=auth).json())
+                self.assertEqual({"state": "idle", "series": False},
+                                 api.get(auto_path + "?page=202", headers=auth).json())
                 opens = int(next_date["id"])
                 with closing(sqlite3.connect(database)) as db:
                     self.assertEqual([], facebook_live_job.due(db, opens + 1))
@@ -380,11 +382,47 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(["101"], live_now_writes)
                 self.assertEqual(["101", "202"], live_writes)
                 self.assertEqual(["facebook-live"], [item["provider"] for item in roster])
-                self.assertEqual({"state": "prepared"}, api.get(auto_path + "?page=101", headers=auth).json())
+                self.assertEqual({"state": "prepared", "series": True},
+                                 api.get(auto_path + "?page=101", headers=auth).json())
                 auto_result = api.get(next_targets, headers=auth)
                 self.assertNotIn("fixture-facebook-auto", auto_result.text())
                 check_destination_rtmps(root, database, roster[0]["id"], operator, facebook_live.INGEST_SERVER,
                                         "fixture-facebook-auto")
+
+                inherited_path = f"{event_path}/{inherited['id']}/destinations"
+                skipped_path = f"{event_path}/{skipped['id']}/destinations"
+                last_path = f"{event_path}/{last['id']}/destinations"
+                self.assertEqual({"state": "queued", "series": True},
+                                 api.get(inherited_path + "/facebook/auto?page=101", headers=auth).json())
+                canceled_date = api.delete(skipped_path + "/facebook/auto", headers=auth, data={"page": "101"})
+                self.assertEqual(200, canceled_date.status, canceled_date.text())
+                self.assertEqual({"state": "idle", "series": True},
+                                 api.get(skipped_path + "/facebook/auto?page=101", headers=auth).json())
+                with closing(sqlite3.connect(database)) as db:
+                    db.executemany("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                                   [(created["id"], int(date["id"])) for date in (inherited, skipped)])
+                    db.commit()
+                    due = facebook_live_job.due(db, int(skipped["id"]) + 1)
+                    self.assertEqual([int(inherited["id"])], [row[1] for row in due])
+                inherited_roster = []
+                with patch.object(facebook_live_job, "time", lambda: int(inherited["id"]) + 1):
+                    deadline = monotonic() + 8
+                    while not inherited_roster and monotonic() < deadline:
+                        inherited_roster = api.get(inherited_path, headers=auth).json()["destinations"]
+                        if not inherited_roster:
+                            sleep(.05)
+                self.assertEqual(["101", "101"], live_now_writes)
+                self.assertEqual(["facebook-live"], [entry["provider"] for entry in inherited_roster])
+                self.assertEqual([], api.get(skipped_path, headers=auth).json()["destinations"])
+
+                facebook_pages.select_option("101")
+                stop_series = page.get_by_role("button", name="Stop automatic starts for future dates", exact=True)
+                expect(stop_series).to_be_enabled()
+                stop_series.click()
+                expect(stop_series).to_be_disabled()
+                self.assertEqual({"state": "idle", "series": False},
+                                 api.get(last_path + "/facebook/auto?page=101", headers=auth).json())
+                self.assertEqual(inherited_roster, api.get(inherited_path, headers=auth).json()["destinations"])
 
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Facebook Live", exact=True).click()
@@ -402,6 +440,8 @@ class FacebookPublication(unittest.TestCase):
         print("Facebook Live prepared one occurrence through the browser and preserved an unconfirmed write across restart.")
         print("Facebook Live auto start waited for readiness and the scheduled time, survived restart, honored cancellation,"
               " and delivered decoded RTMPS.")
+        print("Future Facebook episodes inherited automatic delivery, skipped an opted-out date, and stopped future"
+              " activation without removing prepared broadcasts.")
 
 
 if __name__ == "__main__":
