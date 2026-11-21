@@ -3,9 +3,12 @@ import { measureEventPlayback } from "./event_playback.js";
 import { measurePeerEventPlayback } from "./peer_event_playback.js";
 import { waitingPlayer } from "./event_waiting.js";
 import { eventControls } from "./event_controls.js";
+import { bindEventAudio } from "./event_audio_tracks.js";
 const lobby = document.querySelector("#eventLobby");
 const eventStatus = document.querySelector("#eventStatus");
 const player = document.querySelector("#eventPlayer");
+const audioLabel = document.querySelector("#eventAudioTrackLabel");
+const audioSelect = document.querySelector("#eventAudioTrack");
 const branding = document.querySelector("#eventBranding");
 const logo = branding.querySelector("img");
 const byline = branding.querySelector(".event-byline");
@@ -30,6 +33,7 @@ let playNextMuted;
 let checking = false;
 let hls;
 let stopMeasuring;
+let stopAudio;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
 const sharing = document.querySelector("#stopAttendeeSharing");
@@ -117,6 +121,8 @@ function renderVideo(address, phase, analytics, transport, video) {
     player.dataset.address = address;
     player.dataset.phase = phase;
     player.dataset.transport = transport;
+    stopAudio?.();
+    stopAudio = undefined;
     hls?.destroy();
     hls = undefined;
     if (!video) {
@@ -158,12 +164,14 @@ function renderVideo(address, phase, analytics, transport, video) {
             liveDurationInfinity: true,
             liveSyncDurationCount: liveSegments,
         });
+        stopAudio = bindEventAudio(audioLabel, audioSelect, session);
         session.loadSource(address);
         session.attachMedia(video);
         hls = session;
         captions.bind(video, replay ? replayDate : () => session.playingDate?.getTime() ?? null, replay);
     }
     else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        stopAudio = bindEventAudio(audioLabel, audioSelect, video);
         video.src = address;
         const native = video;
         captions.bind(video, replay ? replayDate :
@@ -179,6 +187,8 @@ function closePlayer() {
     captions.bind();
     captions.select("");
     controls.reset();
+    stopAudio?.();
+    stopAudio = undefined;
     hls?.destroy();
     hls = undefined;
     player.dataset.address = "";
