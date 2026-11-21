@@ -150,6 +150,35 @@ def verify_woocommerce_player(iframe, expected_src):
     assert result["currentTime"] > 0
 
 
+def select_in_cueporch_picker(ap, base, operator, uid):
+    with ap.expect_popup() as pi:
+        ap.locator('#cueporchChooseVideo').click()
+    popup = pi.value
+    auth = popup.locator('#pickerKey')
+    expect(auth).to_be_visible()
+    auth.fill('wrong')
+    with popup.expect_response(lambda response: response.url == f'{base}/api/library') as rejected:
+        popup.locator('#pickerAuth button').click()
+    assert rejected.value.status in (401, 403)
+    expect(popup.locator('#pickerStatus')).to_contain_text('Session expired')
+    expect(popup.locator('#pickerLibrary')).to_be_hidden()
+    auth.fill(operator)
+    popup.locator('#pickerAuth button').click()
+    expect(popup.locator('#pickerLibrary')).to_be_visible()
+    popup.locator('#pickerSearch').fill('Embed clip')
+    destination = urlparse(ap.url).scheme + '://' + urlparse(ap.url).netloc
+    expect(popup.locator('#pickerDestination')).to_have_text(destination)
+    embed = f'{base}/embed/work/{uid}'
+    before = ap.locator("#_cueporch_video_urls").input_value()
+    ap.evaluate("""() => { window.__cpMsg = null; window.__cpPromise = new Promise(r => window.addEventListener('message', e => { window.__cpMsg = e.data; r(); }, { once: true })); }""")
+    popup.evaluate("([data, destination]) => window.opener.postMessage(data, destination)", [{"type": "cueporch-wordpress-selected", "request": "wrong", "embedUrl": embed}, destination])
+    ap.wait_for_function("() => window.__cpMsg && window.__cpMsg.type === 'cueporch-wordpress-selected' && window.__cpMsg.request === 'wrong'")
+    expect(ap.locator("#_cueporch_video_urls")).to_have_value(before)
+    with popup.expect_event('close'):
+        popup.get_by_role('button', name='Choose Embed clip', exact=False).click()
+    expect(ap.locator('#_cueporch_video_urls')).to_have_value(embed)
+
+
 def verify_storefront(browser, storefront, product_id, base, operator, uid):
     user = os.environ["CUEPORCH_WOO_USERNAME"]
     pwd = os.environ["CUEPORCH_WOO_PASSWORD"]
@@ -171,7 +200,11 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid):
 
         for mode in ("tab", "before", "after"):
             ap.goto(f"{storefront}/wp-admin/post.php?post={product_id}&action=edit")
-            ap.fill("#_cueporch_video_urls", watch)
+            if mode == "tab":
+                ap.fill("#_cueporch_video_urls", "")
+                select_in_cueporch_picker(ap, base, operator, uid)
+            else:
+                ap.fill("#_cueporch_video_urls", watch)
             ap.locator("#_cueporch_video_placement").select_option(mode)
             ap.click("#publish")
             expect(ap.locator("#message.updated, .notice-success").first).to_be_visible()

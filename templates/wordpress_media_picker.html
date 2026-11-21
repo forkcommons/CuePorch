@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Choose a CuePorch video</title>
+    <link rel="stylesheet" href="/static/cueporch.css" />
+  </head>
+  <body>
+    <main class="cue-picker">
+      <h1>Choose a CuePorch video</h1>
+
+      <p class="cue-picker-destination">
+        Destination <span id="pickerDestination"></span>
+      </p>
+      <p
+        id="pickerStatus"
+        class="cue-picker-status"
+        role="status"
+        aria-live="polite"
+      >
+        Checking session…
+      </p>
+
+      <form id="pickerAuth" hidden class="cue-picker-auth" method="post">
+        <label for="pickerKey">Operator credential</label>
+        <input
+          id="pickerKey"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <button type="submit">Open library</button>
+      </form>
+
+      <section id="pickerLibrary" class="cue-picker-library" hidden>
+        <label for="pickerSearch">Search videos</label>
+        <input
+          id="pickerSearch"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p class="cue-picker-alert" role="alert">
+          Choosing a video shares its player URL with the destination shown
+          above.
+        </p>
+        <ul id="pickerResults" class="cue-picker-results"></ul>
+      </section>
+    </main>
+    <script type="module" src="/static/ui/wordpress_media_picker.js"></script>
+  </body>
+</html>
