@@ -125,3 +125,41 @@ function cueporch_woo_video_after_thumbnails() {
     echo cueporch_woo_gallery_slides($product);
 }
 add_action('woocommerce_product_thumbnails', 'cueporch_woo_video_after_thumbnails', 99);
+
+function cueporch_woo_block_gallery_product($block) {
+    if (is_admin() || !is_product()) {
+        return null;
+    }
+    $id = (int) ($block->context['postId'] ?? 0);
+    if ($id <= 0 || $id !== get_queried_object_id() || post_password_required($id)) {
+        return null;
+    }
+    $product = wc_get_product($id);
+    return $product instanceof WC_Product ? $product : null;
+}
+
+function cueporch_woo_render_block_gallery(string $html, array $parsed, $block): string {
+    if ($html === '') {
+        return $html;
+    }
+    $product = cueporch_woo_block_gallery_product($block);
+    if (!$product) {
+        return $html;
+    }
+    $placement = (string) $product->get_meta('_cueporch_video_placement');
+    if (!in_array($placement, ['before', 'after'], true)) {
+        return $html;
+    }
+    $urls = cueporch_woo_product_video_urls($product);
+    if (empty($urls)) {
+        return $html;
+    }
+    $videos = '';
+    foreach ($urls as $i => $url) {
+        $videos .= cueporch_woo_render_player($url, $i + 1);
+    }
+    $label = esc_attr__('Product videos', 'cueporch-video');
+    $section = '<section class="cueporch-block-product-videos" aria-label="' . $label . '">' . $videos . '</section>';
+    return $placement === 'before' ? $section . $html : $html . $section;
+}
+add_filter('render_block_woocommerce/product-gallery', 'cueporch_woo_render_block_gallery', 10, 3);

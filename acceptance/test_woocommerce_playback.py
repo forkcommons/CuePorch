@@ -195,6 +195,17 @@ def select_in_cueporch_picker(ap, base, operator, uid, clip):
     expect(ap.locator('#_cueporch_video_urls')).to_have_value(embed)
 
 
+def verify_block_gallery(page, mode):
+    video_region = page.locator('.cueporch-block-product-videos')
+    gallery = page.locator('.wp-block-woocommerce-product-gallery')
+    expect(video_region).to_have_count(1)
+    expect(gallery).to_have_count(1)
+    expect(gallery.locator('img').first).to_be_visible()
+    after = gallery.evaluate("g => !!(g.compareDocumentPosition(document.querySelector('.cueporch-block-product-videos')) & Node.DOCUMENT_POSITION_FOLLOWING)")
+    assert after == (mode == 'after'), f'Block gallery order disagrees with {mode}'
+    return video_region.locator('iframe')
+
+
 def verify_storefront(browser, storefront, product_id, base, operator, uid, clip):
     user = os.environ["CUEPORCH_WOO_USERNAME"]
     pwd = os.environ["CUEPORCH_WOO_PASSWORD"]
@@ -214,7 +225,9 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid, clip
         ap.click("#submit")
         expect(ap.locator("#cueporch_woo_origin")).to_have_value(base)
 
-        for mode in ("tab", "before", "after"):
+        block_gallery = os.environ.get("CUEPORCH_WOO_BLOCK_GALLERY") == "1"
+        modes = ("before", "after") if block_gallery else ("tab", "before", "after")
+        for mode in modes:
             ap.goto(f"{storefront}/wp-admin/post.php?post={product_id}&action=edit")
             if mode == "tab":
                 ap.fill("#_cueporch_video_urls", "")
@@ -227,7 +240,9 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid, clip
 
             gp = guest.new_page()
             gp.goto(f"{storefront}/?post_type=product&p={product_id}")
-            if mode == "tab":
+            if block_gallery:
+                iframe = verify_block_gallery(gp, mode)
+            elif mode == "tab":
                 gp.click('a[href="#tab-cueporch_videos"]')
                 iframe = gp.locator("#tab-cueporch_videos iframe").first
             else:
