@@ -84,6 +84,11 @@ const facebookForm = element("addFacebookLiveDestination");
 const facebookPage = element("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookStatus = element("facebookLiveStatus");
+const linkedinForm = element("linkedinLiveSchedule");
+const linkedinCompany = element("linkedinLiveCompany");
+const linkedinSubmit = button("scheduleLinkedinLive");
+const linkedinStatus = element("linkedinLiveStatus");
+const linkedinPost = element("linkedinLivePost");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const backupKey = input("backupEncoderKey");
@@ -310,6 +315,12 @@ function choose(event, instance) {
     facebookPage.replaceChildren();
     facebookSubmit.disabled = true;
     facebookStatus.textContent = "";
+    linkedinForm.hidden = true;
+    linkedinCompany.replaceChildren();
+    linkedinSubmit.disabled = true;
+    linkedinStatus.textContent = "";
+    linkedinPost.hidden = true;
+    linkedinPost.removeAttribute("href");
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -847,6 +858,7 @@ async function refreshDestinations(result) {
     destinationForm.hidden = !result.available;
     youtubePanel.hidden = !result.available;
     facebookForm.hidden = !result.available;
+    linkedinForm.hidden = !result.available;
     destinationStatus.textContent = result.available ? "" : "Destinations require an event open to the public without registration.";
     const labels = {
         waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
@@ -982,6 +994,53 @@ facebookForm.onsubmit = event => {
         }
         finally {
             facebookSubmit.disabled = !facebookPage.options.length;
+        }
+    });
+};
+button("loadLinkedinCompany").onclick = () => void action(async () => {
+    const selection = active;
+    if (!selection)
+        return;
+    linkedinCompany.replaceChildren();
+    linkedinSubmit.disabled = true;
+    const company = await request("/api/integrations/linkedin-live/company");
+    if (selection !== active)
+        return;
+    linkedinCompany.append(new Option("Company Page " + company.id, company.id));
+    linkedinSubmit.disabled = false;
+});
+linkedinForm.onsubmit = event => {
+    event.preventDefault();
+    const selection = active;
+    if (!selection || linkedinSubmit.disabled || !linkedinCompany.value)
+        return;
+    const path = mediaPath("destinations/linkedin/schedule");
+    const company = linkedinCompany.value;
+    void action(async () => {
+        linkedinSubmit.disabled = true;
+        linkedinStatus.textContent = "";
+        linkedinPost.hidden = true;
+        linkedinPost.removeAttribute("href");
+        try {
+            const result = await request(path, "POST", { company });
+            if (selection !== active)
+                return;
+            const urn = result.post_urn ?? "";
+            if (result.state === "scheduled" && /^urn:li:ugcPost:[0-9]{1,30}$/.test(urn)) {
+                linkedinStatus.textContent = "Announced on LinkedIn. Set up the stream in LinkedIn Live Studio.";
+                linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
+                linkedinPost.hidden = false;
+            }
+            else if (result.state === "pending") {
+                linkedinStatus.textContent = "Another request is scheduling this occurrence.";
+            }
+            else {
+                linkedinStatus.textContent = "LinkedIn did not confirm the announcement. Check the Company Page.";
+            }
+        }
+        finally {
+            if (selection === active)
+                linkedinSubmit.disabled = !linkedinCompany.value;
         }
     });
 };

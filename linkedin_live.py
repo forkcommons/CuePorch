@@ -2,8 +2,10 @@
 
 from dataclasses import replace
 import os
+import re
 
 from flask import abort
+from werkzeug.exceptions import HTTPException
 
 import linkedin_upload
 import team_accounts
@@ -13,8 +15,16 @@ from workspace_oauth import Connection, response_object
 OAUTH = replace(linkedin_upload.OAUTH, key="linkedin-live", name="LinkedIn Live",
                 scope="r_organization_live w_organization_live r_organization_admin")
 API = "https://api.linkedin.com/rest"
+V2_API = "https://api.linkedin.com/v2"
+V2_HEADERS = {"X-Restli-Protocol-Version": "2.0.0"}
+LIVE_VIDEO_ID = re.compile(r"[0-9]{1,20}")
+ANNOUNCEMENT_URN = re.compile(r"urn:li:ugcPost:[0-9]{1,30}")
 PAGE_SIZE = 10
 PAGE_LIMIT = 20
+
+
+class LinkedInWriteUnconfirmed(Exception):
+    """LinkedIn may have applied a write without confirming its identifier."""
 
 
 class LiveConnection(Connection):
@@ -54,3 +64,42 @@ class LiveConnection(Connection):
             if not any(isinstance(link, dict) and link.get("rel") == "next" for link in links):
                 abort(403, "The connected LinkedIn member is not an approved administrator of the configured Page.")
         abort(502, "LinkedIn Page permission lookup reached its page limit.")
+
+    def _post_id(self, revision, resource, payload, before_send, id_format):
+        try:
+            with self.api(revision, "POST", V2_API + resource, headers=V2_HEADERS,
+                          before_send=before_send, json=payload) as response:
+                status = response.status_code
+                if status == 201:
+                    identifier = response.headers.get("x-restli-id", "")
+                    if id_format.fullmatch(identifier):
+                        return identifier
+                elif 400 <= status < 500 and status != 408:
+                    linkedin_upload.denied(response)
+                raise LinkedInWriteUnconfirmed
+        except HTTPException as error:
+            if error.code == 502:
+                raise LinkedInWriteUnconfirmed from error
+            raise
+
+    def create_scheduled(self, revision, owner, title, start_ms, before_send):
+        payload = {"author": {"organization": owner}, "scheduledAt": start_ms, "name": title}
+        return self._post_id(revision, "/liveVideos", payload, before_send, LIVE_VIDEO_ID)
+
+    def announce_scheduled(self, revision, owner, video_id, title, before_send):
+        payload = {
+            "author": owner,
+            "lifecycleState": "PUBLISHED",
+            "specificContent": {"com.linkedin.ugc.ShareContent": {
+                "media": [{"media": "urn:li:liveVideo:" + video_id, "status": "READY"}],
+                "shareCommentary": {"text": title},
+                "shareMediaCategory": "URN_REFERENCE",
+            }},
+            "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "externalDistributionChannels": [],
+                "distributedViaFollowFeed": True,
+            },
+        }
+        return self._post_id(revision, "/ugcPosts", payload, before_send, ANNOUNCEMENT_URN)

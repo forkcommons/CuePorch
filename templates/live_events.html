@@ -482,6 +482,13 @@
           <button type="submit" id="prepareFacebookLive" disabled>Prepare Facebook Live</button>
           <p id="facebookLiveStatus" role="status"></p>
         </form>
+        <form id="linkedinLiveSchedule" hidden>
+          <button type="button" id="loadLinkedinCompany">Load LinkedIn Company Page</button>
+          <label>LinkedIn Live Company Page <select id="linkedinLiveCompany"></select></label>
+          <button type="submit" id="scheduleLinkedinLive" disabled>Schedule and announce on LinkedIn</button>
+          <p id="linkedinLiveStatus" role="status"></p>
+          <a id="linkedinLivePost" hidden>View LinkedIn announcement</a>
+        </form>
         <form id="addDestination">
           <label>Destination type <select name="preset">
             <option value="custom">Custom RTMP or RTMPS</option>

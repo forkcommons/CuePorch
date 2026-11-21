@@ -516,7 +516,7 @@ def overlapping(entries):
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
              sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, youtube_live_connection,
-             facebook_live_connection, marketo=None):
+             facebook_live_connection, linkedin_live_connection, marketo=None):
     marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
@@ -1598,7 +1598,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
     event_simulcast.register(
         app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing,
-        youtube_live_connection, facebook_live_connection, provider_creation_access,
+        youtube_live_connection, facebook_live_connection, linkedin_live_connection, provider_creation_access,
     )
 
     def released_previews(con):
