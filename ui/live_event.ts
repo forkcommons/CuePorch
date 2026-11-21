@@ -3,10 +3,13 @@ import {measureEventPlayback} from "./event_playback.js";
 import {measurePeerEventPlayback} from "./peer_event_playback.js";
 import {waitingPlayer, type BeforeEvent} from "./event_waiting.js";
 import {eventControls, type EventAppearance} from "./event_controls.js";
+import {bindEventAudio, type HlsAudioSource} from "./event_audio_tracks.js";
 
 const lobby = document.querySelector<HTMLElement>("#eventLobby")!;
 const eventStatus = document.querySelector<HTMLElement>("#eventStatus")!;
 const player = document.querySelector<HTMLElement>("#eventPlayer")!;
+const audioLabel = document.querySelector<HTMLLabelElement>("#eventAudioTrackLabel")!;
+const audioSelect = document.querySelector<HTMLSelectElement>("#eventAudioTrack")!;
 const branding = document.querySelector<HTMLElement>("#eventBranding")!;
 const logo = branding.querySelector("img")!;
 const byline = branding.querySelector<HTMLElement>(".event-byline")!;
@@ -42,7 +45,8 @@ let playNextMuted: boolean | undefined;
 let checking = false;
 let hls: HlsClient | undefined;
 let stopMeasuring: (() => void) | undefined;
-interface HlsClient {
+let stopAudio: (() => void) | undefined;
+interface HlsClient extends HlsAudioSource {
   readonly playingDate: Date | null;
   readonly liveSyncPosition: number | null;
   loadSource(url: string): void;
@@ -136,6 +140,8 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
   player.dataset.address = address;
   player.dataset.phase = phase;
   player.dataset.transport = transport;
+  stopAudio?.();
+  stopAudio = undefined;
   hls?.destroy();
   hls = undefined;
   if (!video) {
@@ -175,11 +181,13 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
       liveDurationInfinity: true,
       liveSyncDurationCount: liveSegments,
     });
+    stopAudio = bindEventAudio(audioLabel, audioSelect, session);
     session.loadSource(address);
     session.attachMedia(video);
     hls = session;
     captions.bind(video, replay ? replayDate : () => session.playingDate?.getTime() ?? null, replay);
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    stopAudio = bindEventAudio(audioLabel, audioSelect, video);
     video.src = address;
     const native = video as HTMLVideoElement & {getStartDate?(): Date};
     captions.bind(video, replay ? replayDate :
@@ -195,6 +203,8 @@ function closePlayer() {
   captions.bind();
   captions.select("");
   controls.reset();
+  stopAudio?.();
+  stopAudio = undefined;
   hls?.destroy();
   hls = undefined;
   player.dataset.address = "";

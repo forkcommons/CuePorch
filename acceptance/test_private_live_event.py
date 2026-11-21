@@ -5,9 +5,12 @@ import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
+from time import monotonic
 from unittest.mock import Mock, patch
 
+import requests
 from browser import chromium
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
@@ -15,6 +18,7 @@ from werkzeug.serving import make_server
 import library_events
 from event_media import Gateway, local_hls
 from institution import create_app
+from installed_audio_tracks import SAMPLE_AUDIO
 from installed_events import play_event
 from test_drive_import import QuietHandler, service_worker
 
@@ -23,6 +27,52 @@ PEER = "https://peer.example"
 REMOTE = "private-fixture"
 TEAM = {"X-CuePorch-Team": "1"}
 WATCH = "/events/private-rehearsal"
+
+
+def audio_fixture(directory):
+    def run(cmd):
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", *cmd],
+            check=True, timeout=60,
+        )
+
+    hls = ["-f", "hls", "-hls_time", "1", "-hls_playlist_type", "vod",
+           "-hls_segment_type", "mpegts"]
+
+    run([
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "14",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30", "-sc_threshold", "0",
+        "-an", *hls, "-hls_segment_filename", str(directory / "0-%d.ts"), str(directory / "0.m3u8"),
+    ])
+    for idx, freq in ((1, 440), (2, 880)):
+        run([
+            "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100",
+            "-t", "14", "-c:a", "aac", "-ac", "1", "-b:a", "64k", "-vn",
+            *hls, "-hls_segment_filename", str(directory / f"{idx}-%d.ts"),
+            str(directory / f"{idx}.m3u8"),
+        ])
+
+    (directory / "master.m3u8").write_text("\n".join([
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",'
+        'DEFAULT=YES,AUTOSELECT=YES,URI="1.m3u8"',
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="Spanish",LANGUAGE="es",'
+        'DEFAULT=NO,AUTOSELECT=YES,URI="2.m3u8"',
+        '#EXT-X-STREAM-INF:BANDWIDTH=800000,CODECS="avc1.42c01e,mp4a.40.2",AUDIO="aud"',
+        "0.m3u8",
+        "",
+    ]), encoding="ascii")
+
+
+def hear_frequency(page, frequency):
+    video = page.locator("#eventPlayer video")
+    video.evaluate("video => { video.muted = false; }")
+    deadline = monotonic() + 5
+    measured = video.evaluate(SAMPLE_AUDIO)
+    while abs(measured - frequency) > 24 and monotonic() < deadline:
+        measured = video.evaluate(SAMPLE_AUDIO)
+    assert abs(measured - frequency) <= 24, (measured, frequency)
 
 
 class PrivateLiveEventTest(unittest.TestCase):
@@ -136,6 +186,7 @@ class PrivateLiveEventTest(unittest.TestCase):
                 page = team.new_page()
                 playlist, width, _ = play_event(page, stable, "Live")
                 self.assertEqual(width, 320)
+                expect(page.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
                 segment = playlist.rsplit("/", 1)[0] + "/0-0.ts"
                 self.assertEqual(team.request.get(segment).status, 200)
                 for address in (playlist, segment):
@@ -161,6 +212,77 @@ class PrivateLiveEventTest(unittest.TestCase):
                 self.assertEqual(logout.status, 204)
                 for address in (stable, stable + "/embed", segment, replay):
                     self.assertEqual(team.request.get(address).status, 404)
+
+
+    def test_private_live_audio_switching_and_replay_are_team_only(self):
+        created = self.create_event("private-audio", "private")
+        event, opens = created["id"], created["occurrences"][0]["id"]
+        invitation = self.invite()
+        audio_fixture(self.root)
+        with self.tx() as con:
+            con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)", (event, opens, PEER, REMOTE, "ready"))
+
+        metadata = {
+            "isLive": True, "privacy": {"id": 3}, "state": {"id": 1},
+            "streamingPlaylists": [{
+                "type": 1,
+                "playlistUrl": f"{PEER}/static/streaming-playlists/hls/private/{REMOTE}/master.m3u8",
+            }],
+        }
+
+        def local_read(origin, path, byte_range=None, stream=False):
+            name = path.rsplit("/", 1)[-1]
+            data = (self.root / name).read_bytes()
+            response = requests.Response()
+            response.status_code = 200
+            response.headers.update({"Content-Length": str(len(data)), "Accept-Ranges": "bytes"})
+            response.raw = BytesIO(data)
+            response._content = data
+            return response
+
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        base = f"http://127.0.0.1:{server.server_port}"
+        stable = base + "/events/private-audio"
+        with (
+            service_worker(server), sync_playwright() as pw,
+            chromium(pw, args=["--autoplay-policy=no-user-gesture-required"]) as browser,
+        ):
+            team = browser.new_context()
+            anon = browser.new_context()
+            joined = team.request.post(base + "/api/team/join", headers=TEAM, data={
+                "invitation": invitation, "name": "Audio Viewer", "password": "viewer-password",
+            })
+            self.assertEqual(joined.status, 201, joined.text())
+            with patch.object(Gateway, "metadata", return_value=metadata), patch.object(
+                Gateway, "read", side_effect=local_read,
+            ):
+                page = team.new_page()
+                playlist, width, _ = play_event(page, stable, "Live")
+                self.assertEqual(width, 320)
+                page.evaluate("() => { window.__eventVideo = document.querySelector('#eventPlayer video'); }")
+                track = page.get_by_role("combobox", name="Audio track")
+                expect(track).to_be_visible(timeout=2500)
+                expect(track.locator("option:checked")).to_have_text("English")
+                hear_frequency(page, 440)
+                before = page.evaluate("() => document.querySelector('#eventPlayer video').currentTime")
+                track.select_option(label="Spanish")
+                hear_frequency(page, 880)
+                after = page.evaluate("() => document.querySelector('#eventPlayer video').currentTime")
+                self.assertGreater(after, before)
+                self.assertTrue(page.evaluate("() => window.__eventVideo === document.querySelector('#eventPlayer video')"))
+                alt = playlist.replace("master.m3u8", "1.m3u8")
+                self.assertEqual(team.request.get(alt).status, 200)
+                self.assertEqual(anon.request.get(alt).status, 404)
+                self.release_replay(event, opens)
+                metadata["isLive"] = False
+                replay, width, _ = play_event(page, stable, "Replay")
+                self.assertEqual(width, 320)
+                track = page.get_by_role("combobox", name="Audio track")
+                expect(track).to_be_visible(timeout=2500)
+                self.assertEqual(track.locator("option").all_text_contents(), ["English", "Spanish"])
+                track.select_option(label="Spanish")
+                hear_frequency(page, 880)
+                self.assertEqual(anon.request.get(replay).status, 404)
 
 
 if __name__ == "__main__":
