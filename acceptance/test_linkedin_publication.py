@@ -23,9 +23,11 @@ from werkzeug.serving import make_server
 
 from browser import chromium
 from test_drive_import import QuietHandler, service_worker
+from youtube_rtmps_fixture import check_destination_rtmps
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
+import event_simulcast
 import linkedin_live
 import linkedin_upload as linkedin
 import social_publication
@@ -63,6 +65,13 @@ class LinkedInPublication(unittest.TestCase):
             page_offsets = []
             scheduled_videos = []
             announcement_writes = []
+            ingests = []
+            links = []
+            ends = []
+            sending = set()
+            ready_to_link = set()
+            status_requests = []
+            asset = "urn:li:digitalmediaAsset:Fixture123"
             operator = secrets.token_urlsafe(32)
 
             def signed_request(method, url, **kwargs):
@@ -83,7 +92,7 @@ class LinkedInPublication(unittest.TestCase):
                 "CUEPORCH_LINKEDIN_CLIENT_SECRET": "fixture-secret", "CUEPORCH_LINKEDIN_COMPANY_ID": "12345",
                 "CUEPORCH_LINKEDIN_LIVE_CLIENT_ID": "cueporch-live",
                 "CUEPORCH_LINKEDIN_LIVE_CLIENT_SECRET": "fixture-live-secret",
-                "CUEPORCH_LINKEDIN_LIVE_COMPANY_ID": "12345",
+                "CUEPORCH_LINKEDIN_LIVE_COMPANY_ID": "12345", "CUEPORCH_LINKEDIN_LIVE_REGION": "WEST_US",
             }))
 
             def start_app():
@@ -180,6 +189,44 @@ class LinkedInPublication(unittest.TestCase):
                 if len(announcement_writes) == 2:
                     return "", 503
                 return "", 201, {"x-restli-id": "urn:li:ugcPost:2222"}
+
+            @remote.post("/v2/liveAssetActions")
+            def live_ingest():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                action = request.args["action"]
+                if action == "register":
+                    assert request.json == {"registerLiveEventRequest": {
+                        "owner": owner, "recipes": [linkedin_live.LIVE_RECIPE], "region": "WEST_US",
+                    }}
+                    ingests.append(asset)
+                    return dict(value=dict(asset=asset, ingestUrls=[
+                        dict(ingestProtocol="RTMPS", url="rtmps://127.0.0.1/live/invalid-provider-url"),
+                        dict(ingestProtocol="RTMPS", url="rtmps://live-ingest.linkedin.com:443/live/fixture-linkedin-key"),
+                    ]))
+                assert action == "end" and request.json == {"asset": asset}
+                ends.append(asset)
+                return "", 200
+
+            @remote.get("/v2/assets/Fixture123")
+            def ingest_status():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                status_requests.append(asset)
+                return dict(recipes=[dict(recipe=linkedin_live.LIVE_RECIPE,
+                                          status="AVAILABLE" if ready_to_link else "PROCESSING")])
+
+            @remote.get("/v2/liveVideos/1111")
+            def current_ingest():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                return dict(id=1111, liveVideoAsset={"media": asset} if links else None)
+
+            @remote.post("/v2/liveVideos/1111")
+            def link_ingest():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                assert request.headers["X-Restli-Method"] == "PARTIAL_UPDATE"
+                assert request.json == {"patch": {"$set": {"liveVideoAsset": {"media": asset}}}}
+                assert sending and ready_to_link
+                links.append(asset)
+                return "", 503
 
             @remote.post("/rest/videos")
             def videos():
@@ -333,7 +380,7 @@ class LinkedInPublication(unittest.TestCase):
                 expect(page.get_by_text("Company Page 12345", exact=True)).to_be_visible()
                 self.assertEqual([0, 10, 0, 10], page_offsets)
                 self.assertNotIn("fixture-linkedin-live", api.get(base + "/api/integrations", headers=auth).text())
-                starts = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(second=0, microsecond=0)
+                starts = (datetime.now(timezone.utc) + timedelta(minutes=8)).replace(second=0, microsecond=0)
                 event = dict(title="LinkedIn Live rehearsal", slug="linkedin-live-rehearsal", visibility="public",
                              type="live", latency="standard", save_replay=False,
                              schedule=dict(timezone="UTC", repeat="days", count=2,
@@ -364,7 +411,9 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual([int(starts.timestamp()) * 1000], scheduled_videos)
                 self.assertEqual(["urn:li:liveVideo:1111"], announcement_writes)
                 self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
-                held = api.post(base + "/api/live-events", headers=auth, data=event | {"slug": "held-linkedin-live"})
+                held = api.post(base + "/api/live-events", headers=auth, data=event | {
+                    "slug": "held-linkedin-live", "title": "Held LinkedIn Live rehearsal",
+                })
                 self.assertTrue(held.ok, held.text())
                 hold = held.json()
                 pending = hold["occurrences"][0]["id"]
@@ -383,6 +432,59 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual([int(starts.timestamp()) * 1000,
                                   int((starts + timedelta(days=1)).timestamp()) * 1000], scheduled_videos)
                 self.assertEqual(["urn:li:liveVideo:1111", "urn:li:liveVideo:1112"], announcement_writes)
+                targets = schedule_path.removesuffix("/linkedin/schedule")
+                prepare = targets + "/linkedin/prepare"
+                page.goto(base + "/operator/live-events")
+                page.get_by_role("button", name="Open production for LinkedIn Live rehearsal", exact=False).first.click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Prepare LinkedIn delivery", exact=True).click()
+                expect(page.locator("#linkedinLiveStatus")).to_contain_text("CuePorch will publish")
+                repeated = api.post(prepare, headers=auth, data={})
+                self.assertEqual(200, repeated.status, repeated.text())
+                self.assertEqual([asset], ingests)
+                self.assertEqual(409, api.post(next_path.removesuffix("/schedule") + "/prepare",
+                                               headers=auth, data={}).status)
+                destination = repeated.json()["id"]
+                roster = api.get(targets, headers=auth)
+                self.assertNotIn("fixture-linkedin-key", roster.text() + page.content())
+                self.assertEqual("registered", roster.json()["destinations"][0]["provider_phase"])
+                with closing(sqlite3.connect(database)) as db:
+                    secret, = db.execute("SELECT secret FROM live_simulcast_destination WHERE id=?",
+                                         (destination,)).fetchone()
+                self.assertNotIn(b"fixture-linkedin-key", secret)
+                check_destination_rtmps(root, database, destination, operator,
+                                        "rtmps://live-ingest.linkedin.com:443/live", "fixture-linkedin-key",
+                                        "linkedin-live")
+                sending.add(destination)
+                with patch.object(event_simulcast.Simulcast, "state",
+                                  lambda _self, uid, opens, dest: "sending" if dest in sending else "waiting"):
+                    deadline = monotonic() + 8
+                    while not status_requests and monotonic() < deadline:
+                        sleep(.05)
+                    self.assertTrue(status_requests)
+                    self.assertEqual([], links)
+                    ready_to_link.add(asset)
+                    deadline = monotonic() + 10
+                    while monotonic() < deadline:
+                        rows = api.get(targets, headers=auth).json()["destinations"]
+                        if rows[0]["provider_phase"] == "bound":
+                            break
+                        sleep(.1)
+                    self.assertEqual("bound", rows[0]["provider_phase"])
+                    self.assertEqual([asset], links)
+                page.get_by_role("button", name="Turn off LinkedIn Live", exact=True).click()
+                deadline = monotonic() + 18
+                received_state = []
+                while monotonic() < deadline:
+                    received_state = api.get(targets, headers=auth).json()["destinations"]
+                    if received_state[0]["provider_phase"] == "ended":
+                        break
+                    sleep(.1)
+                self.assertEqual([asset], ends)
+                self.assertEqual("ended", received_state[0]["provider_phase"])
+                self.assertEqual(409, api.put(targets + "/" + destination, headers=auth, data={"enabled": True}).status)
+                self.assertEqual([asset], ingests)
+                self.assertEqual([asset], links)
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect LinkedIn Live", exact=True)).to_be_visible()
@@ -398,6 +500,7 @@ class LinkedInPublication(unittest.TestCase):
               " exact playback, ambiguous post result and disconnect passed.")
         print("Separate LinkedIn Live grant, paginated Page admin verification, and independent disconnect passed.")
         print("LinkedIn Live Company Page browser scheduling, public announcement, optional approval and restart passed.")
+        print("LinkedIn Live verified encrypted ingest, local RTMPS playback, provider-ready binding and end.")
 
 
 if __name__ == "__main__":

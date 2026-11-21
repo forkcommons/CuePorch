@@ -64,7 +64,7 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   logo: string | null; logo_image: string | null; byline: string;
   show_live_badge: boolean; show_viewers: boolean;
 }
-interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null; provider?: string | null; preset?: string | null;}
+interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null; provider?: string | null; preset?: string | null; provider_phase?: string | null;}
 interface Destinations {available: boolean; destinations: Destination[];}
 interface YouTubeBroadcast {id: string; title: string; channel: string; starts: string; privacy: string;}
 interface YouTubeBroadcasts {items: YouTubeBroadcast[]; next: string | null;}
@@ -926,6 +926,8 @@ async function refreshDestinations(result?: Destinations) {
   const labels: Record<string, string> = {
     waiting: "Waiting for live signal", connecting: "Connecting", sending: "Sending",
     retrying: "Reconnecting", disabled: "Off", disconnected: "Disconnected",
+    bound: "Live on LinkedIn", closing: "Ending on LinkedIn", ended: "Ended",
+    end_unconfirmed: "End unconfirmed on LinkedIn",
   };
   const presetLabels: Record<string, string> = {
     instagram: "Instagram Live", tiktok: "TikTok LIVE", x: "X Live", linkedin: "LinkedIn Live",
@@ -934,13 +936,17 @@ async function refreshDestinations(result?: Destinations) {
     const row = document.createElement("li");
     const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
       : item.provider === "facebook-live" ? " · Facebook Live for this date"
+      : item.provider === "linkedin-live" ? " · LinkedIn Live for this date"
       : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
-    row.textContent = `${item.name}${scope} · ${item.server} · ${labels[item.state] || item.state}`;
+    const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
+      ? item.provider_phase : item.state;
+    row.textContent = `${item.name}${scope} · ${item.server} · ${labels[state] || state}`;
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = item.enabled ? "Turn off" : "Turn on";
     control.setAttribute("aria-label", `Turn ${item.enabled ? "off" : "on"} ${item.name}`);
-    control.disabled = item.state === "disconnected" || (!item.enabled && !result!.available);
+    control.disabled = item.state === "disconnected"
+      || (!item.enabled && (!result!.available || item.provider === "linkedin-live"));
     control.onclick = () => void action(async () => {
       await request(mediaPath(`destinations/${item.id}`), "PUT", {enabled: !item.enabled});
       await refreshDestinations();
@@ -1086,6 +1092,34 @@ linkedinForm.onsubmit = event => {
     }
   });
 };
+button("prepareLinkedinLive").onclick = () => void action(async () => {
+  const selection = active;
+  const control = button("prepareLinkedinLive");
+  if (!selection || control.disabled) return;
+  const path = mediaPath("destinations/linkedin/prepare");
+  control.disabled = true;
+  try {
+    const result = await request<{state: string}>(path, "POST", {});
+    if (selection !== active) return;
+    switch (result.state) {
+      case "prepared":
+        linkedinStatus.textContent = "Ready. CuePorch will publish once LinkedIn confirms the live signal.";
+        await refreshDestinations();
+        break;
+      case "pending":
+        linkedinStatus.textContent = "Another request is preparing this stream.";
+        break;
+      case "closing":
+      case "ended":
+        linkedinStatus.textContent = "This LinkedIn Live stream has ended or is ending.";
+        break;
+      default:
+        linkedinStatus.textContent = "LinkedIn did not confirm this stream. Check LinkedIn Live Studio.";
+    }
+  } finally {
+    control.disabled = false;
+  }
+});
 destinationForm.onsubmit = event => {
   event.preventDefault();
   const values = new FormData(destinationForm);
