@@ -304,6 +304,8 @@ Select a clip or scene, then open **Photo or animated sticker**. Choose a librar
 
 **Licensed stock intake** in **Timeline editor** lets you search by category, type, mood, or genre and upload video, audio, or images privately to your shelf. Add a stock item with its license details such as CC0 1.0, CC BY 4.0 with a source link, or recorded permission with a note. A video adds a clip to the timeline, an audio item sets the background source, and an image adds a sticker to the selected clip. CuePorch retains the source and credit in the render and export and displays viewer credits where available.
 
+In the **Timeline editor**, open **Browse the stock catalog**. Filter the seven starter tracks from Scott Buckley's CC BY 4.0 library by category, mood, genre, and track type. Choose **Image** or **Video** to search Wikimedia Commons by category for CC BY 4.0 and CC0 assets. Each result shows the credit and source. Choose **Add to stock shelf**, then **Use stock media** to insert it. Commons searches contact Wikimedia, and imports download from the source into your private shelf. CuePorch keeps the credit with your render and export.
+
 ### Record Studio
 
 Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background.

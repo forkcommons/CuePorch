@@ -181,6 +181,31 @@
           <button id="timelineStockUse" type="button">Use stock media</button>
           <p id="timelineStockStatus" role="status" aria-live="polite"></p>
 
+          <details id="catalogDisclosure">
+            <summary>Browse the stock catalog</summary>
+            <form id="catalogForm" name="catalogForm">
+              <label for="catalogKind">Asset kind</label>
+              <select id="catalogKind" name="catalogKind">
+                <option value="audio" selected>Music</option>
+                <option value="image">Image</option>
+                <option value="video">Video</option>
+              </select>
+              <div><label for="catalogCategory">Category</label><select id="catalogCategory"></select></div>
+              <div><label for="catalogMood">Mood</label><select id="catalogMood"></select></div>
+              <div><label for="catalogGenre">Genre</label><select id="catalogGenre"></select></div>
+              <div><label for="catalogType">Track type</label><select id="catalogType"></select></div>
+              <label for="catalogQuery">Search the catalog</label>
+              <input id="catalogQuery" name="catalogQuery" type="text" maxlength="120">
+              <button id="catalogSearch" name="catalogSearch" type="submit">Search</button>
+              <button id="catalogNext" name="catalogNext" type="button" disabled>Next</button>
+            </form>
+            <div><label for="catalogItems">Catalog results</label><select id="catalogItems" size="5"></select></div>
+            <div id="catalogSource"></div>
+            <button id="catalogImport" name="catalogImport" type="button" disabled>Add to stock shelf</button>
+            <p id="catalogStatus" role="status"></p>
+            <p>Search Wikimedia Commons for images and video. Imported assets are private and keep their source and credit.</p>
+          </details>
+
           <details>
             <summary>Add a licensed file</summary>
             <form id="timelineStockUpload" enctype="multipart/form-data">

@@ -1489,6 +1489,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
+        signing_key=operator,
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
                                                sharing_access, hubspot, mailchimp,

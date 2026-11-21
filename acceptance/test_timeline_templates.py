@@ -33,6 +33,9 @@ class TimelineTemplates(unittest.TestCase):
     def test_stock(self):
         self.run_fixture(check_timeline_stock)
 
+    def test_stock_catalog(self):
+        self.run_fixture(check_stock_catalog)
+
     def test_stickers(self):
         self.run_fixture(check_timeline_stickers)
 
@@ -526,7 +529,88 @@ def check_timeline_stock(page, base, auth, uid, root):
     check_stock_upload_validation(base, auth, root.parent / "blue.mp4")
 
 
-def check_stock_output(base, auth, uid, root):
+def check_stock_catalog(page, base, auth, uid, root):
+    from hashlib import sha1
+    from PIL import Image
+    from stock_commons import _entry
+
+    catalog = f"{base}/api/library/stock-catalog"
+    assert requests.get(catalog, timeout=15).status_code == 403
+    assert requests.post(catalog + "/import", json={"token": "fake"}, timeout=15).status_code == 403
+    assert requests.post(catalog + "/import", headers=auth, json={"token": "fake"}, timeout=15).status_code == 422
+
+    photo = root.parent / "catalog-photo.png"
+    with Image.new("RGBA", (10, 10), "orange") as image:
+        image.save(photo)
+    source_url = "https://commons.wikimedia.org/wiki/File:Fixture_photo.png"
+    source = dict(pageid=241, title="File:Fixture photo.png", imageinfo=[dict(
+        url="https://upload.wikimedia.org/wikipedia/commons/a/a0/Fixture_photo.png?utm_source=commons.wikimedia.org",
+        descriptionurl=source_url, mime="image/png", size=photo.stat().st_size,
+        sha1=sha1(photo.read_bytes()).hexdigest(), extmetadata={
+            "Artist": {"value": "<a>Fixture Photographer</a>"},
+            "LicenseUrl": {"value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"},
+        },
+    )])
+    fixture_entry = _entry(source, "image", "Nature")
+    assert fixture_entry["url"].endswith("/Fixture_photo.png")
+    mp3 = root.parent / "catalog-soundtrack.mp3"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-codec:a", "libmp3lame", str(mp3)],
+        check=True,
+    )
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    page.get_by_text("Browse the stock catalog", exact=True).click()
+    page.locator("#catalogCategory").select_option("Background")
+    page.locator("#catalogMood").select_option("Warm")
+    page.locator("#catalogGenre").select_option("Folk")
+    page.locator("#catalogType").select_option("Vocals")
+    page.locator("#catalogQuery").fill("Glow")
+    page.locator("#catalogSearch").click()
+    options = page.locator("#catalogItems option")
+    expect(options).to_have_count(1)
+    expect(options).to_have_text("Glow")
+    page.locator("#catalogItems").select_option(label="Glow")
+    official_source = "https://www.scottbuckley.com.au/library/glow/"
+    expect(page.locator("#catalogSource")).to_contain_text("Scott Buckley")
+    expect(page.locator("#catalogSource a")).to_have_attribute("href", official_source)
+    token = page.locator("#catalogItems").input_value()
+
+    def copy_fixture(entry, target):
+        media = mp3 if entry["kind"] == "audio" else photo
+        target.write_bytes(media.read_bytes())
+
+    with patch("stock_catalog.download", side_effect=copy_fixture):
+        page.locator("#catalogImport").click()
+        expect(page.locator("#catalogStatus")).to_have_text("Added to the stock shelf.")
+        audio_id = page.locator("#timelineStockAsset").input_value()
+        repeat = requests.post(catalog + "/import", headers=auth, json={"token": token}, timeout=15)
+        assert repeat.status_code == 200, repeat.text
+        assert repeat.json() == {"id": audio_id, "asset_type": "audio", "pending": False, "visibility": "private"}
+    page.locator("#timelineStockUse").click()
+    expect(page.locator("#timelineStatus")).to_have_text("Draft saved.")
+    page.locator("#renderTimeline").click()
+    expect(page.locator("#timelineStatus")).to_have_text("New version saved.", timeout=60000)
+    check_stock_output(base, auth, uid, root, credit="Scott Buckley", source=official_source)
+
+    with (patch("stock_commons.search", return_value=([fixture_entry], None)) as commons,
+          patch("stock_catalog.download", side_effect=copy_fixture)):
+        page.locator("#catalogKind").select_option("image")
+        page.locator("#catalogCategory").select_option("Nature")
+        page.locator("#catalogQuery").fill("waterfall")
+        commons.assert_not_called()
+        page.locator("#catalogSearch").click()
+        page.locator("#catalogItems").select_option(label="Fixture photo")
+        commons.assert_called_once_with("image", "Nature", "waterfall", 0)
+        expect(page.locator("#catalogSource")).to_contain_text("Fixture Photographer")
+        expect(page.locator("#catalogSource a")).to_have_attribute("href", source_url)
+        page.locator("#catalogImport").click()
+        expect(page.locator("#catalogStatus")).to_have_text("Added to the stock shelf.")
+        expect(page.locator("#timelineStockCredit")).to_contain_text("Fixture Photographer")
+        assert page.locator("#timelineStockAsset").input_value() != audio_id
+
+
+def check_stock_output(base, auth, uid, root, credit="Studio Fixture", source="https://example.test/fixture"):
     root = Path(root)
 
     manifest_path = root / "manifest.json"
@@ -545,9 +629,9 @@ def check_stock_output(base, auth, uid, root):
     stock = [a for a in editor_assets if a.get("source") == "cueporch-stock"]
     assert len(stock) == 1, "expected exactly one cueporch-stock editor_asset"
     asset = stock[0]
-    assert asset.get("credit") == "Studio Fixture", f"unexpected credit: {asset.get('credit')!r}"
+    assert asset.get("credit") == credit, f"unexpected credit: {asset.get('credit')!r}"
     assert asset.get("license") == "CC-BY-4.0", f"unexpected license: {asset.get('license')!r}"
-    assert asset.get("source_url") == "https://example.test/fixture", (
+    assert asset.get("source_url") == source, (
         f"unexpected source_url: {asset.get('source_url')!r}"
     )
     assert not asset.get("permission_note"), f"unexpected permission_note: {asset.get('permission_note')!r}"
@@ -570,7 +654,7 @@ def check_stock_output(base, auth, uid, root):
             capture_output=True,
         )
         text = proc.stderr.decode("utf-8", errors="replace")
-        assert "Credit: Studio Fixture" in text, f"missing credit comment in {role} {sha}"
+        assert f"Credit: {credit}" in text, f"missing credit comment in {role} {sha}"
 
     orig_sha = orig_files[0]["sha256"]
     orig_path = root / "objects" / orig_sha

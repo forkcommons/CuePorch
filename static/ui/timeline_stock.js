@@ -1,5 +1,6 @@
 import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
+import { mountTimelineStockCatalog } from "./timeline_stock_catalog.js";
 function el(id) {
     const node = document.getElementById(id);
     if (!node)
@@ -217,6 +218,7 @@ export function mountTimelineStock(context) {
             uploadButton.disabled = false;
         }
     });
+    mountTimelineStockCatalog({ credential: context.credential, folder: context.folder, async available(id) { await context.refresh(); showItem(id); } });
     rebuild();
     return { rebuild };
 }

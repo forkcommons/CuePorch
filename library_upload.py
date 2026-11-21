@@ -20,6 +20,7 @@ from library_trash import hidden
 from media_tools import prepare_screening
 from review_settings import new_upload
 from stock_assets import normalize_upload
+import stock_catalog
 from team_accounts import actor_id
 
 IMAGE_INPUT = {"png": "png_pipe", "jpg": "jpeg_pipe", "jpeg": "jpeg_pipe", "webp": "webp_pipe", "gif": "gif"}
@@ -56,7 +57,7 @@ def prepare_asset(source, scratch, kind, decoder):
     return name, None
 
 
-def register(app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing):
+def register(app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing, *, signing_key):
     def check_folder(con, folder):
         if folder and (
             hidden(con, "folder", folder)
@@ -162,8 +163,11 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                         abort(409, "The upload identifier is already in use.")
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
-                if kind == "video" and not member and not authorize_import:
-                    upload_privacy(con, actor, folder, overrides)
+                if kind == "video":
+                    if stock_asset:
+                        enforce_sharing(con, settings=DEFAULTS)
+                    elif not member and not authorize_import:
+                        upload_privacy(con, actor, folder, overrides)
 
             files = [dict(role="original", path=source.name, format=fmt, name=name[:255])]
             duration = None
@@ -195,9 +199,9 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                     return upload_receipt(con, uid, prior["asset_type"]), 200
                 check_folder(con, folder)
                 if kind == "video":
-                    if authorize_import:
+                    if authorize_import or stock_asset:
                         enforce_sharing(con, settings=DEFAULTS)
-                    choices, password = ((DEFAULTS, None) if member or authorize_import
+                    choices, password = ((DEFAULTS, None) if member or authorize_import or stock_asset
                                          else upload_privacy(con, actor, folder, overrides))
                 work = prior or merge_collection(staged, root)[uid]
                 if member and work.get("source_creator") != actor:
@@ -247,4 +251,5 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
     def import_video(actor, identity, filename, folder, save, authorize):
         return ingest(actor, identity, filename, folder, save, authorize_import=authorize)
 
+    stock_catalog.register(app, staff, signing_key, ingest)
     return import_video
