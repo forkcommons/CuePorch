@@ -161,6 +161,10 @@ const linkedinCompany = element<HTMLSelectElement>("linkedinLiveCompany");
 const linkedinSubmit = button("scheduleLinkedinLive");
 const linkedinStatus = element("linkedinLiveStatus");
 const linkedinPost = element<HTMLAnchorElement>("linkedinLivePost");
+const existingLinkedinList = element<HTMLSelectElement>("existingLinkedinList");
+const existingLinkedinMore = button("existingLinkedinMore");
+const existingLinkedinChoose = button("existingLinkedinChoose");
+let existingLinkedinNext: number | null = null;
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const backupKey = input("backupEncoderKey");
@@ -394,6 +398,10 @@ function choose(event: LiveEvent, instance: Occurrence) {
   linkedinForm.hidden = true;
   linkedinCompany.replaceChildren();
   linkedinSubmit.disabled = true;
+  existingLinkedinList.replaceChildren();
+  existingLinkedinNext = null;
+  existingLinkedinMore.hidden = true;
+  existingLinkedinChoose.disabled = true;
   linkedinStatus.textContent = "";
   linkedinPost.hidden = true;
   linkedinPost.removeAttribute("href");
@@ -1092,6 +1100,45 @@ linkedinForm.onsubmit = event => {
     }
   });
 };
+async function loadLinkedinEvents(append: boolean) {
+  const selection = active;
+  if (!selection || (append && existingLinkedinNext === null)) return;
+  const start = append ? existingLinkedinNext! : 0;
+  if (!append) {
+    existingLinkedinList.replaceChildren();
+    existingLinkedinMore.hidden = true;
+    existingLinkedinChoose.disabled = true;
+    existingLinkedinNext = null;
+  }
+  const result = await request<{items: {id: string; title: string}[]; next: number | null}>(
+    mediaPath("destinations/linkedin/existing") + "?start=" + start);
+  if (selection !== active) return;
+  for (const item of result.items) {
+    const option = new Option(item.title, item.id);
+    option.dataset.start = String(start);
+    existingLinkedinList.append(option);
+  }
+  existingLinkedinNext = result.next;
+  existingLinkedinMore.hidden = result.next === null;
+  existingLinkedinChoose.disabled = !existingLinkedinList.options.length;
+  linkedinStatus.textContent = !existingLinkedinList.options.length && result.next === null
+    ? "No available LinkedIn events start at this time." : "";
+}
+button("loadExistingLinkedin").onclick = () => void action(() => loadLinkedinEvents(false));
+existingLinkedinMore.onclick = () => void action(() => loadLinkedinEvents(true));
+existingLinkedinChoose.onclick = () => void action(async () => {
+  const selection = active;
+  const option = existingLinkedinList.selectedOptions[0];
+  if (!selection || !option?.dataset.start) return;
+  const result = await request<{post_urn: string | null}>(mediaPath("destinations/linkedin/existing"),
+    "POST", {id: option.value, start: Number(option.dataset.start)});
+  if (selection !== active) return;
+  const urn = result.post_urn ?? "";
+  linkedinPost.hidden = !/^urn:li:ugcPost:[0-9]{1,30}$/.test(urn);
+  if (linkedinPost.hidden) linkedinPost.removeAttribute("href");
+  else linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
+  linkedinStatus.textContent = "Existing LinkedIn event selected.";
+});
 button("prepareLinkedinLive").onclick = () => void action(async () => {
   const selection = active;
   const control = button("prepareLinkedinLive");

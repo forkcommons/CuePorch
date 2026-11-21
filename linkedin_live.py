@@ -26,10 +26,23 @@ INGEST_HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.channel\.med
 INGEST_PATH = re.compile(r"/live/([A-Za-z0-9_-]{1,256})")
 PAGE_SIZE = 10
 PAGE_LIMIT = 20
+SCHEDULE_PAGE_SIZE = 15
+SCHEDULE_MAX_START = 999_990
 
 
 class LinkedInWriteUnconfirmed(Exception):
     """LinkedIn may have applied a write without confirming its identifier."""
+
+
+def page_start(value):
+    if type(value) is int:
+        value = str(value)
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,6}", value):
+        abort(400, "Enter a valid LinkedIn events page.")
+    start = int(value)
+    if start % SCHEDULE_PAGE_SIZE or start > SCHEDULE_MAX_START:
+        abort(400, "Enter a valid LinkedIn events page.")
+    return start
 
 
 def parse_ingest(value):
@@ -198,3 +211,38 @@ class LiveConnection(Connection):
                       params={"action": "end"}, json={"asset": asset}) as response:
             if response.status_code != 200:
                 linkedin_upload.denied(response)
+
+    def scheduled_events(self, revision, owner, scheduled_ms, start):
+        params = {"q": "author", "author": owner, "count": SCHEDULE_PAGE_SIZE, "start": start}
+        with self.api(revision, "GET", V2_API + "/liveVideos", params=params, headers=V2_HEADERS) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)
+            data = response_object(response)
+        elements, paging = data.get("elements"), data.get("paging", {})
+        if not isinstance(elements, list) or len(elements) > SCHEDULE_PAGE_SIZE or not isinstance(paging, dict):
+            abort(502, "LinkedIn returned an invalid scheduled events list.")
+        links, total = paging.get("links", []), paging.get("total")
+        if not isinstance(links, list) or (total is not None and (type(total) is not int or total < 0)):
+            abort(502, "LinkedIn returned invalid scheduled events paging.")
+        items = []
+        for event in elements:
+            if not isinstance(event, dict):
+                abort(502, "LinkedIn returned an invalid scheduled event.")
+            if event.get("scheduledAt") != scheduled_ms or event.get("state", "PRE_LIVE") != "PRE_LIVE":
+                continue
+            if event.get("liveVideoAsset") or event.get("author", {"organization": owner}) != {"organization": owner}:
+                continue
+            ident = event.get("id")
+            if type(ident) is int:
+                ident = str(ident)
+            if not isinstance(ident, str) or not LIVE_VIDEO_ID.fullmatch(ident):
+                continue
+            title = event.get("name")
+            post = event.get("ugcPost")
+            items.append({"id": ident,
+                          "title": title.strip()[:75] if isinstance(title, str) and title.strip() else "LinkedIn Live",
+                          "post_urn": post if isinstance(post, str) and ANNOUNCEMENT_URN.fullmatch(post) else None})
+        following = start + SCHEDULE_PAGE_SIZE
+        more = ((total is not None and total > following)
+                or any(isinstance(link, dict) and link.get("rel") == "next" for link in links))
+        return {"items": items, "next": following if more and following <= SCHEDULE_MAX_START else None}

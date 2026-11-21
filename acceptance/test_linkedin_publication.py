@@ -71,6 +71,8 @@ class LinkedInPublication(unittest.TestCase):
             sending = set()
             ready_to_link = set()
             status_requests = []
+            catalog_time = []
+            catalog_offsets = []
             asset = "urn:li:digitalmediaAsset:Fixture123"
             operator = secrets.token_urlsafe(32)
 
@@ -156,6 +158,24 @@ class LinkedInPublication(unittest.TestCase):
                 assert offset == 10
                 rows = [dict(role="ADMINISTRATOR", state="APPROVED", organizationTarget=owner)]
                 return dict(elements=rows if owner in approved_live_pages else [], paging=dict(links=[]))
+
+            @remote.get("/v2/liveVideos")
+            def existing_events():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
+                offset = int(request.args["start"])
+                assert request.args.to_dict() == dict(q="author", author=owner, count="15", start=str(offset))
+                catalog_offsets.append(offset)
+                starts_ms = catalog_time[0]
+                candidate = dict(id=3456, name="Existing LinkedIn broadcast", state="PRE_LIVE",
+                                 scheduledAt=starts_ms, ugcPost="urn:li:ugcPost:7654")
+                if offset == 0:
+                    return dict(elements=[
+                        candidate | dict(id=1, scheduledAt=starts_ms - 86_400_000),
+                        candidate | dict(id=2, liveVideoAsset={"media": asset}),
+                        candidate | dict(id=3, author={"organization": "urn:li:organization:999"}),
+                    ], paging=dict(total=16, links=[dict(rel="next", href="https://invalid.example/ignore")]))
+                assert offset == 15
+                return dict(elements=[candidate], paging=dict(total=16))
 
             @remote.post("/v2/liveVideos")
             def live_videos():
@@ -485,6 +505,43 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual(409, api.put(targets + "/" + destination, headers=auth, data={"enabled": True}).status)
                 self.assertEqual([asset], ingests)
                 self.assertEqual([asset], links)
+
+                starts_later = starts + timedelta(days=1)
+                catalog_time.append(int(starts_later.timestamp()) * 1000)
+                schedule = dict(timezone="UTC", repeat="none",
+                                start=starts_later.strftime("%Y-%m-%dT%H:%M"),
+                                end=(starts_later + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"))
+                existing_event = event | dict(title="Pick an existing LinkedIn event", slug="existing-linkedin", schedule=schedule)
+                picked = api.post(base + "/api/live-events", headers=auth, data=existing_event)
+                self.assertTrue(picked.ok, picked.text())
+                item = picked.json()
+                selected_path = (f"{base}/api/live-events/{item['id']}/{item['occurrences'][0]['id']}"
+                                 "/destinations/linkedin/existing")
+                self.assertEqual(400, api.get(selected_path + "?start=1", headers=auth).status)
+                self.assertEqual(409, api.post(selected_path, headers=auth, data={"id": "3456", "start": 0}).status)
+                page.goto(base + "/operator/live-events")
+                page.get_by_role("button", name="Open production for Pick an existing LinkedIn event",
+                                 exact=False).click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Load existing LinkedIn events", exact=True).click()
+                options = page.get_by_role("combobox", name="Existing LinkedIn event", exact=True)
+                expect(options.locator("option")).to_have_count(0)
+                page.get_by_role("button", name="More LinkedIn events", exact=True).click()
+                options.select_option("3456")
+                page.get_by_role("button", name="Use existing LinkedIn event", exact=True).click()
+                expect(page.locator("#linkedinLivePost")).to_have_attribute(
+                    "href", "https://www.linkedin.com/feed/update/urn:li:ugcPost:7654/")
+                repeat_choice = api.post(selected_path, headers=auth, data={"id": "3456", "start": 15})
+                self.assertEqual(200, repeat_choice.status, repeat_choice.text())
+                duplicate = api.post(base + "/api/live-events", headers=auth, data=existing_event | {
+                    "title": "Conflicting LinkedIn event", "slug": "conflicting-linkedin",
+                }).json()
+                self.assertEqual(409, api.post(
+                    f"{base}/api/live-events/{duplicate['id']}/{duplicate['occurrences'][0]['id']}"
+                    "/destinations/linkedin/existing", headers=auth, data={"id": "3456", "start": 15}).status)
+                self.assertEqual([0, 0, 15, 15, 15], catalog_offsets)
+                self.assertEqual(2, len(scheduled_videos))
+                self.assertEqual(2, len(announcement_writes))
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect LinkedIn Live", exact=True)).to_be_visible()
@@ -501,6 +558,7 @@ class LinkedInPublication(unittest.TestCase):
         print("Separate LinkedIn Live grant, paginated Page admin verification, and independent disconnect passed.")
         print("LinkedIn Live Company Page browser scheduling, public announcement, optional approval and restart passed.")
         print("LinkedIn Live verified encrypted ingest, local RTMPS playback, provider-ready binding and end.")
+        print("LinkedIn Live existing event picker verified paging, date and Page scope, and repeat and duplicate handling.")
 
 
 if __name__ == "__main__":
