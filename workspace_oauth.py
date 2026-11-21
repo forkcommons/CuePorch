@@ -64,6 +64,7 @@ class Config:
     refresh_optional: bool = False
     implicit_bearer: bool = False
     nonexpiring_access: bool = False
+    token_basic_query: bool = False
 
 
 def provider_request(method, url, **kwargs):
@@ -149,7 +150,19 @@ class Connection:
             abort(409, "Disconnect and reconnect using the current workspace credentials.")
 
     def exchange(self, fields, previous_refresh=None):
-        with provider_request("POST", self.config.token_url, data=fields | self.client_fields()) as response:
+        request_kwargs = {}
+        if self.config.token_basic_query:
+            request_kwargs = dict(
+                params=fields,
+                auth=(self.client, self.secret),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+        else:
+            request_kwargs = dict(data=fields | self.client_fields())
+        with provider_request("POST", self.config.token_url, **request_kwargs) as response:
             if response.status_code == 429:
                 check_provider(response)
             data = response_object(response)
