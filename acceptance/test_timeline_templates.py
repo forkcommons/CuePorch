@@ -24,6 +24,72 @@ from export_institution import export
 
 
 class TimelineTemplates(unittest.TestCase):
+    def test_timeline_scale(self):
+        def check(page, base, auth, uid, root):
+            work_url = f"{base}/api/library/work/{uid}/timeline"
+            before = requests.get(work_url, headers=auth, timeout=15).json()
+            before_clips = before["settings"]["clips"]
+
+            page.goto(f"{base}/operator/videos/{uid}/timeline")
+            expect(page.locator("#timelineTemplate")).to_be_enabled(timeout=30000)
+            expect(page.locator("#timelineTemplateInsertClosing")).to_be_enabled(timeout=30000)
+            page.click("#timelineTemplateInsertClosing")
+
+            clips = page.locator("#timelineClips > li")
+            expect(clips).to_have_count(len(before_clips) + 1, timeout=15000)
+            expect(page.locator("text=Draft saved.")).to_be_visible(timeout=30000)
+
+            after = requests.get(work_url, headers=auth, timeout=15).json()
+            after_clips = after["settings"]["clips"]
+            assert len(after_clips) == len(before_clips) + 1
+
+            assert after["revision"] is not None and after["revision"] != before["revision"]
+
+            assert after_clips[0]["start"] == before_clips[0]["start"]
+            assert after_clips[0]["end"] == before_clips[0]["end"]
+
+            segments = page.locator("#timelineScaleClips .timeline-scale-segment")
+            expect(segments).to_have_count(len(after_clips))
+            widths = [segments.nth(i).bounding_box()["width"] for i in range(len(after_clips))]
+            durations = [clip["end"] - clip["start"] for clip in after_clips]
+            assert abs(widths[0] / sum(widths) - durations[0] / sum(durations)) < 0.02
+            fit_total = sum(widths)
+            viewport = page.locator("#timelineScaleViewport")
+            assert abs(fit_total - viewport.evaluate("node => node.clientWidth")) < 2
+
+            expect(page.locator("#timelineZoomOut")).to_be_disabled()
+            page.click("#timelineZoomIn")
+            expect(page.locator("#timelineZoomOut")).to_be_enabled(timeout=5000)
+            widths2 = [segments.nth(i).bounding_box()["width"] for i in range(len(after_clips))]
+            assert abs(sum(widths2) / fit_total - 2) < 0.2, (sum(widths2), fit_total)
+
+            page.click("#timelineZoomIn")
+            widths4 = [segments.nth(i).bounding_box()["width"] for i in range(len(after_clips))]
+            assert abs(sum(widths4) / fit_total - 4) < 0.4, (sum(widths4), fit_total)
+
+            page.click("#timelineZoomOut")
+            expect(page.locator("#timelineZoomValue")).to_have_text("2x")
+            page.click("#timelineFit")
+            widths_fit = [segments.nth(i).bounding_box()["width"] for i in range(len(after_clips))]
+            assert abs(sum(widths_fit) - fit_total) < 10
+
+            expect(page.locator("#timelineZoomOut")).to_be_disabled()
+
+            page.click("button[data-clip-index='0']")
+            expect(segments.first).to_have_attribute("aria-pressed", "true")
+            page.click("#playTimelineClip")
+            page.wait_for_function("parseFloat(document.querySelector('#timelineScaleCursor').style.left) > 2")
+            page.set_viewport_size({"width": 760, "height": 900})
+            viewport.evaluate("node => node.scrollLeft = 100")
+            page.wait_for_function("""() => {
+                const viewport = document.querySelector("#timelineScaleViewport");
+                return viewport.scrollWidth <= viewport.clientWidth + 1 && viewport.scrollLeft === 0;
+            }""")
+            unchanged = requests.get(work_url, headers=auth, timeout=15).json()
+            assert unchanged["revision"] == after["revision"]
+            assert unchanged["settings"] == after["settings"]
+
+        self.run_fixture(check)
     def test_templates(self):
         self.run_fixture(check_timeline_templates)
 
@@ -38,6 +104,11 @@ class TimelineTemplates(unittest.TestCase):
 
     def test_stock_catalog(self):
         self.run_fixture(check_stock_catalog)
+
+    def test_canvas_ratios(self):
+        self.run_fixture(check_timeline_canvas_ratios)
+    def test_inline_camera(self):
+        self.run_fixture(check_timeline_camera, camera=True)
 
     def test_stickers(self):
         self.run_fixture(check_timeline_stickers)
@@ -64,7 +135,7 @@ class TimelineTemplates(unittest.TestCase):
                 self.assertEqual(image.info["duration"], 240)
                 self.assertEqual(image.getpixel((5, 5)), (0, 255, 0, 192))
 
-    def run_fixture(self, check):
+    def run_fixture(self, check, camera=False):
         with ExitStack() as cleanup:
             root = Path(cleanup.enter_context(TemporaryDirectory())) / "collection"
             (root / "objects").mkdir(parents=True)
@@ -127,14 +198,119 @@ class TimelineTemplates(unittest.TestCase):
             response.raise_for_status()
             uid = response.json()["id"]
 
-            with sync_playwright() as playwright, chromium(playwright) as browser:
-                page = browser.new_page()
+            with sync_playwright() as playwright, chromium(
+                playwright,
+                args=[
+                    "--use-fake-device-for-media-stream",
+                    "--use-fake-ui-for-media-stream",
+                ]
+                if camera
+                else None,
+            ) as browser:
+                page = browser.new_page(
+                    permissions=["camera", "microphone"] if camera else None
+                )
                 page.add_init_script(
                     f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)})"
                 )
                 check(page, base, auth, uid, root)
 
 
+def check_timeline_canvas_ratios(page, base, auth, uid, root):
+    from PIL import Image
+
+    work = f"{base}/api/library/work/{uid}"
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    expect(page.locator("#timelineRatio")).to_be_enabled(timeout=30000)
+    page.locator("#timelineColor").fill("#182629")
+    for ratio, w, h in [("16:9", 1280, 720), ("9:16", 720, 1280),
+                        ("1:1", 720, 720), ("4:3", 960, 720)]:
+        page.select_option("#timelineRatio", ratio)
+        before = requests.get(work + "/timeline", headers=auth, timeout=30).json()["current"]
+        with page.expect_response(
+            lambda response: response.request.method == "POST" and response.url == work + "/timeline/render",
+            timeout=30000,
+        ) as render_info:
+            page.click("#renderTimeline")
+        rendered = render_info.value
+        assert rendered.status == 202, (ratio, rendered.status, rendered.text())
+        job_id = rendered.json()["id"]
+        expect(page.locator("text=New version saved.")).to_be_visible(timeout=60000)
+        job = None
+        for _ in range(120):
+            job = requests.get(f"{work}/timeline/render/{job_id}", headers=auth, timeout=30).json()
+            if job["state"] in ("saved", "failed"):
+                break
+            page.wait_for_timeout(500)
+        assert job and job["state"] == "saved", (ratio, job)
+        after = job["result"]
+        assert after != before, (ratio, before, after)
+        pv = requests.post(work + "/timeline/preview",
+                           json={"cut": after}, headers=auth, timeout=60)
+        pv.raise_for_status()
+        mp4 = root / "canvas-proof.mp4"
+        with requests.get(base + pv.json()["preview"], headers=auth,
+                          timeout=300, stream=True) as r:
+            r.raise_for_status()
+            with open(mp4, "wb") as f:
+                for c in r.iter_content(1 << 15):
+                    f.write(c)
+        png = root / "canvas-proof.png"
+        subprocess.check_call(["ffmpeg", "-y", "-loglevel", "error",
+                               "-i", str(mp4), "-vframes", "1", str(png)])
+        with Image.open(png) as frame:
+            image = frame.convert("RGB")
+            assert image.size == (w, h), (ratio, image.size)
+            center = image.getpixel((w // 2, h // 2))
+            assert center[2] > 180 and max(center[:2]) < 70, (ratio, center)
+            if ratio != "16:9":
+                matte = image.getpixel((4, 4))
+                assert all(abs(a - b) < 18 for a, b in zip(matte, (24, 38, 41))), (ratio, matte)
+def check_timeline_camera(page, base, auth, uid, root):
+    page.goto(f"{base}/operator/videos/{uid}/timeline")
+    page.locator("#recordTimeline").click()
+
+    rec = page.frame_locator("#timelineRecorder")
+    rec.get_by_label("Recording title").fill("Inline camera rehearsal")
+    rec.get_by_label("Aspect ratio").select_option("1:1")
+    rec.get_by_role("button", name="Connect camera and microphone").click()
+    rec.get_by_role("button", name="Start recording").click()
+
+    expect(rec.locator("#recordTime")).to_have_text("0:01", timeout=20000)
+    rec.get_by_role("button", name="Stop", exact=True).click()
+    expect(rec.locator("#recordStatus")).to_contain_text(
+        "Recording ready.", timeout=20000
+    )
+
+    project_url = f"{base}/api/library/work/{uid}/timeline"
+    with page.expect_response(
+        lambda response: response.url == project_url and response.request.method == "PUT",
+        timeout=60000,
+    ) as saved:
+        rec.get_by_role("button", name="Add recording to timeline", exact=True).click()
+    assert saved.value.ok, saved.value.text()
+    clips = saved.value.json()["settings"]["clips"]
+    work_id = clips[-1]["work"]
+
+    metadata = requests.get(f"{base}/api/library/work/{work_id}/details", headers=auth, timeout=15)
+    metadata.raise_for_status()
+    media = metadata.json()["media"]
+    assert media["width"] == media["height"] == 720 and media["audio"], media
+    assert clips[-1]["end"] - clips[-1]["start"] >= 800, clips[-1]
+    assert requests.get(f"{base}/watch/work/{work_id}", timeout=15).status_code == 404
+
+    expect(page.locator("#timelineRecordDialog")).to_be_hidden()
+    page.reload()
+    expect(page.locator("#timelineClips > li")).to_have_count(len(clips), timeout=30000)
+    page.locator("#timelineScaleClips button").last.click()
+    video = page.locator("#timelinePreview")
+    expect(video).to_be_visible(timeout=15000)
+    assert video.evaluate("""async video => {
+        video.muted = true;
+        await video.play();
+        return video.videoWidth === 720 && video.videoHeight === 720;
+    }""")
+    page.wait_for_function("document.querySelector('#timelinePreview').currentTime > 0.2")
 def check_timeline_templates(page, base, auth, uid, tmp):
     work = f"{base}/api/library/work/{uid}"
 

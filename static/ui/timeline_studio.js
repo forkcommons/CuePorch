@@ -5,6 +5,7 @@ import { showTimelineCard } from "./timeline_templates.js";
 import { createTimelineGraphicPreview, createTimelineOverlayPreview, mountTimelineGraphics } from "./timeline_graphics.js";
 import { mountTimelineStickers } from "./timeline_stickers.js";
 import { mountTimelineStock } from "./timeline_stock.js";
+import { mountTimelineScale } from "./timeline_scale.js";
 import { mountTimelineText } from "./timeline_text.js";
 function isMedia(clip) {
     return clip !== undefined && "work" in clip;
@@ -48,6 +49,7 @@ const paintSticker = createTimelineOverlayPreview("sticker");
 const stickerControls = mountTimelineStickers(setSticker);
 const textControls = mountTimelineText(setTextLayers);
 const paintText = createTimelineOverlayPreview("text");
+const timelineScale = mountTimelineScale((index) => run(() => inspect(index)));
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 button("replayTimelineText").onclick = () => {
     const layers = state?.clips[selected]?.text_layers;
@@ -163,6 +165,17 @@ function paint() {
     input("timelineMusicGain").value = String(state.music?.gain ?? 25);
     const bookends = [state.brand?.intro, state.brand?.outro].filter(clip => clip != null);
     node("timelineDuration").textContent = seconds(duration(state.clips) + duration(bookends)) + " seconds";
+    const segments = state.clips.map((clip, index) => ({
+        index,
+        title: isMedia(clip) ? nameOf(clip.work) : clip.card.title,
+        duration: clip.end - clip.start,
+    }));
+    if (state.brand?.intro)
+        segments.unshift({ index: null, title: "Brand intro: " + nameOf(state.brand.intro.work), duration: state.brand.intro.end - state.brand.intro.start });
+    if (state.brand?.outro)
+        segments.push({ index: null, title: "Brand outro: " + nameOf(state.brand.outro.work), duration: state.brand.outro.end - state.brand.outro.start });
+    timelineScale.show(segments, selected);
+    updateTimelinePlayhead();
     const brandSummary = node("timelineBrandSources");
     brandSummary.hidden = !state.brand;
     if (state.brand) {
@@ -514,11 +527,19 @@ button("playTimelineClip").onclick = () => run(async () => {
     stopTime = clip.end / 1000;
     await video.play();
 });
+function updateTimelinePlayhead() {
+    const clip = state?.clips[selected];
+    const elapsed = clip && !video.hidden && Number.isFinite(video.currentTime)
+        ? video.currentTime * 1000 - clip.start
+        : 0;
+    timelineScale.position(selected, elapsed);
+}
 video.ontimeupdate = () => {
     if (stopTime !== undefined && video.currentTime >= stopTime) {
         video.pause();
         stopTime = undefined;
     }
+    updateTimelinePlayhead();
 };
 input("timelineSearch").oninput = listSources;
 input("timelineTextSearch").oninput = paintCues;
