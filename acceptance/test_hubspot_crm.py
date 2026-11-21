@@ -195,6 +195,8 @@ class Provider:
         self.engagement_throttled = False
         self.corrupt = False
         self.rejected = False
+        self.contact_list_type = "DYNAMIC"
+        self.first_contact_name = "First"
         from threading import Event
 
         self.pause_batch = False
@@ -292,7 +294,7 @@ class Provider:
                                 "listId": "20",
                                 "name": "Arts audience",
                                 "objectTypeId": "0-1",
-                                "processingType": "DYNAMIC",
+                                "processingType": self.contact_list_type,
                             }
                         ]
                     },
@@ -330,7 +332,7 @@ class Provider:
                     "list": {
                         "listId": "20",
                         "objectTypeId": "0-1",
-                        "processingType": "DYNAMIC",
+                        "processingType": self.contact_list_type,
                         "processingStatus": "COMPLETE",
                     }
                 },
@@ -376,7 +378,7 @@ class Provider:
                 "archived": False,
                 "properties": {
                     "email": "one@example.invalid",
-                    "firstname": "First",
+                    "firstname": self.first_contact_name,
                     "lastname": "",
                 },
             },
@@ -628,6 +630,7 @@ class HubSpotCRM(unittest.TestCase):
         self.verify_import(page, base, auth, created, database, fixture)
 
     def verify_import(self, page, base, auth, created, database, fixture):
+        fixture.contact_list_type = "MANUAL"
         page.goto(base + "/operator/live-events")
         page.get_by_role(
             "button", name="Open production for CRM rehearsal", exact=False
@@ -644,12 +647,19 @@ class HubSpotCRM(unittest.TestCase):
         ).to_be_visible()
         for label in ("First", "Second", "HubSpot"):
             expect(page.get_by_role("row").filter(has_text=label).first).to_be_visible()
+        fixture.first_contact_name = "Changed in HubSpot"
         page.get_by_text("Import selected segment").click()
         expect(
             page.get_by_text(
                 "0 added, 2 already registered, 1 duplicates, 1 skipped.", exact=True
             )
         ).to_be_visible()
+        expect(page.get_by_role("row").filter(has_text="First").first).to_be_visible()
+        expect(
+            page.get_by_role("row").filter(has_text="Changed in HubSpot")
+        ).to_have_count(0)
+        fixture.first_contact_name = "First"
+        fixture.contact_list_type = "DYNAMIC"
         assert fixture.refreshes == 1
         self.verify_isolation(page, base, auth, created, database, fixture)
 
