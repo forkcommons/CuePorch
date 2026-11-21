@@ -138,6 +138,8 @@ def presentation(con, form, sign_on=None, language=None, *, mailchimp_target=Non
             provider = current_app.extensions.get(name)
             if provider:
                 offers[name] = provider.offer(con, kind, uid, form, scope)
+                if name == "salesforce_form_consent" and offers[name]:
+                    offers["salesforce_related_fields"] = provider.offers_related_fields(con, kind, uid, form)
     return dict(form, logo_src=brand_image(con, appearance["logo"]),
                 background_src=brand_image(con, appearance["background_image"]),
                 language=selected, text=catalogue[selected], catalogue=catalogue,

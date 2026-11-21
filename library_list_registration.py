@@ -1,3 +1,4 @@
+import json
 import hmac
 import time
 from collections.abc import Callable
@@ -16,6 +17,7 @@ import keap_crm
 import library_salesforce_video_engagement as video_reports
 import salesforce_crm
 import salesforce_outbound
+import salesforce_registration_fields
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,24 @@ SCHEMA = "".join(
 )
 
 
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS library_salesforce_registration_field_plan (
+    generation TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS library_salesforce_registration_field_payload (
+    delivery TEXT PRIMARY KEY,
+    fields TEXT NOT NULL
+);
+"""
+
+def related_fields_enabled(con, generation):
+    row = con.execute(
+        "SELECT 1 FROM library_salesforce_registration_field_plan WHERE generation = ?",
+        (generation,),
+    ).fetchone()
+    return row is not None
+
+
 def get(con, kind, subject, provider=CONSTANT_CONTACT):
     return con.execute(
         f"SELECT * FROM {provider.plan} WHERE kind=? AND subject=?",
@@ -213,6 +233,19 @@ def stop(con, kind, subject, provider=CONSTANT_CONTACT):
         plan = get(con, kind, subject, provider=provider)
         if plan:
             video_reports.revoke(con, generation=plan["generation"])
+            con.execute(
+                "DELETE FROM library_salesforce_registration_field_payload "
+                "WHERE delivery IN ("
+                "SELECT id FROM library_salesforce_form_delivery "
+                "WHERE generation=?"
+                ")",
+                (plan["generation"],),
+            )
+            con.execute(
+                "DELETE FROM library_salesforce_registration_field_plan "
+                "WHERE generation=?",
+                (plan["generation"],),
+            )
     cur = con.cursor()
 
     # 1) Reject matching actions
@@ -283,7 +316,7 @@ def disconnect(con, provider=CONSTANT_CONTACT):
         stop(con, kind, subject, provider)
 
 
-def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTANT_CONTACT):
+def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTANT_CONTACT, *, related_fields=()):
     if not isinstance(email, str):
         return None
     email_s = email.strip()
@@ -331,6 +364,11 @@ def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTA
     )
 
     if cur.rowcount:
+        if provider is SALESFORCE and related_fields:
+            con.execute(
+                "INSERT INTO library_salesforce_registration_field_payload (delivery, fields) VALUES (?, ?)",
+                (job_id, json.dumps(related_fields)),
+            )
         action(
             con,
             job_id,
@@ -378,19 +416,31 @@ class Consent:
             return None
         return plan
 
+    def _includes_related_fields(self, con, plan):
+        return (
+            self.provider is SALESFORCE
+            and plan is not None
+            and related_fields_enabled(con, plan["generation"])
+        )
+
+    def offers_related_fields(self, con, kind, subject, form):
+        plan = self._plan(con, kind, subject, form)
+        return self._includes_related_fields(con, plan)
+
     def offer(self, con, kind, subject, form, scope):
         plan = self._plan(con, kind, subject, form)
         if not plan:
             return ""
-        return self.signer.dumps(
-            [
-                f"{self.provider.key}-form",
-                kind,
-                subject,
-                scope,
-                plan["generation"],
-            ]
-        )
+        payload = [
+            f"{self.provider.key}-form",
+            kind,
+            subject,
+            scope,
+            plan["generation"],
+        ]
+        if self._includes_related_fields(con, plan):
+            payload.append("registration-fields")
+        return self.signer.dumps(payload)
 
     def capture(self, con, kind, subject, form, scope, ticket):
         plan = self._plan(con, kind, subject, form)
@@ -403,6 +453,8 @@ class Consent:
             scope,
             plan["generation"],
         ]
+        if self._includes_related_fields(con, plan):
+            payload.append("registration-fields")
         try:
             if self.signer.loads(ticket, max_age=1200) != payload:
                 return None
@@ -412,6 +464,11 @@ class Consent:
         def on_record(email, answers):
             if not email:
                 return
+            related_fields = (
+                salesforce_registration_fields.selected(form, answers)
+                if self._includes_related_fields(con, plan)
+                else ()
+            )
             enqueue(
                 con,
                 self.action,
@@ -421,6 +478,7 @@ class Consent:
                 int(time.time()),
                 self.signing_key,
                 provider=self.provider,
+                related_fields=related_fields,
             )
 
         return on_record
@@ -487,7 +545,8 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
         if not company or len(company) > 255 or not company.isprintable():
             abort(422, "Company must be a nonblank printable string of at most 255 characters.")
         campaign = salesforce_crm.campaign(connection, revision, list_id)
-        salesforce_outbound.validate_installation(connection, revision)
+        related_fields = salesforce_registration_fields.configured(form)
+        salesforce_outbound.validate_installation(connection, revision, related_fields=related_fields)
         if engagement is True:
             if form.get("salesforce_first_due") is None:
                 abort(409, "Set a usable duration or timestamp before enabling engagement.")
@@ -507,8 +566,13 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
                 form2.get("salesforce_first_due") != form.get("salesforce_first_due")):
             abort(409, "The form was changed concurrently. Please try again.")
         save(con, kind, uid, revision, form["revision"], destination, provider=provider)
-        if provider == SALESFORCE and type(engagement) is bool:
+        if provider == SALESFORCE:
             generation = get(con, kind, uid, provider=provider)["generation"]
+            if related_fields:
+                con.execute(
+                    "INSERT OR IGNORE INTO library_salesforce_registration_field_plan (generation) VALUES (?)",
+                    (generation,),
+                )
             if engagement is True:
                 video_reports.enable(con, generation)
             elif engagement is False:
@@ -659,6 +723,12 @@ def deliver(tx, job, connection, validate, stop_event, clock, provider=CONSTANT_
 
     with tx() as con:
         row, plan = scope(con, job, connection, validate, stop_event, provider=provider)
+        if provider is SALESFORCE:
+            payload = con.execute(
+                "SELECT fields FROM library_salesforce_registration_field_payload WHERE delivery=?",
+                (row["id"],),
+            ).fetchone()
+            related_fields = json.loads(payload["fields"]) if payload is not None else ()
 
     if provider is SALESFORCE:
         def before_write():
@@ -676,6 +746,7 @@ def deliver(tx, job, connection, validate, stop_event, clock, provider=CONSTANT_
             registered_at=datetime.fromtimestamp(row["registered"], timezone.utc).isoformat(timespec="seconds"),
             address=row["email"],
             answers={"first_name": row["first_name"], "last_name": row["last_name"]},
+            related_fields=related_fields,
             company=plan["company"],
             before_write=before_write,
         )
@@ -763,6 +834,13 @@ def run_one(tx, connection, validate, stop_event, clock=time.time, provider=CONS
                 "WHERE id=? AND state IN ('queued','submitted')",
                 (state, attempts, job_id),
             )
+
+            if provider is SALESFORCE:
+                con.execute(
+                    "DELETE FROM library_salesforce_registration_field_payload "
+                    "WHERE delivery=?",
+                    (job_id,),
+                )
 
     return event_contact_delivery.run_job(
         tx,

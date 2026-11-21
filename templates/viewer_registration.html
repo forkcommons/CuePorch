@@ -88,6 +88,9 @@
     {% endif %}
     {% if registration.salesforce_form_consent %}
     <label><input type="checkbox" name="salesforce_form_consent" value="{{ registration.salesforce_form_consent }}"> Share my email address, name, and registration time with the organizer in Salesforce Sales Cloud.</label>
+    {% if registration.salesforce_related_fields %}
+    <p>Submitted registration answers and captured campaign source details are included.</p>
+    {% endif %}
     {% endif %}
     {% if registration.salesforce_video_engagement_consent %}
         <label><input type="checkbox" name="salesforce_video_engagement_consent" value="{{ registration.salesforce_video_engagement_consent }}"> Share my video views and watch progress with the organizer in Salesforce Sales Cloud.</label>

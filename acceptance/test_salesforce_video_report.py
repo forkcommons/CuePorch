@@ -48,6 +48,18 @@ class TestSalesforceVideoReport(roster.TestSalesforceRoster):
             self, configure_delivery=False
         )
         work = embed_path.rstrip("/").rsplit("/", 1)[-1]
+        url = f"/api/library/work/{work}/registration"
+        response = client.get(url, headers=headers)
+        data = response.get_json()
+        revision = data["revision"]
+        settings = data["settings"]
+        settings["collect_utm"] = True
+        settings["fields"] = [
+            {"type": "select", "id": "field_industry", "label": "Industry", "options": ["Arts"]},
+            {"type": "hidden", "id": "field_channel", "label": "Channel", "parameter": "channel", "default_value": "General"},
+        ]
+        response = client.put(url, json={"revision": revision, "settings": settings}, headers=headers)
+        self.assertIn(response.status_code, (200, 204))
         server = make_server(
             "127.0.0.1", 0, app, threaded=True, request_handler=QuietHandler
         )
@@ -96,11 +108,13 @@ class TestSalesforceVideoReport(roster.TestSalesforceRoster):
     def play(self, browser, base, embed_path, *, tracking, registration=True):
         page = browser.new_page()
         page.goto(base + "/watch")
-        page.set_content(f'<iframe src="{base}{embed_path}" width="640" height="360"></iframe>')
+        page.set_content(f'<iframe src="{base}{embed_path}?utm_source=arts-news&amp;reg_channel=Festival&amp;other=private" width="640" height="360"></iframe>')
         target = page.frame_locator("iframe")
         target.locator("input[name=email]").fill(EMAIL)
         target.locator("input[name=first_name]").fill("Ada")
         target.locator("input[name=last_name]").fill("Viewer")
+        target.locator("select[name=field_industry]").select_option("Arts")
+        expect(target.get_by_text("Submitted registration answers and captured campaign source details are included.")).to_be_visible()
         consent = target.locator("input[name=salesforce_form_consent]")
         engagement = target.locator("input[name=salesforce_video_engagement_consent]")
         assert not consent.is_checked()
@@ -146,6 +160,14 @@ class TestSalesforceVideoReport(roster.TestSalesforceRoster):
         assert receipt()["engagement_states"] == {}
         expect(target.get_by_role("button", name="Stop sharing video activity with Salesforce")).to_have_count(0)
         page.close()
+        assert provider.outbound.writes == []
+
+        response = self.client.put(
+            "/api/policy/event_contact_sync",
+            json={"required": True},
+            headers=self.auth,
+        )
+        assert response.status_code == 200
 
         response = self.client.put(
             "/api/policy/event_engagement_sync",
@@ -155,7 +177,18 @@ class TestSalesforceVideoReport(roster.TestSalesforceRoster):
         assert response.status_code == 200
 
         page, target = self.play(browser, base, embed_path, tracking=True)
+        assert receipt()["states"] == {"waiting": 1}
         assert receipt()["engagement_states"] == {"waiting": 1}
+        assert provider.outbound.writes == []
+        provider.outbound.lost.add(salesforce_outbound.REGISTRATION_FIELD)
+
+        response = self.client.put(
+            "/api/policy/event_contact_sync",
+            json={"required": False},
+            headers=self.auth,
+        )
+        assert response.status_code == 200
+
         self.wait_registration(receipt)
 
         next_due, expected_percent = self.playback_totals(work)
@@ -235,3 +268,41 @@ class TestSalesforceVideoReport(roster.TestSalesforceRoster):
         self.assertEqual(registrant["Video_Views__c"], 1)
         self.assertEqual(registrant["Watch_Percent__c"], expected_percent)
         self.assertEqual(registrant["Status__c"], "Registered")
+        actual = [
+            (
+                value["Registrant__c"],
+                value["Field_Name__c"],
+                value["Field_Type__c"],
+                value["Value__c"],
+            )
+            for (object_name, _), value in provider.outbound.objects.items()
+            if object_name == salesforce_outbound.REGISTRATION_FIELD
+        ]
+        self.assertCountEqual(
+            actual,
+            [
+                (
+                    registrant["Id"],
+                    "Industry",
+                    "Registration Field",
+                    "Arts",
+                ),
+                (
+                    registrant["Id"],
+                    "Channel",
+                    "Hidden Field",
+                    "Festival",
+                ),
+                (
+                    registrant["Id"],
+                    "utm_source",
+                    "UTM Field",
+                    "arts-news",
+                ),
+            ],
+        )
+        with closing(sqlite3.connect(self.database)) as con:
+            payload_count = con.execute(
+                "SELECT COUNT(*) FROM library_salesforce_registration_field_payload"
+            ).fetchone()[0]
+            self.assertEqual(payload_count, 0)
