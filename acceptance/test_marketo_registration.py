@@ -159,17 +159,17 @@ class MarketoBrowser(unittest.TestCase):
         auth = {"Authorization": "Bearer " + operator}
         created = self.create_event(page, base, auth)
         event_id, opens = created["id"], created["occurrences"][1]["id"]
+        page.goto(base + "/operator/live-events")
+        page.get_by_role("button", name="Open production for Marketo rehearsal").nth(
+            1
+        ).click()
+        page.get_by_text("Attendees for this occurrence", exact=True).click()
         self.verify_static_list_import(page, base, auth, event_id, opens, provider)
 
         self.verify_scheduled_import(
             page, base, auth, event_id, opens, provider, restart
         )
 
-        page.goto(base + "/operator/live-events")
-        page.get_by_role("button", name="Open production for Marketo rehearsal").nth(
-            1
-        ).click()
-        page.get_by_text("Attendees for this occurrence", exact=True).click()
         page.get_by_text("Load programs and fields").click()
         page.locator("#eventMarketoProgram").select_option(label="Arts screening")
         page.select_option(
@@ -224,13 +224,12 @@ class MarketoBrowser(unittest.TestCase):
             raise AssertionError(j)
 
         provider.scheduled_member, provider.healthy_import = True, False
-        r = page.request.put(
-            url,
-            headers=hdrs,
-            data={"list": 7, "mapping": {"field_genre": "favoriteGenre"}},
+        panel = page.locator("#eventMarketoImportPanel")
+        panel.get_by_role("button", name="Enable automatic import", exact=True).click()
+        expect(panel.locator("#eventMarketoImportStatus")).to_contain_text(
+            "Automatic import scheduled."
         )
-        assert r.ok, r.text()
-        b = r.json()
+        b = get()
         assert b["list"] == 7 and b["next_at"] == midnight
 
         provider.sync_clock = midnight
@@ -242,6 +241,13 @@ class MarketoBrowser(unittest.TestCase):
         provider.healthy_import, provider.sync_clock = True, retry_at
         r = poll(lambda j: j.get("last_at") == retry_at)
         assert r["last_result"]["added"] == 1 and r["last_result"]["existing"] == 1
+
+        page.get_by_role("button", name="Refresh import status", exact=True).click()
+        expect(
+            page.locator("#eventRosterRows").get_by_text(
+                "scheduled@example.test", exact=True
+            )
+        ).to_be_visible()
 
         with contextlib.closing(sqlite3.connect(provider.database)) as c:
             rows = c.execute(
@@ -266,8 +272,15 @@ class MarketoBrowser(unittest.TestCase):
         provider.sync_clock = opens + 50 * 60
         poll(lambda j: j["state"] == "complete" and j["next_at"] is None)
 
-        d = page.request.delete(url, headers=hdrs, data={})
-        assert d.ok, d.text()
+        provider.sync_clock = time.time()
+        panel.get_by_role("button", name="Enable automatic import", exact=True).click()
+        expect(panel.locator("#eventMarketoImportStatus")).to_contain_text(
+            "Automatic import scheduled."
+        )
+        panel.get_by_role("button", name="Stop automatic import", exact=True).click()
+        expect(panel.locator("#eventMarketoImportStatus")).to_contain_text(
+            "Automatic import is off."
+        )
         assert get()["state"] == "off"
 
     def verify_static_list_import(self, page, base, auth, event_id, opens, provider):
@@ -280,8 +293,8 @@ class MarketoBrowser(unittest.TestCase):
         )
         assert authed.status == 200, authed.text()
         assert authed.json() == {
-            "lists": [{"id": 7, "name": "Screening"}],
-            "next_offset": None,
+            "lists": [{"id": 8, "name": "Documentary"}],
+            "next_offset": 50,
         }
         url = base + f"/api/live-events/{event_id}/{opens}/registration/marketo"
         headers = dict(auth, **{"Origin": base, "X-CuePorch-Integration": "1"})
@@ -295,15 +308,26 @@ class MarketoBrowser(unittest.TestCase):
             ).fetchall()
             assert rows == []
         provider.healthy_import = True
-        first = page.request.post(url, headers=headers, data=payload)
-        assert first.status == 200, first.text()
-        assert first.json() == {
-            "added": 1,
-            "duplicates": 1,
-            "skipped": 1,
-            "existing": 0,
-            "occurrence": opens,
-        }
+        panel = page.locator("#eventMarketoImportPanel")
+        panel.get_by_role(
+            "button", name="Load static lists and fields", exact=True
+        ).click()
+        panel.get_by_role("button", name="More lists", exact=True).click()
+        panel.locator("#eventMarketoList").select_option(label="Screening")
+        panel.locator(
+            '#eventMarketoImportMapping select[data-form-field="field_genre"]'
+        ).select_option("favoriteGenre")
+        panel.get_by_role("button", name="Import selected list", exact=True).click()
+
+        expect(panel.locator("#eventMarketoImportStatus")).to_contain_text(
+            "Added 1. Already registered 0. Duplicates 1. Skipped 1."
+        )
+        expect(
+            page.locator("#eventRosterRows").get_by_text(
+                "import@example.test", exact=True
+            )
+        ).to_be_visible()
+
         second = page.request.post(url, headers=headers, data=payload)
         assert second.status == 200, second.text()
         assert second.json() == {
@@ -731,10 +755,19 @@ class MarketoProvider:
                     ],
                 }
             )
-        if method == "GET" and path in (
-            "/rest/asset/v1/staticLists.json",
-            "/rest/asset/v1/staticList/7.json",
-        ):
+        if method == "GET" and path == "/rest/asset/v1/staticLists.json":
+            params = kwargs["params"]
+            offset = params.get("offset", 0)
+            assert offset in (0, 50)
+            if offset == 0:
+                return _resp(
+                    dict(
+                        success=True,
+                        result=[dict(id=8, name="Documentary")] + [{}] * 49,
+                    )
+                )
+            return _resp(dict(success=True, result=[dict(id=7, name="Screening")]))
+        if method == "GET" and path == "/rest/asset/v1/staticList/7.json":
             return _resp(dict(success=True, result=[dict(id=7, name="Screening")]))
         if method == "GET" and path == "/rest/v1/lists/7/leads.json":
             params = kwargs.get("params", {})

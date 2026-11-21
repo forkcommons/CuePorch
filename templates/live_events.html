@@ -213,6 +213,23 @@
           <button type="button" id="eventHubSpotReadOutbound">Refresh delivery status</button>
           <p id="eventHubSpotOutboundStatus" role="status"></p>
         </fieldset>
+        <fieldset id="eventMarketoImportPanel" hidden>
+          <legend>Import attendees from Marketo</legend>
+          <button type="button" id="eventMarketoListLoad">Load static lists and fields</button>
+          <button type="button" id="eventMarketoListMore" hidden>More lists</button>
+          <label>Static list
+            <select id="eventMarketoList">
+              <option value="">Choose a static list</option>
+            </select>
+          </label>
+          <div id="eventMarketoImportMapping"></div>
+          <button type="button" id="eventMarketoImportNow" disabled>Import selected list</button>
+          <button type="button" id="eventMarketoImportSchedule" disabled>Enable automatic import</button>
+          <button type="button" id="eventMarketoImportStop" hidden>Stop automatic import</button>
+          <button type="button" id="eventMarketoImportRefresh">Refresh import status</button>
+          <p role="status" id="eventMarketoImportStatus"></p>
+        </fieldset>
+
         <fieldset id="eventMarketo" hidden>
           <legend>Send consented registrations to Marketo</legend>
           <button type="button" id="eventMarketoLoad">Load programs and fields</button>

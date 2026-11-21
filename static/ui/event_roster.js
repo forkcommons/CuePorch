@@ -1,6 +1,9 @@
 import { setupHubSpot } from "./event_hubspot.js";
 import { setupMarketo } from "./event_marketo.js";
+import { setupMarketoImport } from "./event_marketo_import.js";
 const sourceNames = { form: "Registration form", api: "API", csv: "CSV import", hubspot: "HubSpot", "hubspot-scheduled": "HubSpot automatic refresh",
+    marketo: "Marketo",
+    "marketo-scheduled": "Marketo automatic import",
     "retained-link": "Retained join link" };
 function watchTime(seconds) {
     if (seconds === undefined)
@@ -56,6 +59,7 @@ export function setupEventRoster(request, download) {
     }
     const chooseHubSpot = setupHubSpot(request, () => void load(0));
     const chooseMarketo = setupMarketo(request);
+    const chooseMarketoImport = setupMarketoImport(request, () => void load(0));
     panel.addEventListener("toggle", () => {
         if (panel.open)
             void load(page);
@@ -86,6 +90,7 @@ export function setupEventRoster(request, download) {
         base = selected;
         chooseHubSpot(base);
         chooseMarketo(base, event);
+        chooseMarketoImport(base, event);
         filter = "";
         page = 0;
         panel.open = false;

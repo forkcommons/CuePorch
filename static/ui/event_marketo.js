@@ -1,3 +1,54 @@
+export async function marketoMappingFields(request, eventId) {
+    const [leadResponse, registrationResponse] = await Promise.all([
+        request('/api/integrations/marketo/lead-fields', undefined, undefined, true),
+        request(`/api/live-events/${eventId}/registration`),
+    ]);
+    return {
+        leadFields: leadResponse.fields,
+        form: registrationResponse.settings,
+    };
+}
+export function renderMarketoMapping(container, formFields, leadFields, selected, emptyLabel) {
+    container.textContent = "";
+    for (const field of formFields) {
+        if (field.type !== "checkbox" && field.type !== "text" && field.type !== "select")
+            continue;
+        const wantsBoolean = field.type === "checkbox";
+        const eligible = leadFields.filter((lf) => (lf.type === "boolean") === wantsBoolean);
+        const wrapper = document.createElement("label");
+        const caption = document.createElement("span");
+        caption.textContent = field.label;
+        wrapper.appendChild(caption);
+        const select = document.createElement("select");
+        select.dataset.formField = field.id;
+        select.appendChild(new Option(emptyLabel, ""));
+        for (const lf of eligible) {
+            select.appendChild(new Option(lf.label, lf.name));
+        }
+        const preferred = selected?.[field.id];
+        if (preferred && eligible.some((lf) => lf.name === preferred)) {
+            select.value = preferred;
+        }
+        else {
+            select.value = "";
+        }
+        wrapper.appendChild(select);
+        container.appendChild(wrapper);
+    }
+}
+export function readMarketoMapping(container) {
+    const mapping = {};
+    const selects = container.querySelectorAll("select[data-form-field]");
+    selects.forEach((select) => {
+        const key = select.dataset.formField;
+        if (!key)
+            return;
+        const value = select.value;
+        if (value)
+            mapping[key] = value;
+    });
+    return mapping;
+}
 export function setupMarketo(request) {
     const eventMarketo = document.querySelector('#eventMarketo');
     const eventMarketoLoad = document.querySelector('#eventMarketoLoad');
@@ -49,35 +100,11 @@ export function setupMarketo(request) {
     }
     async function loadFields() {
         const ticket = generation;
-        const [leadFieldsRes, registrationRes] = await Promise.all([
-            request('/api/integrations/marketo/lead-fields', undefined, undefined, true),
-            request(`/api/live-events/${eventId}/registration`)
-        ]);
+        const { leadFields, form } = await marketoMappingFields(request, eventId);
         if (ticket !== generation)
             return;
-        eventMarketoMapping.replaceChildren();
-        const leadFields = leadFieldsRes.fields;
-        for (const formField of registrationRes.settings.fields) {
-            if (formField.type !== 'checkbox' && formField.type !== 'text' && formField.type !== 'select')
-                continue;
-            const label = document.createElement('label');
-            label.textContent = formField.label;
-            const select = document.createElement('select');
-            select.dataset.formField = formField.id;
-            select.add(new Option('Do not send', ''));
-            const allowed = formField.type === 'checkbox'
-                ? leadFields.filter(leadField => leadField.type === 'boolean')
-                : (formField.type === 'text' || formField.type === 'select')
-                    ? leadFields.filter(leadField => leadField.type !== 'boolean')
-                    : [];
-            for (const leadField of allowed)
-                select.add(new Option(leadField.label, leadField.name));
-            if (receipt?.mapping?.[formField.id])
-                select.value = receipt.mapping[formField.id];
-            label.append(select);
-            eventMarketoMapping.append(label);
-        }
-        loaded = registrationRes.settings.enabled;
+        renderMarketoMapping(eventMarketoMapping, form.fields, leadFields, receipt?.mapping, 'Do not send');
+        loaded = form.enabled;
         eventMarketoEnable.disabled = !loaded || !eventMarketoProgram.value;
     }
     let inFlight = null;
@@ -139,12 +166,7 @@ export function setupMarketo(request) {
         const program = Number(eventMarketoProgram.value);
         if (!Number.isSafeInteger(program) || program <= 0)
             return;
-        const mapping = {};
-        eventMarketoMapping.querySelectorAll('select[data-form-field]').forEach(select => {
-            const value = select.value.trim(), field = select.dataset.formField;
-            if (value && field)
-                mapping[field] = value;
-        });
+        const mapping = readMarketoMapping(eventMarketoMapping);
         const result = await request(endpoint(), 'PUT', { program, mapping, engagement: eventMarketoEngagement.checked }, true);
         if (ticket === generation)
             renderReceipt(result);
