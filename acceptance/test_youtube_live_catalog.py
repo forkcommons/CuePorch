@@ -473,16 +473,6 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
                 creation_page.close()
 
-                policy = api.put(base + "/api/policy/publication", headers=operator_headers, data={"required": True})
-                self.assertTrue(policy.ok, policy.text())
-                held = api.post(base + "/api/live-events", headers=operator_headers,
-                                data=dict(future, title="Needs publication approval", slug="needs-publication-approval"))
-                self.assertTrue(held.ok, held.text())
-                held_path = base + f"/api/live-events/{held.json()['id']}/{int(start.timestamp())}/destinations/youtube/create"
-                refused = api.post(held_path, headers=operator_headers, data={})
-                self.assertEqual(409, refused.status)
-                self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
-
                 series_event = scheduled.json()
                 event_base = f"{base}/api/live-events/{series_event['id']}"
                 _, second, third, fourth = [int(item["id"]) for item in series_event["occurrences"]]
@@ -511,6 +501,31 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertTrue(skipped.ok, skipped.text())
                 self.assertEqual(active_series | {"skipped": True, "restorable": True},
                                  api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                original_title = future["title"]
+                revised_title = "Title-only revise keeps recurring inheritance"
+                revised = api.put(event_base, headers=operator_headers,
+                                  data=dict(series_event["event"], title=revised_title, revision=series_event["revision"]))
+                self.assertTrue(revised.ok, revised.text())
+                self.assertEqual(revised_title, revised.json()["event"]["title"])
+                self.assertEqual(active_series, api.get(later_targets + series_suffix, headers=operator_headers).json())
+                self.assertEqual(active_series | {"skipped": True, "restorable": True},
+                                 api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                self.assertEqual(active_series, api.get(last_series, headers=operator_headers).json())
+                restored = api.put(event_base, headers=operator_headers,
+                                   data=dict(revised.json()["event"], title=original_title, revision=revised.json()["revision"]))
+                self.assertTrue(restored.ok, restored.text())
+                self.assertEqual(original_title, restored.json()["event"]["title"])
+
+                policy = api.put(base + "/api/policy/publication", headers=operator_headers, data={"required": True})
+                self.assertTrue(policy.ok, policy.text())
+                held = api.post(base + "/api/live-events", headers=operator_headers,
+                                data=dict(future, title="Needs publication approval", slug="needs-publication-approval"))
+                self.assertTrue(held.ok, held.text())
+                held_path = base + f"/api/live-events/{held.json()['id']}/{int(start.timestamp())}/destinations/youtube/create"
+                refused = api.post(held_path, headers=operator_headers, data={})
+                self.assertEqual(409, refused.status)
+                self.assertEqual(["broadcast", "stream", "bind"], observed["writes"])
+
                 third_local = series_event["occurrences"][2]["local"].replace("T", " ")
                 skip_page = browser.new_page()
                 skip_page.add_init_script(

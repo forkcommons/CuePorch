@@ -489,6 +489,45 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(403, api.post(next_targets + "/facebook-profile", headers=auth, data={"page": "101"}).status)
                 self.assertEqual(403, api.post(next_targets + "/facebook", headers=auth, data={"page": "707"}).status)
 
+                response = api.post(base + "/api/live-events", headers=auth,
+                                    data=created['event'] | {'title': 'Facebook profile series',
+                                                             'slug': 'facebook-profile-series'})
+                self.assertTrue(response.ok, response.text())
+                profile_series = response.json()
+                first, next_date, omitted = profile_series["occurrences"][:3]
+                event_path = base + f"/api/live-events/{profile_series['id']}"
+                response = api.put(event_path + f"/{first['id']}/destinations/facebook-profile/auto",
+                                   headers=auth, data={"page": "707", "privacy": "SELF", "series": True})
+                self.assertEqual(202, response.status, response.text())
+                self.assertEqual({"state": "queued", "series": True, "privacy": "SELF"},
+                                 api.get(event_path + f"/{next_date['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+                self.assertEqual(200, api.delete(event_path + f"/{omitted['id']}/destinations/facebook-profile/auto",
+                                                 headers=auth, data={"page": "707"}).status)
+                self.assertEqual({"state": "idle", "series": True, "privacy": "SELF", "restorable": True},
+                                 api.get(event_path + f"/{omitted['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+                updated = api.put(event_path, headers=auth,
+                                  data=dict(profile_series["event"], title="Facebook profile series updated",
+                                            revision=profile_series["revision"]))
+                self.assertTrue(updated.ok, updated.text())
+                self.assertEqual({"state": "queued", "series": True, "privacy": "SELF"},
+                                 api.get(event_path + f"/{next_date['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+                self.assertEqual({"state": "idle", "series": True, "privacy": "SELF", "restorable": True},
+                                 api.get(event_path + f"/{omitted['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+                self.assertEqual({"state": "queued", "series": True, "privacy": "SELF"},
+                                 api.get(event_path + f"/{first['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+                self.assertEqual(200, api.delete(event_path + f"/{next_date['id']}/destinations/facebook-profile/auto",
+                                                 headers=auth, data={"page": "707", "series": True}).status)
+                self.assertEqual(200, api.delete(event_path + f"/{first['id']}/destinations/facebook-profile/auto",
+                                                 headers=auth, data={"page": "707"}).status)
+                self.assertEqual({"state": "idle", "series": False},
+                                 api.get(event_path + f"/{next_date['id']}/destinations/facebook-profile/auto?page=707",
+                                         headers=auth).json())
+
                 page.goto(base + "/operator/live-events")
                 page.get_by_role("button", name=f"Open production for Facebook Live rehearsal at {next_label}",
                                  exact=True).click()
