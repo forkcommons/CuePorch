@@ -35,6 +35,7 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
         registration = f"/api/live-events/{event['id']}/registration"
         options = client.get(registration, headers=headers).get_json()
         options["settings"]["enabled"] = True
+        options["settings"]["attendance_analytics"] = True
         self.assertEqual(client.put(registration, headers=headers, json=options).status_code, 200)
 
         url = f"/api/live-events/{event['id']}/{opens}/registration/salesforce/outbound"
@@ -47,6 +48,8 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
 
         adapter = event_salesforce_registration.salesforce_outbound
         with patch.object(adapter, "validate_installation") as describe, patch.object(
+            adapter, "validate_engagement_installation"
+        ), patch.object(
             adapter, "publish_registration", side_effect=publish
         ):
             response = client.put(url, headers=headers, json={"campaign": roster.TARGET})
@@ -79,7 +82,7 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
         service = make_server("127.0.0.1", 0, app, threaded=True, request_handler=QuietHandler)
         watch = f"http://127.0.0.1:{service.server_port}/events/salesforce-outbound-rehearsal?occurrence={opens}"
         with service_worker(service), sync_playwright() as playwright, chromium(playwright) as browser:
-            def register(email, consent):
+            def register(email, consent, engagement=False):
                 page = browser.new_page()
                 try:
                     page.goto(watch)
@@ -90,9 +93,15 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
                     expect(box).not_to_be_checked()
                     if consent:
                         box.check()
+                    engagement_box = page.locator("input[name=salesforce_engagement_consent]")
+                    expect(engagement_box).not_to_be_checked()
+                    if engagement:
+                        engagement_box.check()
                     page.locator("form button[type=submit]").first.click()
                     expect(box).to_have_count(0)
-                    self.assertTrue(page.locator("#eventLobby").get_attribute("data-viewer-grant"))
+                    grant = page.locator("#eventLobby").get_attribute("data-viewer-grant")
+                    self.assertTrue(grant)
+                    return grant
                 finally:
                     page.close()
 
@@ -110,6 +119,7 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
             panel.locator('#sfCampaignMore').click()
             panel.locator('#sfCampaign').select_option(label='Arts')
             panel.locator('#sfLeadCompany').fill('Rehearsal Company')
+            panel.locator('#sfOutboundEngagement').check()
             panel.locator('#sfOutboundEnable').click()
             expect(status).to_contain_text('Campaign: Arts.')
             panel.locator('#sfOutboundRefresh').click()
@@ -117,21 +127,35 @@ class TestSalesforceWebinar(roster.TestSalesforceRoster):
             expect(company).to_have_value('Rehearsal Company')
             expect(status).to_contain_text('Campaign: Arts.')
             expect(panel.locator('#sfImportStatus')).to_have_text('Off.')
+            expect(panel.locator('#sfOutboundComplete')).to_be_hidden()
+            self.assertTrue(receipt()['engagement'])
+            complete = client.post(url + '/complete', headers=headers, json={})
+            self.assertEqual(complete.status_code, 409)
             self.assertEqual(receipt()['company'], 'Rehearsal Company')
             operator_page.close()
             register("declined@example.test", False)
             self.assertEqual(receipt()["states"], {})
             register("automatic@example.test", True)
             wait_sent(1)
+            self.assertEqual(receipt()["engagement_states"], {})
             self.assertEqual(captured[0]["address"], "automatic@example.test")
             self.assertEqual(captured[0]["answers"]["first_name"], "Ada")
             self.assertEqual(datetime.fromisoformat(captured[0]["registered_at"]).utcoffset(), timedelta(0))
             set_required(True)
-            register("waiting@example.test", True)
+            response = client.put("/api/policy/event_engagement_sync", headers=headers, json={"required": True})
+            self.assertEqual(response.status_code, 200)
+            waiting_grant = register("waiting@example.test", True, engagement=True)
             self.assertEqual(receipt()["states"], {"sent": 1, "waiting": 1})
             self.assertEqual(len(captured), 1)
             set_required(False)
             wait_sent(2)
+            self.assertEqual(receipt()["engagement_states"], {"waiting": 1})
+            response = client.post(
+                "/api/event-playback/withdraw-sharing",
+                headers={"X-CuePorch-Event-Viewer": waiting_grant},
+            )
+            self.assertEqual(response.status_code, 204)
+            self.assertEqual(receipt()["engagement_states"], {"canceled": 1})
             self.assertEqual(captured[1]["address"], "waiting@example.test")
             set_required(True)
             register("canceled@example.test", True)

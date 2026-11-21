@@ -232,7 +232,12 @@
             <label>Company for new Salesforce leads
               <input type="text" id="sfLeadCompany" value="Individual" maxlength="255">
             </label>
+            <label>
+              <input type="checkbox" id="sfOutboundEngagement">
+              Report consented webinar attendance and watch time
+            </label>
             <button type="button" id="sfOutboundEnable" disabled>Enable Salesforce delivery</button>
+            <button type="button" id="sfOutboundComplete" hidden>Start Salesforce reporting now</button>
             <button type="button" id="sfOutboundStop" hidden>Stop Salesforce delivery</button>
             <button type="button" id="sfOutboundRefresh">Refresh Salesforce delivery status</button>
             <p role="status" id="sfOutboundStatus"></p>

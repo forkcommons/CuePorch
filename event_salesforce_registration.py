@@ -7,6 +7,7 @@ from flask import abort, request
 from browser_account_security import json_mutation, private, same_origin, secure_site
 import event_attendance
 import event_contact_delivery as outbox
+import event_salesforce_engagement
 import salesforce_crm
 import salesforce_outbound
 
@@ -38,7 +39,7 @@ def offer(con, connection, row, slot, form, now):
     return None
 
 
-def register_routes(app, tx, staff, origin, connection, read, selected_open, registration_intake):
+def register_routes(app, tx, staff, origin, connection, read, selected_open, registration_intake, validate_engagement):
 
     def save_dest(uid, opens, body):
         company = body.get("company", "Individual")
@@ -48,20 +49,29 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
         if not company or not company.isprintable() or len(company) > 255:
             abort(422)
 
+        engagement = body.get("engagement", False)
+        if type(engagement) is not bool:
+            abort(422)
+
         revision = connection.revision()
 
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
 
+        if engagement and not form["attendance_analytics"]:
+            abort(409, 'Enable attendee analytics on the registration form first.')
+
         cid = salesforce_crm.campaign(connection, revision, body.get("campaign"))["id"]
         salesforce_outbound.validate_installation(connection, revision)
+        if engagement:
+            salesforce_outbound.validate_engagement_installation(connection, revision, kind='webinar')
 
         with tx() as con:
             connection.authorize(con, revision)
             row_again, slot_again, form_again = registration_intake(con, uid, opens)
             if row_again["revision"] != row["revision"] or form_again["revision"] != form["revision"]:
                 abort(409)
-            destination = {"campaign": cid, "company": company}
+            destination = {"campaign": cid, "company": company, "engagement": engagement}
             outbox.set_destination(
                 con,
                 PROVIDER,
@@ -91,6 +101,24 @@ def register_routes(app, tx, staff, origin, connection, read, selected_open, reg
             if request.method == "DELETE":
                 outbox.disable(con, PROVIDER, uid, opens)
             return private(outbox.receipt(con, PROVIDER, uid, opens, connection_revision(con, connection)))
+
+    @app.post('/api/live-events/<uid>/<int:opens>/registration/salesforce/outbound/complete')
+    def complete_outbound(uid, opens):
+        staff()
+        json_mutation(secure_site(origin), 'X-CuePorch-Integration')
+        with tx() as con:
+            plan = outbox.get(con, PROVIDER, uid, opens)
+            if not plan or json.loads(plan['destination']).get('engagement') is not True:
+                abort(409, 'Salesforce engagement is not enabled for this registration')
+            connection.authorize(con, plan['provider_revision'])
+            validate_engagement(con, plan)
+            observed = event_salesforce_engagement.completion(con, plan['generation'])
+            if observed is None:
+                abort(409, 'Salesforce engagement stream end must be confirmed')
+            event_salesforce_engagement.complete(
+                con, plan['generation'], time(), observed['duration'], manual=True)
+            return private(outbox.receipt(
+                con, PROVIDER, uid, opens, plan['provider_revision']))
 
 def enqueue(con, action, plan, registrant, answers, now):
     delivery = outbox.enqueue(con, action, plan, registrant, now)
@@ -129,13 +157,18 @@ def deliver(tx, job, connection, validate, stop, clock):
         before_write=before_write)
 
 
-def start(app, tx, database, connection, validate, *, clock=time):
+def start(app, tx, database, connection, validate, *, clock=time, engagement_validate=None):
     if not connection or not connection.configured:
         return lambda: None
     def tick(stop):
-        outbox._run_one(tx, PROVIDER,
+        registration_success = outbox._run_one(tx, PROVIDER,
             lambda job: deliver(tx, job, connection, validate, stop, clock),
             stop, clock)
+        engagement_success = False
+        if engagement_validate is not None:
+            engagement_success = event_salesforce_engagement.run_one(
+                tx, connection, engagement_validate, stop, clock)
+        return registration_success or engagement_success
     return outbox._start_worker(app, database, PROVIDER, tick)
 
 

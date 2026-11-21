@@ -108,7 +108,8 @@ class MarketoActivityTest(unittest.TestCase):
         from contextlib import contextmanager
         from pathlib import Path
         from tempfile import TemporaryDirectory
-        from unittest.mock import Mock
+        from threading import Event
+        from unittest.mock import Mock, patch
 
         import event_contact_delivery
         import event_schedule
@@ -177,6 +178,23 @@ class MarketoActivityTest(unittest.TestCase):
             self.con, lambda *_: None, mailchimp_plan, "r", "s"
         )
 
+        import event_salesforce_engagement
+
+        salesforce_plan = event_contact_delivery.set_destination(
+            self.con,
+            "salesforce",
+            "e",
+            opens,
+            provider_revision="p",
+            event_revision="r",
+            form_revision="f",
+            deadline=opens + 600,
+            destination={"campaign": "701000000000002", "engagement": True},
+        )
+        event_salesforce_engagement.enqueue(
+            self.con, lambda *_: None, salesforce_plan, "r", "s"
+        )
+
         @contextmanager
         def tx():
             yield self.con
@@ -211,7 +229,21 @@ class MarketoActivityTest(unittest.TestCase):
         self.assertEqual(marketo_row[0], 57)
         self.assertEqual(mailchimp_row[0], 57)
         self.assertEqual(marketo_row[1], mailchimp_row[1])
+        salesforce_completion = event_salesforce_engagement.completion(self.con, salesforce_plan["generation"])
+        self.assertIsNotNone(salesforce_completion)
+        self.assertEqual(salesforce_completion["duration"], 57)
+        self.assertEqual(salesforce_completion["completed"], marketo_row[1])
+        self.assertEqual(salesforce_completion["report_at"], salesforce_completion["completed"] + 3600)
         self.assertEqual(host.call.call_count, 1)
+        manual = salesforce_completion["completed"] + 5
+        self.assertTrue(event_salesforce_engagement.complete(self.con, salesforce_plan["generation"], manual, 57, manual=True))
+        self.assertEqual(event_salesforce_engagement.completion(self.con, salesforce_plan["generation"])["report_at"], manual)
+        self.con.execute("INSERT INTO action SELECT id,'eligible',NULL FROM live_event_salesforce_engagement")
+        with patch.object(event_salesforce_engagement, "deliver", return_value="sent") as send:
+            for elapsed in (1, 2, 301, 1501):
+                event_salesforce_engagement.run_one(tx, None, None, Event(), lambda: int(manual) + elapsed)
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(event_salesforce_engagement.status(self.con, salesforce_plan["generation"]), {"sent": 1})
 
         count = self.con.execute("SELECT COUNT(*) FROM live_webhook_feed").fetchone()[0]
         self.assertEqual(count, 0)

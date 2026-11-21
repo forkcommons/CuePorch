@@ -857,7 +857,8 @@ def create_app(root, database, operator, institution, simulation=None):
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued'
                             UNION SELECT action FROM library_hubspot_media_event WHERE state='queued'
-                            UNION SELECT id FROM live_event_mailchimp_engagement WHERE state='queued' AND write_started=0)""", (step,))
+                            UNION SELECT id FROM live_event_mailchimp_engagement WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM live_event_salesforce_engagement WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",

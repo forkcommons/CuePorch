@@ -18,6 +18,8 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   const cancelSend = $<HTMLButtonElement>("#sfOutboundStop");
   const readSend = $<HTMLButtonElement>("#sfOutboundRefresh");
   const sendStatus = $<HTMLElement>("#sfOutboundStatus");
+  const engagement = $<HTMLInputElement>("#sfOutboundEngagement");
+  const complete = $<HTMLButtonElement>("#sfOutboundComplete");
 
   let base = "";
   let generation = 0;
@@ -26,8 +28,8 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   let receipt: Receipt | undefined;
   const importPath = () => base + "/registration/salesforce";
   const syncPath = () => importPath() + "/sync";
-  let outbound: { available: boolean; enabled: boolean; state: string; campaign?: string; company?: string; states: Record<string, number> } | undefined;
-  type OutboundReceipt = NonNullable<typeof outbound>;
+  type OutboundReceipt = { available: boolean; enabled: boolean; state: string; campaign?: string; company?: string; states: Record<string, number>; engagement?: boolean; engagement_states?: Record<string, number>; engagement_report_at?: number | null };
+  let outbound: OutboundReceipt | undefined;
   const outboundPath = () => importPath() + "/outbound";
 
   function updateControls() {
@@ -46,6 +48,10 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     cancelSend.disabled = busy;
     cancelSend.hidden = !(outbound?.enabled || outbound?.state === "stale");
     readSend.disabled = busy;
+    engagement.disabled = busy || outbound?.available !== true;
+    const reportAt = outbound?.engagement_report_at;
+    complete.hidden = !(outbound?.enabled && outbound?.engagement && reportAt != null && Number.isFinite(reportAt) && reportAt * 1000 > Date.now());
+    complete.disabled = busy;
   }
 
   function resultText(r: ImportResult) {
@@ -76,6 +82,7 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   function renderOutbound(r: OutboundReceipt) {
     outbound = r;
     company.value = r.company ?? "Individual";
+    engagement.checked = !!r.engagement;
     const p: string[] = [];
     if (!r.available) {
       p.push("Salesforce delivery unavailable.");
@@ -90,6 +97,9 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
       if (campaignName) p.push(`Campaign: ${campaignName}.`);
       const entries = Object.entries(r.states ?? {});
       p.push(entries.length ? `Counts: ${entries.map(([k, v]) => `${k} ${v}`).join(", ")}.` : "No deliveries yet.");
+      const engagementEntries = Object.entries(r.engagement_states ?? {});
+      if (engagementEntries.length) p.push(`Engagement counts: ${engagementEntries.map(([k, v]) => `${k} ${v}`).join(", ")}.`);
+      if (r.engagement) p.push(r.engagement_report_at != null ? `Engagement report at ${new Date(r.engagement_report_at * 1000).toLocaleString()}.` : "Waiting for confirmed webinar end.");
     }
     sendStatus.textContent = p.join(" ");
     updateControls();
@@ -137,7 +147,7 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
   company.addEventListener("input", updateControls);
 
   send.addEventListener("click", () => run(async (t) => {
-    const r = await request<OutboundReceipt>(outboundPath(), "PUT", { campaign: select.value, company: company.value.trim() }, true);
+    const r = await request<OutboundReceipt>(outboundPath(), "PUT", { campaign: select.value, company: company.value.trim(), engagement: engagement.checked }, true);
     if (t !== generation) return;
     renderOutbound(r);
   }, sendStatus));
@@ -150,6 +160,12 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
 
   readSend.addEventListener("click", () => run(async (t) => {
     const r = await request<OutboundReceipt>(outboundPath());
+    if (t !== generation) return;
+    renderOutbound(r);
+  }, sendStatus));
+
+  complete.addEventListener("click", () => run(async (t) => {
+    const r = await request<OutboundReceipt>(outboundPath() + "/complete", "POST", {}, true);
     if (t !== generation) return;
     renderOutbound(r);
   }, sendStatus));
@@ -188,6 +204,7 @@ export function setupSalesforceImport(request: Request, onRosterChanged: () => v
     status.textContent = "";
     sendStatus.textContent = "";
     company.value = "Individual";
+    engagement.checked = false;
     updateControls();
     run(async (t) => {
       const [syncRes, outboundRes] = await Promise.allSettled([

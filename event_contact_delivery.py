@@ -96,6 +96,12 @@ def disable(con, provider, event, opens):
                 import event_mailchimp_engagement
 
                 event_mailchimp_engagement.cancel(con, generation=plan["generation"])
+    if provider == "salesforce":
+        plan = get(con, provider, event, opens)
+        if plan and json.loads(plan["destination"]).get("engagement") is True:
+            import event_salesforce_engagement
+
+            event_salesforce_engagement.cancel(con, generation=plan["generation"])
     params = (provider, event, opens)
     con.execute(
         """
@@ -446,6 +452,12 @@ def receipt(con, provider, event, opens, revision):
         result["states"] = {r[0]: r[1] for r in rows}
     if enabled and provider == "salesforce":
         result.update(json.loads(plan["destination"]))
+        if result.get("engagement") is True:
+            import event_salesforce_engagement
+
+            result["engagement_states"] = event_salesforce_engagement.status(con, plan["generation"])
+            observed = event_salesforce_engagement.completion(con, plan["generation"])
+            result["engagement_report_at"] = observed["report_at"] if observed else None
         return result
     if enabled and provider == "mailchimp":
         destination = json.loads(plan["destination"])

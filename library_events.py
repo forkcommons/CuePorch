@@ -32,6 +32,7 @@ import event_engagement
 import event_hubspot_sync
 import event_salesforce_sync
 import event_salesforce_registration
+import event_salesforce_engagement
 import salesforce_crm
 import event_hubspot_outbound
 import event_contact_delivery
@@ -89,7 +90,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
        + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
-       + event_mailchimp_engagement.SCHEMA)
+       + event_mailchimp_engagement.SCHEMA + event_salesforce_engagement.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -132,7 +133,8 @@ def observe_delivery(tx, database, origin, connect):
         hooks = event_webhooks.subscribed(con, ("live-event-started", "live-event-ended"))
         entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed,
                                       p.generation AS marketo_generation,
-                                      q.generation AS mailchimp_generation
+                                      q.generation AS mailchimp_generation,
+                                      s.generation AS salesforce_generation
                                FROM live_occurrence o
                                JOIN live_event e ON e.id=o.event
                                LEFT JOIN live_webhook_feed f
@@ -155,9 +157,19 @@ def observe_delivery(tx, database, origin, connect):
                                               AND m.generation=q.generation AND m.state='queued')
                                 AND NOT EXISTS (SELECT 1 FROM live_event_mailchimp_completion c
                                                 WHERE c.generation=q.generation)
+                               LEFT JOIN live_event_contact_plan s
+                                 ON s.provider='salesforce' AND s.event=o.event AND s.opens=o.opens
+                                AND s.event_revision=e.revision
+                                AND json_extract(s.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_salesforce_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=s.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_salesforce_completion c
+                                                WHERE c.generation=s.generation)
                                WHERE o.origin=? AND o.opens<=?
                                  AND ((? AND o.delivery='ready' AND (f.state IS NULL OR f.state='live'))
-                                      OR ((p.generation IS NOT NULL OR q.generation IS NOT NULL)
+                                      OR ((p.generation IS NOT NULL OR q.generation IS NOT NULL
+                                           OR s.generation IS NOT NULL)
                                           AND o.delivery IN ('ready','replay')))""",
                             (origin, now.timestamp(), hooks)).fetchall()
     for item in entries:
@@ -169,7 +181,8 @@ def observe_delivery(tx, database, origin, connect):
             with lock_event(database, uid, timeout=0):
                 marketo_generation = item["marketo_generation"]
                 mailchimp_generation = item["mailchimp_generation"]
-                any_generation = marketo_generation is not None or mailchimp_generation is not None
+                salesforce_generation = item["salesforce_generation"]
+                any_generation = any(generation is not None for generation in (marketo_generation,mailchimp_generation,salesforce_generation))
                 with tx() as con:
                     current = occurrence(con, uid, opens)
                     if not current or current["remote"] != item["remote"]:
@@ -203,6 +216,7 @@ def observe_delivery(tx, database, origin, connect):
                         for provider, module, generation in (
                             ("marketo", event_marketo_engagement, marketo_generation),
                             ("mailchimp", event_mailchimp_engagement, mailchimp_generation),
+                            ("salesforce", event_salesforce_engagement, salesforce_generation),
                         ):
                             if generation is None:
                                 continue
@@ -1333,9 +1347,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     ) if salesforce.configured else lambda: None
 
     event_salesforce_registration.register_routes(
-        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake)
+        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake,
+        validate_hubspot_engagement)
     stop_salesforce_outbound = event_salesforce_registration.start(
-        app, tx, database, salesforce, validate_hubspot_plan
+        app, tx, database, salesforce, validate_hubspot_plan,
+        engagement_validate=validate_hubspot_engagement,
     ) if salesforce.configured else lambda: None
 
     stop_hubspot_outbound = event_hubspot_outbound.start(
@@ -2200,6 +2216,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             salesforce_plan = None
             salesforce_consent = ""
+            salesforce_engagement_consent = ""
             mailchimp_consent = ""
             mailchimp_engagement_consent = ""
             mailchimp_plan = None
@@ -2214,6 +2231,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if salesforce_plan:
                     salesforce_scope = ["salesforce-outbound", scope, salesforce_plan["generation"]]
                     salesforce_consent = forms.dumps(salesforce_scope)
+                    if offer_sharing and json.loads(salesforce_plan["destination"]).get("engagement") is True:
+                        salesforce_engagement_scope = ["salesforce-engagement", scope, salesforce_plan["generation"]]
+                        salesforce_engagement_consent = forms.dumps(salesforce_engagement_scope)
                 current = mailchimp.connection(con)
                 candidate = event_contact_delivery.get(con, "mailchimp", row["id"], shown["id"])
                 if (
@@ -2276,8 +2296,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     def remember(email, answers):
                         nonlocal sharing
                         registrant, created = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
-                        if (salesforce_plan
-                                and valid_ticket(forms, request.form.get("salesforce_consent", ""), salesforce_scope, 1200)):
+                        salesforce_agreed = bool(salesforce_plan and valid_ticket(forms, request.form.get("salesforce_consent", ""), salesforce_scope, 1200))
+                        if salesforce_agreed:
                             event_salesforce_registration.enqueue(con, action, salesforce_plan, registrant, answers, int(now.timestamp()))
                         if (created and contact_plan
                                 and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
@@ -2292,7 +2312,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                             forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
                         marketo_engagement_agreed = bool(marketo_agreed and marketo_engagement_consent and valid_ticket(forms, request.form.get("marketo_engagement_consent", ""), marketo_engagement_scope, 1200))
                         mailchimp_engagement_agreed = bool(mailchimp_agreed and mailchimp_engagement_consent and valid_ticket(forms, request.form.get("mailchimp_engagement_consent", ""), mailchimp_engagement_scope, 1200))
-                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed or mailchimp_engagement_agreed):
+                        salesforce_engagement_agreed = bool(salesforce_agreed and salesforce_engagement_consent and valid_ticket(forms, request.form.get('salesforce_engagement_consent', ''), salesforce_engagement_scope, 1200))
+                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed or mailchimp_engagement_agreed or salesforce_engagement_agreed):
                             sharing = event_registrants.share(con, registrant)
                             if engagement_agreed:
                                 event_hubspot_engagement.enqueue(con, action, contact_plan, registrant, sharing)
@@ -2300,6 +2321,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                 event_marketo_engagement.enqueue(con, action, marketo_plan, registrant, sharing)
                             if mailchimp_engagement_agreed:
                                 event_mailchimp_engagement.enqueue(con, action, mailchimp_plan, registrant, sharing)
+                            if salesforce_engagement_agreed:
+                                event_salesforce_engagement.enqueue(con, action, salesforce_plan, registrant, sharing)
 
                     admitted, sign_on, form_error = library_registration.admit(
                         con, "event", row["id"], form, scope, shown["id"],
@@ -2443,6 +2466,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
                                      salesforce_consent=salesforce_consent,
+                                     salesforce_engagement_consent=salesforce_engagement_consent,
                                      marketo_consent=marketo_consent,
                                      mailchimp_consent=mailchimp_consent,
                                      mailchimp_engagement_consent=mailchimp_engagement_consent,
@@ -2546,6 +2570,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 event_hubspot_engagement.cancel(con, sharing=sharing)
                 event_marketo_engagement.cancel(con, sharing=sharing)
                 event_mailchimp_engagement.cancel(con, sharing=sharing)
+                event_salesforce_engagement.cancel(con, sharing=sharing)
                 con.execute("DELETE FROM live_event_shared_qa_vote WHERE sharing=?", (sharing,))
         return private("", 204)
 

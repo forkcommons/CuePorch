@@ -107,6 +107,12 @@
       Share my name, email address and registration time with the organizer in Salesforce Sales Cloud.
     </label>
     {% endif %}
+    {% if salesforce_engagement_consent %}
+    <label>
+      <input type="checkbox" name="salesforce_engagement_consent" value="{{ salesforce_engagement_consent }}">
+      Share my webinar attendance and watch time with the organizer in Salesforce Sales Cloud.
+    </label>
+    {% endif %}
     {% if marketo_consent %}
     <label>
       <input type='checkbox' name='marketo_consent' value='{{ marketo_consent }}'>
