@@ -69,6 +69,7 @@ import regional_availability
 import registration_csv
 import studio_voice
 import studio_scripts
+from team_accounts import current as current_team_member
 from team_accounts import note
 
 
@@ -239,7 +240,8 @@ def observe_delivery(tx, database, origin, connect):
 
 
 def private_delivery(con, event, uid, opens):
-    return bool(event.get("cueporch_delivery") or event["visibility"] in RESTRICTED_AUDIENCES
+    return bool(event.get("cueporch_delivery") or event["visibility"] == "private"
+                or event["visibility"] in RESTRICTED_AUDIENCES
                 or territories(event)["mode"] != "anywhere" or con.execute(
                     "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
 
@@ -278,7 +280,8 @@ def publish_replays(tx, database, origin, connect, action):
     with tx() as con:
         candidates = con.execute(
             """SELECT o.event,o.opens,o.remote FROM live_occurrence o JOIN live_event e ON e.id=o.event
-               JOIN action a ON a.id=e.publication WHERE o.origin=? AND a.status='eligible'
+               LEFT JOIN action a ON a.id=e.publication WHERE o.origin=?
+               AND (a.status='eligible' OR (a.id IS NULL AND json_extract(e.settings,'$.visibility')='private'))
                AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=? AND
                (o.delivery='ready' OR (o.delivery='replay' AND COALESCE((
                    SELECT enabled FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens
@@ -473,7 +476,8 @@ def viewer_url(row, event, embed, key=None, opens=None):
 
 def summary(con, row, event, first, last):
     visible = publication(con, row, event)
-    can_embed = visible == "eligible" and event.get("embed_policy", UNRESTRICTED_EMBED)["mode"] != "disabled"
+    watchable = visible == "eligible" or event["visibility"] == "private"
+    can_embed = watchable and event.get("embed_policy", UNRESTRICTED_EMBED)["mode"] != "disabled"
     key, _ = access_settings(con, row["id"]) if event["visibility"] == "unlisted" else (None, None)
     sessions = []
     for upcoming in event_schedule.occurrences(event["schedule"], first, last):
@@ -485,7 +489,7 @@ def summary(con, row, event, first, last):
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
                 preview_encoder=encoder_preview_enabled(con, row["id"]),
                 publication=visible, occurrences=sessions,
-                watch=viewer_url(row, event, False, key) if visible == "eligible" else None,
+                watch=viewer_url(row, event, False, key) if watchable else None,
                 embed=viewer_url(row, event, True, key) if can_embed else None)
 
 
@@ -1458,11 +1462,22 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         slot = find_open(json.loads(row["settings"]), opens) if row else None
         return bool(slot and datetime.fromisoformat(slot["end"]) > datetime.now(timezone.utc))
 
+    def require_event_audience(con, row, event):
+        visible = publication(con, row, event)
+        if visible == "eligible":
+            return
+        if visible == "private" and event["visibility"] == "private":
+            secure = secure_site(mail_origin, required=False)
+            if secure is not None and current_team_member(con, secure):
+                return
+        abort(404)
+
     def audience_chat(con, slug, opens):
         row, event = read(con, slug, True)
         slot = selected_open(event, opens)
         delivery = occurrence(con, row["id"], opens)
-        if publication(con, row, event) != "eligible" or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
+        require_event_audience(con, row, event)
+        if delivery and delivery["delivery"] in ("withdrawing", "withdrawn"):
             abort(404)
         embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
         if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(row, embed):
@@ -2220,8 +2235,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         latest_captioned = False
         with tx() as con:
             row, event = read(con, slug, True)
-            if publication(con, row, event) != "eligible":
-                abort(404)
+            require_event_audience(con, row, event)
             ancestors, frame_grant = event_frame(row, event, embed, json_status)
             access, link_key, locked = viewer_permission(con, row, event, embed, json_status)
             enforce_territories(event)
@@ -2534,7 +2548,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      if can_participate else None,
                                      engagement_endpoint=url_for("audience_event_engagement", slug=slug, opens=shown["id"])
                                      if can_participate else None))
-        return audience_response(view, ancestors, 422 if form_error else 200, bool(access))
+        return audience_response(view, ancestors, 422 if form_error else 200,
+                                 bool(access) or event["visibility"] == "private")
 
     def audience_response(view, ancestors, status, restricted):
         response = make_response(view, status)
@@ -2560,7 +2575,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             row, event = read(con, slug, True)
             selected_open(event, opens)
             delivery = occurrence(con, row["id"], opens)
-            if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])[kind] != digest
+            require_event_audience(con, row, event)
+            if (event_player.settings(con, row["id"])[kind] != digest
                     or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
                 abort(404)
             if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(
@@ -2580,7 +2596,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         row, event = read(con, uid)
         delivery = occurrence(con, uid, opens)
         form = library_registration.active(con, "event", uid)
-        if (row["revision"] != revision or publication(con, row, event) != "eligible" or
+        require_event_audience(con, row, event)
+        if (row["revision"] != revision or
                 not delivery or delivery["remote"] != remote or delivery["delivery"] not in DELIVERED or
                 replay != (delivery["delivery"] == "replay") or
                 (form["revision"] if form else None) != form_revision):
