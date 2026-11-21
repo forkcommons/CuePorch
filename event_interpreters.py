@@ -8,20 +8,26 @@ from time import monotonic, time
 
 import requests
 
-from event_capture import BusyError, EncoderProgress, MAX_ROOMS, RtmpPublisher
+from event_capture import BusyError, EncoderProgress, MAX_ROOMS, RtmpPublisher, RtmpRelay
+from event_interpreter_timing import AlignedAudio
 
 
 class Input:
-    def __init__(self, directory, config, name, language, deadline, parent_stop):
+    def __init__(self, directory, config, name, language, deadline, parent):
         self.directory = directory
         self.name = name
         self.language = language
         self.deadline = deadline
-        self.parent_stop = parent_stop
+        self.parent_stop = parent.stop
         self.stop = Event()
         self.done = Event()
         self.publisher = RtmpPublisher(config, self.stop)
         self.path = None
+        self.mixer = AlignedAudio(parent.playback) if isinstance(parent, RtmpRelay) else None
+        self.mixing = None
+        if self.mixer is not None:
+            self.mixing = Thread(target=self.mixer.run, args=(self,), name="CuePorch interpreter mixer", daemon=True)
+            self.mixing.start()
         Thread(target=self.run, name="CuePorch interpreter receiver", daemon=True).start()
 
     def live(self):
@@ -102,6 +108,8 @@ class Input:
             try:
                 self.publisher.disconnect()
             finally:
+                if self.mixing is not None:
+                    self.mixing.join()
                 self.done.set()
 
 
@@ -124,6 +132,15 @@ class InterpreterInputs:
             item = self.active.get((uid, opens, language))
             return item if item is not None and item.live() else None
 
+    def audience(self, uid, opens, primary):
+        with self.lock:
+            for (event, occurrence, _), item in self.active.items():
+                if event == uid and occurrence == opens and item.live():
+                    mixer = item.mixer
+                    if mixer is not None and mixer.primary is primary and mixer.available():
+                        return mixer
+        return None
+
     def prepare(self, uid, opens, parent, config, name, language, deadline):
         key = (uid, opens, language)
         with self.lock:
@@ -142,7 +159,7 @@ class InterpreterInputs:
             if len(self.active) >= MAX_ROOMS:
                 raise BusyError("Close another interpreter input before starting this one.")
             self.directory.mkdir(parents=True, exist_ok=True)
-            item = Input(self.directory, config, name, language, deadline, parent.stop)
+            item = Input(self.directory, config, name, language, deadline, parent)
             self.active[key] = item
             return item
 

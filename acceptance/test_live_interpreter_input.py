@@ -6,19 +6,23 @@ import unittest
 from array import array
 from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urljoin
 
 import requests
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
 from browser import chromium
-from installed_rtmp_relay import free_port, relay_fixture
+from installed_events import play_event
+from installed_rtmp_relay import free_port, marked_feed, relay_fixture
 from institution import create_app
+from test_private_live_event import TEAM, hear_frequency
 from test_drive_import import QuietHandler, service_worker
 
 
@@ -73,6 +77,18 @@ def decoded_tone(path):
     assert len(samples) >= 1600
     crossings = sum((a < 0) != (b < 0) for a, b in zip(samples, samples[1:]))
     return crossings * 8000 / len(samples)
+
+
+def segment_pts(directory, name, payload, stream):
+    path = directory / name
+    path.write_bytes(payload)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", stream, "-show_entries",
+         "stream=start_pts,time_base", "-of", "json", str(path)],
+        check=True, capture_output=True, timeout=8,
+    )
+    info = json.loads(probe.stdout)["streams"][0]
+    return Fraction(info["start_pts"]) * Fraction(info["time_base"])
 
 
 def prepare_with_browser(base, auth, route):
@@ -139,12 +155,66 @@ class LiveInterpreterInputTest(unittest.TestCase):
 
             manager = app.extensions["event_interpreter_inputs"]
             receiver = manager.get(uid, opens, "es")
-            with publish_tone(source["server"], source["key"], certificate, 880):
-                first_run = self.assert_received(route, auth, receiver, 880)
-            with publish_tone(source["server"], source["key"], certificate, 660) as publishing:
-                self.assert_received(route, auth, receiver, 660, previous=first_run)
-                self.assertEqual(requests.delete(route + "/es", headers=auth, timeout=8).status_code, 204)
-                self.assertNotEqual(publishing.wait(timeout=11), 0)
+            encoder = primary.json()
+            invited = requests.post(base + "/api/team/invitations", headers=auth | TEAM, timeout=8,
+                                    json={"email": "listener@example.com", "role": "viewer"})
+            self.assertEqual(invited.status_code, 201, invited.text)
+            invitation = invited.json()["path"].split("#", 1)[1]
+            stable = base + event["watch"]
+            with (
+                marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate, "red", "320x180", 30, 440),
+                patch("event_media.Gateway.metadata", return_value={
+                    "isLive": True, "privacy": {"id": 3}, "state": {"id": 4},
+                }),
+                sync_playwright() as pw,
+                chromium(pw, args=["--autoplay-policy=no-user-gesture-required"]) as browser,
+            ):
+                team = browser.new_context()
+                joined = team.request.post(base + "/api/team/join", headers=TEAM, data={
+                    "invitation": invitation, "name": "Listener", "password": "listener-password",
+                })
+                self.assertEqual(joined.status, 201, joined.text())
+                deadline = monotonic() + 15
+                while monotonic() < deadline and not receiver.mixer.primary.live():
+                    sleep(.2)
+                page = team.new_page()
+                address, _, _ = play_event(page, stable, "Live")
+                self.assertTrue(address.endswith("/0.m3u8"))
+                hear_frequency(page, 440)
+                track = page.get_by_role("combobox", name="Audio track")
+                with publish_tone(source["server"], source["key"], certificate, 880):
+                    first_run = self.assert_received(route, auth, receiver, 880)
+                    expect(track).to_be_visible(timeout=20000)
+                    self.assertEqual(track.locator("option:checked").text_content(), "Original")
+                    hear_frequency(page, 440)
+                    track.select_option(label="Spanish")
+                    hear_frequency(page, 880)
+                    player = page.locator("#eventPlayer")
+                    master = urljoin(stable, player.get_attribute("data-address"))
+                    alternate = urljoin(master, "1.m3u8")
+                    playlist = team.request.get(alternate)
+                    self.assertEqual(playlist.status, 200)
+                    name = [line for line in playlist.text().splitlines() if line.endswith(".ts")][-1]
+                    segment = urljoin(alternate, name)
+                    audio = team.request.get(segment)
+                    video_name = "0-" + name[2:]
+                    video = team.request.get(urljoin(alternate, video_name))
+                    self.assertEqual(audio.status, 200)
+                    self.assertEqual(video.status, 200)
+                    with TemporaryDirectory() as directory:
+                        audio_pts = segment_pts(Path(directory), name, audio.body(), "a:0")
+                        video_pts = segment_pts(Path(directory), video_name, video.body(), "v:0")
+                        self.assertAlmostEqual(float(audio_pts), float(video_pts), delta=.002)
+                    self.assertEqual(requests.get(alternate, timeout=8).status_code, 404)
+                    self.assertEqual(requests.get(segment, timeout=8).status_code, 404)
+                with publish_tone(source["server"], source["key"], certificate, 660) as publishing:
+                    self.assert_received(route, auth, receiver, 660, previous=first_run)
+                    hear_frequency(page, 660)
+                    self.assertEqual(requests.delete(route + "/es", headers=auth, timeout=8).status_code, 204)
+                    self.assertNotEqual(publishing.wait(timeout=11), 0)
+                self.assertEqual(team.request.get(alternate).status, 404)
+                expect(track).to_be_hidden(timeout=12000)
+                hear_frequency(page, 440)
             self.assertEqual(requests.get(route, headers=auth, timeout=8).json(), {"inputs": []})
             with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
                 self.assertNotEqual(revoked.wait(timeout=8), 0)

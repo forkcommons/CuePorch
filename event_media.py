@@ -55,8 +55,8 @@ def manifest_text(payload):
     return content
 
 
-def local_hls(directory, filename):
-    if filename == "0.m3u8":
+def local_hls(directory, filename, manifests=("0.m3u8",)):
+    if filename in manifests:
         with (directory / filename).open("rb") as playlist:
             payload = playlist.read(256 * 1024 + 1)
         if len(payload) > 256 * 1024:
