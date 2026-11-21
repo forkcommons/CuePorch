@@ -19,7 +19,7 @@ from filelock import FileLock, Timeout
 from flask import abort, request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import Conflict, HTTPException
 
 from event_audio import MASTER_MAX, SEGMENT_MAX, released_fragments, released_variant, selected_variant
 from event_capture import EncoderProgress
@@ -1159,7 +1159,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 staff()
             with tx() as con:
                 check(con)
-                check_provider_capacity(con, uid, opens)
+                try:
+                    check_provider_capacity(con, uid, opens)
+                except Conflict as error:
+                    if live_now:
+                        raise facebook_live_job.AutomaticCapacityDeferred() from error
+                    raise
                 if not live_now and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
                     abort(409, "Choose a future occurrence to prepare a Facebook Live broadcast.")
 
@@ -1186,7 +1191,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         revision, provider_page, title, opens, before_send, live_now=live_now,
                         **options),
                     save, *key, revision,
-                    claim_auto=(lambda con: facebook_live_job.claim(con, key, automatic)) if live_now else None,
+                    automatic=automatic,
                 )
         except Timeout:
             return {"state": "unconfirmed"}, 202
