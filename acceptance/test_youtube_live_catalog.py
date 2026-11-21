@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import event_simulcast
 from institution import create_app
 import youtube_live
+from youtube_rtmps_fixture import check_youtube_rtmps
 
 
 class YouTubeLiveCatalog(unittest.TestCase):
@@ -342,6 +343,7 @@ class YouTubeLiveCatalog(unittest.TestCase):
                     )
 
                 wait_until(lambda: destination["id"] in scheduler_targets, 10, "The released YouTube destination was not selected.")
+                check_youtube_rtmps(root, database, destination["id"], operator)
                 page.get_by_role("button", name="Disconnect YouTube Live", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("YouTube Live disconnected.", timeout=15000)
                 self.assertTrue(observed["revoked"])
