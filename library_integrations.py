@@ -289,7 +289,9 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, facebook_live_connection, linkedin_live_connection, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *,
+             constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection,
+             facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -317,7 +319,9 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    live_connections = {item.config.key: item for item in (youtube_live_connection, facebook_live_connection, linkedin_live_connection)}
+    live_connections = {item.config.key: item for item in (
+        youtube_live_connection, facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection,
+    )}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound | live_connections
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
@@ -463,6 +467,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              if item.config.key == "facebook-live" else
                              "Connect and check a LinkedIn Live Company Page."
                              if item.config.key == "linkedin-live" else
+                             "Connect and check a LinkedIn Live profile."
+                             if item.config.key == "linkedin-member-live" else
                              "Upload a native video from the Library to your channel."
                              if item.config.key in outbound else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
@@ -517,6 +523,15 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                 abort(403, "Your workspace sharing policy restricts live company access.")
         revision = linkedin_live_connection.revision()
         return private(linkedin_live_connection.authorized_company(revision))
+
+    @app.get("/api/integrations/linkedin-member-live/profile")
+    def linkedin_member_live_profile():
+        read_api()
+        with tx() as con:
+            if not sharing_access(con)["outbound"]:
+                abort(403, "Your workspace sharing policy restricts live profile access.")
+        revision = linkedin_member_live_connection.revision()
+        return private(linkedin_member_live_connection.authorized_profile(revision))
 
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):

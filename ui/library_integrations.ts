@@ -230,6 +230,13 @@ function render() {
             const result = await api<{id: string}>(pathFor(item, "company"));
             companyLine.textContent = "Company Page " + result.id;
           }), companyLine);
+        } else if (item.id === "linkedin-member-live") {
+          const profileLine = document.createElement("p");
+          card.append(button("Show LinkedIn Live profile", async () => {
+            profileLine.textContent = "";
+            const result = await api<{id: string}>(pathFor(item, "profile"));
+            profileLine.textContent = "Profile " + result.id;
+          }), profileLine);
         } else if (item.category !== "Marketing") card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {

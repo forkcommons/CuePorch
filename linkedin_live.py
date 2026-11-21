@@ -15,6 +15,8 @@ from workspace_oauth import Connection, response_object
 
 OAUTH = replace(linkedin_upload.OAUTH, key="linkedin-live", name="LinkedIn Live",
                 scope="r_organization_live w_organization_live r_organization_admin")
+MEMBER_OAUTH = replace(OAUTH, key="linkedin-member-live", name="LinkedIn Profile Live",
+                       scope="r_member_live w_member_live r_liteprofile")
 API = "https://api.linkedin.com/rest"
 V2_API = "https://api.linkedin.com/v2"
 V2_HEADERS = {"X-Restli-Protocol-Version": "2.0.0"}
@@ -55,6 +57,25 @@ def parse_ingest(value):
             or endpoint.port not in (None, 443, 2935, 2936) or not stream):
         raise ValueError
     return f"rtmps://{endpoint.netloc}/live", stream[1]
+
+
+class ProfileLiveConnection(Connection):
+    def __init__(self, tx, operator, sharing_access):
+        super().__init__(MEMBER_OAUTH, tx, operator)
+        self.sharing_access = sharing_access
+
+    def save_authorization(self, con, tokens, context):
+        team_accounts.require_live_connection_manager(con, context, self.sharing_access)
+        return super().save_authorization(con, tokens, context)
+
+    def authorized_profile(self, revision):
+        with self.api(revision, "GET", V2_API + "/me", headers=V2_HEADERS) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)
+            raw = response_object(response).get("id")
+        if not isinstance(raw, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw):
+            abort(502, "LinkedIn returned an invalid profile ID.")
+        return {"id": raw, "urn": "urn:li:person:" + raw}
 
 
 class LiveConnection(Connection):
