@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from institution import create_app
 import event_simulcast
 import linkedin_live
+import linkedin_live_job
 import linkedin_upload as linkedin
 import social_publication
 from workspace_oauth import provider_request
@@ -175,7 +176,10 @@ class LinkedInPublication(unittest.TestCase):
                         candidate | dict(id=3, author={"organization": "urn:li:organization:999"}),
                     ], paging=dict(total=16, links=[dict(rel="next", href="https://invalid.example/ignore")]))
                 assert offset == 15
-                return dict(elements=[candidate], paging=dict(total=16))
+                return dict(elements=[
+                    candidate,
+                    candidate | dict(id=3457, name="Manual delivery broadcast", ugcPost="urn:li:ugcPost:7655"),
+                ], paging=dict(total=17))
 
             @remote.post("/v2/liveVideos")
             def live_videos():
@@ -528,18 +532,53 @@ class LinkedInPublication(unittest.TestCase):
                 expect(options.locator("option")).to_have_count(0)
                 page.get_by_role("button", name="More LinkedIn events", exact=True).click()
                 options.select_option("3456")
+                expect(page.get_by_role("checkbox", name="Prepare LinkedIn delivery automatically")).to_be_checked()
                 page.get_by_role("button", name="Use existing LinkedIn event", exact=True).click()
                 expect(page.locator("#linkedinLivePost")).to_have_attribute(
                     "href", "https://www.linkedin.com/feed/update/urn:li:ugcPost:7654/")
                 repeat_choice = api.post(selected_path, headers=auth, data={"id": "3456", "start": 15})
                 self.assertEqual(200, repeat_choice.status, repeat_choice.text())
+                self.assertIs(repeat_choice.json()["auto_prepare"], True)
                 duplicate = api.post(base + "/api/live-events", headers=auth, data=existing_event | {
                     "title": "Conflicting LinkedIn event", "slug": "conflicting-linkedin",
                 }).json()
-                self.assertEqual(409, api.post(
-                    f"{base}/api/live-events/{duplicate['id']}/{duplicate['occurrences'][0]['id']}"
-                    "/destinations/linkedin/existing", headers=auth, data={"id": "3456", "start": 15}).status)
+                manual_path = (f"{base}/api/live-events/{duplicate['id']}/{duplicate['occurrences'][0]['id']}"
+                               "/destinations/linkedin/existing")
+                self.assertEqual(409, api.post(manual_path, headers=auth, data={"id": "3456", "start": 15}).status)
                 self.assertEqual([0, 0, 15, 15, 15], catalog_offsets)
+                manual = api.post(manual_path, headers=auth, data={"id": "3457", "start": 15, "auto_prepare": False})
+                self.assertEqual(201, manual.status, manual.text())
+                self.assertIs(manual.json()["auto_prepare"], False)
+
+                clock = starts_later + timedelta(seconds=1)
+                opens = int(starts_later.timestamp())
+
+                class OccurrenceClock(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return clock.astimezone(tz) if tz else clock.replace(tzinfo=None)
+
+                with closing(sqlite3.connect(database)) as db:
+                    db.executemany("INSERT INTO live_occurrence VALUES (?, ?, 'fixture', 'fixture', 'ready')",
+                                   [(item["id"], opens), (duplicate["id"], opens)])
+                    db.commit()
+
+                self.assertEqual([asset], ingests)
+                deliveries = []
+                with patch.object(event_simulcast, "datetime", OccurrenceClock), patch.object(
+                    linkedin_live_job, "time", lambda: clock.timestamp()
+                ):
+                    deadline = monotonic() + 8
+                    while monotonic() < deadline:
+                        with closing(sqlite3.connect(database)) as db:
+                            deliveries = db.execute("SELECT event, phase FROM linkedin_live_ingest WHERE opens=?",
+                                                    (opens,)).fetchall()
+                        if deliveries and all(phase != "registering" for _, phase in deliveries):
+                            break
+                        sleep(.05)
+                self.assertEqual([(item["id"], "registered")], deliveries)
+                self.assertEqual([asset, asset], ingests)
+                self.assertEqual([asset], links)
                 self.assertEqual(2, len(scheduled_videos))
                 self.assertEqual(2, len(announcement_writes))
                 page.goto(base + "/operator/integrations")
@@ -559,6 +598,7 @@ class LinkedInPublication(unittest.TestCase):
         print("LinkedIn Live Company Page browser scheduling, public announcement, optional approval and restart passed.")
         print("LinkedIn Live verified encrypted ingest, local RTMPS playback, provider-ready binding and end.")
         print("LinkedIn Live existing event picker verified paging, date and Page scope, and repeat and duplicate handling.")
+        print("LinkedIn Live prepared exactly the opted-in ready occurrence and preserved manual delivery for the other.")
 
 
 if __name__ == "__main__":

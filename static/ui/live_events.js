@@ -85,6 +85,7 @@ const facebookPage = element("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookStatus = element("facebookLiveStatus");
 const linkedinForm = element("linkedinLiveSchedule");
+const linkedinAutomaticDelivery = input("linkedinAutomaticDelivery");
 const linkedinCompany = element("linkedinLiveCompany");
 const linkedinSubmit = button("scheduleLinkedinLive");
 const linkedinStatus = element("linkedinLiveStatus");
@@ -320,6 +321,7 @@ function choose(event, instance) {
     facebookSubmit.disabled = true;
     facebookStatus.textContent = "";
     linkedinForm.hidden = true;
+    linkedinAutomaticDelivery.checked = true;
     linkedinCompany.replaceChildren();
     linkedinSubmit.disabled = true;
     existingLinkedinList.replaceChildren();
@@ -1032,18 +1034,21 @@ linkedinForm.onsubmit = event => {
         return;
     const path = mediaPath("destinations/linkedin/schedule");
     const company = linkedinCompany.value;
+    const auto_prepare = linkedinAutomaticDelivery.checked;
     void action(async () => {
         linkedinSubmit.disabled = true;
         linkedinStatus.textContent = "";
         linkedinPost.hidden = true;
         linkedinPost.removeAttribute("href");
         try {
-            const result = await request(path, "POST", { company });
+            const result = await request(path, "POST", { company, auto_prepare });
             if (selection !== active)
                 return;
             const urn = result.post_urn ?? "";
             if (result.state === "scheduled" && /^urn:li:ugcPost:[0-9]{1,30}$/.test(urn)) {
-                linkedinStatus.textContent = "Announced on LinkedIn. Set up the stream in LinkedIn Live Studio.";
+                linkedinStatus.textContent = result.auto_prepare
+                    ? "Announced on LinkedIn. CuePorch will prepare delivery when this occurrence is ready to stream."
+                    : "Announced on LinkedIn. Use Prepare LinkedIn delivery when ready.";
                 linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
                 linkedinPost.hidden = false;
             }
@@ -1092,7 +1097,9 @@ existingLinkedinChoose.onclick = () => void action(async () => {
     const option = existingLinkedinList.selectedOptions[0];
     if (!selection || !option?.dataset.start)
         return;
-    const result = await request(mediaPath("destinations/linkedin/existing"), "POST", { id: option.value, start: Number(option.dataset.start) });
+    const result = await request(mediaPath("destinations/linkedin/existing"), "POST", {
+        id: option.value, start: Number(option.dataset.start), auto_prepare: linkedinAutomaticDelivery.checked,
+    });
     if (selection !== active)
         return;
     const urn = result.post_urn ?? "";
@@ -1101,7 +1108,9 @@ existingLinkedinChoose.onclick = () => void action(async () => {
         linkedinPost.removeAttribute("href");
     else
         linkedinPost.href = "https://www.linkedin.com/feed/update/" + urn + "/";
-    linkedinStatus.textContent = "Existing LinkedIn event selected.";
+    linkedinStatus.textContent = result.auto_prepare
+        ? "Existing LinkedIn event selected. CuePorch will prepare delivery when this occurrence is ready to stream."
+        : "Existing LinkedIn event selected. Use Prepare LinkedIn delivery when ready.";
 });
 button("prepareLinkedinLive").onclick = () => void action(async () => {
     const selection = active;

@@ -20,13 +20,46 @@ CREATE TABLE IF NOT EXISTS linkedin_live_ingest(
  event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL,
  revision TEXT NOT NULL, phase TEXT NOT NULL, asset TEXT, destination TEXT, end_after INTEGER, bind_until INTEGER,
  PRIMARY KEY(event,opens,company));
+CREATE TABLE IF NOT EXISTS linkedin_live_auto(
+ event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL, state TEXT NOT NULL,
+ PRIMARY KEY(event,opens,company));
 """
 READ = "SELECT * FROM linkedin_live_creation WHERE event=? AND opens=? AND company=?"
 UPDATE = """UPDATE linkedin_live_creation SET state=?,video=?,post=?
             WHERE event=? AND opens=? AND company=?"""
 
 
-def provision(tx, check, create, announce, event, opens, company, event_revision, revision):
+AUTO = "SELECT state FROM linkedin_live_auto WHERE event=? AND opens=? AND company=?"
+SCOPE = " WHERE event=? AND opens=? AND company=?"
+
+
+def set_auto(con, key, enabled):
+    if enabled:
+        con.execute("INSERT OR IGNORE INTO linkedin_live_auto VALUES(?,?,?,'queued')", key)
+    else:
+        con.execute("DELETE FROM linkedin_live_auto" + SCOPE, key)
+
+
+def due_auto(con, now):
+    return con.execute("""SELECT c.event,c.opens,c.company FROM linkedin_live_creation c
+        JOIN linkedin_live_auto a ON a.event=c.event AND a.opens=c.opens AND a.company=c.company
+        JOIN live_occurrence o ON o.event=c.event AND o.opens=c.opens AND o.delivery='ready'
+        JOIN workspace_integration_connection g ON g.provider='linkedin-live' AND g.revision=c.revision
+        LEFT JOIN linkedin_live_ingest i ON i.event=c.event AND i.opens=c.opens AND i.company=c.company
+        WHERE c.state='scheduled' AND a.state='queued' AND i.event IS NULL
+        AND c.opens BETWEEN ? AND ? ORDER BY c.opens""", (now - 7200, now)).fetchall()
+
+
+def claim_auto(con, key):
+    ready = con.execute("SELECT 1 FROM live_occurrence WHERE event=? AND opens=? AND delivery='ready'",
+                        key[:2]).fetchone()
+    if not ready or con.execute(INGEST, key).fetchone():
+        return False
+    return con.execute("UPDATE linkedin_live_auto SET state='attempted'" + SCOPE + " AND state='queued'",
+                       key).rowcount == 1
+
+
+def provision(tx, check, create, announce, event, opens, company, event_revision, revision, auto_prepare=None):
     key = (event, opens, company)
     with tx() as con:
         check(con)
@@ -35,13 +68,17 @@ def provision(tx, check, create, announce, event, opens, company, event_revision
             if (row["event_revision"], row["revision"]) != (event_revision, revision):
                 abort(409, "The event or LinkedIn connection has changed. Check the existing schedule on LinkedIn.")
             if row["state"] == "scheduled":
-                return {"state": "scheduled", "post_urn": row["post"]}, 200
+                if auto_prepare is not None:
+                    set_auto(con, key, auto_prepare)
+                return {"state": "scheduled", "post_urn": row["post"],
+                        "auto_prepare": bool(con.execute(AUTO, key).fetchone())}, 200
             if row["state"] != "created":
                 return {"state": "unconfirmed"}, 202
             video = row["video"]
         else:
             con.execute("INSERT INTO linkedin_live_creation VALUES(?,?,?,?,?,'creating',NULL,NULL)",
                         (*key, event_revision, revision))
+            set_auto(con, key, auto_prepare is not False)
             video = None
 
     if video is None:
@@ -52,7 +89,8 @@ def provision(tx, check, create, announce, event, opens, company, event_revision
         except HTTPException as error:
             if error.code is not None and 400 <= error.code < 500:
                 with tx() as con:
-                    con.execute("DELETE FROM linkedin_live_creation WHERE event=? AND opens=? AND company=?", key)
+                    con.execute("DELETE FROM linkedin_live_creation" + SCOPE, key)
+                    set_auto(con, key, False)
             raise
         with tx() as con:
             con.execute(UPDATE, ("created", video, None, *key))
@@ -71,11 +109,13 @@ def provision(tx, check, create, announce, event, opens, company, event_revision
         raise
     with tx() as con:
         con.execute(UPDATE, ("scheduled", video, post, *key))
-    return {"state": "scheduled", "post_urn": post}, 201
+        if auto_prepare is not None:
+            set_auto(con, key, auto_prepare)
+        automatic = bool(con.execute(AUTO, key).fetchone())
+    return {"state": "scheduled", "post_urn": post, "auto_prepare": automatic}, 201
 
 
 INGEST = "SELECT * FROM linkedin_live_ingest WHERE event=? AND opens=? AND company=?"
-SCOPE = " WHERE event=? AND opens=? AND company=?"
 
 
 def prepare_ingest(tx, check, send, save, key, revision):
@@ -116,13 +156,14 @@ def prepare_ingest(tx, check, send, save, key, revision):
 class Broadcasts:
     """Advance acknowledged LinkedIn assets independently of the shared relay scheduler."""
 
-    def __init__(self, app, tx, connection, outputs, lease, eligible):
+    def __init__(self, app, tx, connection, outputs, lease, eligible, prepare):
         self.app = app
         self.tx = tx
         self.connection = connection
         self.outputs = outputs
         self.lease = lease
         self.eligible = eligible
+        self.prepare = prepare
         self.stopping = Event()
         self.thread = Thread(target=self.scan, name="CuePorch LinkedIn Live", daemon=True)
         self.thread.start()
@@ -144,6 +185,14 @@ class Broadcasts:
                     with suppress(Timeout):
                         with FileLock(self.lease(key), timeout=0):
                             self.advance(key)
+                with self.tx() as con:
+                    upcoming = due_auto(con, int(time()))
+                for row in upcoming:
+                    if self.stopping.is_set():
+                        return
+                    if row["company"] == self.connection.company:
+                        with suppress(HTTPException):
+                            self.prepare(row["event"], row["opens"], interactive=False)
             except Exception:
                 self.app.logger.exception("CuePorch could not advance LinkedIn Live delivery")
 

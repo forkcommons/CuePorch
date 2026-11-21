@@ -526,11 +526,6 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             return False
         return revision == creation["event_revision"]
 
-    linkedin_delivery = linkedin_live_job.Broadcasts(
-        app, tx, linkedin_live_connection, outputs, linkedin_lease, linkedin_eligible,
-    )
-    app.extensions["stop_linkedin_live"] = linkedin_delivery.close
-
     def _require_provider_connection():
         if not youtube_live_connection.revision():
             abort(409, "Connect YouTube Live before using YouTube Live destinations.")
@@ -807,6 +802,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             abort(409, "Configure LinkedIn Live before scheduling a broadcast.")
         if company != connection.company:
             abort(403, "Choose the connected LinkedIn Live Company Page.")
+        auto_prepare = payload.get("auto_prepare")
+        if auto_prepare is not None and type(auto_prepare) is not bool:
+            abort(422, "Choose whether to prepare LinkedIn delivery automatically.")
 
         def access(con):
             enforce_sharing(con, feature="outbound")
@@ -838,7 +836,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     tx, check,
                     lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
                     lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
-                    uid, opens, company, event_revision, revision,
+                    uid, opens, company, event_revision, revision, auto_prepare,
                 )
         except Timeout:
             return private(dict(state="pending"), 202)
@@ -874,6 +872,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         if not isinstance(video, str) or not linkedin_live.LIVE_VIDEO_ID.fullmatch(video):
             abort(422, "Choose an existing LinkedIn Live event.")
         start = linkedin_live.page_start(body.get("start", 0))
+        auto_prepare = body.get("auto_prepare")
+        if auto_prepare is not None and type(auto_prepare) is not bool:
+            abort(422, "Choose whether to prepare LinkedIn delivery automatically.")
 
         try:
             with FileLock(linkedin_lease(key), timeout=0):
@@ -885,7 +886,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     if prior:
                         if (prior["state"], prior["video"], prior["event_revision"], prior["revision"]) == (
                                 "scheduled", video, event_revision, revision):
-                            return private(dict(state="scheduled", post_urn=prior["post"]))
+                            if auto_prepare is not None:
+                                linkedin_live_job.set_auto(con, key, auto_prepare)
+                            enabled = bool(con.execute(linkedin_live_job.AUTO, key).fetchone())
+                            return private(dict(state="scheduled", post_urn=prior["post"], auto_prepare=enabled))
                         abort(409, "This occurrence already has a LinkedIn Live schedule.")
                 page = connection.scheduled_events(revision, owner, starts_ms, start)
                 selected = next((item for item in page["items"] if item["id"] == video), None)
@@ -898,18 +902,24 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         abort(409, "This LinkedIn Live event already belongs to an occurrence.")
                     con.execute("INSERT INTO linkedin_live_creation VALUES(?,?,?,?,?,'scheduled',?,?)",
                                 (*key, event_revision, revision, video, selected["post_urn"]))
+                    linkedin_live_job.set_auto(con, key, auto_prepare is not False)
         except Timeout:
             abort(409, "Another request is changing this LinkedIn Live occurrence.")
-        return private(dict(state="scheduled", post_urn=selected["post_urn"]), 201)
+        return private(dict(state="scheduled", post_urn=selected["post_urn"], auto_prepare=auto_prepare is not False), 201)
 
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/prepare")
     def prepare_linkedin_live(uid, opens):
         staff()
+        result, status = prepare_linkedin(uid, opens, interactive=True)
+        return private(result, status)
+
+    def prepare_linkedin(uid, opens, *, interactive):
         connection = linkedin_live_connection
         key = (uid, opens, connection.company)
 
         def access(con):
-            enforce_sharing(con, feature="outbound")
+            if interactive:
+                enforce_sharing(con, feature="outbound")
             revision, _, slot = creation_access(con, uid, opens)
             creation = con.execute(linkedin_live_job.READ, key).fetchone()
             saved = connection.connection(con)
@@ -931,7 +941,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 abort(409, "The LinkedIn Live schedule changed.")
 
         def before_send():
-            staff()
+            if interactive:
+                staff()
             with tx() as con:
                 check(con)
                 check_provider_capacity(con, uid, opens)
@@ -943,14 +954,23 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         try:
             with FileLock(linkedin_lease(key), timeout=0):
+                if not interactive:
+                    with tx() as con:
+                        check(con)
+                        if not linkedin_live_job.claim_auto(con, key):
+                            return {"state": "pending"}, 202
                 owner = connection.authorized_company(record["revision"])["urn"]
-                result, status = linkedin_live_job.prepare_ingest(
+                return linkedin_live_job.prepare_ingest(
                     tx, check, lambda: connection.register_ingest(record["revision"], owner, before_send),
                     save, key, record["revision"],
                 )
         except Timeout:
-            return private(dict(state="pending"), 202)
-        return private(result, status)
+            return {"state": "pending"}, 202
+
+    linkedin_delivery = linkedin_live_job.Broadcasts(
+        app, tx, linkedin_live_connection, outputs, linkedin_lease, linkedin_eligible, prepare_linkedin,
+    )
+    app.extensions["stop_linkedin_live"] = linkedin_delivery.close
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
     def event_destinations(uid, opens):
