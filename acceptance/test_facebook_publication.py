@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
@@ -584,14 +585,58 @@ class FacebookPublication(unittest.TestCase):
                 page.get_by_role("button", name="Cancel automatic start", exact=True).click()
                 expect(page.locator("#facebookRestoreDate")).to_be_visible()
                 self.assertEqual([], profile_writes)
+                with closing(sqlite3.connect(database)) as seed_con:
+                    open_slots = 10 - len(inherited_roster)
+                    seed_con.executemany(
+                        "INSERT INTO live_simulcast_destination"
+                        "(id,event,name,server,secret,enabled,opens,provider) VALUES(?,?,?,?,?,?,?,?)",
+                        [(f"capacity-fixture-{i}", created["id"], f"Capacity fixture {i}", "rtmp://seed.invalid",
+                          b"", 0, int(inherited["id"]), "youtube-live") for i in range(open_slots)],
+                    )
+                    seed_con.commit()
+
+                scheduled = int(skipped["id"]) + 1
+                first_poll, second_poll, release = Event(), Event(), Event()
+                due = facebook_live_job.due
+
+                def observe_capacity_poll(con, now):
+                    if now == scheduled:
+                        if first_poll.is_set():
+                            second_poll.set()
+                            if not release.is_set():
+                                return []
+                        else:
+                            first_poll.set()
+                    return due(con, now)
+
                 inherited_profile = []
-                with patch.object(facebook_live_job, "time", lambda: int(skipped["id"]) + 1):
-                    deadline = monotonic() + 8
-                    while not inherited_profile and monotonic() < deadline:
-                        inherited_profile = [item for item in api.get(inherited_path, headers=auth).json()["destinations"]
-                                             if item["provider"] == "facebook-profile-live"]
-                        if not inherited_profile:
-                            sleep(.05)
+                try:
+                    with patch.object(facebook_live_job, "due", observe_capacity_poll), patch.object(
+                        facebook_live_job, "time", lambda: scheduled
+                    ):
+                        self.assertTrue(second_poll.wait(8), "The scheduler did not advance while capacity was full.")
+                        self.assertEqual([], profile_writes)
+                        auto = api.get(inherited_path + "/facebook-profile/auto?page=707", headers=auth)
+                        self.assertEqual(200, auto.status, auto.text())
+                        self.assertEqual("queued", auto.json()["state"])
+                        with closing(sqlite3.connect(database)) as seed_con:
+                            self.assertIsNone(seed_con.execute(
+                                "SELECT state FROM facebook_live_auto WHERE event=? AND opens=? AND page=?",
+                                (created["id"], int(inherited["id"]), "profile:707"),
+                            ).fetchone(), "A deferred inherited date must still follow the series.")
+                            seed_con.execute("DELETE FROM live_simulcast_destination WHERE id='capacity-fixture-0'")
+                            seed_con.commit()
+                        release.set()
+                        deadline = monotonic() + 8
+                        while not inherited_profile and monotonic() < deadline:
+                            inherited_profile = [item for item in api.get(inherited_path, headers=auth).json()["destinations"]
+                                                 if item["provider"] == "facebook-profile-live"]
+                            if not inherited_profile:
+                                sleep(.05)
+                finally:
+                    with closing(sqlite3.connect(database)) as seed_con:
+                        seed_con.execute("DELETE FROM live_simulcast_destination WHERE id LIKE 'capacity-fixture-%'")
+                        seed_con.commit()
                 self.assertEqual([{
                     "title": event["title"],
                     "status": "LIVE_NOW",

@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS facebook_live_series(
 """
 
 
+class AutomaticCapacityDeferred(Exception):
+    """Connected capacity was full before an automatic provider request was sent."""
+
+
 def migrate(con):
     for table in ("facebook_live_auto", "facebook_live_series"):
         columns = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
@@ -105,7 +109,7 @@ def start(app, tx, prepare):
     return stop
 
 
-def provision(tx, check, create, save, event, opens, page, revision, *, claim_auto=None, replace=None):
+def provision(tx, check, create, save, event, opens, page, revision, *, automatic=None, replace=None):
     key = (event, opens, page)
     replacing = False
     with tx() as con:
@@ -129,12 +133,32 @@ def provision(tx, check, create, save, event, opens, page, revision, *, claim_au
                     abort(409, "This broadcast was removed. Check its status in Facebook Live Producer.")
                 return {"state": "prepared", "id": destination}, 200
         if not replacing:
-            if claim_auto is not None and not claim_auto(con):
+            if automatic is not None and not claim(con, key, automatic):
                 return {"state": "canceled"}, 200
             con.execute("INSERT INTO facebook_live_creation VALUES(?,?,?,?,'sending',NULL)", (*key, revision))
 
     try:
         target = create()
+    except AutomaticCapacityDeferred:
+        with tx() as con:
+            deleted = con.execute(
+                "DELETE FROM facebook_live_creation "
+                "WHERE event=? AND opens=? AND page=? AND revision=? "
+                "AND state='sending' AND destination IS NULL",
+                (*key, revision)
+            ).rowcount
+            if deleted and automatic is not None:
+                # An inherited date continues to follow the series after deferral.
+                statement = (
+                    "DELETE FROM facebook_live_auto" if automatic["series"]
+                    else "UPDATE facebook_live_auto SET state='queued'"
+                )
+                con.execute(
+                    statement + " WHERE event=? AND opens=? AND page=? AND revision=? "
+                    "AND event_revision=? AND privacy IS ? AND state='attempted'",
+                    (*key, revision, automatic["event_revision"], automatic["privacy"]),
+                )
+        return {"state": "queued"}, 202
     except FacebookLiveUnconfirmed:
         with tx() as con:
             con.execute("UPDATE facebook_live_creation SET state='unconfirmed' WHERE event=? AND opens=? AND page=?", key)
