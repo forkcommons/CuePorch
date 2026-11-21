@@ -457,6 +457,76 @@ class WebsiteEmbeds(unittest.TestCase):
         assert manual_record is not None
         assert manual_record["managed"] is False
 
+    def render_hubspot_module(self, name, payload, **fields):
+        import re
+        from jinja2 import Environment
+        from markupsafe import escape
+
+        module_dir = (
+            Path(__file__).resolve().parents[1] / "integrations" / "hubspot" / name
+        )
+        with open(module_dir / "fields.json", encoding="utf-8") as f:
+            assert json.load(f)[0]["supported_source_types"] == ["media_bridge"]
+        env = Environment(autoescape=True)
+        env.filters["escape_attr"] = escape
+        env.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(
+            pattern, replacement, str(value)
+        )
+        module = {
+            "video": {"media_bridge_object": {"oembed_response": payload}},
+            **fields,
+        }
+        template = env.from_string(
+            (module_dir / "module.html").read_text(encoding="utf-8")
+        )
+        return template.render(module=module)
+
+    def verify_hubspot_email(self, page, payload):
+        from playwright.sync_api import expect
+
+        destination = {"href": "https://campaign.example.invalid/watch"}
+
+        # Case 1: rendered fallback with a real destination and empty poster
+        html = self.render_hubspot_module(
+            "cueporch-email.module",
+            payload,
+            destination=destination,
+            poster={},
+        )
+        page.set_content(html)
+        link = page.get_by_role("link")
+        expect(link).to_have_attribute("href", destination["href"])
+        expect(link).to_contain_text(payload["title"])
+        expect(page.locator("iframe")).to_have_count(0)
+        expect(page.locator("video")).to_have_count(0)
+        expect(page.locator("script")).to_have_count(0)
+
+        # Case 2: poster src on the synthetic host; string checks only, no network.
+        poster_src = "https://campaign.example.invalid/poster.png"
+        html_with_poster = self.render_hubspot_module(
+            "cueporch-email.module",
+            payload,
+            destination=destination,
+            poster={"src": poster_src},
+        )
+        assert poster_src in html_with_poster, "poster image src missing from render"
+        assert "<img" in html_with_poster, "poster image element missing from render"
+        assert destination["href"] in html_with_poster, (
+            "destination link missing from render"
+        )
+        assert "iframe" not in html_with_poster.lower()
+        assert "<video" not in html_with_poster.lower()
+
+        # Case 3: blank destination renders a blank/absent link
+        html_blank = self.render_hubspot_module(
+            "cueporch-email.module",
+            payload,
+            destination={"href": ""},
+            poster={},
+        )
+        page.set_content(html_blank)
+        expect(page.get_by_role("link")).to_have_count(0)
+
     def exercise(self, browser, base, consumer_url, consumer, operator, clip, bridge):
         import json
         from uuid import uuid4
@@ -510,7 +580,8 @@ class WebsiteEmbeds(unittest.TestCase):
             params={"url": f"https://example.invalid/watch/work/{uid}"},
         )
         assert m.status == 404
-        consumer["code"] = dj["html"]
+        self.verify_hubspot_email(page, dj)
+        consumer["code"] = self.render_hubspot_module("cueporch-video.module", dj)
         page.goto(consumer_url)
         v = page.frame_locator("iframe").locator("video")
         expect(v).to_be_visible()

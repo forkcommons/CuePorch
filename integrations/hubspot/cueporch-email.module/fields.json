@@ -1,0 +1,29 @@
+[
+  {
+    "name": "video",
+    "label": "CuePorch video",
+    "type": "embed",
+    "supported_source_types": ["media_bridge"],
+    "supported_media_bridge_providers": [],
+    "default": {
+      "source_type": "media_bridge"
+    },
+    "required": false,
+    "locked": false
+  },
+  {
+    "name": "destination",
+    "label": "Landing page with this video",
+    "type": "url",
+    "supported_types": ["CONTENT", "EXTERNAL"],
+    "required": false
+  },
+  {
+    "name": "poster",
+    "label": "Email poster image",
+    "type": "image",
+    "required": false,
+    "resizable": false,
+    "show_loading": false
+  }
+]

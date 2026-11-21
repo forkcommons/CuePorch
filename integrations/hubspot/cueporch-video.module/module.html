@@ -1,0 +1,6 @@
+{% set media = module.video.media_bridge_object %}
+{% if media and media.oembed_response and media.oembed_response.provider_name == "CuePorch" and media.oembed_response.type == "video" and media.oembed_response.html %}
+<figure class="cueporch-video">
+  {{ media.oembed_response.html|safe }}
+</figure>
+{% endif %}

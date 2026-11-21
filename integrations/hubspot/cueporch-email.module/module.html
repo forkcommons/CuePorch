@@ -1,0 +1,13 @@
+{% set media = module.video.media_bridge_object %}
+{% set destination = module.destination.href %}
+{% if media and destination %}
+{% if media.oembed_response and media.oembed_response.provider_name == "CuePorch" and media.oembed_response.type == "video" and destination|regex_replace("^https://","") != destination %}
+<a href="{{ destination|escape_attr }}">
+{% if module.poster and module.poster.src and module.poster.src|regex_replace("^https://","") != module.poster.src %}
+<img src="{{ module.poster.src|escape_attr }}" alt="Watch {{ media.oembed_response.title|escape_attr }}">
+{% else %}
+Watch {{ media.oembed_response.title|escape_attr }}
+{% endif %}
+</a>
+{% endif %}
+{% endif %}
