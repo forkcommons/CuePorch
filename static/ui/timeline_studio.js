@@ -3,6 +3,7 @@ import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
 import { showTimelineCard } from "./timeline_templates.js";
 import { createTimelineGraphicPreview, mountTimelineGraphics } from "./timeline_graphics.js";
+import { mountTimelineStock } from "./timeline_stock.js";
 function isMedia(clip) {
     return clip !== undefined && "work" in clip;
 }
@@ -594,6 +595,24 @@ async function open() {
         showJob(project.job, true);
     void loadTimelineTemplates();
     void loadTimelineGraphics();
+    void mountTimelineStock({
+        items: () => [...media.values()],
+        credential: () => key.value,
+        folder: () => "",
+        refresh: async () => {
+            const items = await call("/api/library");
+            media = new Map(items.map(item => [item.id, item]));
+            listSources();
+            select("timelineMusic").replaceChildren(new Option("None", ""), ...items.filter(item => item.asset_type === "audio").map(item => new Option(item.title, item.id)));
+            paint();
+        },
+        use: async (item) => {
+            if (item.asset_type === "audio")
+                change({ ...state, music: { work: item.id, start: 0, gain: 25 } });
+            else
+                await appendClip(item.id);
+        },
+    });
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)

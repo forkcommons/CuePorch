@@ -132,6 +132,69 @@
           <button id="recordTimeline" type="button">Record a clip</button>
         </fieldset>
         <fieldset>
+          <legend>Stock media</legend>
+          <label for="timelineStockSearch">Find stock media</label>
+          <input id="timelineStockSearch" type="search">
+
+          <label for="timelineStockCategory">Stock category</label>
+          <select id="timelineStockCategory"></select>
+
+          <label for="timelineStockKind">Stock type</label>
+          <select id="timelineStockKind">
+            <option value="">All types</option>
+            <option value="video">Video</option>
+            <option value="audio">Audio</option>
+          </select>
+
+          <label for="timelineStockMood">Stock mood</label>
+          <select id="timelineStockMood"></select>
+
+          <label for="timelineStockGenre">Stock genre</label>
+          <select id="timelineStockGenre"></select>
+
+          <label for="timelineStockAsset">Stock asset</label>
+          <select id="timelineStockAsset"></select>
+
+          <p id="timelineStockCredit"></p>
+          <button id="timelineStockUse" type="button">Use stock media</button>
+          <p id="timelineStockStatus" role="status" aria-live="polite"></p>
+
+          <details>
+            <summary>Add a licensed file</summary>
+            <form id="timelineStockUpload" enctype="multipart/form-data">
+              <label for="timelineStockFile">Media file (audio or video)</label>
+              <input id="timelineStockFile" type="file" accept="audio/*,video/*" required>
+
+              <label for="timelineStockUploadCategory">Category</label>
+              <input id="timelineStockUploadCategory" type="text" required maxlength="80">
+
+              <label for="timelineStockUploadMood">Mood (optional)</label>
+              <input id="timelineStockUploadMood" type="text" maxlength="80">
+
+              <label for="timelineStockUploadGenre">Genre (optional)</label>
+              <input id="timelineStockUploadGenre" type="text" maxlength="80">
+
+              <label for="timelineStockLicense">License for credit and authorization</label>
+              <select id="timelineStockLicense" required>
+                <option value="CC0-1.0">CC0-1.0</option>
+                <option value="CC-BY-4.0">CC-BY-4.0</option>
+                <option value="permission">Permission</option>
+              </select>
+
+              <label for="timelineStockAuthor">Author or creator</label>
+              <input id="timelineStockAuthor" type="text" required maxlength="160">
+
+              <label for="timelineStockSource">Source URL</label>
+              <input id="timelineStockSource" type="url">
+
+              <label for="timelineStockPermission">Permission details (required when license is permission)</label>
+              <textarea id="timelineStockPermission" maxlength="500"></textarea>
+
+              <button id="timelineStockUploadButton" type="submit">Add licensed file</button>
+            </form>
+          </details>
+        </fieldset>
+        <fieldset>
           <legend>Background audio</legend>
           <label for="timelineMusic">Audio work</label>
           <select id="timelineMusic"><option value="">None</option></select>

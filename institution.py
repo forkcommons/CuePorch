@@ -1607,6 +1607,11 @@ def create_app(root, database, operator, institution, simulation=None):
                 visibility=visibility.get(w["id"]) if w["id"] not in protected else None,
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),
+                stock_asset=(
+                    {k: v for k, v in w["stock_asset"].items() if k != "permission_note"}
+                    if isinstance(w.get("stock_asset"), dict)
+                    else None
+                ),
                 added_at=w.get("library_added_at"),
                 modified_at=max(
                     filter(

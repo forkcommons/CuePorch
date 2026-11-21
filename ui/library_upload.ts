@@ -54,12 +54,14 @@ export function uploadLibraryFile(
   file: File, id: string, folder: string, credential: string, options: object | null,
   progress: (value: number | null) => void,
   endpoint = "/api/library/uploads",
+  stockAsset?: object,
 ) {
   const data = new FormData();
   data.set("file", file);
   data.set("upload_id", id);
   data.set("folder", folder);
   if (options) data.set("privacy", JSON.stringify(options));
+  if (stockAsset) data.set("stock_asset", JSON.stringify(stockAsset));
   return new Promise<UploadReceipt>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.upload.onprogress = (event) => {

@@ -1,5 +1,6 @@
 """Ingest local assets into the existing private institutional catalog."""
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ from library_privacy import DEFAULTS, actor_defaults, apply_pending, apply_setti
 from library_trash import hidden
 from media_tools import prepare_screening
 from review_settings import new_upload
+from stock_assets import normalize_upload
 from team_accounts import actor_id
 
 IMAGE_INPUT = {"png": "png_pipe", "jpg": "jpeg_pipe", "jpeg": "jpeg_pipe", "webp": "webp_pipe"}
@@ -90,10 +92,16 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             abort(400, "The upload identifier is invalid.")
         if member:
             identity = str(uuid.uuid5(uuid.UUID(member), identity))
+        stock_asset = request.form.get("stock_asset") or None
+        if member and stock_asset:
+            abort(403, "Team workspace uploads cannot carry stock metadata.")
+        if stock_asset:
+            stock_asset = normalize_upload(stock_asset)
         return ingest(actor, identity, incoming.filename, request.form.get("folder") or None,
-                      incoming.save, request.form.get("privacy"), member)
+                      incoming.save, request.form.get("privacy"), member, stock_asset=stock_asset)
 
-    def ingest(actor, identity, filename, folder, save, overrides=None, member=None, authorize_import=None):
+    def ingest(actor, identity, filename, folder, save, overrides=None, member=None, authorize_import=None,
+               stock_asset=None):
         name = PureWindowsPath(filename).name
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", name).strip(" .")
         name_path = Path(name)
@@ -111,6 +119,8 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             kind, decoder = "document", None
         else:
             abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
+        if stock_asset and kind == "document":
+            abort(400, "Stock metadata is not supported for documents.")
         if authorize_import and kind != "video":
             abort(415, "Choose a supported video file.")
         overrides = overrides if kind == "video" else None
@@ -135,12 +145,17 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
             if not source.stat().st_size:
                 abort(422, "The selected file is empty.")
             digest = checksum(source)
+            stock_digest = None
+            if stock_asset:
+                stock_digest = hashlib.sha256(
+                    json.dumps(stock_asset, sort_keys=True, separators=(",", ":")).encode("utf8")
+                ).hexdigest()
             with tx() as con:
                 if authorize_import:
                     authorize_import(con)
                 if member:
                     ensure_member(con, member)
-                prior, placed = prior_upload(con, uid, digest)
+                prior, placed = prior_upload(con, uid, digest, stock_digest)
                 if placed:
                     if member and not con.execute("SELECT 1 FROM team_owned_work WHERE work=? AND member=?",
                                                   (uid, member)).fetchone():
@@ -162,7 +177,9 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                 scratch, institution, identity, title, files,
                 dict(asset_type=kind, source_creator=actor, source_privacy="private",
                      source_embed_policy="private", duration_seconds=duration,
-                     source_upload_sha256=digest),
+                     source_upload_sha256=digest,
+                     **({"stock_asset": stock_asset,
+                         "source_upload_stock": stock_digest} if stock_asset else {})),
                 provider=provider,
             )
             with tx() as con:
@@ -170,7 +187,7 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
                     authorize_import(con)
                 if member:
                     ensure_member(con, member)
-                prior, placed = prior_upload(con, uid, digest)
+                prior, placed = prior_upload(con, uid, digest, stock_digest)
                 if placed:
                     if member and not con.execute("SELECT 1 FROM team_owned_work WHERE work=? AND member=?",
                                                   (uid, member)).fetchone():
@@ -213,13 +230,15 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
         enforce_sharing(con, settings=settings)
         return settings, password
 
-    def prior_upload(con, uid, digest):
+    def prior_upload(con, uid, digest, stock_digest=None):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))
         prior = next((work for work in manifest["works"] if work["id"] == uid), None)
         if prior is None:
             return None, False
         if prior.get("source_upload_sha256") != digest:
             abort(409, "This upload identifier has already been used for a different file.")
+        if prior.get("source_upload_stock") != stock_digest:
+            abort(409, "This upload identifier has already been used for a different stock asset.")
         if hidden(con, "work", uid):
             abort(409, "This upload is in Recently deleted. Restore it to use it again.")
         placed = con.execute("SELECT 1 FROM library_placement WHERE work=?", (uid,)).fetchone()

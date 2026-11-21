@@ -11,6 +11,7 @@ from catalog import VideoReplacement, update_video_version, video_version_key
 from library_interactivity import readable_chapters
 from library_languages import save_blob, summary, tracks_for
 from media_tools import make_gif, prepare_screening, video_properties
+from stock_assets import stock_credit, write_credit_metadata
 import subtitles
 
 
@@ -117,17 +118,24 @@ def register(app, tx, staff, get_work, root, remember_work, title_for, video_mim
             screening = scratch / "screening.mp4"
             tracks, chapters, language = attachments
             try:
-                prepare_screening(source, original, interval=interval, full_resolution=True)
+                assets = list(work.get("editor_assets", []))
+                credit = stock_credit(work, work)
+                if credit is not None:
+                    assets.append(credit)
+                metadata = write_credit_metadata(scratch / "credits.ffmeta", assets)
+                prepare_screening(source, original, interval=interval, full_resolution=True,
+                                  credit_metadata=metadata)
                 length = video_properties(str(original)).get("duration")
                 if not length:
                     raise ValueError("No playable frames were rendered from this selection.")
-                prepare_screening(original, screening)
+                prepare_screening(original, screening, credit_metadata=metadata)
                 captions = clip_captions(root, tracks, start_ms, end_ms)
             except (OSError, ValueError) as error:
                 abort(422, f"Unable to save this selection. {error}" if isinstance(error, ValueError)
                       else "A source file could not be read while saving this selection.")
             replacement = VideoReplacement(
                 original, screening, length, captions, clip_chapters(chapters, start_ms, end_ms), language,
+                editor_assets=assets or None,
             )
             with tx() as con:
                 get_work(con, uid)

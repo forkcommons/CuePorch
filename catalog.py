@@ -13,7 +13,7 @@ from filelock import FileLock
 from cueporch import checksum, dump, import_collection, work_id
 
 
-VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job", "editor_assets")
+VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job", "editor_assets", "stock_asset")
 
 
 def video_version_key(work):
@@ -199,6 +199,8 @@ def copy_work(collection, uid, title):
                 "disposition",
                 "chapters",
                 "credits",
+                "stock_asset",
+                "editor_assets",
             )
             if field in source
         }
