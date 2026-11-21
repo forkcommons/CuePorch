@@ -373,7 +373,7 @@ class Program:
                 key = self.cipher.decrypt(row["secret"]).decode("utf-8")
                 fields = row.keys()
                 linkedin = (("preset" in fields and row["preset"] == "linkedin")
-                            or ("provider" in fields and row["provider"] == "linkedin-live"))
+                            or ("provider" in fields and row["provider"] in ("linkedin-live", "linkedin-member-live")))
                 if linkedin:
                     self.legs[uid] = Leg(row["server"], key, audio_required, profile="linkedin-live")
                 else:
@@ -501,10 +501,11 @@ class Simulcast:
 
 
 def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
-             facebook_live_connection, linkedin_live_connection,
+             facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection,
              creation_access):
+    linkedin_connections = {item.key: item for item in (linkedin_live_connection, linkedin_member_live_connection)}
     live_connections = {item.key: item for item in (
-        youtube_live_connection, facebook_live_connection, linkedin_live_connection)}
+        youtube_live_connection, facebook_live_connection)} | linkedin_connections
     linkedin_lease_dir = outputs.directory / "linkedin-schedule"
 
     def linkedin_lease(key):
@@ -512,12 +513,20 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         name = digest(b"CuePorch LinkedIn schedule", ":".join(map(str, key)).encode(), "sha256").hex()
         return linkedin_lease_dir / (name + ".lock")
 
+    def linked_owner(connection, revision):
+        if connection is linkedin_member_live_connection:
+            profile = connection.authorized_profile(revision)
+            return "member:" + profile["id"], profile["urn"]
+        company = connection.authorized_company(revision)
+        return company["id"], company["urn"]
+
     def linkedin_eligible(con, row, creation):
         if not creation or creation["state"] != "scheduled":
             return False
         saved = con.execute("SELECT enabled FROM live_simulcast_destination WHERE id=?",
                             (row["destination"],)).fetchone()
-        current = linkedin_live_connection.connection(con)
+        connection = linkedin_connections[linkedin_live_job.provider_for(row["company"])]
+        current = connection.connection(con)
         if not saved or not saved["enabled"] or not current or current["revision"] != row["revision"]:
             return False
         try:
@@ -793,14 +802,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         return private(result, status)
 
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/schedule")
-    def schedule_linkedin_live(uid, opens):
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/schedule",
+              defaults={"profile": True})
+    def schedule_linkedin_live(uid, opens, profile=False):
         staff()
         payload = request.get_json()
-        company = payload.get("company") if isinstance(payload, dict) else None
-        connection = linkedin_live_connection
+        connection = linkedin_member_live_connection if profile else linkedin_live_connection
         if not connection.configured:
             abort(409, "Configure LinkedIn Live before scheduling a broadcast.")
-        if company != connection.company:
+        if not isinstance(payload, dict):
+            abort(422, "Choose a connected LinkedIn Live account.")
+        if not profile and payload.get("company") != connection.company:
             abort(403, "Choose the connected LinkedIn Live Company Page.")
         auto_prepare = payload.get("auto_prepare")
         if auto_prepare is not None and type(auto_prepare) is not bool:
@@ -820,6 +832,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         with tx() as con:
             event_revision, revision, title, start_ms = access(con)
 
+        if profile:
+            owner_key, owner = linked_owner(connection, revision)
+            selected = payload.get("profile")
+            if not isinstance(selected, str) or owner_key != "member:" + selected:
+                abort(403, "Choose the connected LinkedIn Live profile.")
+        else:
+            owner_key = connection.company
+
         def check(con):
             if access(con) != (event_revision, revision, title, start_ms):
                 abort(409, "The event or LinkedIn connection changed. Reload destinations.")
@@ -830,23 +850,25 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 check(con)
 
         try:
-            with FileLock(linkedin_lease((uid, opens, company)), timeout=0):
-                owner = connection.authorized_company(revision)["urn"]
+            with FileLock(linkedin_lease((uid, opens, owner_key)), timeout=0):
+                if not profile:
+                    _, owner = linked_owner(connection, revision)
                 result, status = linkedin_live_job.provision(
                     tx, check,
                     lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
                     lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
-                    uid, opens, company, event_revision, revision, auto_prepare,
+                    uid, opens, owner_key, event_revision, revision, auto_prepare,
                 )
         except Timeout:
             return private(dict(state="pending"), 202)
         return private(result, status)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin/existing", methods=["GET", "POST"])
-    def existing_linkedin_event(uid, opens):
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/existing",
+               methods=["GET", "POST"], defaults={"profile": True})
+    def existing_linkedin_event(uid, opens, profile=False):
         staff()
-        connection = linkedin_live_connection
-        key = (uid, opens, connection.company)
+        connection = linkedin_member_live_connection if profile else linkedin_live_connection
 
         def access(con):
             enforce_sharing(con, feature="outbound")
@@ -862,9 +884,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         with tx() as con:
             scope = access(con)
         event_revision, revision, starts_ms = scope
+        owner_key, owner = linked_owner(connection, revision)
+        key = (uid, opens, owner_key)
         if request.method in ("GET", "HEAD"):
             start = linkedin_live.page_start(request.args.get("start", "0"))
-            owner = connection.authorized_company(revision)["urn"]
             return private(connection.scheduled_events(revision, owner, starts_ms, start))
 
         body = request.get_json()
@@ -878,7 +901,6 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         try:
             with FileLock(linkedin_lease(key), timeout=0):
-                owner = connection.authorized_company(revision)["urn"]
                 with tx() as con:
                     if access(con) != scope:
                         abort(409, "The event or LinkedIn Live connection changed.")
@@ -908,14 +930,24 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         return private(dict(state="scheduled", post_urn=selected["post_urn"], auto_prepare=auto_prepare is not False), 201)
 
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/prepare")
-    def prepare_linkedin_live(uid, opens):
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin-member/prepare",
+              defaults={"profile": True})
+    def prepare_linkedin_live(uid, opens, profile=False):
         staff()
-        result, status = prepare_linkedin(uid, opens, interactive=True)
+        owner_key = None
+        if profile:
+            with tx() as con:
+                enforce_sharing(con, feature="outbound")
+            owner_key, _ = linked_owner(linkedin_member_live_connection, linkedin_member_live_connection.revision())
+        result, status = prepare_linkedin(uid, opens, interactive=True, owner_key=owner_key)
         return private(result, status)
 
-    def prepare_linkedin(uid, opens, *, interactive):
-        connection = linkedin_live_connection
-        key = (uid, opens, connection.company)
+    def prepare_linkedin(uid, opens, *, interactive, owner_key=None):
+        owner_key = owner_key if owner_key is not None else linkedin_live_connection.company
+        connection = linkedin_connections[linkedin_live_job.provider_for(owner_key)]
+        if connection is linkedin_live_connection and connection.company != owner_key:
+            abort(409, "The configured LinkedIn Live Company Page changed.")
+        key = (uid, opens, owner_key)
 
         def access(con):
             if interactive:
@@ -924,7 +956,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             creation = con.execute(linkedin_live_job.READ, key).fetchone()
             saved = connection.connection(con)
             if not saved or not creation or creation["state"] != "scheduled":
-                abort(409, "Schedule and announce this occurrence using the connected LinkedIn Live Page.")
+                abort(409, "Schedule and announce this occurrence using the connected LinkedIn Live account.")
             if (creation["event_revision"], creation["revision"]) != (revision, saved["revision"]):
                 abort(409, "The scheduled event or LinkedIn Live connection changed.")
             elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(slot["start"])).total_seconds()
@@ -949,17 +981,19 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         def save(con, target):
             check_provider_capacity(con, uid, opens)
-            return save_provider_destination(con, uid, opens, "linkedin-live", record["revision"],
-                                             record["video"], target | {"title": "LinkedIn Live"})
+            return save_provider_destination(con, uid, opens, connection.key, record["revision"],
+                                             record["video"], target | {"title": connection.config.name})
 
         try:
             with FileLock(linkedin_lease(key), timeout=0):
+                actual_owner_key, owner = linked_owner(connection, record["revision"])
+                if actual_owner_key != owner_key:
+                    abort(409, "The authorized LinkedIn Live account changed.")
                 if not interactive:
                     with tx() as con:
                         check(con)
                         if not linkedin_live_job.claim_auto(con, key):
                             return {"state": "pending"}, 202
-                owner = connection.authorized_company(record["revision"])["urn"]
                 return linkedin_live_job.prepare_ingest(
                     tx, check, lambda: connection.register_ingest(record["revision"], owner, before_send),
                     save, key, record["revision"],
@@ -968,7 +1002,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             return {"state": "pending"}, 202
 
     linkedin_delivery = linkedin_live_job.Broadcasts(
-        app, tx, linkedin_live_connection, outputs, linkedin_lease, linkedin_eligible, prepare_linkedin,
+        app, tx, linkedin_connections, outputs, linkedin_lease, linkedin_eligible, prepare_linkedin,
     )
     app.extensions["stop_linkedin_live"] = linkedin_delivery.close
 
@@ -1050,7 +1084,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     enforce_sharing(con, feature="outbound")
                     if not available:
                         abort(409, "Destinations require a public event without audience registration.")
-                    if saved["provider"] == "linkedin-live":
+                    if saved["provider"] in linkedin_connections:
                         abort(409, "A disabled LinkedIn Live stream cannot be restarted in the same occurrence.")
                     if saved["provider"] is not None:
                         provider = live_connections.get(saved["provider"])

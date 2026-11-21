@@ -59,26 +59,9 @@ def parse_ingest(value):
     return f"rtmps://{endpoint.netloc}/live", stream[1]
 
 
-class ProfileLiveConnection(Connection):
-    def __init__(self, tx, operator, sharing_access):
-        super().__init__(MEMBER_OAUTH, tx, operator)
-        self.sharing_access = sharing_access
-
-    def save_authorization(self, con, tokens, context):
-        team_accounts.require_live_connection_manager(con, context, self.sharing_access)
-        return super().save_authorization(con, tokens, context)
-
-    def authorized_profile(self, revision):
-        with self.api(revision, "GET", V2_API + "/me", headers=V2_HEADERS) as response:
-            if response.status_code != 200:
-                linkedin_upload.denied(response)
-            raw = response_object(response).get("id")
-        if not isinstance(raw, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw):
-            abort(502, "LinkedIn returned an invalid profile ID.")
-        return {"id": raw, "urn": "urn:li:person:" + raw}
-
-
 class LiveConnection(Connection):
+    author_field = "organization"
+
     def __init__(self, tx, operator, sharing_access):
         super().__init__(OAUTH, tx, operator)
         self.sharing_access = sharing_access
@@ -134,7 +117,7 @@ class LiveConnection(Connection):
             raise
 
     def create_scheduled(self, revision, owner, title, start_ms, before_send):
-        payload = {"author": {"organization": owner}, "scheduledAt": start_ms, "name": title}
+        payload = {"author": {self.author_field: owner}, "scheduledAt": start_ms, "name": title}
         return self._post_id(revision, "/liveVideos", payload, before_send, LIVE_VIDEO_ID)
 
     def announce_scheduled(self, revision, owner, video_id, title, before_send):
@@ -246,12 +229,13 @@ class LiveConnection(Connection):
         if not isinstance(links, list) or (total is not None and (type(total) is not int or total < 0)):
             abort(502, "LinkedIn returned invalid scheduled events paging.")
         items = []
+        author = {self.author_field: owner}
         for event in elements:
             if not isinstance(event, dict):
                 abort(502, "LinkedIn returned an invalid scheduled event.")
             if event.get("scheduledAt") != scheduled_ms or event.get("state", "PRE_LIVE") != "PRE_LIVE":
                 continue
-            if event.get("liveVideoAsset") or event.get("author", {"organization": owner}) != {"organization": owner}:
+            if event.get("liveVideoAsset") or event.get("author", author) != author:
                 continue
             ident = event.get("id")
             if type(ident) is int:
@@ -267,3 +251,20 @@ class LiveConnection(Connection):
         more = ((total is not None and total > following)
                 or any(isinstance(link, dict) and link.get("rel") == "next" for link in links))
         return {"items": items, "next": following if more and following <= SCHEDULE_MAX_START else None}
+
+
+class ProfileLiveConnection(LiveConnection):
+    author_field = "member"
+
+    def __init__(self, tx, operator, sharing_access):
+        Connection.__init__(self, MEMBER_OAUTH, tx, operator)
+        self.sharing_access = sharing_access
+
+    def authorized_profile(self, revision):
+        with self.api(revision, "GET", V2_API + "/me", headers=V2_HEADERS) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)
+            raw = response_object(response).get("id")
+        if not isinstance(raw, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw):
+            abort(502, "LinkedIn returned an invalid profile ID.")
+        return {"id": raw, "urn": "urn:li:person:" + raw}

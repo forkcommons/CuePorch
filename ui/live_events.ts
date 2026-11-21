@@ -157,6 +157,8 @@ const facebookPage = element<HTMLSelectElement>("facebookLivePage");
 const facebookSubmit = button("prepareFacebookLive");
 const facebookStatus = element("facebookLiveStatus");
 const linkedinForm = element<HTMLFormElement>("linkedinLiveSchedule");
+const linkedinAccount = element<HTMLSelectElement>("linkedinAccount");
+let linkedinAccountRevision = 0;
 const linkedinAutomaticDelivery = input("linkedinAutomaticDelivery");
 const linkedinCompany = element<HTMLSelectElement>("linkedinLiveCompany");
 const linkedinSubmit = button("scheduleLinkedinLive");
@@ -166,6 +168,26 @@ const existingLinkedinList = element<HTMLSelectElement>("existingLinkedinList");
 const existingLinkedinMore = button("existingLinkedinMore");
 const existingLinkedinChoose = button("existingLinkedinChoose");
 let existingLinkedinNext: number | null = null;
+const linkedinProvider = () => linkedinAccount.value === "member" ? "linkedin-member" : "linkedin";
+
+function resetLinkedinAccount() {
+  linkedinAccountRevision++;
+  linkedinAutomaticDelivery.checked = true;
+  linkedinCompany.replaceChildren();
+  linkedinSubmit.disabled = true;
+  existingLinkedinList.replaceChildren();
+  existingLinkedinNext = null;
+  existingLinkedinMore.hidden = true;
+  existingLinkedinChoose.disabled = true;
+  linkedinStatus.textContent = "";
+  linkedinPost.hidden = true;
+  linkedinPost.removeAttribute("href");
+  button("prepareLinkedinLive").disabled = false;
+  button("loadLinkedinCompany").textContent = linkedinAccount.value === "member"
+    ? "Load LinkedIn profile" : "Load LinkedIn Company Page";
+}
+
+linkedinAccount.onchange = resetLinkedinAccount;
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
 const backupKey = input("backupEncoderKey");
@@ -397,16 +419,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   facebookSubmit.disabled = true;
   facebookStatus.textContent = "";
   linkedinForm.hidden = true;
-  linkedinAutomaticDelivery.checked = true;
-  linkedinCompany.replaceChildren();
-  linkedinSubmit.disabled = true;
-  existingLinkedinList.replaceChildren();
-  existingLinkedinNext = null;
-  existingLinkedinMore.hidden = true;
-  existingLinkedinChoose.disabled = true;
-  linkedinStatus.textContent = "";
-  linkedinPost.hidden = true;
-  linkedinPost.removeAttribute("href");
+  linkedinAccount.value = "company";
+  resetLinkedinAccount();
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
@@ -944,9 +958,10 @@ async function refreshDestinations(result?: Destinations) {
   };
   destinationList.replaceChildren(...result.destinations.map(item => {
     const row = document.createElement("li");
+    const linkedin = item.provider === "linkedin-live" || item.provider === "linkedin-member-live";
     const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
       : item.provider === "facebook-live" ? " · Facebook Live for this date"
-      : item.provider === "linkedin-live" ? " · LinkedIn Live for this date"
+      : linkedin ? " · LinkedIn Live for this date"
       : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
     const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
       ? item.provider_phase : item.state;
@@ -956,7 +971,7 @@ async function refreshDestinations(result?: Destinations) {
     control.textContent = item.enabled ? "Turn off" : "Turn on";
     control.setAttribute("aria-label", `Turn ${item.enabled ? "off" : "on"} ${item.name}`);
     control.disabled = item.state === "disconnected"
-      || (!item.enabled && (!result!.available || item.provider === "linkedin-live"));
+      || (!item.enabled && (!result!.available || linkedin));
     control.onclick = () => void action(async () => {
       await request(mediaPath(`destinations/${item.id}`), "PUT", {enabled: !item.enabled});
       await refreshDestinations();
@@ -1065,19 +1080,24 @@ facebookForm.onsubmit = event => {
 button("loadLinkedinCompany").onclick = () => void action(async () => {
   const selection = active;
   if (!selection) return;
+  const revision = linkedinAccountRevision;
+  const profile = linkedinAccount.value === "member";
   linkedinCompany.replaceChildren();
   linkedinSubmit.disabled = true;
-  const company = await request<{id: string}>("/api/integrations/linkedin-live/company");
-  if (selection !== active) return;
-  linkedinCompany.append(new Option("Company Page " + company.id, company.id));
+  const account = await request<{id: string}>(profile
+    ? "/api/integrations/linkedin-member-live/profile" : "/api/integrations/linkedin-live/company");
+  if (selection !== active || revision !== linkedinAccountRevision) return;
+  linkedinCompany.append(new Option((profile ? "Profile " : "Company Page ") + account.id, account.id));
   linkedinSubmit.disabled = false;
 });
 linkedinForm.onsubmit = event => {
   event.preventDefault();
   const selection = active;
   if (!selection || linkedinSubmit.disabled || !linkedinCompany.value) return;
-  const path = mediaPath("destinations/linkedin/schedule");
-  const company = linkedinCompany.value;
+  const revision = linkedinAccountRevision;
+  const path = mediaPath(`destinations/${linkedinProvider()}/schedule`);
+  const account = linkedinAccount.value === "member"
+    ? {profile: linkedinCompany.value} : {company: linkedinCompany.value};
   const auto_prepare = linkedinAutomaticDelivery.checked;
   void action(async () => {
     linkedinSubmit.disabled = true;
@@ -1086,8 +1106,8 @@ linkedinForm.onsubmit = event => {
     linkedinPost.removeAttribute("href");
     try {
       const result = await request<{state: "scheduled" | "pending" | "unconfirmed"; post_urn?: string;
-        auto_prepare?: boolean}>(path, "POST", {company, auto_prepare});
-      if (selection !== active) return;
+        auto_prepare?: boolean}>(path, "POST", {...account, auto_prepare});
+      if (selection !== active || revision !== linkedinAccountRevision) return;
       const urn = result.post_urn ?? "";
       if (result.state === "scheduled" && /^urn:li:ugcPost:[0-9]{1,30}$/.test(urn)) {
         linkedinStatus.textContent = result.auto_prepare
@@ -1098,15 +1118,16 @@ linkedinForm.onsubmit = event => {
       } else if (result.state === "pending") {
         linkedinStatus.textContent = "Another request is scheduling this occurrence.";
       } else {
-        linkedinStatus.textContent = "LinkedIn did not confirm the announcement. Check the Company Page.";
+        linkedinStatus.textContent = "LinkedIn did not confirm the announcement. Check the connected account.";
       }
     } finally {
-      if (selection === active) linkedinSubmit.disabled = !linkedinCompany.value;
+      if (selection === active && revision === linkedinAccountRevision) linkedinSubmit.disabled = !linkedinCompany.value;
     }
   });
 };
 async function loadLinkedinEvents(append: boolean) {
   const selection = active;
+  const revision = linkedinAccountRevision;
   if (!selection || (append && existingLinkedinNext === null)) return;
   const start = append ? existingLinkedinNext! : 0;
   if (!append) {
@@ -1116,8 +1137,8 @@ async function loadLinkedinEvents(append: boolean) {
     existingLinkedinNext = null;
   }
   const result = await request<{items: {id: string; title: string}[]; next: number | null}>(
-    mediaPath("destinations/linkedin/existing") + "?start=" + start);
-  if (selection !== active) return;
+    mediaPath(`destinations/${linkedinProvider()}/existing`) + "?start=" + start);
+  if (selection !== active || revision !== linkedinAccountRevision) return;
   for (const item of result.items) {
     const option = new Option(item.title, item.id);
     option.dataset.start = String(start);
@@ -1133,13 +1154,14 @@ button("loadExistingLinkedin").onclick = () => void action(() => loadLinkedinEve
 existingLinkedinMore.onclick = () => void action(() => loadLinkedinEvents(true));
 existingLinkedinChoose.onclick = () => void action(async () => {
   const selection = active;
+  const revision = linkedinAccountRevision;
   const option = existingLinkedinList.selectedOptions[0];
   if (!selection || !option?.dataset.start) return;
   const result = await request<{post_urn: string | null; auto_prepare: boolean}>(
-    mediaPath("destinations/linkedin/existing"), "POST", {
+    mediaPath(`destinations/${linkedinProvider()}/existing`), "POST", {
       id: option.value, start: Number(option.dataset.start), auto_prepare: linkedinAutomaticDelivery.checked,
     });
-  if (selection !== active) return;
+  if (selection !== active || revision !== linkedinAccountRevision) return;
   const urn = result.post_urn ?? "";
   linkedinPost.hidden = !/^urn:li:ugcPost:[0-9]{1,30}$/.test(urn);
   if (linkedinPost.hidden) linkedinPost.removeAttribute("href");
@@ -1150,13 +1172,14 @@ existingLinkedinChoose.onclick = () => void action(async () => {
 });
 button("prepareLinkedinLive").onclick = () => void action(async () => {
   const selection = active;
+  const revision = linkedinAccountRevision;
   const control = button("prepareLinkedinLive");
   if (!selection || control.disabled) return;
-  const path = mediaPath("destinations/linkedin/prepare");
+  const path = mediaPath(`destinations/${linkedinProvider()}/prepare`);
   control.disabled = true;
   try {
     const result = await request<{state: string}>(path, "POST", {});
-    if (selection !== active) return;
+    if (selection !== active || revision !== linkedinAccountRevision) return;
     switch (result.state) {
       case "prepared":
         linkedinStatus.textContent = "Ready. CuePorch will publish once LinkedIn confirms the live signal.";
@@ -1173,7 +1196,7 @@ button("prepareLinkedinLive").onclick = () => void action(async () => {
         linkedinStatus.textContent = "LinkedIn did not confirm this stream. Check LinkedIn Live Studio.";
     }
   } finally {
-    control.disabled = false;
+    if (selection === active && revision === linkedinAccountRevision) control.disabled = false;
   }
 });
 destinationForm.onsubmit = event => {

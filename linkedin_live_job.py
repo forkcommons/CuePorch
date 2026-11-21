@@ -33,6 +33,10 @@ AUTO = "SELECT state FROM linkedin_live_auto WHERE event=? AND opens=? AND compa
 SCOPE = " WHERE event=? AND opens=? AND company=?"
 
 
+def provider_for(owner_key):
+    return "linkedin-member-live" if owner_key.startswith("member:") else "linkedin-live"
+
+
 def set_auto(con, key, enabled):
     if enabled:
         con.execute("INSERT OR IGNORE INTO linkedin_live_auto VALUES(?,?,?,'queued')", key)
@@ -44,7 +48,8 @@ def due_auto(con, now):
     return con.execute("""SELECT c.event,c.opens,c.company FROM linkedin_live_creation c
         JOIN linkedin_live_auto a ON a.event=c.event AND a.opens=c.opens AND a.company=c.company
         JOIN live_occurrence o ON o.event=c.event AND o.opens=c.opens AND o.delivery='ready'
-        JOIN workspace_integration_connection g ON g.provider='linkedin-live' AND g.revision=c.revision
+        JOIN workspace_integration_connection g ON g.revision=c.revision
+          AND g.provider=CASE WHEN c.company LIKE 'member:%' THEN 'linkedin-member-live' ELSE 'linkedin-live' END
         LEFT JOIN linkedin_live_ingest i ON i.event=c.event AND i.opens=c.opens AND i.company=c.company
         WHERE c.state='scheduled' AND a.state='queued' AND i.event IS NULL
         AND c.opens BETWEEN ? AND ? ORDER BY c.opens""", (now - 7200, now)).fetchall()
@@ -156,10 +161,10 @@ def prepare_ingest(tx, check, send, save, key, revision):
 class Broadcasts:
     """Advance acknowledged LinkedIn assets independently of the shared relay scheduler."""
 
-    def __init__(self, app, tx, connection, outputs, lease, eligible, prepare):
+    def __init__(self, app, tx, connections, outputs, lease, eligible, prepare):
         self.app = app
         self.tx = tx
-        self.connection = connection
+        self.connections = connections
         self.outputs = outputs
         self.lease = lease
         self.eligible = eligible
@@ -190,18 +195,18 @@ class Broadcasts:
                 for row in upcoming:
                     if self.stopping.is_set():
                         return
-                    if row["company"] == self.connection.company:
-                        with suppress(HTTPException):
-                            self.prepare(row["event"], row["opens"], interactive=False)
+                    with suppress(HTTPException):
+                        self.prepare(row["event"], row["opens"], interactive=False, owner_key=row["company"])
             except Exception:
                 self.app.logger.exception("CuePorch could not advance LinkedIn Live delivery")
 
     def advance(self, key):
+        connection = self.connections[provider_for(key[2])]
         with self.tx() as con:
             row = con.execute(INGEST, key).fetchone()
             if not row or row["phase"] not in ("registered", "bound", "closing"):
                 return
-            saved = self.connection.connection(con)
+            saved = connection.connection(con)
             if not saved or saved["revision"] != row["revision"]:
                 self.close_destination(con, row, key, "disconnected")
                 return
@@ -219,7 +224,7 @@ class Broadcasts:
 
         try:
             if row["phase"] == "closing":
-                self.connection.end_asset(row["revision"], row["asset"])
+                connection.end_asset(row["revision"], row["asset"])
                 with self.tx() as con:
                     con.execute("UPDATE linkedin_live_ingest SET phase='ended'" + SCOPE, key)
             elif row["phase"] == "registered" and self.outputs.state(*key[:2], row["destination"]) == "sending":
@@ -227,11 +232,11 @@ class Broadcasts:
                     con.execute("UPDATE linkedin_live_ingest SET bind_until=COALESCE(bind_until,?)" + SCOPE,
                                 (int(time()) + 90, *key))
                 revision, video, asset = row["revision"], creation["video"], row["asset"]
-                if not self.connection.asset_available(revision, asset):
+                if not connection.asset_available(revision, asset):
                     return
-                current = self.connection.bound_asset(revision, video)
+                current = connection.bound_asset(revision, video)
                 if current is None:
-                    self.connection.bind_asset(revision, video, asset, lambda: self.check_binding(key))
+                    connection.bind_asset(revision, video, asset, lambda: self.check_binding(key))
                 elif current != asset:
                     abort(422, "The scheduled LinkedIn broadcast has a different stream.")
                 with self.tx() as con:
