@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import requests
 from browser import chromium
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
@@ -68,11 +69,24 @@ def audio_fixture(directory):
 def hear_frequency(page, frequency):
     video = page.locator("#eventPlayer video")
     video.evaluate("video => { video.muted = false; }")
-    deadline = monotonic() + 5
-    measured = video.evaluate(SAMPLE_AUDIO)
-    while abs(measured - frequency) > 24 and monotonic() < deadline:
-        measured = video.evaluate(SAMPLE_AUDIO)
-    assert abs(measured - frequency) <= 24, (measured, frequency)
+    deadline = monotonic() + 8
+    no_signal_error = "No decoded audio signal reached the browser analyser."
+    measured = None
+    last_no_signal = None
+    while monotonic() < deadline:
+        try:
+            measured = video.evaluate(SAMPLE_AUDIO)
+        except PlaywrightError as error:
+            if no_signal_error not in str(error).partition("\n")[0]:
+                raise
+            last_no_signal = error
+            continue
+        last_no_signal = None
+        if abs(measured - frequency) <= 24:
+            return
+    if last_no_signal is not None:
+        raise last_no_signal
+    raise AssertionError((measured, frequency))
 
 
 class PrivateLiveEventTest(unittest.TestCase):

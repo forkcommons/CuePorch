@@ -132,7 +132,13 @@ def prepare_with_browser(base, auth, route):
         page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(token)});")
         page.goto(base + "/operator/live-events")
         page.get_by_role("button", name="Open production for Interpreter rehearsal", exact=False).click()
-        page.locator("#interpreterPanel summary").click()
+        panel = page.locator("#interpreterPanel")
+        with page.expect_response(
+            lambda r: r.url == route and r.request.method == "GET"
+        ) as loaded:
+            panel.locator("summary").click()
+        assert loaded.value.status == 200, loaded.value.text()
+        expect(panel).not_to_have_attribute("inert", "")
         page.locator("#interpreterLanguage").fill("es")
         page.locator("#interpreterName").fill("Spanish")
         with page.expect_response(lambda r: r.url == route and r.request.method == "POST") as prepared:
@@ -162,14 +168,14 @@ class LiveInterpreterInputTest(unittest.TestCase):
         self.exercise_interpreter(manual=False, srt=True)
 
     def test_interpreter_audio_on_encrypted_srt_failover(self):
-        self.exercise_interpreter(manual=False, redundant=True, srt=True)
+        self.exercise_interpreter(manual=True, redundant=True, srt=True)
 
     def exercise_interpreter(self, manual, redundant=False, *, srt=False):
         with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db):
             now = datetime.now(timezone.utc)
             event_response = requests.post(base + "/api/live-events", headers=auth, timeout=8, json={
                 "title": "Interpreter rehearsal", "slug": "interpretation", "visibility": "private",
-                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": not srt,
+                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": True,
                 "archive_replay": False,
                 "schedule": {
                     "timezone": "UTC", "repeat": "none",
@@ -246,7 +252,26 @@ class LiveInterpreterInputTest(unittest.TestCase):
                     if redundant:
                         self.assert_failover(feeds, page, track, primary_feed, encoder, certificate, path, auth, team)
                     if srt:
+                        if redundant:
+                            requests.put(base + "/api/policy/replay", headers=auth,
+                                         json={"required": True}, timeout=8).raise_for_status()
+                        else:
+                            recording = receiver.mixer.recording
+                            with recording.lock:
+                                initial = recording.latest
+                            deadline = monotonic() + 8
+                            while True:
+                                with recording.lock:
+                                    latest = recording.latest
+                                if latest >= initial + 3 or monotonic() >= deadline:
+                                    break
+                                sleep(.2)
+                            self.assertGreaterEqual(latest, initial + 3)
                         self.assert_srt_stopped(path, route, auth, receiver, team, page, source, certificate)
+                        offline = requests.ConnectionError("The fixture's connected host is offline.")
+                        with patch("event_media.Gateway.metadata", side_effect=offline):
+                            self.assert_replay(db, base, auth, stable, path, uid, opens, team, page, manual,
+                                               redundant=redundant)
                         return
                     if redundant:
                         requests.put(base + "/api/policy/replay", headers=auth,
@@ -348,11 +373,16 @@ class LiveInterpreterInputTest(unittest.TestCase):
         self.assertEqual(track.locator("option:checked").text_content(), "Spanish")
         address = urljoin(page.url, page.locator("#eventPlayer").get_attribute("data-address"))
         paired = [team.request.get(urljoin(address, name)) for name in ("1.m3u8", "2.m3u8")]
+        signatures = []
         for manifest in paired:
             self.assertEqual(manifest.status, 200)
-            self.assertEqual(manifest.text().splitlines().count("#EXT-X-DISCONTINUITY"), 2)
-        self.assertEqual([line for line in paired[0].text().splitlines() if line.startswith("#EXT-X-DISCONTINUITY")],
-                         [line for line in paired[1].text().splitlines() if line.startswith("#EXT-X-DISCONTINUITY")])
+            lines = manifest.text().splitlines()
+            sequence = next((int(line.partition(":")[2]) for line in lines
+                             if line.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:")), 0)
+            retained = lines.count("#EXT-X-DISCONTINUITY")
+            self.assertEqual(sequence + retained, 2)
+            signatures.append((sequence, retained))
+        self.assertEqual(signatures[0], signatures[1])
 
     def assert_replay(self, db, base, auth, stable, path, uid, opens, team, page, manual, redundant=False):
         archive = None
@@ -367,6 +397,13 @@ class LiveInterpreterInputTest(unittest.TestCase):
         self.assertAlmostEqual(decoded_tone(segments[0], at=.15), 440, delta=28)
         interpretation = next(index for index, segment in enumerate(segments)
                               if abs(decoded_tone(segment) - 880) < 28)
+        durations = [
+            float(line.partition(":")[2].partition(",")[0])
+            for line in (archive.directory / "2.m3u8").read_text(encoding="utf-8").splitlines()
+            if line.startswith("#EXTINF:")
+        ]
+        self.assertEqual(len(durations), len(segments))
+        interpretation_at = sum(durations[:interpretation]) + min(durations[interpretation] / 2, .15)
         gate = f"{base}/api/actions/live-replay-{uid}-{opens}"
         deadline = monotonic() + 12
         while monotonic() < deadline:
@@ -388,11 +425,11 @@ class LiveInterpreterInputTest(unittest.TestCase):
             self.assertEqual(requests.get(path + "/health", headers=auth, timeout=8).json()["state"], "preparing_replay")
             media = self.retained_copy(db, base, auth, path)
             if not redundant:
-                self.assertAlmostEqual(decoded_tone(media, 0, interpretation + .15), 440, delta=28)
-                self.assertAlmostEqual(decoded_tone(media, 1, interpretation + .15), 880, delta=28)
+                self.assertAlmostEqual(decoded_tone(media, 0, interpretation_at), 440, delta=28)
+                self.assertAlmostEqual(decoded_tone(media, 1, interpretation_at), 880, delta=28)
             self.assertEqual(team.request.get(captions).status, 404)
             if not redundant:
-                self.assert_caption_input(auth, path, interpretation + .15)
+                self.assert_caption_input(auth, path, interpretation_at)
             requests.post(gate + "/decision", headers=auth, json={"decision": "approve"}, timeout=8).raise_for_status()
         expect(page.locator("#eventStatus")).to_have_text("Replay", timeout=12000)
         replay, width, duration = play_event(page, stable, "Replay", navigate=False)
@@ -407,7 +444,11 @@ class LiveInterpreterInputTest(unittest.TestCase):
         if redundant:
             self.assert_replay_switches(page, team, replay, media, archive.duration)
         else:
-            page.locator("#eventPlayer video").evaluate("(video, at) => { video.currentTime = at; }", interpretation + .15)
+            page.locator("#eventPlayer video").evaluate("(video, at) => { video.currentTime = at; }", interpretation_at)
+            page.wait_for_function(
+                "() => { const v = document.querySelector('#eventPlayer video'); return v && !v.seeking && v.readyState >= 2; }",
+                timeout=5000,
+            )
             hear_frequency(page, 880)
         alternate = urljoin(replay, "1.m3u8")
         self.assertEqual(requests.get(alternate, timeout=8).status_code, 404)

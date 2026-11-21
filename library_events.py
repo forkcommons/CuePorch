@@ -1883,8 +1883,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
                     end_at = datetime.fromisoformat(shift["end"]).timestamp()
                 connection = provision_event(uid, opens, browser=True, preview=False if backup else body.get("preview"))
-                return dict(studio.srt(uid, opens, connection, endpoints, direct_window(uid, connection), height, end_at),
-                            preview=connection["preview"])
+                window = direct_window(uid, connection)
+                recording = None
+                if window is not None:
+                    with tx() as con:
+                        _, event = read(con, uid)
+                        target = occurrence(con, uid, opens) if event["save_replay"] else None
+                    if target is not None:
+                        recording = event_replay_spool.reserve(
+                            recordings.replay_root, uid, opens, target["remote"], allow_discontinuity=backup is not None,
+                        )
+                try:
+                    return dict(studio.srt(uid, opens, connection, endpoints, window, height, end_at, recording=recording),
+                                preview=connection["preview"])
+                except (OSError, ValueError):
+                    if recording is not None:
+                        recording.finish()
+                    raise
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
