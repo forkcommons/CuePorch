@@ -348,10 +348,19 @@ class FacebookPublication(unittest.TestCase):
                 expect(page.get_by_role("checkbox", name="Start automatically when CuePorch is live")).to_be_checked()
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
+                page.reload()
+                page.get_by_role("button", name=f"Open production for Facebook Live rehearsal at {next_label}",
+                                 exact=True).click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.get_by_role("button", name="Load Facebook Live Pages", exact=True).click()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
+                expect(page.get_by_role("button", name="Cancel automatic start", exact=True)).to_be_enabled()
+                self.assertEqual(403, api.get(auto_path + "?page=101").status)
                 self.assertEqual(202, api.put(auto_path, headers=auth, data={"page": "202"}).status)
                 facebook_pages.select_option("202")
                 page.get_by_role("button", name="Cancel automatic start", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("canceled")
+                self.assertEqual({"state": "idle"}, api.get(auto_path + "?page=202", headers=auth).json())
                 opens = int(next_date["id"])
                 with closing(sqlite3.connect(database)) as db:
                     self.assertEqual([], facebook_live_job.due(db, opens + 1))
@@ -371,6 +380,7 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(["101"], live_now_writes)
                 self.assertEqual(["101", "202"], live_writes)
                 self.assertEqual(["facebook-live"], [item["provider"] for item in roster])
+                self.assertEqual({"state": "prepared"}, api.get(auto_path + "?page=101", headers=auth).json())
                 auto_result = api.get(next_targets, headers=auth)
                 self.assertNotIn("fixture-facebook-auto", auto_result.text())
                 check_destination_rtmps(root, database, roster[0]["id"], operator, facebook_live.INGEST_SERVER,
