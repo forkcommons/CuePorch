@@ -3,6 +3,7 @@
 from dataclasses import replace
 import os
 import re
+from urllib.parse import urlsplit
 
 from flask import abort
 from werkzeug.exceptions import HTTPException
@@ -19,12 +20,28 @@ V2_API = "https://api.linkedin.com/v2"
 V2_HEADERS = {"X-Restli-Protocol-Version": "2.0.0"}
 LIVE_VIDEO_ID = re.compile(r"[0-9]{1,20}")
 ANNOUNCEMENT_URN = re.compile(r"urn:li:ugcPost:[0-9]{1,30}")
+ASSET_URN = re.compile(r"urn:li:digitalmediaAsset:([A-Za-z0-9_-]{1,128})")
+LIVE_RECIPE = "urn:li:digitalmediaRecipe:feedshare-live-video"
+INGEST_HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.channel\.media\.azure\.net|live-ingest\.linkedin\.com)")
+INGEST_PATH = re.compile(r"/live/([A-Za-z0-9_-]{1,256})")
 PAGE_SIZE = 10
 PAGE_LIMIT = 20
 
 
 class LinkedInWriteUnconfirmed(Exception):
     """LinkedIn may have applied a write without confirming its identifier."""
+
+
+def parse_ingest(value):
+    if (not isinstance(value, str) or not value.isascii() or not value.isprintable()
+            or len(value) > 512 or any(char.isspace() or char in "?#@" for char in value)):
+        raise ValueError
+    endpoint = urlsplit(value)
+    stream = INGEST_PATH.fullmatch(endpoint.path)
+    if (endpoint.scheme != "rtmps" or not INGEST_HOST.fullmatch(endpoint.hostname or "")
+            or endpoint.port not in (None, 443, 2935, 2936) or not stream):
+        raise ValueError
+    return f"rtmps://{endpoint.netloc}/live", stream[1]
 
 
 class LiveConnection(Connection):
@@ -103,3 +120,81 @@ class LiveConnection(Connection):
             },
         }
         return self._post_id(revision, "/ugcPosts", payload, before_send, ANNOUNCEMENT_URN)
+
+    def register_ingest(self, revision, owner, before_send):
+        payload = {"registerLiveEventRequest": {
+            "owner": owner, "recipes": [LIVE_RECIPE],
+            "region": os.environ.get("CUEPORCH_LINKEDIN_LIVE_REGION", "WEST_US"),
+        }}
+        try:
+            with self.api(revision, "POST", V2_API + "/liveAssetActions", headers=V2_HEADERS,
+                          params={"action": "register"}, before_send=before_send, json=payload) as response:
+                if response.status_code != 200:
+                    if 400 <= response.status_code < 500 and response.status_code != 408:
+                        linkedin_upload.denied(response)
+                    raise LinkedInWriteUnconfirmed
+                data = response_object(response).get("value")
+                if not isinstance(data, dict):
+                    raise LinkedInWriteUnconfirmed
+                asset, candidates = data.get("asset"), data.get("ingestUrls")
+                if (not isinstance(asset, str) or not ASSET_URN.fullmatch(asset)
+                        or not isinstance(candidates, list) or len(candidates) > 16):
+                    raise LinkedInWriteUnconfirmed
+                for candidate in candidates:
+                    if not isinstance(candidate, dict) or candidate.get("ingestProtocol") != "RTMPS":
+                        continue
+                    try:
+                        server, key = parse_ingest(candidate.get("url"))
+                    except ValueError:
+                        continue
+                    return {"asset": asset, "server": server, "key": key}
+                raise LinkedInWriteUnconfirmed
+        except HTTPException as error:
+            if error.code == 502:
+                raise LinkedInWriteUnconfirmed from error
+            raise
+
+    def asset_available(self, revision, asset):
+        identifier = ASSET_URN.fullmatch(asset)
+        if not identifier:
+            raise ValueError("Invalid LinkedIn Live asset identifier.")
+        with self.api(revision, "GET", f"{V2_API}/assets/{identifier[1]}", headers=V2_HEADERS) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)
+            recipes = response_object(response).get("recipes")
+            if not isinstance(recipes, list):
+                abort(502, "LinkedIn returned an invalid asset status.")
+            return any(isinstance(row, dict) and row.get("recipe") == LIVE_RECIPE
+                       and row.get("status") == "AVAILABLE" for row in recipes)
+
+    def bound_asset(self, revision, video):
+        if not LIVE_VIDEO_ID.fullmatch(video):
+            raise ValueError("Invalid LinkedIn Live broadcast identifier.")
+        with self.api(revision, "GET", f"{V2_API}/liveVideos/{video}", headers=V2_HEADERS) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)
+            obj = response_object(response).get("liveVideoAsset")
+        if obj is None:
+            return None
+        media = obj.get("media") if isinstance(obj, dict) else None
+        if not isinstance(media, str) or not ASSET_URN.fullmatch(media):
+            abort(502, "LinkedIn returned an invalid bound asset.")
+        return media
+
+    def bind_asset(self, revision, video, asset, before_send):
+        if not LIVE_VIDEO_ID.fullmatch(video) or not ASSET_URN.fullmatch(asset):
+            raise ValueError("Invalid LinkedIn Live broadcast or asset identifier.")
+        headers = V2_HEADERS | {"X-Restli-Method": "PARTIAL_UPDATE"}
+        payload = {"patch": {"$set": {"liveVideoAsset": {"media": asset}}}}
+        with self.api(revision, "POST", f"{V2_API}/liveVideos/{video}", headers=headers,
+                      before_send=before_send, json=payload) as response:
+            if response.status_code != 204:
+                linkedin_upload.denied(response)
+
+    def end_asset(self, revision, asset):
+        if not ASSET_URN.fullmatch(asset):
+            raise ValueError("Invalid LinkedIn Live asset identifier.")
+        with self.api(revision, "POST", V2_API + "/liveAssetActions", headers=V2_HEADERS,
+                      params={"action": "end"}, json={"asset": asset}) as response:
+            if response.status_code != 200:
+                linkedin_upload.denied(response)

@@ -538,6 +538,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         stop_salesforce_sync()
         stop_salesforce_outbound()
         stop_mail()
+        app.extensions["stop_linkedin_live"]()
         outputs.close()
         preview_outputs.close()
         programs.close()

@@ -502,7 +502,34 @@ class Simulcast:
 def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
              facebook_live_connection, linkedin_live_connection,
              creation_access):
-    live_connections = {item.key: item for item in (youtube_live_connection, facebook_live_connection)}
+    live_connections = {item.key: item for item in (
+        youtube_live_connection, facebook_live_connection, linkedin_live_connection)}
+    linkedin_lease_dir = outputs.directory / "linkedin-schedule"
+
+    def linkedin_lease(key):
+        linkedin_lease_dir.mkdir(parents=True, exist_ok=True)
+        name = digest(b"CuePorch LinkedIn schedule", ":".join(map(str, key)).encode(), "sha256").hex()
+        return linkedin_lease_dir / (name + ".lock")
+
+    def linkedin_eligible(con, row, creation):
+        if not creation or creation["state"] != "scheduled":
+            return False
+        saved = con.execute("SELECT enabled FROM live_simulcast_destination WHERE id=?",
+                            (row["destination"],)).fetchone()
+        current = linkedin_live_connection.connection(con)
+        if not saved or not saved["enabled"] or not current or current["revision"] != row["revision"]:
+            return False
+        try:
+            revision, _, _ = creation_access(con, row["event"], row["opens"])
+        except HTTPException:
+            return False
+        return revision == creation["event_revision"]
+
+    linkedin_delivery = linkedin_live_job.Broadcasts(
+        app, tx, linkedin_live_connection, outputs, linkedin_lease, linkedin_eligible,
+    )
+    app.extensions["stop_linkedin_live"] = linkedin_delivery.close
+
     def _require_provider_connection():
         if not youtube_live_connection.revision():
             abort(409, "Connect YouTube Live before using YouTube Live destinations.")
@@ -803,17 +830,64 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             with tx() as con:
                 check(con)
 
-        lease_dir = outputs.directory / "linkedin-schedule"
-        lease_dir.mkdir(parents=True, exist_ok=True)
-        lock_name = digest(b"CuePorch LinkedIn schedule", f"{uid}:{opens}:{company}".encode(), "sha256").hex()
         try:
-            with FileLock(lease_dir / (lock_name + ".lock"), timeout=0):
+            with FileLock(linkedin_lease((uid, opens, company)), timeout=0):
                 owner = connection.authorized_company(revision)["urn"]
                 result, status = linkedin_live_job.provision(
                     tx, check,
                     lambda: connection.create_scheduled(revision, owner, title, start_ms, before_send),
                     lambda video: connection.announce_scheduled(revision, owner, video, title, before_send),
                     uid, opens, company, event_revision, revision,
+                )
+        except Timeout:
+            return private(dict(state="pending"), 202)
+        return private(result, status)
+
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/prepare")
+    def prepare_linkedin_live(uid, opens):
+        staff()
+        connection = linkedin_live_connection
+        key = (uid, opens, connection.company)
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            revision, _, slot = creation_access(con, uid, opens)
+            creation = con.execute(linkedin_live_job.READ, key).fetchone()
+            saved = connection.connection(con)
+            if not saved or not creation or creation["state"] != "scheduled":
+                abort(409, "Schedule and announce this occurrence using the connected LinkedIn Live Page.")
+            if (creation["event_revision"], creation["revision"]) != (revision, saved["revision"]):
+                abort(409, "The scheduled event or LinkedIn Live connection changed.")
+            elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(slot["start"])).total_seconds()
+            if not -900 <= elapsed <= 7200:
+                abort(409, "Prepare LinkedIn delivery from 15 minutes before to two hours after the scheduled start.")
+            return creation
+
+        with tx() as con:
+            record = access(con)
+
+        def check(con):
+            current = access(con)
+            if (current["video"], current["revision"]) != (record["video"], record["revision"]):
+                abort(409, "The LinkedIn Live schedule changed.")
+
+        def before_send():
+            staff()
+            with tx() as con:
+                check(con)
+                check_provider_capacity(con, uid, opens)
+
+        def save(con, target):
+            check_provider_capacity(con, uid, opens)
+            return save_provider_destination(con, uid, opens, "linkedin-live", record["revision"],
+                                             record["video"], target | {"title": "LinkedIn Live"})
+
+        try:
+            with FileLock(linkedin_lease(key), timeout=0):
+                owner = connection.authorized_company(record["revision"])["urn"]
+                result, status = linkedin_live_job.prepare_ingest(
+                    tx, check, lambda: connection.register_ingest(record["revision"], owner, before_send),
+                    save, key, record["revision"],
                 )
         except Timeout:
             return private(dict(state="pending"), 202)
@@ -854,8 +928,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                      enabled, scope, body.get("preset") if scope is not None else None),
                 )
             rows = con.execute(
-                "SELECT id,name,server,enabled,opens,provider,revision,preset FROM live_simulcast_destination"
-                " WHERE event=? AND (opens IS NULL OR opens=?) ORDER BY name",
+                """SELECT d.id,d.name,d.server,d.enabled,d.opens,d.provider,d.revision,d.preset,i.phase AS provider_phase
+                   FROM live_simulcast_destination d
+                   LEFT JOIN linkedin_live_ingest i ON i.destination=d.id
+                   WHERE d.event=? AND (d.opens IS NULL OR d.opens=?) ORDER BY d.name""",
                 (uid, opens),
             ).fetchall()
             revisions = {key: row["revision"] for key, provider in live_connections.items()
@@ -895,6 +971,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     enforce_sharing(con, feature="outbound")
                     if not available:
                         abort(409, "Destinations require a public event without audience registration.")
+                    if saved["provider"] == "linkedin-live":
+                        abort(409, "A disabled LinkedIn Live stream cannot be restarted in the same occurrence.")
                     if saved["provider"] is not None:
                         provider = live_connections.get(saved["provider"])
                         connection = provider.connection(con) if provider else None
