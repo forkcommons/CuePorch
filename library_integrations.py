@@ -35,13 +35,14 @@ import marketo_crm
 import linkedin_upload
 import mail_relay
 import social_publication
-from team_accounts import CONTRIBUTORS, MANAGERS, current as signed_in_member
+from team_accounts import CONTRIBUTORS, MANAGERS, SESSION_MARKER, current as signed_in_member
 import shopify_product_media
 import tiktok_business
 import webex_recordings
 import x_upload
 import zoom_recordings
 import youtube_upload
+import youtube_live
 from library_analytics import source_origin
 from library_upload import VIDEO_INPUT, max_upload_bytes
 from workspace_oauth import (
@@ -309,6 +310,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         "", webex_recordings.SCOPE,
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
+    youtube_live_connection = youtube_live.WorkspaceConnection(tx, operator, sharing_access)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
@@ -316,7 +318,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, youtube_live_connection, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -445,6 +447,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                 category=("Marketing" if item.config.key in ("hubspot", "mailchimp", "constant-contact", "campaign-monitor", "keap", "salesforce") else
                           "Commerce" if item.config.key == "shopify" else
                           "Social publishing" if item.config.key in outbound else
+                          "Live events" if item.config.key == "youtube-live" else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
                 description=("Import a contact segment into a webinar occurrence." if item.config.key == "hubspot" else
                              "Connect a Mailchimp account for registration sync." if item.config.key == "mailchimp" else
@@ -454,6 +457,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              "Connect Salesforce Sales Cloud to find active campaigns." if item.config.key == "salesforce" else
                              "Add a Library video to a Shopify product's media."
                              if item.config.key == "shopify" else
+                             "Connect a YouTube channel for event simulcasting."
+                             if item.config.key == "youtube-live" else
                              "Upload a native video from the Library to your channel."
                              if item.config.key in outbound else "Copy meeting recordings into your private Library."
                              if item.config.key in meetings else "Browse and copy videos into your private Library."),
@@ -479,6 +484,17 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                           browse_folders=False, meeting=False, manage_path="/operator/library"))
         return private(dict(integrations=items))
 
+    @app.get("/api/integrations/youtube-live/channels")
+    def youtube_live_channels():
+        read_api()
+        with tx() as con:
+            if not sharing_access(con)["outbound"]:
+                abort(403, "Your workspace sharing policy restricts live channel access.")
+        revision = youtube_live_connection.revision()
+        return private(youtube_live.channels(
+            youtube_live_connection, revision, request.args.get("cursor"),
+        ))
+
     @app.post("/api/integrations/<provider>/connect")
     def connect(provider):
         if request.args.get("personal") == "1":
@@ -495,6 +511,19 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             credential_owner()
         if provider == "shopify":
             return connection.prepare(secure, current, context={"shop": body.get("shop")})
+        if provider == "youtube-live":
+            member = None
+            with tx() as con:
+                if request.headers.get("Authorization") == "Bearer " + SESSION_MARKER:
+                    member = signed_in_member(con, secure)
+                    if not member or member["role"] not in MANAGERS:
+                        abort(403)
+                if not sharing_access(con, member)["outbound"]:
+                    abort(403, "Your workspace sharing policy restricts connecting a live channel.")
+            return connection.prepare(secure, current, context={
+                "member": member["id"] if member else None,
+                "origin": current,
+            })
         return connection.prepare(secure, current)
 
     @app.get(CALLBACK_ROOT + "<provider>/callback")
