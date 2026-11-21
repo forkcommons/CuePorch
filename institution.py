@@ -1467,6 +1467,7 @@ def create_app(root, database, operator, institution, simulation=None):
     youtube_live_connection = youtube_live.WorkspaceConnection(tx, operator, sharing_access)
     facebook_live_connection = facebook_live.PageLiveConnection(tx, operator, sharing_access)
     linkedin_live_connection = linkedin_live.LiveConnection(tx, operator, sharing_access)
+    linkedin_member_live_connection = linkedin_live.ProfileLiveConnection(tx, operator, sharing_access)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor, hubspot, marketo=marketo, mailchimp=mailchimp, salesforce=salesforce,
@@ -1490,7 +1491,8 @@ def create_app(root, database, operator, institution, simulation=None):
                                                constant_contact=constant_contact, campaign_monitor=campaign_monitor, keap=keap, salesforce=salesforce,
                                                credential_owner=credential_owner, marketo=marketo,
                                                youtube_live_connection=youtube_live_connection, facebook_live_connection=facebook_live_connection,
-                                               linkedin_live_connection=linkedin_live_connection)
+                                               linkedin_live_connection=linkedin_live_connection,
+                                               linkedin_member_live_connection=linkedin_member_live_connection)
     app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner, hubspot_origins=hubspot_origins)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,

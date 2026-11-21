@@ -56,6 +56,7 @@ class LinkedInPublication(unittest.TestCase):
             base = f"http://127.0.0.1:{service.server_port}"
             callback = base + "/integration/oauth/linkedin/callback"
             live_callback = base + "/integration/oauth/linkedin-live/callback"
+            member_callback = base + "/integration/oauth/linkedin-member-live/callback"
             database = root / "workspace.sqlite"
             owner = "urn:li:organization:12345"
             received = {}
@@ -63,6 +64,7 @@ class LinkedInPublication(unittest.TestCase):
             failed_once = set()
             ready = set()
             approved_live_pages = set()
+            member_id = ["FixtureMember1"]
             page_offsets = []
             scheduled_videos = []
             announcement_writes = []
@@ -88,6 +90,9 @@ class LinkedInPublication(unittest.TestCase):
             cleanup.enter_context(patch.multiple(linkedin_live, OAUTH=replace(
                 linkedin_live.OAUTH, authorization_url=origin + "/oauth/authorize",
                 token_url=origin + "/oauth/token",
+            ), MEMBER_OAUTH=replace(
+                linkedin_live.MEMBER_OAUTH, authorization_url=origin + "/oauth/authorize",
+                token_url=origin + "/oauth/token",
             ), API=origin + "/rest", V2_API=origin + "/v2"))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
             cleanup.enter_context(patch.dict("os.environ", {
@@ -96,6 +101,8 @@ class LinkedInPublication(unittest.TestCase):
                 "CUEPORCH_LINKEDIN_LIVE_CLIENT_ID": "cueporch-live",
                 "CUEPORCH_LINKEDIN_LIVE_CLIENT_SECRET": "fixture-live-secret",
                 "CUEPORCH_LINKEDIN_LIVE_COMPANY_ID": "12345", "CUEPORCH_LINKEDIN_LIVE_REGION": "WEST_US",
+                "CUEPORCH_LINKEDIN_MEMBER_LIVE_CLIENT_ID": "cueporch-member-live",
+                "CUEPORCH_LINKEDIN_MEMBER_LIVE_CLIENT_SECRET": "fixture-member-secret",
             }))
 
             def start_app():
@@ -115,6 +122,11 @@ class LinkedInPublication(unittest.TestCase):
 
             @remote.get("/oauth/authorize")
             def authorize():
+                if request.args["client_id"] == "cueporch-member-live":
+                    assert request.args["redirect_uri"] == member_callback
+                    assert request.args["scope"] == "r_member_live w_member_live r_liteprofile"
+                    return redirect(member_callback + "?" + urlencode(
+                        dict(state=request.args["state"], code="linkedin-member-code")))
                 if request.args["client_id"] == "cueporch-live":
                     assert request.args["redirect_uri"] == live_callback
                     assert request.args["scope"] == linkedin_live.OAUTH.scope
@@ -126,6 +138,12 @@ class LinkedInPublication(unittest.TestCase):
 
             @remote.post("/oauth/token")
             def token():
+                if request.form["code"] == "linkedin-member-code":
+                    assert request.form["client_secret"] == "fixture-member-secret"
+                    assert request.form["redirect_uri"] == member_callback
+                    assert request.form["grant_type"] == "authorization_code"
+                    return dict(access_token="fixture-linkedin-member-live", scope=linkedin_live.MEMBER_OAUTH.scope,
+                                expires_in=5184000)
                 if request.form["code"] == "linkedin-live-code":
                     assert request.form["client_secret"] == "fixture-live-secret"
                     assert request.form["redirect_uri"] == live_callback
@@ -144,6 +162,11 @@ class LinkedInPublication(unittest.TestCase):
                     assert request.headers["Authorization"] == "Bearer " + token
                     for key, value in linkedin.HEADERS.items():
                         assert request.headers[key] == value
+
+            @remote.get("/v2/me")
+            def live_member_profile():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-member-live"
+                return dict(id=member_id[0])
 
             @remote.get("/rest/organizationAcls")
             def organization_acls():
@@ -582,6 +605,24 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertEqual(2, len(scheduled_videos))
                 self.assertEqual(2, len(announcement_writes))
                 page.goto(base + "/operator/integrations")
+                profile_path = base + "/api/integrations/linkedin-member-live/profile"
+                self.assertEqual(403, api.get(profile_path).status)
+                self.assertEqual(409, api.get(profile_path, headers=auth).status)
+                page.get_by_role("button", name="Connect LinkedIn Profile Live", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("LinkedIn Profile Live is connected.")
+                page.get_by_role("button", name="Show LinkedIn Live profile", exact=True).click()
+                expect(page.get_by_text("Profile FixtureMember1", exact=True)).to_be_visible()
+                profile = api.get(profile_path, headers=auth)
+                self.assertEqual(200, profile.status, profile.text())
+                self.assertEqual(dict(id="FixtureMember1", urn="urn:li:person:FixtureMember1"), profile.json())
+                self.assertNotIn("fixture-linkedin-member-live", page.content())
+
+                member_id[0] = {"invalid": 1}
+                self.assertEqual(502, api.get(profile_path, headers=auth).status)
+                page.get_by_role("button", name="Disconnect LinkedIn Profile Live", exact=True).click()
+                expect(page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True)).to_be_visible()
+                expect(page.get_by_role("button", name="Disconnect LinkedIn Company Page", exact=True)).to_be_visible()
+                self.assertEqual(409, api.get(profile_path, headers=auth).status)
                 page.get_by_role("button", name="Disconnect LinkedIn Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect LinkedIn Live", exact=True)).to_be_visible()
                 expect(page.get_by_role("button", name="Disconnect LinkedIn Company Page", exact=True)).to_be_visible()
@@ -595,6 +636,7 @@ class LinkedInPublication(unittest.TestCase):
         print("LinkedIn Company Page OAuth, multipart restart and ordered ETags, opted-in approval, public posting,"
               " exact playback, ambiguous post result and disconnect passed.")
         print("Separate LinkedIn Live grant, paginated Page admin verification, and independent disconnect passed.")
+        print("LinkedIn Live profile grant verified separate scopes, exact profile, invalid response, and independent disconnect.")
         print("LinkedIn Live Company Page browser scheduling, public announcement, optional approval and restart passed.")
         print("LinkedIn Live verified encrypted ingest, local RTMPS playback, provider-ready binding and end.")
         print("LinkedIn Live existing event picker verified paging, date and Page scope, and repeat and duplicate handling.")
