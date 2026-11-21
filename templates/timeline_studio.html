@@ -32,6 +32,7 @@
       <section aria-labelledby="timelinePreviewTitle">
         <h2 id="timelinePreviewTitle">Preview</h2>
         <video id="timelinePreview" controls playsinline hidden aria-label="Timeline source video"></video>
+        <div id="timelineCardPreview" hidden></div>
         <p id="timelineSourceName"></p>
         <div class="video-work-actions">
           <button id="splitTimeline" type="button" disabled>Split at preview time</button>
@@ -54,6 +55,40 @@
           <button id="clearTimelineKit" type="button" hidden>Remove from timeline</button>
           <a href="{{ url_for('brand_kits_page') }}">Manage brand kits</a>
           <p id="timelineBrandSources" hidden></p>
+        </fieldset>
+        <fieldset>
+          <legend>Templates</legend>
+          <label for="timelineTemplateSearch">Find a template</label>
+          <input id="timelineTemplateSearch" type="search">
+          <label for="timelineTemplateCategory">Template category</label>
+          <select id="timelineTemplateCategory">
+            <option value="">All categories</option>
+          </select>
+          <label for="timelineTemplateRatio">Template shape</label>
+          <select id="timelineTemplateRatio">
+            <option value="">Any shape</option>
+            <option value="16:9" selected>Landscape (16:9)</option>
+            <option value="1:1">Square (1:1)</option>
+            <option value="9:16">Portrait (9:16)</option>
+          </select>
+          <label for="timelineTemplate">Template</label>
+          <select id="timelineTemplate" disabled>
+            <option value="">Choose a template</option>
+          </select>
+          <p id="timelineTemplateDescription" aria-live="polite"></p>
+          <figure>
+            <figcaption>Opening scene</figcaption>
+            <div id="timelineTemplateOpening"></div>
+          </figure>
+          <figure>
+            <figcaption>Closing scene</figcaption>
+            <div id="timelineTemplateClosing"></div>
+          </figure>
+          <div class="video-work-actions">
+            <button id="timelineTemplateApply" type="button" disabled>Use both scenes</button>
+            <button id="timelineTemplateInsertOpening" type="button" disabled>Insert opening scene</button>
+            <button id="timelineTemplateInsertClosing" type="button" disabled>Insert closing scene</button>
+          </div>
         </fieldset>
         <fieldset>
           <legend>Library media</legend>

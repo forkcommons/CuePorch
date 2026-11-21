@@ -20,6 +20,7 @@ from library_languages import save_blob, tracks_for, track_language
 from library_timeline import find_cut, SIZES, video_source
 from media_tools import prepare_screening
 import subtitles
+import timeline_cards
 from timeline_render import Clip, Music, render
 
 
@@ -41,19 +42,20 @@ def combined_attachments(root, sources):
     offset = 0
     for item, work, cut in sources:
         start, end = item["start"], item["end"]
-        for track in tracks_for(work, cut, vtt_only=False):
-            if track["format"] not in ("vtt", "srt"):
-                raise ValueError("Convert the subtitle files to WebVTT before combining these videos.")
-            language = track_language(track)
-            data = (root / "objects" / track["sha256"]).read_bytes()
-            for cue in subtitles.parse(data, track["format"]):
-                left, right = max(start, cue["start"]), min(end, cue["end"])
-                if left < right:
-                    all_cues[language].append(dict(cue, start=offset + left - start, end=offset + right - start))
-        context = dict(work, files=cut["files"], chapters=cut.get("chapters", []))
-        for chapter in clip_chapters(readable_chapters(context), start, end):
-            second = chapter["timecode"] + (offset + 500) // 1000
-            chapters[second] = dict(chapter, timecode=second)
+        if work is not None:
+            for track in tracks_for(work, cut, vtt_only=False):
+                if track["format"] not in ("vtt", "srt"):
+                    raise ValueError("Convert the subtitle files to WebVTT before combining these videos.")
+                language = track_language(track)
+                data = (root / "objects" / track["sha256"]).read_bytes()
+                for cue in subtitles.parse(data, track["format"]):
+                    left, right = max(start, cue["start"]), min(end, cue["end"])
+                    if left < right:
+                        all_cues[language].append(dict(cue, start=offset + left - start, end=offset + right - start))
+            context = dict(work, files=cut["files"], chapters=cut.get("chapters", []))
+            for chapter in clip_chapters(readable_chapters(context), start, end):
+                second = chapter["timecode"] + (offset + 500) // 1000
+                chapters[second] = dict(chapter, timecode=second)
         offset += end - start
     captions = tuple(
         dict(role="caption", format="vtt", language=language, provenance="Timeline edit",
@@ -118,6 +120,9 @@ def register(app, tx, staff, get_work, root, remember_work):
         ordered = (brand.get("intro"), *render_input["clips"], brand.get("outro"))
         sources = []
         for item in (item for item in ordered if item):
+            if "card" in item:
+                sources.append((item, None, None))
+                continue
             source_work = get_work(con, item["work"])
             sources.append((item, source_work, find_cut(source_work, item["cut"])))
         music = render_input["music"]
@@ -133,12 +138,17 @@ def register(app, tx, staff, get_work, root, remember_work):
         if isinstance(loaded, str):
             return loaded
         settings, sources, music = loaded
-        clips = []
-        for item, _, cut in sources:
-            file, info = video_source(root, cut)
-            clips.append(Clip(file, item["start"], item["end"], bool(info["audio"])))
         with TemporaryDirectory(dir=root / "objects", prefix="timeline-") as name:
             scratch = Path(name)
+            clips = []
+            for item, _, cut in sources:
+                if cut is None:
+                    path = scratch / (uuid.uuid4().hex + ".png")
+                    timeline_cards.draw_card(path, item["card"], SIZES[settings["ratio"]])
+                    clips.append(Clip(str(path), 0, item["end"], False, still=True))
+                else:
+                    file, info = video_source(root, cut)
+                    clips.append(Clip(file, item["start"], item["end"], bool(info["audio"])))
             original, screening = scratch / "timeline.mp4", scratch / "screening.mp4"
             duration = render(original, clips, SIZES[settings["ratio"]], settings["color"], music, stopping)
             prepare_screening(original, screening, stopping=stopping)

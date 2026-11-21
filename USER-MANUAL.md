@@ -296,6 +296,8 @@ Open **Edit video** from the workspace. Set the start and end in seconds, move t
 
 Open **Timeline editor** to combine clips from the library. Use **Upload and add clip** or **Record a clip** to bring in new footage without leaving the editor. CuePorch saves these sources to the library and adds them to the draft. Record Studio opens in the editor and uses the selected folder’s privacy settings or your upload defaults. Select a source, change the bounds, split at the preview time or omit a subtitle cue. Move clips earlier or later, adjust the canvas and mix a library audio work beneath the video. Undo and redo edit actions before rendering. CuePorch saves a draft while you work and opens it again when you return. **Render as a new version** queues the edit and keeps the original cuts available through **Versions**.
 
+In **Timeline editor**, browse 35 original presets by category, search, or shape and preview a template before using it. Insert a single scene after the selected clip, or insert the template both before and after existing clips. Edit the title, subtitle, and duration, and use **Undo** to reverse an edit. CuePorch saves your draft automatically. When ready, choose **Render as a new version**.
+
 ### Record Studio
 
 Open **Record Studio** from the library. Choose a camera and microphone, connect them in the browser, or share a screen, window or tab. The studio can combine camera and screen side by side or as an inset. Pick the canvas ratio, output size and background.

@@ -12,6 +12,7 @@ class Clip:
     start: int
     end: int
     has_audio: bool
+    still: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,15 +33,19 @@ def render(target, clips, size, color, music=None, stopping=None):
     for index, clip in enumerate(clips):
         milliseconds = clip.end - clip.start
         length = f"{milliseconds / 1000:.3f}"
-        sources.extend(("-protocol_whitelist", "file,pipe", "-ss", f"{clip.start / 1000:.3f}", "-t", length,
-                        "-i", str(clip.source)))
+        if clip.still:
+            sources.extend(("-protocol_whitelist", "file,pipe", "-f", "image2", "-loop", "1",
+                            "-framerate", "30", "-t", length, "-i", str(clip.source)))
+        else:
+            sources.extend(("-protocol_whitelist", "file,pipe", "-ss", f"{clip.start / 1000:.3f}", "-t", length,
+                            "-i", str(clip.source)))
         filters.append(
             f"[{index}:V:0]setpts=PTS-STARTPTS,fps=30,"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x{color},setsar=1,format=yuv420p,"
             f"tpad=stop_mode=clone:stop_duration={length},trim=duration={length}[v{index}]"
         )
-        if clip.has_audio:
+        if clip.has_audio and not clip.still:
             audio = f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo,apad"
         else:
             audio = "anullsrc=r=48000:cl=stereo"

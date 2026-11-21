@@ -14,6 +14,8 @@ from library_languages import tracks_for, track_language
 from media_tools import video_properties
 import subtitles
 from team_brand_kits import written_kit
+from timeline_cards import normalize_card
+import timeline_templates
 
 
 SCHEMA = """
@@ -65,6 +67,9 @@ def normalize(raw, get_work, root, con):
         abort(422, "Choose a canvas, a background color and up to 128 source clips.")
     clips = []
     for item in raw_clips:
+        if isinstance(item, dict) and "card" in item:
+            clips.append(normalize_card(item))
+            continue
         if not isinstance(item, dict) or not isinstance(item.get("work"), str):
             abort(422, "Choose a source for each clip.")
         work = get_work(item["work"])
@@ -111,6 +116,7 @@ def project(con, root, work, actor):
 
 def register(app, tx, staff, get_work, root, signing_key):
     signer = URLSafeTimedSerializer(signing_key, salt="cueporch-timeline-preview")
+    timeline_templates.register_templates(app, staff)
 
     def preview_for(con, uid, version):
         work = get_work(con, uid)

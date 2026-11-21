@@ -1,8 +1,14 @@
-import {uploadLibraryFile} from "./library_upload.js";
-import {privateSettings} from "./library_privacy.js";
-import type {BrandKit, BrandKits} from "./brand_kits.js";
+import { mountTimelineTemplates, type TemplateItem } from "./timeline_templates.js";
+import { uploadLibraryFile } from "./library_upload.js";
+import { privateSettings } from "./library_privacy.js";
+import type { BrandKit, BrandKits } from "./brand_kits.js";
+import {showTimelineCard, type CardClip} from "./timeline_templates.js";
 
-interface Clip { work: string; cut: string; start: number; end: number }
+interface MediaClip { work: string; cut: string; start: number; end: number }
+type Clip = MediaClip | CardClip;
+function isMedia(clip: Clip | undefined): clip is MediaClip {
+  return clip !== undefined && "work" in clip;
+}
 interface Music { work: string; cut?: string; start: number; gain: number }
 interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null; brand?: BrandKit | null }
 interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
@@ -75,7 +81,7 @@ function controls() {
   button("undoTimeline").disabled = !undo.length;
   button("redoTimeline").disabled = !redo.length;
   button("renderTimeline").disabled = !state.clips.length || working();
-  button("splitTimeline").disabled = selected < 0 || video.hidden;
+  button("splitTimeline").disabled = !isMedia(state.clips[selected]) || video.hidden;
   button("playTimelineClip").disabled = button("splitTimeline").disabled;
   button("discardTimeline").disabled = Boolean(working());
   const full = state.clips.length >= 128;
@@ -120,6 +126,42 @@ function timeInput(label: string, value: number, change: (milliseconds: number) 
   return group;
 }
 
+function textInput(label: string, value: string, maxLength: number, change: (text: string) => void, required = true) {
+  const group = document.createElement("label");
+  const field = document.createElement("input");
+  field.type = "text";
+  field.maxLength = maxLength;
+  field.value = value;
+  field.onchange = () => {
+    const next = field.value.trim();
+    if ((required && !next) || next.length > maxLength) {
+      paint();
+      message(`${label} is invalid.`);
+      return;
+    }
+    change(next);
+  };
+  group.append(label, field);
+  return group;
+}
+
+function updateCard(index: number, patch: Partial<CardClip>) {
+  const clips = state.clips.map((clip, i) =>
+    i === index && !isMedia(clip) ? {...clip, ...patch} : clip
+  );
+  change({...state, clips});
+}
+
+function cardDuration(index: number, milliseconds: number) {
+  const clip = state.clips[index];
+  if (!clip || isMedia(clip) || !Number.isFinite(milliseconds) || milliseconds < 1000 || milliseconds > 15000) {
+    paint();
+    message("Choose between 1 and 15 seconds.");
+    return;
+  }
+  updateCard(index, {end: milliseconds});
+}
+
 function paint() {
   select("timelineRatio").value = state.ratio;
   input("timelineColor").value = "#" + state.color;
@@ -140,16 +182,36 @@ function paint() {
   for (const [index, clip] of state.clips.entries()) {
     const row = document.createElement("li");
     row.className = "timeline-clip";
-    const choose = action(nameOf(clip.work), () => run(() => inspect(index)));
+    const choose = action(isMedia(clip) ? nameOf(clip.work) : clip.card.title, () => run(() => inspect(index)));
     choose.setAttribute("aria-pressed", String(index === selected));
     const earlier = action("Earlier", () => move(index, -1));
     earlier.disabled = index === 0;
     const later = action("Later", () => move(index, 1));
     later.disabled = index === state.clips.length - 1;
-    row.append(choose, timeInput("Start (seconds)", clip.start, start => range(index, start, clip.end)),
-      timeInput("End (seconds)", clip.end, end => range(index, clip.start, end)),
-      earlier, later, action("Remove", () => remove(index)));
+    row.append(choose);
+    if (isMedia(clip)) {
+      row.append(
+        timeInput("Start (seconds)", clip.start, start => range(index, start, clip.end)),
+        timeInput("End (seconds)", clip.end, end => range(index, clip.start, end)),
+      );
+    } else {
+      row.append(
+        textInput("Scene title", clip.card.title, 80, title => updateCard(index, {card: {...clip.card, title}})),
+        textInput("Scene subtitle", clip.card.subtitle, 120, subtitle => updateCard(index, {card: {...clip.card, subtitle}}), false),
+        timeInput("Duration (seconds)", clip.end, milliseconds => cardDuration(index, milliseconds)),
+      );
+    }
+    row.append(earlier, later, action("Remove", () => remove(index)));
     trackList.append(row);
+  }
+  const cardPreview = node<HTMLElement>("timelineCardPreview");
+  const selectedClip = state.clips[selected];
+  if (selectedClip && !isMedia(selectedClip)) {
+    cardPreview.hidden = false;
+    showTimelineCard(cardPreview, selectedClip, state.ratio);
+  } else {
+    cardPreview.hidden = true;
+    cardPreview.replaceChildren();
   }
   controls();
 }
@@ -219,12 +281,14 @@ function move(index: number, by: number) {
 }
 
 function range(index: number, start: number, end: number) {
+  const clip = state.clips[index];
+  if (!isMedia(clip)) return;
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < 100) {
     paint();
     message("Choose at least 0.1 seconds within the source.");
     return;
   }
-  const clips = state.clips.map((clip, i) => i === index ? {...clip, start, end} : clip);
+  const clips = state.clips.map((clip, i) => i === index && isMedia(clip) ? {...clip, start, end} : clip);
   change({...state, clips});
 }
 
@@ -235,7 +299,7 @@ function seek(position: number) {
 
 function split(at: number) {
   const clip = state.clips[selected];
-  if (!clip || at - clip.start < 100 || clip.end - at < 100) {
+  if (!isMedia(clip) || at - clip.start < 100 || clip.end - at < 100) {
     message("Choose a point inside the selected clip.");
     return;
   }
@@ -246,7 +310,7 @@ function split(at: number) {
 
 function omitCue(cue: Cue) {
   const clip = state.clips[selected];
-  if (!clip) return;
+  if (!isMedia(clip)) return;
   const first = Math.max(cue.start, clip.start), last = Math.min(cue.end, clip.end);
   if (first >= last) return;
   const retained = [
@@ -280,7 +344,7 @@ async function transcript() {
   const clip = state.clips[selected];
   const language = select("timelineSubtitle").value;
   const version = ++cueVersion;
-  if (!clip || !language) return;
+  if (!isMedia(clip) || !language) return;
   const query = new URLSearchParams({cut: clip.cut, language});
   const response = await call<{cues: Cue[]}>(endpoint(clip.work) + "/timeline/transcript?" + query);
   if (version !== cueVersion) return;
@@ -290,19 +354,30 @@ async function transcript() {
 
 async function inspect(index: number) {
   selected = index;
+  video.pause();
   video.hidden = true;
+  video.removeAttribute("src");
+  video.load();
+  video.onloadedmetadata = null;
   stopTime = undefined;
   node("timelineTranscript").hidden = true;
   paint();
   const clip = state.clips[index];
   const version = ++previewVersion;
+  ++cueVersion;
+  if (!isMedia(clip)) {
+    node("timelineSourceName").textContent = clip?.card.title ?? "";
+    cues = [];
+    paintCues();
+    return;
+  }
   node("timelineSourceName").textContent = nameOf(clip.work);
   const query = new URLSearchParams({cut: clip.cut});
   const [preview, subtitles] = await Promise.all([
     call<{preview: string}>(endpoint(clip.work) + "/timeline/preview", "POST", {cut: clip.cut}),
     call<{languages: string[]}>(endpoint(clip.work) + "/timeline/transcript?" + query),
   ]);
-  if (version !== previewVersion || state.clips[selected]?.cut !== clip.cut) return;
+  if (version !== previewVersion || state.clips[selected] !== clip) return;
   video.src = preview.preview;
   video.onloadedmetadata = () => seek(clip.start);
   video.hidden = false;
@@ -345,9 +420,15 @@ button("discardTimeline").onclick = () => run(async () => {
   project = await call<Project>(endpoint() + "/timeline", "DELETE", {revision: project.revision});
   state = project.settings;
   selected = -1;
+  video.pause();
   video.hidden = true;
+  video.removeAttribute("src");
+  video.load();
+  video.onloadedmetadata = null;
   node("timelineTranscript").hidden = true;
   confirmed = ++generation;
+  ++cueVersion;
+  cues = [];
   undo.length = redo.length = 0;
   status.textContent = "Draft reset.";
   paint();
@@ -364,7 +445,7 @@ async function addNewClip(work: string) {
   if (!saved) throw new Error("The saved video is unavailable in this Library.");
   media.set(work, saved);
   listSources();
-  if (!state.clips.some(clip => clip.work === work)) await appendClip(work);
+  if (!state.clips.some(clip => isMedia(clip) && clip.work === work)) await appendClip(work);
   await save(true);
 }
 
@@ -419,6 +500,7 @@ button("setTimelineMusic").onclick = () => {
 button("splitTimeline").onclick = () => split(Math.round(video.currentTime * 1000));
 button("playTimelineClip").onclick = () => run(async () => {
   const clip = state.clips[selected];
+  if (!isMedia(clip)) return;
   seek(clip.start);
   stopTime = clip.end / 1000;
   await video.play();
@@ -441,6 +523,45 @@ button("applyTimelineKit").onclick = () => {
 };
 button("clearTimelineKit").onclick = () => change({...state, brand: null});
 
+async function loadTimelineTemplates() {
+  const description = node("timelineTemplateDescription");
+  try {
+    const {templates: items} = await call<{templates: TemplateItem[]}>("/api/library/timeline-templates");
+    mountTimelineTemplates(items, apply, insert);
+  } catch (error) {
+    description.textContent = error instanceof Error ? error.message : String(error);
+  }
+
+  function apply(opening: Clip, closing: Clip, ratio: string) {
+    if (state.clips.length + 2 > 128) {
+      message("Remove enough clips before using both template scenes.");
+      return;
+    }
+
+    const clips = [opening, ...state.clips, closing];
+    selected = -1;
+    video.pause();
+    video.hidden = true;
+    node("timelineTranscript").hidden = true;
+    previewVersion += 1;
+    cueVersion += 1;
+    change({...state, ratio, clips});
+  }
+
+  function insert(clip: Clip) {
+    if (state.clips.length >= 128) {
+      message("Timeline supports at most 128 clips. Remove a clip before inserting another.");
+      return;
+    }
+
+    const clips = [...state.clips];
+    const newPosition = selected >= 0 ? selected + 1 : clips.length;
+    clips.splice(newPosition, 0, clip);
+    change({...state, clips});
+    run(() => inspect(newPosition));
+  }
+}
+
 async function open() {
   const [items, loaded, shelf] = await Promise.all([
     call<Media[]>("/api/library"), call<Project>(endpoint() + "/timeline"), call<BrandKits>("/api/library/brand-kits"),
@@ -460,6 +581,7 @@ async function open() {
   node("timelineStudio").hidden = false;
   node("timelineRecovery").hidden = !project.draft;
   if (project.job) showJob(project.job, true);
+  void loadTimelineTemplates();
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value) run(open);
