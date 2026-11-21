@@ -87,6 +87,7 @@ import library_upload
 import hubspot_crm
 import mailchimp_crm
 import constant_contact_crm
+import campaign_monitor_crm
 import library_mailchimp_forms
 import library_constant_contact_forms
 import marketo_crm
@@ -1402,6 +1403,7 @@ def create_app(root, database, operator, institution, simulation=None):
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
     mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
     constant_contact = workspace_oauth.Connection(constant_contact_crm.OAUTH, tx, operator)
+    campaign_monitor = campaign_monitor_crm.CampaignMonitorConnection(tx, operator)
     def active_mailchimp_form(con, kind, uid):
         if kind == "showcase":
             library_showcases.get_showcase(con, uid)
@@ -1442,7 +1444,7 @@ def create_app(root, database, operator, institution, simulation=None):
     )
     publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
                                                sharing_access, hubspot, mailchimp,
-                                               constant_contact=constant_contact, marketo=marketo)
+                                               constant_contact=constant_contact, campaign_monitor=campaign_monitor, marketo=marketo)
     app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner, hubspot_origins=hubspot_origins)
     social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
                                 library_actions.title_for, operator_name, team_member, authorize_editor,

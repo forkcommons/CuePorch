@@ -65,6 +65,7 @@ class Config:
     implicit_bearer: bool = False
     nonexpiring_access: bool = False
     token_basic_query: bool = False
+    refresh_client_fields: bool = True
 
 
 def provider_request(method, url, **kwargs):
@@ -160,6 +161,8 @@ class Connection:
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
             )
+        elif fields.get("grant_type") == "refresh_token" and not self.config.refresh_client_fields:
+            request_kwargs = dict(data=fields)
         else:
             request_kwargs = dict(data=fields | self.client_fields())
         with provider_request("POST", self.config.token_url, **request_kwargs) as response:
