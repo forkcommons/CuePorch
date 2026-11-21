@@ -29,6 +29,13 @@ function cueporch_woo_render_product_video_fields() {
         )
     );
 
+    if ( get_option( 'cueporch_woo_origin' ) ) {
+        echo '<p class="form-field">';
+        echo '<button type="button" class="button" id="cueporchChooseVideo" data-origin="' . esc_attr( get_option( 'cueporch_woo_origin' ) ) . '">' . esc_html__( 'Choose from CuePorch', 'cueporch-video' ) . '</button>';
+        echo ' <span id="cueporchPickerStatus" aria-live="polite"></span>';
+        echo '</p>';
+    }
+
     woocommerce_wp_select(
         array(
             'id'      => '_cueporch_video_placement',
@@ -136,4 +143,20 @@ function cueporch_woo_save_product_video_fields( $product ) {
     }
 
     $product->update_meta_data( '_cueporch_video_placement', $placement );
+}
+
+add_action( 'admin_enqueue_scripts', 'cueporch_woo_enqueue_editor_picker' );
+function cueporch_woo_enqueue_editor_picker( $hook ) {
+    if ( 'post.php' !== $hook && 'post-new.php' !== $hook ) {
+        return;
+    }
+    $screen = get_current_screen();
+    if ( ! $screen || 'product' !== $screen->post_type ) {
+        return;
+    }
+    if ( ! get_option( 'cueporch_woo_origin' ) ) {
+        return;
+    }
+    $ver = (string) filemtime( plugin_dir_path( __FILE__ ) . 'editor-picker.js' );
+    wp_enqueue_script( 'cueporch-editor-picker', plugin_dir_url( __FILE__ ) . 'editor-picker.js', array(), $ver, true );
 }

@@ -1652,6 +1652,13 @@ def create_app(root, database, operator, institution, simulation=None):
             "library_console.html", public_url=os.environ.get("CUEPORCH_PUBLIC_URL", "")
         )
 
+    @app.get("/operator/wordpress-media-picker")
+    def wordpress_media_picker():
+        response = Response(render_template("wordpress_media_picker.html"), mimetype="text/html")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        return response
+
     @app.get("/operator/videos/<uuid:work>")
     def operator_video(work):
         return render_template("video_details.html", work=str(work), public_url=os.environ.get("CUEPORCH_PUBLIC_URL", ""))
