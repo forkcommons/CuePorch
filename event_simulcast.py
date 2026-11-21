@@ -502,11 +502,12 @@ class Simulcast:
 
 
 def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing, youtube_live_connection,
-             facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection,
+             facebook_live_connection, facebook_profile_live_connection, linkedin_live_connection,
+             linkedin_member_live_connection,
              creation_access):
     linkedin_connections = {item.key: item for item in (linkedin_live_connection, linkedin_member_live_connection)}
     live_connections = {item.key: item for item in (
-        youtube_live_connection, facebook_live_connection)} | linkedin_connections
+        youtube_live_connection, facebook_live_connection, facebook_profile_live_connection)} | linkedin_connections
     linkedin_lease_dir = outputs.directory / "linkedin-schedule"
 
     def linkedin_lease(key):
@@ -748,12 +749,24 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
         return private(dict(id=uid_destination), 201)
 
-    def facebook_page():
+    def facebook_page(profile=False):
         payload = request.get_json()
         page = payload.get("page") if isinstance(payload, dict) else None
         if not isinstance(page, str) or not facebook_upload.ID.fullmatch(page):
-            abort(422, "Choose a Facebook Live Page.")
-        return page
+            abort(422, "Choose a Facebook destination.")
+        return "profile:" + page if profile else page
+
+    def facebook_page_arg(profile=False):
+        page = request.args.get("page", "")
+        if not facebook_upload.ID.fullmatch(page):
+            abort(422, "Choose a Facebook destination.")
+        return "profile:" + page if profile else page
+
+    def facebook_provider(page):
+        if page.startswith("profile:"):
+            return (facebook_profile_live_connection, page[8:],
+                    facebook_profile_live_connection.create_profile_live)
+        return facebook_live_connection, page, facebook_live_connection.create_page_live
 
     def facebook_lease(key):
         lease_dir = outputs.directory / "facebook-creation"
@@ -763,27 +776,37 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
     def facebook_access(con, uid, opens, page):
         event_revision, title, slot = creation_access(con, uid, opens)
-        saved = facebook_live_connection.connection(con)
-        if not saved:
-            abort(409, "Connect Facebook Live before preparing a broadcast.")
-        pages = facebook_live_connection.tokens(saved)["pages"]
-        if page not in pages:
-            abort(403, "That Facebook Live Page is not connected.")
-        return event_revision, title, slot, saved["revision"], pages[page]["name"]
+        if page.startswith("profile:"):
+            saved = facebook_profile_live_connection.connection(con)
+            if not saved:
+                abort(409, "Connect Facebook before preparing a profile broadcast.")
+            profile = facebook_profile_live_connection.tokens(saved)["profile"]
+            if str(profile["id"]) != page[8:]:
+                abort(403, "That Facebook profile is not connected.")
+            page_name = profile["name"]
+        else:
+            saved = facebook_live_connection.connection(con)
+            if not saved:
+                abort(409, "Connect Facebook Live before preparing a broadcast.")
+            pages = facebook_live_connection.tokens(saved)["pages"]
+            if page not in pages:
+                abort(403, "That Facebook Live Page is not connected.")
+            page_name = pages[page]["name"]
+        return event_revision, title, slot, saved["revision"], page_name
 
+    @app.post("/api/live-events/<uid>/<int:opens>/destinations/facebook-profile", defaults={"profile": True})
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/facebook")
-    def create_facebook_destination(uid, opens):
+    def create_facebook_destination(uid, opens, profile=False):
         staff()
-        page = facebook_page()
+        page = facebook_page(profile)
         result, status = prepare_facebook(uid, opens, page)
         return private(result, status)
 
+    @app.get("/api/live-events/<uid>/<int:opens>/destinations/facebook-profile/auto", defaults={"profile": True})
     @app.get("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto")
-    def facebook_auto_status(uid, opens):
+    def facebook_auto_status(uid, opens, profile=False):
         staff()
-        page = request.args.get("page", "")
-        if not facebook_upload.ID.fullmatch(page):
-            abort(422, "Choose a Facebook Live Page.")
+        page = facebook_page_arg(profile)
         with tx() as con:
             enforce_sharing(con, feature="outbound")
             event_revision, _, _, revision, _ = facebook_access(con, uid, opens, page)
@@ -805,10 +828,11 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             state = "queued" if series and opens > series["after_opens"] else "idle"
         return private(dict(state=state, series=series is not None))
 
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook-profile/auto", methods=["PUT", "DELETE"], defaults={"profile": True})
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto", methods=["PUT", "DELETE"])
-    def configure_facebook_auto(uid, opens):
+    def configure_facebook_auto(uid, opens, profile=False):
         staff()
-        key = (uid, opens, facebook_page())
+        key = (uid, opens, facebook_page(profile))
         series = request.get_json().get("series", False)
         if type(series) is not bool:
             abort(422, "Choose whether to apply automatic starts to future dates.")
@@ -874,7 +898,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         def save(con, target):
             check_provider_capacity(con, uid, opens)
             bound = target | {"title": page_name.strip() or "Facebook Live"}
-            return save_provider_destination(con, uid, opens, "facebook-live", revision, target["id"], bound)
+            return save_provider_destination(con, uid, opens, facebook_provider(page)[0].key, revision, target["id"], bound)
 
         try:
             with facebook_lease(key):
@@ -882,9 +906,10 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     with tx() as con:
                         check(con)
                         facebook_live_job.queue(con, key, revision, event_revision, state="canceled")
+                _, provider_page, create_live = facebook_provider(page)
                 return facebook_live_job.provision(
-                    tx, check, lambda: facebook_live_connection.create_page_live(
-                        revision, page, title, opens, before_send, live_now=live_now),
+                    tx, check, lambda: create_live(
+                        revision, provider_page, title, opens, before_send, live_now=live_now),
                     save, *key, revision,
                     claim_auto=(lambda con: facebook_live_job.claim(con, key, automatic)) if live_now else None,
                 )

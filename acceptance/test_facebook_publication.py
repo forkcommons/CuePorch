@@ -54,11 +54,13 @@ class FacebookPublication(unittest.TestCase):
             base = f"http://127.0.0.1:{service.server_port}"
             callback = base + "/integration/oauth/facebook/callback"
             live_callback = base + "/integration/oauth/facebook-live/callback"
+            profile_callback = base + "/integration/oauth/facebook-profile-live/callback"
             database = root / "workspace.sqlite"
             chunks = {}
             posts = []
             live_writes = []
             live_now_writes = []
+            profile_writes = []
             exchanges = []
             checkpoints = dict(rate=0, interrupted=False, live_permission=False)
             operator = secrets.token_urlsafe(32)
@@ -70,12 +72,18 @@ class FacebookPublication(unittest.TestCase):
                 facebook_live.OAUTH, authorization_url=origin + "/oauth/authorize",
                 token_url=origin + "/graph/oauth/access_token",
             )))
+            cleanup.enter_context(patch.object(facebook_live, "PROFILE_OAUTH", replace(
+                facebook_live.PROFILE_OAUTH, authorization_url=origin + "/oauth/authorize",
+                token_url=origin + "/graph/oauth/access_token",
+            )))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_FACEBOOK_CLIENT_ID": "cueporch",
                 "CUEPORCH_FACEBOOK_CLIENT_SECRET": "fixture-secret",
                 "CUEPORCH_FACEBOOK_LIVE_CLIENT_ID": "cueporch",
                 "CUEPORCH_FACEBOOK_LIVE_CLIENT_SECRET": "fixture-secret",
+                "CUEPORCH_FACEBOOK_PROFILE_LIVE_CLIENT_ID": "cueporch",
+                "CUEPORCH_FACEBOOK_PROFILE_LIVE_CLIENT_SECRET": "fixture-secret",
             }))
 
             def start_app():
@@ -96,8 +104,9 @@ class FacebookPublication(unittest.TestCase):
             @remote.get("/oauth/authorize")
             def authorize():
                 redirect_uri = request.args["redirect_uri"]
-                assert request.args["client_id"] == "cueporch" and redirect_uri in (callback, live_callback)
-                config = facebook_live.OAUTH if redirect_uri == live_callback else facebook.OAUTH
+                assert request.args["client_id"] == "cueporch" and redirect_uri in (callback, live_callback, profile_callback)
+                config = (facebook_live.PROFILE_OAUTH if redirect_uri == profile_callback else
+                          facebook_live.OAUTH if redirect_uri == live_callback else facebook.OAUTH)
                 assert set(request.args["scope"].split()) == set(config.scope.split())
                 return redirect(redirect_uri + "?" + urlencode(dict(state=request.args["state"], code="facebook-code")))
 
@@ -108,7 +117,7 @@ class FacebookPublication(unittest.TestCase):
                     assert request.args["fb_exchange_token"] == "fixture-short"
                     exchanges.append("long")
                     return dict(access_token="fixture-long", expires_in=5184000)
-                assert request.args["code"] == "facebook-code" and request.args["redirect_uri"] in (callback, live_callback)
+                assert request.args["code"] == "facebook-code" and request.args["redirect_uri"] in (callback, live_callback, profile_callback)
                 exchanges.append("short")
                 return dict(access_token="fixture-short", expires_in=1000)
 
@@ -122,6 +131,11 @@ class FacebookPublication(unittest.TestCase):
                 authenticated("fixture-long")
                 state = "granted" if checkpoints["live_permission"] else "declined"
                 return {"data": [{"permission": "publish_video", "status": state}]}
+
+            @remote.get("/graph/me")
+            def me():
+                authenticated("fixture-long")
+                return {"id": "707", "name": "Porch Artist"}
 
             @remote.get("/graph/me/accounts")
             def pages():
@@ -138,6 +152,10 @@ class FacebookPublication(unittest.TestCase):
 
             @remote.post("/graph/<page_id>/live_videos")
             def prepare_live(page_id):
+                if page_id == "707":
+                    authenticated("fixture-long")
+                    profile_writes.append(request.get_json())
+                    return dict(id="1707", secure_stream_url=facebook_live.INGEST_SERVER + "/fixture-facebook-profile-key")
                 assert page_id in {"101", "202"}
                 authenticated("fixture-station" if page_id == "101" else "fixture-arts")
                 body = request.get_json()
@@ -425,6 +443,57 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(inherited_roster, api.get(inherited_path, headers=auth).json()["destinations"])
 
                 page.goto(base + "/operator/integrations")
+                profile_catalog = base + "/api/integrations/facebook-profile-live/profiles"
+                self.assertEqual(409, api.get(profile_catalog, headers=auth).status)
+                page.get_by_role("button", name="Connect Facebook Profile Live", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("Facebook Profile Live is connected.", timeout=15000)
+                page.get_by_role("button", name="Show Facebook profiles", exact=True).click()
+                expect(page.get_by_text("Porch Artist", exact=True)).to_be_visible()
+                profile_list = api.get(profile_catalog, headers=auth)
+                self.assertEqual({"items": [{"id": "707", "name": "Porch Artist"}]}, profile_list.json())
+                self.assertNotIn("fixture-long", profile_list.text())
+                self.assertEqual(403, api.get(profile_catalog).status)
+                self.assertEqual(403, api.post(next_targets + "/facebook-profile", headers=auth, data={"page": "101"}).status)
+                self.assertEqual(403, api.post(next_targets + "/facebook", headers=auth, data={"page": "707"}).status)
+
+                page.goto(base + "/operator/live-events")
+                page.get_by_role("button", name=f"Open production for Facebook Live rehearsal at {next_label}",
+                                 exact=True).click()
+                page.get_by_text("Simulcast destinations", exact=True).click()
+                page.locator("#facebookLiveTarget").select_option("profile")
+                page.get_by_role("button", name="Load Facebook profiles", exact=True).click()
+                expect(page.get_by_role("combobox", name="Facebook profile", exact=True)).to_have_value("707")
+                page.get_by_role("checkbox", name="Also start future dates automatically", exact=True).check()
+                page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
+                expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
+                for occurrence_path in (next_targets, skipped_path):
+                    canceled = api.delete(occurrence_path + "/facebook-profile/auto", headers=auth, data={"page": "707"})
+                    self.assertEqual(200, canceled.status, canceled.text())
+                self.assertEqual([], profile_writes)
+                inherited_profile = []
+                with patch.object(facebook_live_job, "time", lambda: int(skipped["id"]) + 1):
+                    deadline = monotonic() + 8
+                    while not inherited_profile and monotonic() < deadline:
+                        inherited_profile = [item for item in api.get(inherited_path, headers=auth).json()["destinations"]
+                                             if item["provider"] == "facebook-profile-live"]
+                        if not inherited_profile:
+                            sleep(.05)
+                self.assertEqual([{"title": event["title"], "status": "LIVE_NOW", "stop_on_delete_stream": True}], profile_writes)
+                self.assertEqual([], api.get(skipped_path, headers=auth).json()["destinations"])
+                self.assertEqual(1, len(inherited_profile))
+                check_destination_rtmps(root, database, inherited_profile[0]["id"], operator, facebook_live.INGEST_SERVER,
+                                        "fixture-facebook-profile-key")
+                stop_profile = api.delete(inherited_path + "/facebook-profile/auto", headers=auth,
+                                          data={"page": "707", "series": True})
+                self.assertEqual(200, stop_profile.status, stop_profile.text())
+                self.assertEqual({"state": "idle", "series": False},
+                                 api.get(last_path + "/facebook-profile/auto?page=707", headers=auth).json())
+
+                page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Disconnect Facebook Profile Live", exact=True).click()
+                expect(page.get_by_role("button", name="Connect Facebook Profile Live", exact=True)).to_be_visible()
+                self.assertEqual(409, api.get(profile_catalog, headers=auth).status)
+                self.assertEqual(200, api.get(catalog, headers=auth).status)
                 page.get_by_role("button", name="Disconnect Facebook Live", exact=True).click()
                 expect(page.get_by_role("button", name="Connect Facebook Live", exact=True)).to_be_visible()
                 self.assertEqual(409, api.get(catalog, headers=auth).status)

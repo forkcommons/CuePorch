@@ -223,6 +223,16 @@ function render() {
               return row;
             }));
           }), pages);
+        } else if (item.id === "facebook-profile-live") {
+          const profiles = document.createElement("ul");
+          card.append(button("Show Facebook profiles", async () => {
+            const result = await api<{items: {id: string; name: string}[]}>("/api/integrations/facebook-profile-live/profiles");
+            profiles.replaceChildren(...result.items.map(item => {
+              const row = document.createElement("li");
+              row.textContent = item.name;
+              return row;
+            }));
+          }), profiles);
         } else if (item.id === "linkedin-live") {
           const companyLine = document.createElement("p");
           card.append(button("Show LinkedIn Company Page", async () => {

@@ -477,8 +477,14 @@
           <p id="youtubeBroadcastStatus" role="status"></p>
         </section>
         <form id="addFacebookLiveDestination" hidden>
+          <label>Facebook destination
+            <select id="facebookLiveTarget">
+              <option value="page" selected>Page</option>
+              <option value="profile">Profile</option>
+            </select>
+          </label>
           <button type="button" id="loadFacebookLivePages">Load Facebook Live Pages</button>
-          <label>Facebook Live Page <select id="facebookLivePage" name="page"></select></label>
+          <label><span id="facebookLivePageLabel">Facebook Live Page</span> <select id="facebookLivePage" name="page"></select></label>
           <label><input type="checkbox" id="facebookAutomatic" checked> Start automatically when CuePorch is live</label>
           <div id="facebookSeriesControls" hidden>
             <label><input type="checkbox" id="facebookSeries"> Also start future dates automatically</label>

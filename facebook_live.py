@@ -18,6 +18,12 @@ OAUTH = replace(
     name="Facebook Live",
     scope=facebook_upload.OAUTH.scope + " publish_video",
 )
+PROFILE_OAUTH = replace(
+    OAUTH,
+    key="facebook-profile-live",
+    name="Facebook Profile Live",
+    scope="publish_video",
+)
 INGEST_SERVER = "rtmps://live-api-s.facebook.com:443/rtmp"
 STREAM_PATH = re.compile(r"/rtmp/([A-Za-z0-9_-]{8,256})")
 
@@ -66,11 +72,7 @@ class PageLiveConnection(facebook_upload.PageConnection):
     def public_pages(self, con):
         return {"items": [{"id": key, "name": row["name"]} for key, row in self.pages(con).items()]}
 
-    def create_page_live(self, revision, page, title, opens, before_send, *, live_now=False):
-        with self.tx() as con:
-            access = self.tokens(self.authorize(con, revision))["pages"].get(page)
-        if access is None:
-            abort(403, "The Facebook Page is no longer connected.")
+    def create_live(self, owner, token, title, opens, before_send, *, live_now=False):
         before_send()
         payload = {"title": title, "status": "LIVE_NOW" if live_now else "SCHEDULED_UNPUBLISHED",
                    "stop_on_delete_stream": True}
@@ -78,7 +80,7 @@ class PageLiveConnection(facebook_upload.PageConnection):
             payload["event_params"] = {"start_time": opens}
         try:
             data = self.graph_request(
-                "POST", f"{facebook_upload.GRAPH}/{page}/live_videos", access["token"],
+                "POST", f"{facebook_upload.GRAPH}/{owner}/live_videos", token,
                 json=payload,
             )
             ident = facebook_upload.numeric(data.get("id"))
@@ -88,3 +90,41 @@ class PageLiveConnection(facebook_upload.PageConnection):
                 raise FacebookLiveUnconfirmed from error
             raise
         return {"id": ident, "server": INGEST_SERVER, "key": key}
+
+    def create_page_live(self, revision, page, title, opens, before_send, *, live_now=False):
+        with self.tx() as con:
+            access = self.tokens(self.authorize(con, revision))["pages"].get(page)
+        if access is None:
+            abort(403, "The Facebook Page is no longer connected.")
+        return self.create_live(page, access["token"], title, opens, before_send, live_now=live_now)
+
+
+class ProfileLiveConnection(PageLiveConnection):
+    def __init__(self, tx, operator, sharing_access):
+        Connection.__init__(self, PROFILE_OAUTH, tx, operator)
+        self.sharing_access = sharing_access
+
+    def exchange(self, fields, previous_refresh=None):
+        short = self.exchange_token({key: fields[key] for key in ("code", "redirect_uri")})
+        user = self.exchange_token(dict(grant_type="fb_exchange_token", fb_exchange_token=short))
+        data = self.graph_request("GET", facebook_upload.GRAPH + "/me", user, {"fields": "id,name"})
+        ident = facebook_upload.numeric(data.get("id"))
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            abort(502, "Facebook returned an invalid profile name.")
+        return {"profile": {"id": ident, "name": name, "token": user}}
+
+    def public_profiles(self, con):
+        row = self.connection(con)
+        profile = self.tokens(row).get("profile") if row else None
+        if not isinstance(profile, dict):
+            return {"items": []}
+        return {"items": [{"id": profile.get("id"), "name": profile.get("name")}]}
+
+    def create_profile_live(self, revision, owner, title, opens, before_send, *, live_now=False):
+        with self.tx() as con:
+            profile = self.tokens(self.authorize(con, revision)).get("profile")
+        owner = facebook_upload.numeric(owner)
+        if not isinstance(profile, dict) or profile.get("id") != owner:
+            abort(403, "The Facebook Profile is no longer connected.")
+        return self.create_live(owner, profile["token"], title, opens, before_send, live_now=live_now)

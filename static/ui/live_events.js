@@ -90,6 +90,17 @@ const facebookSeriesControls = element("facebookSeriesControls");
 const facebookSeriesStop = button("facebookSeriesStop");
 const facebookStatus = element("facebookLiveStatus");
 let facebookStatusRevision = 0;
+const facebookTarget = element("facebookLiveTarget");
+const facebookPageLabel = element("facebookLivePageLabel");
+const facebookLoad = button("loadFacebookLivePages");
+function clearFacebookAsyncStatus() {
+    facebookStatusRevision++;
+    facebookStatus.textContent = "";
+    facebookCancel.disabled = true;
+    facebookSeriesStop.disabled = true;
+}
+function facebookProfile() { return facebookTarget.value === "profile"; }
+function facebookBasePath() { return mediaPath(facebookProfile() ? "destinations/facebook-profile" : "destinations/facebook"); }
 const linkedinForm = element("linkedinLiveSchedule");
 const linkedinAccount = element("linkedinAccount");
 let linkedinAccountRevision = 0;
@@ -343,6 +354,9 @@ function choose(event, instance) {
     youtubeCreate.reset();
     youtubeCreateButton.textContent = "Create YouTube broadcast";
     facebookForm.hidden = true;
+    facebookTarget.value = "page";
+    facebookPageLabel.textContent = "Facebook Live Page";
+    facebookLoad.textContent = "Load Facebook Live Pages";
     facebookPage.replaceChildren();
     facebookSubmit.disabled = true;
     facebookAutomatic.checked = true;
@@ -910,8 +924,9 @@ async function refreshDestinations(result) {
         const linkedin = item.provider === "linkedin-live" || item.provider === "linkedin-member-live";
         const scope = item.provider === "youtube-live" ? " · YouTube Live for this date"
             : item.provider === "facebook-live" ? " · Facebook Live for this date"
-                : linkedin ? " · LinkedIn Live for this date"
-                    : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
+                : item.provider === "facebook-profile-live" ? " · Facebook Profile for this date"
+                    : linkedin ? " · LinkedIn Live for this date"
+                        : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
         const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
             ? item.provider_phase : item.state;
         row.textContent = `${item.name}${scope} · ${item.server} · ${labels[state] || state}`;
@@ -1011,42 +1026,73 @@ async function refreshFacebookAutoStatus() {
     if (!active || !facebookPage.value)
         return;
     const revision = ++facebookStatusRevision;
-    const path = mediaPath("destinations/facebook");
+    const path = facebookBasePath();
     const page = facebookPage.value;
     facebookStatus.textContent = "";
     facebookCancel.disabled = true;
     facebookSeriesStop.disabled = true;
-    const result = await request(`${path}/auto?page=${encodeURIComponent(page)}`);
-    if (revision !== facebookStatusRevision)
-        return;
-    const labels = {
-        queued: "Facebook Live will start when this occurrence is ready to stream.",
-        prepared: "Facebook Live delivery is configured for this occurrence.",
-        unconfirmed: "Facebook has not confirmed the broadcast. Check Live Producer.",
-        failed: "CuePorch could not start Facebook Live. Check the Page connection and try again.",
-    };
-    facebookStatus.textContent = labels[result.state] ?? "";
-    facebookCancel.disabled = !["queued", "failed"].includes(result.state);
-    facebookSeriesStop.disabled = !result.series;
+    try {
+        const result = await request(`${path}/auto?page=${encodeURIComponent(page)}`);
+        if (revision !== facebookStatusRevision || path !== facebookBasePath())
+            return;
+        const labels = {
+            queued: "Facebook Live will start when this occurrence is ready to stream.",
+            prepared: "Facebook Live delivery is configured for this occurrence.",
+            unconfirmed: "Facebook has not confirmed the broadcast. Check Live Producer.",
+            failed: "CuePorch could not start Facebook Live. Check the Facebook connection and try again.",
+        };
+        facebookStatus.textContent = labels[result.state] ?? "";
+        facebookCancel.disabled = !["queued", "failed"].includes(result.state);
+        facebookSeriesStop.disabled = !result.series;
+    }
+    catch (error) {
+        if (revision === facebookStatusRevision && path === facebookBasePath())
+            throw error;
+    }
 }
-facebookPage.onchange = () => void action(refreshFacebookAutoStatus);
+facebookTarget.onchange = () => {
+    clearFacebookAsyncStatus();
+    facebookPage.replaceChildren();
+    facebookSubmit.disabled = true;
+    const profile = facebookProfile();
+    facebookPageLabel.textContent = profile ? "Facebook profile" : "Facebook Live Page";
+    facebookLoad.textContent = profile ? "Load Facebook profiles" : "Load Facebook Live Pages";
+};
+facebookPage.onchange = () => void action(async () => {
+    clearFacebookAsyncStatus();
+    if (facebookPage.value)
+        await refreshFacebookAutoStatus();
+});
 facebookAutomatic.onchange = () => { facebookSeries.disabled = !facebookAutomatic.checked; };
-button("loadFacebookLivePages").onclick = () => void action(async () => {
+facebookLoad.onclick = () => void action(async () => {
     if (!active)
         return;
-    const path = mediaPath("destinations/facebook");
-    const result = await request("/api/integrations/facebook-live/pages");
-    if (!active || mediaPath("destinations/facebook") !== path)
-        return;
-    facebookPage.replaceChildren(...result.items.map(page => new Option(page.name, page.id)));
-    facebookSubmit.disabled = !result.items.length;
-    await refreshFacebookAutoStatus();
+    const path = facebookBasePath();
+    const endpoint = facebookProfile()
+        ? "/api/integrations/facebook-profile-live/profiles" : "/api/integrations/facebook-live/pages";
+    const revision = ++facebookStatusRevision;
+    facebookStatus.textContent = "";
+    facebookCancel.disabled = true;
+    facebookSeriesStop.disabled = true;
+    facebookSubmit.disabled = true;
+    try {
+        const result = await request(endpoint);
+        if (!active || revision !== facebookStatusRevision || path !== facebookBasePath())
+            return;
+        facebookPage.replaceChildren(...result.items.map(page => new Option(page.name, page.id)));
+        facebookSubmit.disabled = !result.items.length;
+        await refreshFacebookAutoStatus();
+    }
+    catch (error) {
+        if (revision === facebookStatusRevision && path === facebookBasePath())
+            throw error;
+    }
 });
 facebookForm.onsubmit = event => {
     event.preventDefault();
     if (!active || facebookSubmit.disabled || !facebookPage.value)
         return;
-    const path = mediaPath("destinations/facebook");
+    const path = facebookBasePath();
     const page = facebookPage.value;
     const automatic = facebookAutomatic.checked;
     const series = automatic && !facebookSeriesControls.hidden && facebookSeries.checked;
@@ -1055,7 +1101,7 @@ facebookForm.onsubmit = event => {
         facebookSubmit.disabled = true;
         try {
             const result = await request(automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", { page, series });
-            if (revision !== facebookStatusRevision)
+            if (revision !== facebookStatusRevision || path !== facebookBasePath())
                 return;
             facebookCancel.disabled = result.state !== "queued";
             if (result.state === "queued") {
@@ -1074,7 +1120,7 @@ facebookForm.onsubmit = event => {
             }
         }
         finally {
-            if (active && mediaPath("destinations/facebook") === path) {
+            if (active && revision === facebookStatusRevision && path === facebookBasePath()) {
                 facebookSubmit.disabled = !facebookPage.options.length;
             }
         }
@@ -1083,18 +1129,18 @@ facebookForm.onsubmit = event => {
 facebookCancel.onclick = () => void action(async () => {
     if (!active || !facebookPage.value || facebookCancel.disabled)
         return;
-    const path = mediaPath("destinations/facebook");
+    const path = facebookBasePath();
     const page = facebookPage.value;
     const revision = ++facebookStatusRevision;
     facebookCancel.disabled = true;
     try {
         await request(path + "/auto", "DELETE", { page });
-        if (revision !== facebookStatusRevision)
+        if (revision !== facebookStatusRevision || path !== facebookBasePath())
             return;
         facebookStatus.textContent = "Automatic Facebook Live start canceled.";
     }
     catch (error) {
-        if (revision === facebookStatusRevision)
+        if (revision === facebookStatusRevision && path === facebookBasePath())
             facebookCancel.disabled = false;
         throw error;
     }
@@ -1103,17 +1149,17 @@ facebookSeriesStop.onclick = () => void action(async () => {
     if (!active || !facebookPage.value || facebookSeriesStop.disabled)
         return;
     const revision = ++facebookStatusRevision;
-    const path = mediaPath("destinations/facebook");
+    const path = facebookBasePath();
     const page = facebookPage.value;
     facebookSeriesStop.disabled = true;
     try {
         await request(path + "/auto", "DELETE", { page, series: true });
-        if (revision !== facebookStatusRevision)
+        if (revision !== facebookStatusRevision || path !== facebookBasePath())
             return;
         await refreshFacebookAutoStatus();
     }
     catch (error) {
-        if (revision === facebookStatusRevision)
+        if (revision === facebookStatusRevision && path === facebookBasePath())
             facebookSeriesStop.disabled = false;
         throw error;
     }

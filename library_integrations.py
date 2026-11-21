@@ -291,7 +291,8 @@ def meeting_archive_notifier(tx, origin):
 
 def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *,
              constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection,
-             facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection, marketo=None):
+             facebook_live_connection, facebook_profile_live_connection, linkedin_live_connection,
+             linkedin_member_live_connection, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -320,7 +321,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
     live_connections = {item.config.key: item for item in (
-        youtube_live_connection, facebook_live_connection, linkedin_live_connection, linkedin_member_live_connection,
+        youtube_live_connection, facebook_live_connection, facebook_profile_live_connection, linkedin_live_connection,
+        linkedin_member_live_connection,
     )}
     connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound | live_connections
     watch = Watch(
@@ -465,6 +467,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              if item.config.key == "youtube-live" else
                              "Connect and check Facebook Pages with live streaming permissions."
                              if item.config.key == "facebook-live" else
+                             "Connect and check Facebook profiles with live streaming permissions."
+                             if item.config.key == "facebook-profile-live" else
                              "Connect and check a LinkedIn Live Company Page."
                              if item.config.key == "linkedin-live" else
                              "Connect and check a LinkedIn Live profile."
@@ -514,6 +518,16 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             if not facebook_live_connection.connection(con):
                 abort(409, "Connect Facebook Live to view Pages.")
             return private(facebook_live_connection.public_pages(con))
+
+    @app.get("/api/integrations/facebook-profile-live/profiles")
+    def facebook_profile_live_profiles():
+        read_api()
+        with tx() as con:
+            if not sharing_access(con)["outbound"]:
+                abort(403, "Your workspace sharing policy restricts live profile access.")
+            if not facebook_profile_live_connection.connection(con):
+                abort(409, "Connect Facebook Live to view profiles.")
+            return private(facebook_profile_live_connection.public_profiles(con))
 
     @app.get("/api/integrations/linkedin-live/company")
     def linkedin_live_company():
