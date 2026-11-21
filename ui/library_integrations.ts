@@ -194,6 +194,25 @@ function render() {
           library.href = personal ? "/team" : "/operator/library";
           library.textContent = "Choose a video in Library";
           card.append(library);
+        } else if (item.id === "youtube-live") {
+          const channels = document.createElement("ul");
+          let next: string | null = null;
+          const load = async (more = false) => {
+            const result = await api<{items: {id: string; title: string}[]; next: string | null}>(
+              `/api/integrations/youtube-live/channels${next ? `?cursor=${encodeURIComponent(next)}` : ""}`,
+            );
+            if (!more) channels.replaceChildren();
+            for (const channel of result.items) {
+              const row = document.createElement("li");
+              row.textContent = channel.title;
+              channels.append(row);
+            }
+            next = result.next;
+            moreButton.hidden = !next;
+          };
+          const moreButton = button("More YouTube channels", () => load(true));
+          moreButton.hidden = true;
+          card.append(button("Show YouTube channels", () => { next = null; return load(); }), channels, moreButton);
         } else if (item.category !== "Marketing") card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {
