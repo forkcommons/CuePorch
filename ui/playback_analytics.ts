@@ -139,3 +139,25 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
 
 const standalone = document.querySelector<HTMLVideoElement>("video[data-analytics]");
 if (standalone) playbackObservation(standalone.dataset.analytics!, standalone.hasAttribute("data-team-view"))(standalone, true);
+const withdraw=document.querySelector<HTMLButtonElement>("button[data-salesforce-withdraw]"), status=document.querySelector<HTMLElement>("[data-salesforce-withdraw-status]"), url=withdraw?.dataset.salesforceWithdraw;
+if (withdraw && status && url) {
+  withdraw.addEventListener("click", async () => {
+    withdraw.disabled = true;
+    try {
+      const response = await fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CuePorch-Salesforce-View": "1",
+        },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error("Salesforce video reporting stop failed");
+      withdraw.hidden = true;
+      status.textContent = "Salesforce video reporting stopped.";
+    } catch {
+      withdraw.disabled = false;
+      status.textContent = "Could not stop Salesforce video reporting. Try again.";
+    }
+  });
+}

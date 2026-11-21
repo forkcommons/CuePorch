@@ -13,6 +13,7 @@ import campaign_monitor_crm
 import constant_contact_crm
 import event_contact_delivery
 import keap_crm
+import library_salesforce_video_engagement as video_reports
 import salesforce_crm
 import salesforce_outbound
 
@@ -208,6 +209,10 @@ def save(con, kind, subject, provider_revision, form_revision, destination, prov
 
 
 def stop(con, kind, subject, provider=CONSTANT_CONTACT):
+    if provider is SALESFORCE:
+        plan = get(con, kind, subject, provider=provider)
+        if plan:
+            video_reports.revoke(con, generation=plan["generation"])
     cur = con.cursor()
 
     # 1) Reject matching actions
@@ -421,6 +426,41 @@ class Consent:
         return on_record
 
 
+    def engagement_offer(self, con, work, form, scope):
+        if not (self.provider is SALESFORCE and video_reports.first_report_at(work) is not None):
+            return None
+        plan = self._plan(con, "video", work["id"], form)
+        if not plan or not video_reports.enabled(con, plan["generation"]):
+            return None
+        return self.signer.dumps(
+            [
+                "salesforce-video-engagement",
+                work["id"],
+                video_reports.video_version_key(work),
+                scope,
+                plan["generation"],
+            ]
+        )
+
+    def engagement_capture(self, con, work, form, scope, address, registration_ticket, engagement_ticket):
+        expected = self.engagement_offer(con, work, form, scope)
+        if not engagement_ticket or not isinstance(address, str) or not expected:
+            return None
+        callback = self.capture(con, "video", work["id"], form, scope, registration_ticket)
+        if not callback:
+            return None
+        try:
+            if self.signer.loads(engagement_ticket, max_age=1200) != self.signer.loads(expected):
+                return None
+        except BadSignature:
+            return None
+        plan = self._plan(con, "video", work["id"], form)
+        if not plan:
+            return None
+        email_key = address.strip().casefold()
+        recipient = hmac.digest(self.signing_key, email_key.encode("utf-8"), "sha256").hex()
+        return video_reports.consent(con, self.action, plan, work, recipient, email_key, int(time.time()))
+
 def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTACT):
     revision = connection.revision()
     with tx() as con:
@@ -437,6 +477,9 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
         prior = get(con, kind, uid, provider=provider)
 
     if provider == SALESFORCE:
+        engagement = body.get("engagement")
+        if "engagement" in body and type(engagement) is not bool:
+            abort(422, "Engagement must be a boolean.")
         company = body.get("company", "Individual")
         if not isinstance(company, str):
             abort(422, "Company must be a nonblank printable string of at most 255 characters.")
@@ -445,6 +488,10 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
             abort(422, "Company must be a nonblank printable string of at most 255 characters.")
         campaign = salesforce_crm.campaign(connection, revision, list_id)
         salesforce_outbound.validate_installation(connection, revision)
+        if engagement is True:
+            if form.get("salesforce_first_due") is None:
+                abort(409, "Set a usable duration or timestamp before enabling engagement.")
+            salesforce_outbound.validate_engagement_installation(connection, revision, kind="video")
         destination = {"id": campaign["id"], "name": campaign["name"], "company": company}
     else:
         destination = provider.adapter.contact_list(connection, revision, list_id)
@@ -455,7 +502,17 @@ def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTA
         if (get(con, kind, uid, provider=provider) != prior or not form2 or
                 form2["revision"] != form["revision"]):
             abort(409, "The form was changed concurrently. Please try again.")
+        if provider == SALESFORCE and engagement is True and (
+                form2.get("salesforce_version") != form.get("salesforce_version") or
+                form2.get("salesforce_first_due") != form.get("salesforce_first_due")):
+            abort(409, "The form was changed concurrently. Please try again.")
         save(con, kind, uid, revision, form["revision"], destination, provider=provider)
+        if provider == SALESFORCE and type(engagement) is bool:
+            generation = get(con, kind, uid, provider=provider)["generation"]
+            if engagement is True:
+                video_reports.enable(con, generation)
+            elif engagement is False:
+                video_reports.revoke(con, generation=generation)
 
 
 def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
@@ -470,7 +527,7 @@ def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
         and plan["provider_revision"] == conn_row["revision"]
     )
     if not enabled:
-        return {
+        result = {
             "available": available,
             "enabled": enabled,
             "state": "stale" if plan else "off",
@@ -478,6 +535,11 @@ def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
             "list_name": None,
             "states": {},
         }
+        if provider is SALESFORCE:
+            result["engagement_available"] = bool(form and form.get("salesforce_first_due") is not None)
+            result["engagement"] = False
+            result["engagement_states"] = {}
+        return result
     rows = con.execute(
         "SELECT CASE WHEN d.state='queued' AND a.status='waiting' THEN 'waiting' "
         "ELSE d.state END AS receipt_state, COUNT(*) AS count "
@@ -494,6 +556,13 @@ def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
     }
     if provider == SALESFORCE:
         receipt["company"] = plan["company"]
+        receipt["engagement_available"] = form.get("salesforce_first_due") is not None
+        receipt["engagement"] = video_reports.enabled(con, plan["generation"])
+        receipt["engagement_states"] = (
+            video_reports.status(con, plan["generation"])
+            if receipt["engagement"]
+            else {}
+        )
     return receipt
 
 
@@ -709,13 +778,23 @@ def run_one(tx, connection, validate, stop_event, clock=time.time, provider=CONS
 def start(app, tx, database, connection, validate, provider=CONSTANT_CONTACT):
     if not connection.configured:
         return lambda: None
+
+    def tick(stop_event):
+        registration_ran = run_one(
+            tx, connection, validate, stop_event, provider=provider
+        )
+        video_ran = False
+        if provider == SALESFORCE:
+            video_ran = video_reports.run_one(
+                tx, connection, validate, stop_event
+            )
+        return bool(registration_ran or video_ran)
+
     return event_contact_delivery._start_worker(
         app,
         database,
         provider.key + "-forms",
-        lambda stop_event: run_one(
-            tx, connection, validate, stop_event, provider=provider
-        ),
+        tick,
     )
 
 def _keap_write(tx, job, row, connection, validate, stop_event, clock, provider, stage, contact_id, send):

@@ -60,6 +60,15 @@ function receiptStatus(receipt, ready, provider) {
         status = `${name} delivery is off.`;
     }
     const counts = Object.entries(labels).flatMap(([key, label]) => receipt.states[key] ? [label + ": " + receipt.states[key]] : []);
+    if (receipt.engagement === true) {
+        const engagementStates = Object.entries(receipt.engagement_states ?? {});
+        const engagementStatus = engagementStates.length
+            ? `daily ${engagementStates.map(([state, count]) => `${state} ${count}`).join(" ")}`
+            : "daily";
+        return counts.length
+            ? `${status} ${engagementStatus} ${counts.join(" ")}`
+            : `${status} ${engagementStatus}`;
+    }
     return counts.length ? `${status} ${counts.join(" ")}` : status;
 }
 export function setupLibraryListDelivery(panel, credential, isCurrent, provider) {
@@ -76,6 +85,7 @@ export function setupLibraryListDelivery(panel, credential, isCurrent, provider)
     const client = provider === "campaign-monitor" ? control("Client") : null;
     const picker = control("List");
     const company = provider === "salesforce" ? control("Company") : null;
+    const engagement = provider === "salesforce" ? control("Engagement") : null;
     const save = control("Save");
     const reload = control("Refresh");
     const stop = control("Stop");
@@ -105,6 +115,8 @@ export function setupLibraryListDelivery(panel, credential, isCurrent, provider)
                 client.disabled = disabled;
             if (company)
                 company.disabled = disabled;
+            if (engagement)
+                engagement.disabled = disabled || (!receipt?.engagement_available && !receipt?.engagement);
             picker.disabled = disabled || picker.options.length <= 1;
             save.disabled = disabled || !picker.value || (company !== null && !company.value.trim());
             reload.disabled = busy;
@@ -148,6 +160,9 @@ export function setupLibraryListDelivery(panel, credential, isCurrent, provider)
             receipt = updated;
             if (company)
                 company.value = receipt.company ?? "Individual";
+            if (engagement) {
+                engagement.checked = receipt.engagement === true;
+            }
             savedListVisible = true;
             panel.hidden = !receipt.available && receipt.state === "off";
             drawLists(receipt.list_id ?? "");
@@ -239,7 +254,11 @@ export function setupLibraryListDelivery(panel, credential, isCurrent, provider)
             const listId = picker.value;
             if (!listId)
                 return;
-            const body = company ? { list_id: listId, company: company.value.trim() } : { list_id: listId };
+            const body = company
+                ? { list_id: listId, company: company.value.trim() }
+                : { list_id: listId };
+            if (engagement && !engagement.disabled)
+                body.engagement = engagement.checked;
             void run(() => readReceipt("PUT", body));
         };
         reload.onclick = () => void run(() => readReceipt());

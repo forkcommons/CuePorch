@@ -25,6 +25,7 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import library_salesforce_video_engagement as video_reports
 import library_hubspot_media_events as media_events
 from browser_account_security import json_mutation, secure_site
 import library_video_questions
@@ -527,6 +528,12 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 can_watch and not options["dnt"] and library_analytics.permitted()
             ) else None
             grant = {}
+            salesforce = app.extensions.get("salesforce_form_consent")
+            salesforce_report = None
+            if salesforce and context and admitted and not request.form.get("registration_action"):
+                salesforce_report = salesforce.engagement_capture(con, work, form, enrollment_scope, request.form.get("email"), request.form.get("salesforce_form_consent", ""), request.form.get("salesforce_video_engagement_consent", ""))
+                if salesforce_report:
+                    grant["salesforce_engagement"] = salesforce_report
             if form and can_watch:
                 grant["registration"] = form["revision"]
             if context and settings["download"]:
@@ -572,6 +579,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 start = 0
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
             registration_view = library_registration.presentation(con, form, sign_on, mailchimp_target=("video", uid, enrollment_scope)) if form_token else None
+            if registration_view and salesforce and not options["dnt"] and library_analytics.permitted():
+                registration_view["salesforce_video_engagement_consent"] = salesforce.engagement_offer(con, work, form, enrollment_scope)
         oembed_discovery = (
             library_embed.oembed_url(team_origin, uid)
             if not embed and mode == "public" and settings["embed"] == "anywhere"
@@ -593,6 +602,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
                             presentation=presentation, poster=poster, rating=rating, analytics=analytics, hubspot_origin=hubspot_origin, questions=questions,
                             share=share_paths(uid, row)["watch"], registration=registration_view,
+                            salesforce_report=bool(salesforce_report),
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
         )
@@ -760,6 +770,22 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 media_events.observe(con, nonce, seq, intervals, duration_ms, played, time.time(), action)
             return "", 204
 
+    @app.delete("/viewer-analytics/<session>/salesforce")
+    def viewer_salesforce_withdraw(session):
+        json_mutation(secure_site(team_origin),"X-CuePorch-Salesforce-View")
+        try:
+            token,version,*_ = analytics_serializer.loads(session,max_age=4*3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        with tx() as con:
+            work,_,_,grant = authorized_playback(con,token)
+            report = grant.get("salesforce_engagement")
+            if not report or video_version_key(work) != version:
+                abort(404)
+            video_reports.revoke(con,report=report)
+        return "",204
+
+
     @app.post("/viewer-analytics/<session>")
     def viewer_analytics(session):
         try:
@@ -768,13 +794,17 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             abort(404)
         request.max_content_length = 128 * 1024
         with tx() as con:
-            work, _, _, _ = authorized_playback(con, token)
+            work, _, _, grant = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
             if library_analytics.permitted():
                 library_analytics.record(con, work, nonce, surface, request.get_json(),
                                          context[0] if context else None, viewer_key=viewer_key,
                                          source_language=context[1] if len(context) > 1 else None)
+                if report := grant.get("salesforce_engagement"):
+                    video_reports.link_sample(con, report, work["id"], version, nonce)
+            elif report := grant.get("salesforce_engagement"):
+                video_reports.revoke(con, report=report)
         return "", 204
 
     return watch

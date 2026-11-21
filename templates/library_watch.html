@@ -55,6 +55,7 @@
     </div>
     {% endif %}
     {% if analytics %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}
+    {% if analytics and salesforce_report %}<button type="button" data-salesforce-withdraw="{{ url_for('viewer_salesforce_withdraw', session=analytics) }}">Stop sharing video activity with Salesforce</button> <span role="status" data-salesforce-withdraw-status></span>{% endif %}
     {% if hubspot_origin %}<script type="module" src="/static/ui/hubspot_media_view.js"></script>{% endif %}
     {% if interactive %}
       {% include "playback_interactivity.html" %}

@@ -62,6 +62,7 @@ _OBJECT_SPECS = {
         ("Status__c", False),
         ("Registered_At__c", False),
         ("Watch_Percent__c", False),
+        ("Video_Views__c", False),
     ],
 }
 
@@ -222,6 +223,7 @@ class TestSalesforceWebinarReport(roster.TestSalesforceRoster):
             page.click("form button[type=submit]")
             expect(page.locator("#eventStatus")).to_have_text("Live")
             video = page.locator("#eventPlayer video")
+            page.wait_for_function("() => { const video = document.querySelector('#eventPlayer video'); return !!video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentSrc !== ''; }")
             video.evaluate("video => {video.muted = true; return video.play();}")
             page.wait_for_function(
                 "() => { const v = document.querySelector('#eventPlayer video'); "

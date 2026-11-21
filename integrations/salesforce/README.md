@@ -21,7 +21,7 @@ In the webinar's attendee panel or the video's registration editor, load Salesfo
 
 Delivery runs automatically by default. Operators can require approval under the contact delivery policy. Refresh Salesforce delivery status in the attendee panel to see waiting and sent counts. Stopping delivery or disconnecting Salesforce cancels pending deliveries. Records already sent remain subject to the Salesforce organization's retention settings.
 
-The source tests use simulated Salesforce responses. Verification in a Salesforce organization and on the shipping packages is pending. Engagement reporting remains in development.
+The source tests use simulated Salesforce responses. Verification in a Salesforce organization and on the shipping packages is pending.
 
 ## Engagement reporting
 
@@ -31,4 +31,8 @@ For webinars, turn on attendance analytics in the registration form, then enable
 
 CuePorch schedules the first report one hour after it confirms the webinar has ended. Operators can start reporting sooner from the Salesforce delivery panel once the end is confirmed. Reports run in five-minute cycles for up to 25 minutes. The event engagement policy can require operator approval. It defaults to automatic delivery.
 
-Daily video reporting and related records for Q&A, poll answers, registration answers, and hidden campaign parameters remain in development. [Vimeo Salesforce workflow](https://help.vimeo.com/hc/en-us/articles/32200480938001-About-the-Salesforce-Sales-Cloud-integration-with-Vimeo)
+For registered videos, enable daily reporting in the Salesforce section of the video’s registration editor. The connection needs permission to update the watch and view fields on the Registrant object. A viewer can separately opt in to share their video activity after choosing to share registration details. The player offers a control to stop sharing future video activity with Salesforce. Previously delivered records remain subject to the Salesforce organization’s retention settings.
+
+The first reporting window opens one hour after the original upload timestamp, or after the video was added to CuePorch when the original timestamp is unavailable. The reporting window then recurs every 24 hours. CuePorch sends watch percentage based on the portions viewed and counts playback sessions recorded with consent. The event engagement policy applies to these reports and defaults to automatic delivery.
+
+Related records for Q&A, poll answers, registration answers, and hidden campaign parameters remain in development. [Vimeo Salesforce workflow](https://help.vimeo.com/hc/en-us/articles/32200480938001-About-the-Salesforce-Sales-Cloud-integration-with-Vimeo)

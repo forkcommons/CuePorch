@@ -92,6 +92,7 @@ import keap_crm
 import salesforce_crm
 import library_mailchimp_forms
 import library_list_registration
+import library_salesforce_video_engagement
 import marketo_crm
 import event_hubspot_outbound
 import event_contact_delivery
@@ -219,6 +220,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_registration.SCHEMA
             + library_mailchimp_forms.SCHEMA
             + library_list_registration.SCHEMA
+            + library_salesforce_video_engagement.SCHEMA
             + registration_return.SCHEMA
             + library_events.SCHEMA
             + library_hubspot_bridge.SCHEMA
@@ -858,7 +860,8 @@ def create_app(root, database, operator, institution, simulation=None):
                             SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued'
                             UNION SELECT action FROM library_hubspot_media_event WHERE state='queued'
                             UNION SELECT id FROM live_event_mailchimp_engagement WHERE state='queued' AND write_started=0
-                            UNION SELECT id FROM live_event_salesforce_engagement WHERE state='queued')""", (step,))
+                            UNION SELECT id FROM live_event_salesforce_engagement WHERE state='queued'
+                            UNION SELECT id FROM library_salesforce_video_report WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1427,7 +1430,14 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(404)
         form = library_registration.active(con, kind, uid)
         if kind == "video" and include_title and form:
-            return dict(form, salesforce_title=library_actions.title_for(con, item))
+            from catalog import video_version_key
+            return dict(
+                form,
+                salesforce_title=library_actions.title_for(con,item),
+                salesforce_version=video_version_key(item),
+                salesforce_duration=item.get("duration_seconds"),
+                salesforce_first_due=library_salesforce_video_engagement.first_report_at(item)
+            )
         return form
 
     def active_salesforce_form(con, kind, uid):
