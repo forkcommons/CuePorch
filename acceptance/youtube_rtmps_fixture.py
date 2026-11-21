@@ -133,4 +133,4 @@ def check_destination_rtmps(root, database, destination_id, operator, expected_s
         assert re.search(r"Audio: aac[^\n]*48000 Hz, stereo", decoded.stderr), decoded.stderr
         print("LinkedIn Live preset delivered decodable 720p30 H.264 Baseline and stereo AAC over verified local TLS.")
     else:
-        print("Selected YouTube destination delivered decodable audio and video over verified local TLS.")
+        print("Selected destination delivered decodable audio and video over verified local TLS.")

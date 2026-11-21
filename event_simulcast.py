@@ -96,7 +96,7 @@ def destination_scope(body, server, opens):
         if not server.startswith("rtmps://"):
             abort(422, "LinkedIn Live destinations require an RTMPS server URL.")
         return opens
-    if preset in ("instagram", "tiktok", "x"):
+    if preset in ("instagram", "tiktok", "x", "vimeo-ott"):
         return opens
     abort(422, "Choose a supported destination preset or use the custom option.")
 

@@ -955,6 +955,7 @@ async function refreshDestinations(result?: Destinations) {
   };
   const presetLabels: Record<string, string> = {
     instagram: "Instagram Live", tiktok: "TikTok LIVE", x: "X Live", linkedin: "LinkedIn Live",
+    "vimeo-ott": "Vimeo OTT",
   };
   destinationList.replaceChildren(...result.destinations.map(item => {
     const row = document.createElement("li");
@@ -1213,10 +1214,12 @@ destinationForm.onsubmit = event => {
 const presetSelect = destinationForm.elements.namedItem("preset") as HTMLSelectElement;
 const patreonDestinationHelp = element<HTMLParagraphElement>("patreonDestinationHelp");
 const socialDestinationHelp = element<HTMLParagraphElement>("socialDestinationHelp");
+const ottDestinationHelp = element<HTMLParagraphElement>("ottDestinationHelp");
 function syncPresetHelp() {
   const preset = presetSelect.value;
   patreonDestinationHelp.hidden = preset !== "patreon";
   socialDestinationHelp.hidden = !["instagram", "tiktok", "x", "linkedin"].includes(preset);
+  ottDestinationHelp.hidden = preset !== "vimeo-ott";
 }
 presetSelect.addEventListener("change", syncPresetHelp);
 destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
