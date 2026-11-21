@@ -22,6 +22,7 @@ import event_hubspot_outbound
 import facebook_upload
 import google_meet_recordings
 import hubspot_crm
+import marketo_crm
 import linkedin_upload
 import mail_relay
 import social_publication
@@ -278,7 +279,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, *, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -540,6 +541,23 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             hubspot.authorize(con, revision)
         return private(dict(subscriptions=result))
+
+    @app.get("/api/integrations/marketo/programs")
+    def marketo_programs():
+        read_api()
+        if marketo is None:
+            abort(404)
+        offset = request.args.get("offset", "0")
+        if not re.fullmatch(r"[0-9]{1,9}", offset):
+            abort(400)
+        return private(marketo_crm.programs(marketo, int(offset)))
+
+    @app.get("/api/integrations/marketo/lead-fields")
+    def marketo_lead_fields():
+        read_api()
+        if marketo is None:
+            abort(404)
+        return private(dict(fields=marketo_crm.lead_fields(marketo)))
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():
