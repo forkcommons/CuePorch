@@ -489,6 +489,14 @@
           </label>
           <button type="button" id="loadFacebookLivePages">Load Facebook Live Pages</button>
           <label><span id="facebookLivePageLabel">Facebook Live Page</span> <select id="facebookLivePage" name="page"></select></label>
+          <label id="facebookLivePrivacyLabel" hidden>Facebook audience
+            <select id="facebookLivePrivacy">
+              <option value="" selected>Facebook default</option>
+              <option value="EVERYONE">Public</option>
+              <option value="ALL_FRIENDS">Friends</option>
+              <option value="SELF">Only me</option>
+            </select>
+          </label>
           <label><input type="checkbox" id="facebookAutomatic" checked> Start automatically when CuePorch is live</label>
           <div id="facebookSeriesControls" hidden>
             <label><input type="checkbox" id="facebookSeries"> Also start future dates automatically</label>

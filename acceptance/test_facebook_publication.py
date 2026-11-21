@@ -155,7 +155,7 @@ class FacebookPublication(unittest.TestCase):
                 if page_id == "707":
                     authenticated("fixture-long")
                     profile_writes.append(request.get_json())
-                    return dict(id="1707", secure_stream_url=facebook_live.INGEST_SERVER + "/fixture-facebook-profile-key")
+                    return dict(id=str(1706 + len(profile_writes)), secure_stream_url=facebook_live.INGEST_SERVER + "/fixture-facebook-profile-key")
                 assert page_id in {"101", "202"}
                 authenticated("fixture-station" if page_id == "101" else "fixture-arts")
                 body = request.get_json()
@@ -464,6 +464,7 @@ class FacebookPublication(unittest.TestCase):
                 page.get_by_role("button", name="Load Facebook profiles", exact=True).click()
                 expect(page.get_by_role("combobox", name="Facebook profile", exact=True)).to_have_value("707")
                 expect(page.get_by_role("checkbox", name="Also start future dates automatically", exact=True)).to_be_checked()
+                page.locator("#facebookLivePrivacy").select_option("ALL_FRIENDS")
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
                 for occurrence_path in (next_targets, skipped_path):
@@ -478,7 +479,17 @@ class FacebookPublication(unittest.TestCase):
                                              if item["provider"] == "facebook-profile-live"]
                         if not inherited_profile:
                             sleep(.05)
-                self.assertEqual([{"title": event["title"], "status": "LIVE_NOW", "stop_on_delete_stream": True}], profile_writes)
+                self.assertEqual([{
+                    "title": event["title"],
+                    "status": "LIVE_NOW",
+                    "stop_on_delete_stream": True,
+                    "privacy": {"value": "ALL_FRIENDS"},
+                }], profile_writes)
+                inherited_auto = api.get(inherited_path + "/facebook-profile/auto?page=707", headers=auth)
+                self.assertEqual(200, inherited_auto.status, inherited_auto.text())
+                self.assertEqual("ALL_FRIENDS", inherited_auto.json()["privacy"])
+                self.assertEqual(422, api.put(inherited_path + "/facebook-profile/auto", headers=auth,
+                                               data={"page": "707", "privacy": "INVALID"}).status)
                 self.assertEqual([], api.get(skipped_path, headers=auth).json()["destinations"])
                 self.assertEqual(1, len(inherited_profile))
                 check_destination_rtmps(root, database, inherited_profile[0]["id"], operator, facebook_live.INGEST_SERVER,
@@ -488,6 +499,20 @@ class FacebookPublication(unittest.TestCase):
                 self.assertEqual(200, stop_profile.status, stop_profile.text())
                 self.assertEqual({"state": "idle", "series": False},
                                  api.get(last_path + "/facebook-profile/auto?page=707", headers=auth).json())
+
+                manual_profile = api.post(last_path + "/facebook-profile", headers=auth,
+                                          data={"page": "707", "privacy": "SELF"})
+                self.assertEqual(201, manual_profile.status, manual_profile.text())
+                self.assertEqual("SCHEDULED_UNPUBLISHED", profile_writes[-1]["status"])
+                self.assertEqual(int(last["id"]), profile_writes[-1]["event_params"]["start_time"])
+                self.assertEqual({"value": "SELF"}, profile_writes[-1]["privacy"])
+                profile_write_count = len(profile_writes)
+                repeated_profile = api.post(last_path + "/facebook-profile", headers=auth,
+                                            data={"page": "707", "privacy": "ALL_FRIENDS"})
+                self.assertEqual(200, repeated_profile.status, repeated_profile.text())
+                self.assertEqual(profile_write_count, len(profile_writes))
+                self.assertEqual("SELF", api.get(last_path + "/facebook-profile/auto?page=707",
+                                                  headers=auth).json()["privacy"])
 
                 page.goto(base + "/operator/integrations")
                 page.get_by_role("button", name="Disconnect Facebook Profile Live", exact=True).click()

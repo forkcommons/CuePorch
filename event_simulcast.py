@@ -26,6 +26,7 @@ from event_capture import EncoderProgress
 from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
 from browser_account_security import private
 import event_peer
+import facebook_live
 import facebook_live_job
 import linkedin_live
 import linkedin_live_job
@@ -67,6 +68,7 @@ def migrate(con):
     ):
         if column not in columns:
             con.execute(f"ALTER TABLE live_simulcast_destination ADD COLUMN {column} {definition}")
+    facebook_live_job.migrate(con)
 
 
 MAX_DESTINATIONS = 20
@@ -905,7 +907,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
     def create_facebook_destination(uid, opens, profile=False):
         staff()
         page = facebook_page(profile)
-        result, status = prepare_facebook(uid, opens, page)
+        privacy = request.get_json().get("privacy")
+        if profile:
+            privacy = facebook_live.normalize_profile_privacy(privacy)
+        elif privacy is not None:
+            abort(422, "Privacy is only supported for Facebook profiles.")
+        result, status = prepare_facebook(uid, opens, page, privacy=privacy)
         return private(result, status)
 
     @app.get("/api/live-events/<uid>/<int:opens>/destinations/facebook-profile/auto", defaults={"profile": True})
@@ -919,9 +926,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             key = (uid, opens, page, revision)
             creation = con.execute("""SELECT state FROM facebook_live_creation
                 WHERE event=? AND opens=? AND page=? AND revision=?""", key).fetchone()
-            automatic = con.execute("""SELECT state,revision,event_revision FROM facebook_live_auto
+            automatic = con.execute("""SELECT state,revision,event_revision,privacy FROM facebook_live_auto
                 WHERE event=? AND opens=? AND page=?""", key[:3]).fetchone()
-            series = con.execute("""SELECT after_opens FROM facebook_live_series
+            series = con.execute("""SELECT after_opens,privacy FROM facebook_live_series
                 WHERE event=? AND page=? AND revision=? AND event_revision=?""",
                                  (uid, page, revision, event_revision)).fetchone()
         if creation:
@@ -932,7 +939,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 state = {"queued": "queued", "attempted": "failed"}.get(automatic["state"], "idle")
         else:
             state = "queued" if series and opens > series["after_opens"] else "idle"
-        return private(dict(state=state, series=series is not None))
+        result = dict(state=state, series=series is not None)
+        if profile:
+            if automatic and (automatic["revision"], automatic["event_revision"]) == (revision, event_revision):
+                privacy = automatic["privacy"]
+            elif series and opens > series["after_opens"]:
+                privacy = series["privacy"]
+            else:
+                privacy = None
+            if privacy is not None:
+                result["privacy"] = privacy
+        return private(result)
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook-profile/auto", methods=["PUT", "DELETE"], defaults={"profile": True})
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto", methods=["PUT", "DELETE"])
@@ -942,6 +959,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         series = request.get_json().get("series", False)
         if type(series) is not bool:
             abort(422, "Choose whether to apply automatic starts to future dates.")
+        privacy = None
+        if request.method == "PUT":
+            privacy = request.get_json().get("privacy")
+            if profile:
+                privacy = facebook_live.normalize_profile_privacy(privacy)
+            elif privacy is not None:
+                abort(422, "Privacy is only supported for Facebook profiles.")
         try:
             with facebook_lease(key), tx() as con:
                 enforce_sharing(con, feature="outbound")
@@ -959,16 +983,18 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     settings = con.execute("SELECT settings FROM live_event WHERE id=?", (uid,)).fetchone()["settings"]
                     if json.loads(settings)["schedule"]["repeat"] == "none":
                         abort(409, "Choose a recurring event to set up future broadcasts.")
-                    con.execute("""INSERT INTO facebook_live_series VALUES(?,?,?,?,?)
+                    con.execute("""INSERT INTO facebook_live_series (event,page,revision,event_revision,after_opens,privacy)
+                        VALUES(?,?,?,?,?,?)
                         ON CONFLICT(event,page) DO UPDATE SET revision=excluded.revision,
-                        event_revision=excluded.event_revision,after_opens=excluded.after_opens""",
-                                (uid, key[2], revision, event_revision, opens))
-                facebook_live_job.queue(con, key, revision, event_revision)
+                        event_revision=excluded.event_revision,after_opens=excluded.after_opens,
+                        privacy=excluded.privacy""",
+                                (uid, key[2], revision, event_revision, opens, privacy))
+                facebook_live_job.queue(con, key, revision, event_revision, privacy=privacy)
         except Timeout:
             abort(409, "Another request is preparing this Facebook broadcast.")
         return private(dict(state="queued"), 202)
 
-    def prepare_facebook(uid, opens, page, *, automatic=None):
+    def prepare_facebook(uid, opens, page, *, automatic=None, privacy=None):
         key = (uid, opens, page)
         live_now = automatic is not None
         with tx() as con:
@@ -988,8 +1014,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 WHERE event=? AND opens=? AND delivery='ready'""", key[:2]).fetchone():
                 abort(409, "The occurrence is no longer ready to stream.")
             if live_now and automatic["series"] and not con.execute("""SELECT 1 FROM facebook_live_series
-                WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<?""",
-                (uid, page, revision, event_revision, opens)).fetchone():
+                WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<? AND privacy IS ?""",
+                (uid, page, revision, event_revision, opens, automatic["privacy"])).fetchone():
                 abort(409, "Automatic starts for future dates are no longer enabled.")
 
         def before_send():
@@ -1011,11 +1037,18 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if not live_now:
                     with tx() as con:
                         check(con)
-                        facebook_live_job.queue(con, key, revision, event_revision, state="canceled")
+                        exists = con.execute(
+                            "SELECT 1 FROM facebook_live_creation WHERE event=? AND opens=? AND page=?",
+                            key,
+                        ).fetchone()
+                        if not exists:
+                            facebook_live_job.queue(con, key, revision, event_revision, state="canceled", privacy=privacy)
                 _, provider_page, create_live = facebook_provider(page)
+                options = {"privacy": automatic["privacy"] if live_now else privacy} if page.startswith("profile:") else {}
                 return facebook_live_job.provision(
                     tx, check, lambda: create_live(
-                        revision, provider_page, title, opens, before_send, live_now=live_now),
+                        revision, provider_page, title, opens, before_send, live_now=live_now,
+                        **options),
                     save, *key, revision,
                     claim_auto=(lambda con: facebook_live_job.claim(con, key, automatic)) if live_now else None,
                 )

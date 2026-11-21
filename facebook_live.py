@@ -26,10 +26,19 @@ PROFILE_OAUTH = replace(
 )
 INGEST_SERVER = "rtmps://live-api-s.facebook.com:443/rtmp"
 STREAM_PATH = re.compile(r"/rtmp/([A-Za-z0-9_-]{8,256})")
+PROFILE_PRIVACY = frozenset(("EVERYONE", "ALL_FRIENDS", "SELF"))
 
 
 class FacebookLiveUnconfirmed(Exception):
     """Facebook may have created the broadcast without confirming it."""
+
+
+def normalize_profile_privacy(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in PROFILE_PRIVACY:
+        abort(422, "Unsupported Facebook profile privacy value.")
+    return value
 
 
 def parse_ingest(value):
@@ -72,12 +81,14 @@ class PageLiveConnection(facebook_upload.PageConnection):
     def public_pages(self, con):
         return {"items": [{"id": key, "name": row["name"]} for key, row in self.pages(con).items()]}
 
-    def create_live(self, owner, token, title, opens, before_send, *, live_now=False):
+    def create_live(self, owner, token, title, opens, before_send, *, live_now=False, privacy=None):
         before_send()
         payload = {"title": title, "status": "LIVE_NOW" if live_now else "SCHEDULED_UNPUBLISHED",
                    "stop_on_delete_stream": True}
         if not live_now:
             payload["event_params"] = {"start_time": opens}
+        if privacy is not None:
+            payload["privacy"] = {"value": privacy}
         try:
             data = self.graph_request(
                 "POST", f"{facebook_upload.GRAPH}/{owner}/live_videos", token,
@@ -121,10 +132,11 @@ class ProfileLiveConnection(PageLiveConnection):
             return {"items": []}
         return {"items": [{"id": profile.get("id"), "name": profile.get("name")}]}
 
-    def create_profile_live(self, revision, owner, title, opens, before_send, *, live_now=False):
+    def create_profile_live(self, revision, owner, title, opens, before_send, *, live_now=False, privacy=None):
         with self.tx() as con:
             profile = self.tokens(self.authorize(con, revision)).get("profile")
         owner = facebook_upload.numeric(owner)
         if not isinstance(profile, dict) or profile.get("id") != owner:
             abort(403, "The Facebook Profile is no longer connected.")
-        return self.create_live(owner, profile["token"], title, opens, before_send, live_now=live_now)
+        return self.create_live(owner, profile["token"], title, opens, before_send, live_now=live_now,
+                                privacy=normalize_profile_privacy(privacy))
