@@ -30,6 +30,9 @@
         const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
         return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
     };
+    const createButton = document.getElementById("cueporchCreateProductVideo");
+    let creationRequested = false;
+    let sourceSent = false;
     let popup = null;
     let active = null;
     const setStatus = (m) => {
@@ -56,6 +59,20 @@
         if (!d || typeof d !== "object")
             return;
         const m = d;
+        if (m.type === "cueporch-wordpress-product-request") {
+            if (m.request === active &&
+                creationRequested &&
+                createButton &&
+                !sourceSent) {
+                sourceSent = true;
+                const request = active;
+                void sendProductSource(createButton, popup, trustedOrigin, request).finally(() => {
+                    if (active === request)
+                        sourceSent = false;
+                });
+            }
+            return;
+        }
         if (m.type !== "cueporch-wordpress-selected" || m.request !== active)
             return;
         if (typeof m.embedUrl !== "string")
@@ -77,7 +94,7 @@
         setStatus(ok ? "Video added." : "Video rejected: duplicate or 10-item limit.");
         active = null;
     });
-    btn.addEventListener("click", () => {
+    function openPicker(create) {
         try {
             if (popup && !popup.closed)
                 popup.close();
@@ -86,10 +103,14 @@
             /* ignore */
         }
         active = uuid();
+        creationRequested = create;
+        sourceSent = false;
         const qs = new URLSearchParams({
             destination: location.origin,
             request: active,
         });
+        if (create)
+            qs.set("mode", "create");
         const target = `${trustedOrigin}/operator/wordpress-media-picker?${qs.toString()}`;
         let w = null;
         try {
@@ -106,5 +127,90 @@
         }
         popup = w;
         setStatus("Picker opened. Select a video to continue.");
-    });
+    }
+    btn.addEventListener("click", () => openPicker(false));
+    if (createButton)
+        createButton.addEventListener("click", () => openPicker(true));
 })();
+async function readProductPhoto(source) {
+    const u = new URL(source.url);
+    if (u.origin !== location.origin || u.username || u.password || u.hash)
+        throw new Error("Invalid photo URL");
+    const res = await fetch(source.url, {
+        credentials: "same-origin",
+        redirect: "error",
+        signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok)
+        throw new Error("Photo request failed");
+    const ct = res.headers
+        .get("content-type")
+        ?.split(";")[0]
+        .trim()
+        .toLowerCase();
+    if (ct !== source.mime)
+        throw new Error("Invalid photo type");
+    const MAX = 8 * 1024 * 1024;
+    const cl = res.headers.get("content-length");
+    if (cl !== null && /^\d+$/.test(cl) && Number(cl) > MAX)
+        throw new Error("Photo too large");
+    if (!res.body)
+        throw new Error("Empty photo");
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        total += value.byteLength;
+        if (total > MAX) {
+            await reader.cancel();
+            throw new Error("Photo too large");
+        }
+        chunks.push(value);
+    }
+    if (total === 0)
+        throw new Error("Empty photo");
+    const buf = new ArrayBuffer(total);
+    const bytes = new Uint8Array(buf);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return { name: source.name, mediaType: source.mime, bytes: buf };
+}
+async function sendProductSource(button, target, origin, request) {
+    try {
+        const title = (button.dataset.title ?? "").trim();
+        const candidates = JSON.parse(button.dataset.photos ?? "");
+        if (!title ||
+            !Array.isArray(candidates) ||
+            candidates.length < 1 ||
+            candidates.length > 8)
+            throw new Error();
+        const photos = [];
+        for (const candidate of candidates) {
+            const photo = candidate;
+            if (typeof photo.name !== "string" ||
+                typeof photo.url !== "string" ||
+                (photo.mime !== "image/jpeg" &&
+                    photo.mime !== "image/png" &&
+                    photo.mime !== "image/webp"))
+                throw new Error();
+            photos.push(await readProductPhoto({
+                name: photo.name,
+                url: photo.url,
+                mime: photo.mime,
+            }));
+        }
+        target.postMessage({ type: "cueporch-wordpress-product-source", request, title, photos }, origin, photos.map((photo) => photo.bytes));
+    }
+    catch {
+        try {
+            target.postMessage({ type: "cueporch-wordpress-product-error", request }, origin);
+        }
+        catch { }
+    }
+}
