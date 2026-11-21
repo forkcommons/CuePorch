@@ -378,7 +378,7 @@ function choose(event, instance) {
     facebookAutomatic.checked = true;
     facebookCancel.disabled = true;
     facebookSeriesControls.hidden = event.event.schedule.repeat === "none";
-    facebookSeries.checked = false;
+    facebookSeries.checked = !facebookSeriesControls.hidden;
     facebookSeries.disabled = false;
     facebookSeriesStop.disabled = true;
     facebookStatusRevision++;
@@ -1208,7 +1208,6 @@ facebookForm.onsubmit = event => {
             if (result.state === "queued") {
                 facebookStatus.textContent = "Facebook Live will start when this occurrence is ready to stream.";
                 if (series) {
-                    facebookSeries.checked = false;
                     facebookSeriesStop.disabled = false;
                 }
             }
