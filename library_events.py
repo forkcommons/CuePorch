@@ -1926,10 +1926,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 connection = provision_event(uid, opens, browser=True, preview=False)
                 end_at = datetime.fromisoformat(shift["end"]).timestamp()
                 recording = None
-                if height is None and event["save_replay"]:
+                if event["save_replay"]:
                     with tx() as con:
                         target = occurrence(con, uid, opens)
-                    recording = event_replay_spool.reserve(recordings.replay_root, uid, opens, target["remote"])
+                    recording = event_replay_spool.reserve(
+                        recordings.replay_root, uid, opens, target["remote"], allow_discontinuity=height is not None,
+                    )
                 try:
                     return private(studio.rtmp(uid, opens, connection, rtmp_config, window, height, end_at, recording))
                 except (OSError, ValueError):

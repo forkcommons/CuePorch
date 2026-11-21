@@ -18,7 +18,7 @@ from filelock import FileLock, Timeout
 
 from event_audio import Fragment
 from event_interpreter_timing import (
-    aligned_pcm, audio_master, decode_pcm, encode_audio_segment, first_video_pts, number, read_timeline,
+    aligned_pcm, audio_master, decode_pcm, discontinuities, encode_audio_segment, first_video_pts, number, read_timeline,
 )
 
 
@@ -67,7 +67,7 @@ def available(root, uid, opens, remote):
 
 
 class ProgramSpool:
-    def __init__(self, directory, byte_limit, scope, lease):
+    def __init__(self, directory, byte_limit, scope, lease, *, allow_discontinuity=False):
         self.directory = directory
         self.byte_limit = byte_limit
         self.scope = scope
@@ -75,6 +75,8 @@ class ProgramSpool:
         self.lock = Lock()
         self.identity = uuid4().hex
         self.fragments = []
+        self.epochs = []
+        self.allow_discontinuity = allow_discontinuity
         self.latest = -1
         self.size = 0
         self.failed = self.sealed = False
@@ -99,15 +101,23 @@ class ProgramSpool:
             if self.failed or self.sealed:
                 return
             try:
-                _, fragments = read_timeline(primary, 0)
-                for fragment in fragments:
+                text, fragments = read_timeline(primary, 0, self.allow_discontinuity)
+                base, markers = discontinuities(text.splitlines())
+                epoch = base or 0
+                for fragment, changed in zip(fragments, markers, strict=True):
+                    epoch += changed
                     index = number(fragment)
                     if index <= self.latest:
+                        if self.epochs[index] != epoch:
+                            raise ValueError("The rolling program changed an archive segment.")
                         continue
                     if index != self.latest + 1:
                         raise ValueError("The rolling program lost an archive segment.")
+                    if self.epochs and epoch - self.epochs[self.latest] not in (0, 1):
+                        raise ValueError("The rolling program lost an archive epoch.")
                     self.keep(primary / fragment.name)
                     self.fragments.append(fragment)
+                    self.epochs.append(epoch)
                     self.latest = index
             except FileNotFoundError:
                 if (primary / "0.m3u8").is_file():
@@ -142,6 +152,7 @@ class ProgramSpool:
                     capture = {
                         "scope": self.scope, "identity": self.identity,
                         "programme": [asdict(fragment) for fragment in self.fragments],
+                        "epochs": self.epochs,
                         "name": self.name, "language": self.language, "limit": self.byte_limit,
                     }
                     atomic_text(self.directory / "capture.json", json.dumps(capture))
@@ -149,7 +160,7 @@ class ProgramSpool:
                 self.lease.release()
 
 
-def reserve(root, uid, opens, remote):
+def reserve(root, uid, opens, remote, *, allow_discontinuity=False):
     scope = uid, opens, remote
     directory = root / key(*scope)
     lease = FileLock(str(directory.with_suffix(".lock")), timeout=0, thread_local=False)
@@ -163,24 +174,32 @@ def reserve(root, uid, opens, remote):
             raise
     except (OSError, Timeout):
         return None
-    return ProgramSpool(directory, CAPTURE_LIMIT, scope, lease)
+    return ProgramSpool(directory, CAPTURE_LIMIT, scope, lease, allow_discontinuity=allow_discontinuity)
 
 
-def replay_manifests(programme, name, language):
+def replay_manifests(programme, name, language, epochs=None):
     if (not programme
             or any(number(fragment) != index or fragment.initialization
                    or not SEGMENT.fullmatch(fragment.name) or not fragment.name.startswith("0-")
                    or not 0 < fragment.duration <= 30
                    for index, fragment in enumerate(programme))):
         raise ValueError("Invalid replay timeline.")
+    if epochs is None:
+        epochs = [0] * len(programme)
+    if (not isinstance(epochs, list) or len(epochs) != len(programme)
+            or any(not isinstance(epoch, int) for epoch in epochs)
+            or epochs[0] != 0
+            or any(not 0 <= epochs[i] - epochs[i - 1] <= 1 for i in range(1, len(epochs)))):
+        raise ValueError("Invalid replay epochs.")
     target = math.ceil(max(fragment.duration for fragment in programme))
     headers = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{target}",
                "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
     video, audio = headers.copy(), headers.copy()
-    for fragment in programme:
+    for index, (fragment, epoch) in enumerate(zip(programme, epochs)):
         duration = f"#EXTINF:{fragment.duration:.6f},"
-        video.extend((duration, fragment.name))
-        audio.extend((duration, "1-" + fragment.name[2:]))
+        marker = ["#EXT-X-DISCONTINUITY"] if index and epoch > epochs[index - 1] else []
+        video.extend(marker + [duration, fragment.name])
+        audio.extend(marker + [duration, "1-" + fragment.name[2:]])
     video.append("#EXT-X-ENDLIST")
     audio.append("#EXT-X-ENDLIST")
     return {"2.m3u8": "\n".join(video) + "\n", "1.m3u8": "\n".join(audio) + "\n",
@@ -189,7 +208,7 @@ def replay_manifests(programme, name, language):
 
 def finish_archive(directory, payload, stopping):
     programme = [Fragment(**item) for item in payload["programme"]]
-    manifests = replay_manifests(programme, payload["name"], payload["language"])
+    manifests = replay_manifests(programme, payload["name"], payload["language"], payload.get("epochs"))
     size = sum(path.stat().st_size for path in directory.iterdir() if SEGMENT.fullmatch(path.name))
     for fragment in programme:
         if stopping.is_set():
