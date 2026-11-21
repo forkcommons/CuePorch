@@ -26,6 +26,7 @@ FREE_RESERVE = 512 * 1024**2
 CAPTURE_LIMIT = 8 * 1024**3
 ARCHIVE_MANIFESTS = ("master.m3u8", "1.m3u8", "2.m3u8")
 SEGMENT = re.compile(r"[01]-\d{9}\.ts")
+HLS_INPUT = ("-protocol_whitelist", "file,pipe", "-allowed_extensions", "ts,m3u8", "-f", "hls", "-i")
 
 
 def key(uid, opens, remote):

@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from urllib.parse import urljoin
 
 import requests
@@ -23,7 +23,6 @@ import event_replay_spool
 from installed_events import play_event
 from installed_rtmp_relay import free_port, marked_feed, relay_fixture
 from institution import create_app
-import library_events
 from test_private_live_event import TEAM, hear_frequency
 from test_drive_import import QuietHandler, service_worker
 
@@ -41,15 +40,14 @@ def interpreter_fixture(binary):
         cleanup.enter_context(patch.dict("os.environ", relay_env | {"CUEPORCH_PUBLIC_URL": ""}))
         operator = secrets.token_urlsafe(32)
         db = root / "workspace.sqlite"
-        with patch("institution.library_worker.start", return_value=lambda: None) as worker:
+        with patch("institution.library_worker.start", return_value=lambda: None):
             app = create_app(root, db, operator, "station")
-        tx, action = worker.call_args.args[3:5]
         for name, stop in app.extensions.items():
             if name.startswith("stop_") and callable(stop):
                 cleanup.callback(stop)
         server = make_server("127.0.0.1", port, app, threaded=True, request_handler=QuietHandler)
         cleanup.enter_context(service_worker(server))
-        yield app, f"http://127.0.0.1:{port}", {"Authorization": "Bearer " + operator}, certificate, db, tx, action
+        yield app, f"http://127.0.0.1:{port}", {"Authorization": "Bearer " + operator}, certificate, db
 
 
 @contextmanager
@@ -122,7 +120,13 @@ def prepare_with_browser(base, auth, route):
 @unittest.skipUnless(os.environ.get("CUEPORCH_TEST_MEDIAMTX"), "Local MediaMTX fixture binary required")
 class LiveInterpreterInputTest(unittest.TestCase):
     def test_rtmps_interpreter_reconnect_and_revoke(self):
-        with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db, tx, action):
+        self.exercise_interpreter(manual=True)
+
+    def test_interpreter_replay_releases_automatically_while_host_is_offline(self):
+        self.exercise_interpreter(manual=False)
+
+    def exercise_interpreter(self, manual):
+        with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db):
             now = datetime.now(timezone.utc)
             event_response = requests.post(base + "/api/live-events", headers=auth, timeout=8, json={
                 "title": "Interpreter rehearsal", "slug": "interpretation", "visibility": "private",
@@ -222,13 +226,19 @@ class LiveInterpreterInputTest(unittest.TestCase):
                 self.assertEqual(team.request.get(alternate).status, 404)
                 expect(track).to_be_hidden(timeout=12000)
                 hear_frequency(page, 440)
-                self.assertEqual(requests.delete(path + "/rtmp", headers=auth, timeout=8).status_code, 204)
-                self.assert_replay(db, tx, action, base, auth, stable, path, uid, opens, team, page)
+                self.assertFalse(requests.get(base + "/api/policy", headers=auth, timeout=8).json()["replay"])
+                if manual:
+                    requests.put(base + "/api/policy/replay", headers=auth,
+                                 json={"required": True}, timeout=8).raise_for_status()
+                offline = requests.ConnectionError("The fixture's connected host is offline.")
+                with patch("event_media.Gateway.metadata", side_effect=offline):
+                    self.assertEqual(requests.delete(path + "/rtmp", headers=auth, timeout=8).status_code, 204)
+                    self.assert_replay(db, base, auth, stable, path, uid, opens, team, page, manual)
             self.assertEqual(requests.get(route, headers=auth, timeout=8).json(), {"inputs": []})
             with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
                 self.assertNotEqual(revoked.wait(timeout=8), 0)
 
-    def assert_replay(self, db, tx, action, base, auth, stable, path, uid, opens, team, page):
+    def assert_replay(self, db, base, auth, stable, path, uid, opens, team, page, manual):
         archive = None
         deadline = monotonic() + 25
         while archive is None and monotonic() < deadline:
@@ -242,18 +252,33 @@ class LiveInterpreterInputTest(unittest.TestCase):
         interpretation = next(index for index, segment in enumerate(segments)
                               if abs(decoded_tone(segment) - 880) < 28)
         gate = f"{base}/api/actions/live-replay-{uid}-{opens}"
-        self.assertFalse(requests.get(base + "/api/policy", headers=auth, timeout=8).json()["replay"])
-        requests.put(base + "/api/policy/replay", headers=auth, json={"required": True}, timeout=8).raise_for_status()
-        host = Mock()
-        with patch("event_peer.observe", return_value={"state": "replay"}):
-            library_events.publish_replays(tx, db, "https://peer.example", lambda _: host, action)
-            self.assertEqual(requests.get(gate, headers=auth, timeout=8).json()["status"], "waiting")
-            page.goto(stable)
+        deadline = monotonic() + 12
+        while monotonic() < deadline:
+            response = requests.get(gate, headers=auth, timeout=8)
+            if response.status_code == 200:
+                approval = response.json()
+                self.assertEqual(approval["status"], "waiting" if manual else "eligible")
+                self.assertEqual(approval["decision"], None if manual else "automatic")
+                break
+            self.assertEqual(response.status_code, 404)
+            sleep(.25)
+        else:
+            self.fail("The local replay did not reach the operator approval queue while the host was offline.")
+        captions = f"{stable}/{opens}/replay-captions"
+        page.goto(stable)
+        if manual:
+            expect(page.locator("#eventStatus")).to_have_text("The replay is awaiting release")
             expect(page.locator("#eventPlayer video")).to_have_count(0)
+            self.assertEqual(requests.get(path + "/health", headers=auth, timeout=8).json()["state"], "preparing_replay")
             self.assert_retained_copy(db, base, auth, path, interpretation + .15)
+            self.assertEqual(team.request.get(captions).status, 404)
+            self.assert_caption_input(auth, path, interpretation + .15)
             requests.post(gate + "/decision", headers=auth, json={"decision": "approve"}, timeout=8).raise_for_status()
-            library_events.publish_replays(tx, db, "https://peer.example", lambda _: host, action)
-        replay, width, duration = play_event(page, stable, "Replay")
+        expect(page.locator("#eventStatus")).to_have_text("Replay", timeout=12000)
+        replay, width, duration = play_event(page, stable, "Replay", navigate=False)
+        self.assertEqual(requests.get(path + "/health", headers=auth, timeout=8).json()["state"], "replay")
+        if manual:
+            self.assertEqual(team.request.get(captions).json()["cues"][0]["text"], "Original program caption")
         self.assertEqual(width, 320)
         self.assertAlmostEqual(duration, archive.duration, delta=.5)
         hear_frequency(page, 440)
@@ -263,11 +288,29 @@ class LiveInterpreterInputTest(unittest.TestCase):
         hear_frequency(page, 880)
         alternate = urljoin(replay, "1.m3u8")
         self.assertEqual(requests.get(alternate, timeout=8).status_code, 404)
-        host.call.return_value.json.return_value = {"privacy": {"id": 3}}
-        with patch("event_peer.connected_host", side_effect=lambda *_: nullcontext(host)):
-            self.assertEqual(requests.delete(path + "/delivery", headers=auth, timeout=8).status_code, 204)
+        with patch("event_peer.connected_host", side_effect=requests.ConnectionError("The host remains offline.")):
+            self.assertEqual(requests.delete(path + "/delivery", headers=auth, timeout=8).status_code, 502)
         self.assertEqual(team.request.get(alternate).status, 404)
-        host.set_public.assert_not_called()
+
+    def assert_caption_input(self, auth, path, at):
+        def transcribe(source, output, language, stopping):
+            self.assertEqual(language, "en")
+            self.assertAlmostEqual(decoded_tone(source, 0, at), 440, delta=28)
+            return b"WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nOriginal program caption\n", b"{}"
+
+        with patch("caption_adapter.transcribe_path", side_effect=transcribe) as adapter:
+            requests.put(path + "/captions", headers=auth, json={"enabled": True, "language": "en"},
+                         timeout=8).raise_for_status()
+            deadline = monotonic() + 12
+            while monotonic() < deadline:
+                state = requests.get(path + "/replay-captions", headers=auth, timeout=8).json()
+                self.assertNotEqual(state["state"], "failed", state)
+                if state["has_track"]:
+                    break
+                sleep(.25)
+            else:
+                self.fail("The archive did not supply local program audio for replay captions.")
+            adapter.assert_called_once()
 
     def assert_retained_copy(self, db, base, auth, path, at):
         endpoint = path + "/library-recording"

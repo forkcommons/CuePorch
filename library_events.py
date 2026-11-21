@@ -280,10 +280,14 @@ def lock_event(database, uid, timeout=1):
 
 
 def publish_replays(tx, database, origin, connect, action):
+    local_only = origin is None
+    replay_root = database.parent / "interpreted-replays"
+    if local_only and not replay_root.is_dir():
+        return
     with tx() as con:
         candidates = con.execute(
             """SELECT o.event,o.opens,o.remote FROM live_occurrence o JOIN live_event e ON e.id=o.event
-               LEFT JOIN action a ON a.id=e.publication WHERE o.origin=?
+               LEFT JOIN action a ON a.id=e.publication WHERE (? OR o.origin=?)
                AND (a.status='eligible' OR (a.id IS NULL AND json_extract(e.settings,'$.visibility')='private'))
                AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=? AND
                (o.delivery='ready' OR (o.delivery='replay' AND COALESCE((
@@ -291,7 +295,7 @@ def publish_replays(tx, database, origin, connect, action):
                ),json_extract(e.settings,'$.setup.captions.enabled'),0)=1 AND NOT EXISTS (
                    SELECT 1 FROM live_replay_captions c WHERE c.event=o.event AND c.opens=o.opens
                )))""",
-            (origin, datetime.now(timezone.utc).timestamp()),
+            (local_only, origin, datetime.now(timezone.utc).timestamp()),
         ).fetchall()
     for item in candidates:
         uid, opens, remote = item
@@ -299,27 +303,39 @@ def publish_replays(tx, database, origin, connect, action):
             with lock_event(database, uid, timeout=0):
                 with tx() as con:
                     saved = occurrence(con, uid, opens)
+                    if (saved is None or saved["remote"] != remote or saved["delivery"] not in DELIVERED
+                            or (not local_only and saved["origin"] != origin)):
+                        continue
+                    row, event = read(con, uid)
+                    if not event["save_replay"] or (event["visibility"] != "private" and
+                                                    publication(con, row, event) != "eligible"):
+                        continue
+                    managed = private_delivery(con, event, uid, opens)
+                    local = managed and event_replay_spool.available(replay_root, uid, opens, remote)
+                    if local_only and not local:
+                        continue
                     if saved["delivery"] == "replay":
                         event_replay_captions.queue(con, action, uid, opens)
                         continue
-                    if saved["delivery"] != "ready":
-                        continue
-                    _, event = read(con, uid)
                     registered = library_registration.active(con, "event", uid) is not None
-                    managed = private_delivery(con, event, uid, opens)
-                host = connect(origin)
-                if event_peer.observe(host, remote)["state"] != "replay":
-                    continue
+                host = None
+                if not local:
+                    host = connect(origin)
+                    if event_peer.observe(host, remote)["state"] != "replay":
+                        continue
                 with tx() as con:
                     decision = action(con, f"live-replay-{uid}-{opens}", "replay",
                                       dict(title=event["title"], event=uid, occurrence=opens))
                     if decision in ("eligible", "waiting"):
                         event_replay_captions.queue(con, action, uid, opens)
                 if decision == "eligible":
-                    if not registered and not managed:
+                    if host is not None and not registered and not managed:
                         host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
+                        if local and con.execute("""SELECT 1 FROM live_webhook_feed
+                            WHERE event=? AND occurrence=? AND state='live'""", (uid, opens)).fetchone():
+                            event_webhooks.observe(con, uid, opens, "ended")
                         event_webhooks.enqueue(con, "live-event-archive-available", uid, opens, data=dict(clip=remote))
         except (Timeout, ValueError, requests.RequestException, KeyError):
             continue
@@ -533,7 +549,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     app.extensions["event_interpreter_inputs"] = interpreters
     event_rtmp.register(app, rtmp_config, studio, interpreters)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
-    recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
+    recordings = event_library_recordings.Recordings(
+        app, tx, media, database, root, institution, remember_work,
+        lambda: publish_replays(tx, database, None, None, action),
+    )
     stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
 
     def stop():
@@ -2038,6 +2057,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             return dict(encoder=local)
         if target is None or target["delivery"] not in DELIVERED:
             return dict(state=target["delivery"] if target else "scheduled", encoder=local)
+        archive = (event_replay_spool.available(recordings.replay_root, uid, opens, target["remote"])
+                   if managed and event["save_replay"] else None)
+        if archive is not None:
+            released = target["delivery"] == "replay"
+            with tx() as con:
+                viewers = event_analytics.current(con, uid, opens, "replay") if released else 0
+            return dict(state="replay" if released else "preparing_replay", public=False,
+                        viewers=viewers, duration=archive.duration, encoder=local)
         try:
             with event_peer.connected_host(target["origin"]) as host:
                 result = event_peer.observe(host, target["remote"])
@@ -2187,7 +2214,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                   [*context, duration_ms], joined, sharing])
 
     def interpreted_archive(event, delivery, scope):
-        if delivery and event["save_replay"] and delivery["delivery"] == "replay":
+        if delivery and event["save_replay"] and delivery["delivery"] in DELIVERED:
             return event_replay_spool.available(recordings.replay_root, scope[0], scope[2], delivery["remote"])
         return None
 
@@ -2197,6 +2224,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         status = "Scheduled"
         attendance = [joined] if joined else []
         if archive is not None:
+            if delivery["delivery"] != "replay":
+                return None, None, "The replay is awaiting release"
             session = files.dumps(scope + [delivery["remote"], f"interpreted:{archive.identity}", True] + attendance)
             address = url_for("event_media_file", token=session, filename="master.m3u8")
             if analytics_scope is not None:
