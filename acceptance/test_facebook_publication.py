@@ -364,7 +364,7 @@ class FacebookPublication(unittest.TestCase):
                 facebook_pages = page.get_by_role("combobox", name="Facebook Live Page", exact=True)
                 facebook_pages.select_option("101")
                 expect(page.get_by_role("checkbox", name="Start automatically when CuePorch is live")).to_be_checked()
-                page.get_by_role("checkbox", name="Also start future dates automatically", exact=True).check()
+                expect(page.get_by_role("checkbox", name="Also start future dates automatically", exact=True)).to_be_checked()
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
                 page.reload()
@@ -463,7 +463,7 @@ class FacebookPublication(unittest.TestCase):
                 page.locator("#facebookLiveTarget").select_option("profile")
                 page.get_by_role("button", name="Load Facebook profiles", exact=True).click()
                 expect(page.get_by_role("combobox", name="Facebook profile", exact=True)).to_have_value("707")
-                page.get_by_role("checkbox", name="Also start future dates automatically", exact=True).check()
+                expect(page.get_by_role("checkbox", name="Also start future dates automatically", exact=True)).to_be_checked()
                 page.get_by_role("button", name="Prepare Facebook Live", exact=True).click()
                 expect(page.locator("#facebookLiveStatus")).to_contain_text("will start when this occurrence is ready")
                 for occurrence_path in (next_targets, skipped_path):
