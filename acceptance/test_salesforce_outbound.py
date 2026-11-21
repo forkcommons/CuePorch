@@ -100,7 +100,15 @@ class Provider:
                 if name == delivery.REGISTRANT:
                     record.setdefault("Lead__c", None)
                     record.setdefault("Contact__c", None)
-                new_id = MEDIA_KEY if name == delivery.MEDIA else REGISTRANT_KEY
+                prefixes = {
+                    delivery.MEDIA: "a01",
+                    delivery.REGISTRANT: "a02",
+                    delivery.REGISTRATION_FIELD: "a03",
+                    delivery.WEBINAR_POLL: "a04",
+                    delivery.WEBINAR_QA: "a05",
+                }
+                serial = 1 + sum(1 for (object_name, _key) in self.objects if object_name == name)
+                new_id = f"{prefixes[name]}{serial:012d}"
                 record["Id"] = new_id
                 self.objects[(name, key)] = record
 
@@ -316,3 +324,60 @@ class TestSalesforceOutbound(unittest.TestCase):
             self.publish(provider, before_write=canceled)
 
         self.assertEqual(provider.writes, [])
+
+    def test_campaign_catalog_relationships(self):
+        provider = Provider()
+        cases = (
+            (CAMPAIGN, "video"),
+            (CAMPAIGN, "webinar"),
+            ("701000000000002", "video"),
+        )
+        for campaign, kind in cases:
+            provider.campaign = campaign
+            result = delivery.publish_registration(
+                provider,
+                REVISION,
+                campaign=campaign,
+                kind=kind,
+                title="Shared title",
+                source_ref="source-1",
+                registrant="viewer-1",
+                registered_at="2026-11-21T14:00:00Z",
+                address=EMAIL,
+                answers={"last_name": "Viewer"},
+                company="Individual",
+                before_write=lambda: None,
+                related_fields=(("field_industry", "Industry", "Registration Field", "Arts"),),
+            )
+            self.assertEqual(result, "sent")
+        media = [
+            obj
+            for (name, _), obj in provider.objects.items()
+            if name == delivery.MEDIA
+        ]
+        registrants = [
+            obj
+            for (name, _), obj in provider.objects.items()
+            if name == delivery.REGISTRANT
+        ]
+        registration_fields = [
+            obj
+            for (name, _), obj in provider.objects.items()
+            if name == delivery.REGISTRATION_FIELD
+        ]
+
+        self.assertCountEqual(
+            cases,
+            [(obj["Campaign__c"], obj["Kind__c"]) for obj in media],
+        )
+        self.assertCountEqual(
+            [obj["Media__c"] for obj in registrants],
+            [obj["Id"] for obj in media],
+        )
+        self.assertCountEqual(
+            [obj["Registrant__c"] for obj in registration_fields],
+            [obj["Id"] for obj in registrants],
+        )
+        self.assertTrue(
+            all(obj["Value__c"] == "Arts" for obj in registration_fields)
+        )

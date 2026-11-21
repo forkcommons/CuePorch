@@ -12,5 +12,14 @@
         <members>Lead.CuePorch_Email_Key__c</members>
         <name>CustomField</name>
     </types>
+    <types>
+        <members>CuePorch_Media__c-CuePorch Media Reporting</members>
+        <members>CuePorch_Registrant__c-CuePorch Registrant Reporting</members>
+        <name>Layout</name>
+    </types>
+    <types>
+        <members>CuePorch_Reporting_Reader</members>
+        <name>PermissionSet</name>
+    </types>
     <version>64.0</version>
 </Package>

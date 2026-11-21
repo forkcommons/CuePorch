@@ -11,7 +11,14 @@ sf project deploy start --metadata-dir metadata --single-package --target-org cu
 sf project deploy start --metadata-dir metadata --single-package --target-org cueporch-sandbox
 ```
 
-The Salesforce account used by CuePorch needs API access and permission to read Campaigns, Contacts, and Leads, including their email and email opt-out fields. Outbound registration also needs permission to create Leads, read and write the CuePorch custom fields on Lead, and read and create the two CuePorch custom objects and their fields. Add the **CuePorch Media** and **Registrants** related lists to the relevant Salesforce record pages if your team needs to browse them there.
+The Salesforce account used by CuePorch needs API access and permission to read Campaigns, Contacts, and Leads, including their email and email opt-out fields. Outbound registration also needs permission to create Leads, read and write the CuePorch custom fields on Lead, and read and create CuePorch Media and Registrant records. Enable the additional object permissions described under engagement reporting for the features you use.
+
+## Browse a campaign in Salesforce
+
+1. In Salesforce Setup, open **Object Manager**, select **Campaign**, and open **Page Layouts**. Edit the layout assigned to your campaign team. Add the **CuePorch Media** related list and show **Title** and **Kind**. In Lightning Experience, the Campaign record page needs a **Related Lists** or **Related List–Single** component that shows the list. [Salesforce related list configuration](https://help.salesforce.com/s/articleView?id=platform.customizing_related_lists.htm&language=en_US&type=5)
+2. Assign **CuePorch Media Reporting** and **CuePorch Registrant Reporting** to the appropriate profiles on their respective custom objects. The Media layout shows **Registrants**. The Registrant layout shows the registration date, status, watch percentage, and views, plus **Registration and Hidden Fields**, **Poll Answers**, and **Questions and Answers**.
+3. Assign the **CuePorch Reporting Reader** permission set to the people who need report access. It grants read access to the CuePorch custom objects. Use your organization's sharing settings to give those people access to the specific media, registrants, and related records for each campaign. Grant access to the Campaign and to any Leads or Contacts they need to open through your existing Salesforce policies.
+4. Open a campaign that has received a CuePorch registration. Under **Related**, open a media title and then a registrant. Check **Details** for viewing metrics and **Related** for submitted registration and engagement records. The related lists show activity that viewers chose to share and that CuePorch delivered. The first Media record appears after the first Salesforce registration for that video or webinar occurrence.
 
 ## Delivery behavior
 
