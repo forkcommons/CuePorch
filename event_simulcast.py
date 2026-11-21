@@ -777,6 +777,26 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         result, status = prepare_facebook(uid, opens, page)
         return private(result, status)
 
+    @app.get("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto")
+    def facebook_auto_status(uid, opens):
+        staff()
+        page = request.args.get("page", "")
+        if not facebook_upload.ID.fullmatch(page):
+            abort(422, "Choose a Facebook Live Page.")
+        with tx() as con:
+            enforce_sharing(con, feature="outbound")
+            event_revision, _, _, revision, _ = facebook_access(con, uid, opens, page)
+            key = (uid, opens, page, revision)
+            creation = con.execute("""SELECT state FROM facebook_live_creation
+                WHERE event=? AND opens=? AND page=? AND revision=?""", key).fetchone()
+            automatic = con.execute("""SELECT state FROM facebook_live_auto
+                WHERE event=? AND opens=? AND page=? AND revision=? AND event_revision=?""",
+                                    (*key, event_revision)).fetchone()
+        if creation:
+            return private(dict(state="prepared" if creation["state"] == "prepared" else "unconfirmed"))
+        return private(dict(state="idle" if not automatic else
+                            "queued" if automatic["state"] == "queued" else "failed"))
+
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/facebook/auto", methods=["PUT", "DELETE"])
     def configure_facebook_auto(uid, opens):
         staff()

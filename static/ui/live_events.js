@@ -86,6 +86,7 @@ const facebookSubmit = button("prepareFacebookLive");
 const facebookAutomatic = input("facebookAutomatic");
 const facebookCancel = button("cancelFacebookAuto");
 const facebookStatus = element("facebookLiveStatus");
+let facebookStatusRevision = 0;
 const linkedinForm = element("linkedinLiveSchedule");
 const linkedinAccount = element("linkedinAccount");
 let linkedinAccountRevision = 0;
@@ -343,6 +344,7 @@ function choose(event, instance) {
     facebookSubmit.disabled = true;
     facebookAutomatic.checked = true;
     facebookCancel.disabled = true;
+    facebookStatusRevision++;
     facebookStatus.textContent = "";
     linkedinForm.hidden = true;
     linkedinAccount.value = "company";
@@ -998,6 +1000,27 @@ youtubeCreate.onsubmit = event => {
         }
     });
 };
+async function refreshFacebookAutoStatus() {
+    if (!active || !facebookPage.value)
+        return;
+    const revision = ++facebookStatusRevision;
+    const path = mediaPath("destinations/facebook");
+    const page = facebookPage.value;
+    facebookStatus.textContent = "";
+    facebookCancel.disabled = true;
+    const result = await request(`${path}/auto?page=${encodeURIComponent(page)}`);
+    if (revision !== facebookStatusRevision)
+        return;
+    const labels = {
+        queued: "Facebook Live will start when this occurrence is ready to stream.",
+        prepared: "Facebook Live delivery is configured for this occurrence.",
+        unconfirmed: "Facebook has not confirmed the broadcast. Check Live Producer.",
+        failed: "CuePorch could not start Facebook Live. Check the Page connection and try again.",
+    };
+    facebookStatus.textContent = labels[result.state] ?? "";
+    facebookCancel.disabled = !["queued", "failed"].includes(result.state);
+}
+facebookPage.onchange = () => void action(refreshFacebookAutoStatus);
 button("loadFacebookLivePages").onclick = () => void action(async () => {
     if (!active)
         return;
@@ -1007,7 +1030,7 @@ button("loadFacebookLivePages").onclick = () => void action(async () => {
         return;
     facebookPage.replaceChildren(...result.items.map(page => new Option(page.name, page.id)));
     facebookSubmit.disabled = !result.items.length;
-    facebookCancel.disabled = !result.items.length;
+    await refreshFacebookAutoStatus();
 });
 facebookForm.onsubmit = event => {
     event.preventDefault();
@@ -1016,12 +1039,14 @@ facebookForm.onsubmit = event => {
     const path = mediaPath("destinations/facebook");
     const page = facebookPage.value;
     const automatic = facebookAutomatic.checked;
+    const revision = ++facebookStatusRevision;
     void action(async () => {
         facebookSubmit.disabled = true;
         try {
             const result = await request(automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", { page });
-            if (!active || mediaPath("destinations/facebook") !== path || facebookPage.value !== page)
+            if (revision !== facebookStatusRevision)
                 return;
+            facebookCancel.disabled = result.state !== "queued";
             if (result.state === "queued") {
                 facebookStatus.textContent = "Facebook Live will start when this occurrence is ready to stream.";
             }
@@ -1045,17 +1070,18 @@ facebookCancel.onclick = () => void action(async () => {
         return;
     const path = mediaPath("destinations/facebook");
     const page = facebookPage.value;
+    const revision = ++facebookStatusRevision;
     facebookCancel.disabled = true;
     try {
         await request(path + "/auto", "DELETE", { page });
-        if (!active || mediaPath("destinations/facebook") !== path || facebookPage.value !== page)
+        if (revision !== facebookStatusRevision)
             return;
         facebookStatus.textContent = "Automatic Facebook Live start canceled.";
     }
-    finally {
-        if (active && mediaPath("destinations/facebook") === path) {
-            facebookCancel.disabled = !facebookPage.options.length;
-        }
+    catch (error) {
+        if (revision === facebookStatusRevision)
+            facebookCancel.disabled = false;
+        throw error;
     }
 });
 button("loadLinkedinCompany").onclick = () => void action(async () => {
