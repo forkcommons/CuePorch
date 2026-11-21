@@ -26,6 +26,7 @@ from event_media import LIVE_FILE, MANIFEST_URI, manifest_text, root_path
 from browser_account_security import private
 import event_peer
 import facebook_live_job
+import linkedin_live
 import linkedin_live_job
 import facebook_upload
 import youtube_live
@@ -842,6 +843,64 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         except Timeout:
             return private(dict(state="pending"), 202)
         return private(result, status)
+
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/linkedin/existing", methods=["GET", "POST"])
+    def existing_linkedin_event(uid, opens):
+        staff()
+        connection = linkedin_live_connection
+        key = (uid, opens, connection.company)
+
+        def access(con):
+            enforce_sharing(con, feature="outbound")
+            event_revision, _, slot = creation_access(con, uid, opens)
+            starts = datetime.fromisoformat(slot["start"])
+            saved = connection.connection(con)
+            if not connection.configured or not saved:
+                abort(409, "Connect LinkedIn Live before choosing an existing event.")
+            if starts <= datetime.now(timezone.utc):
+                abort(409, "Choose a future occurrence for an existing LinkedIn event.")
+            return event_revision, saved["revision"], int(starts.timestamp()) * 1000
+
+        with tx() as con:
+            scope = access(con)
+        event_revision, revision, starts_ms = scope
+        if request.method in ("GET", "HEAD"):
+            start = linkedin_live.page_start(request.args.get("start", "0"))
+            owner = connection.authorized_company(revision)["urn"]
+            return private(connection.scheduled_events(revision, owner, starts_ms, start))
+
+        body = request.get_json()
+        video = body.get("id") if isinstance(body, dict) else None
+        if not isinstance(video, str) or not linkedin_live.LIVE_VIDEO_ID.fullmatch(video):
+            abort(422, "Choose an existing LinkedIn Live event.")
+        start = linkedin_live.page_start(body.get("start", 0))
+
+        try:
+            with FileLock(linkedin_lease(key), timeout=0):
+                owner = connection.authorized_company(revision)["urn"]
+                with tx() as con:
+                    if access(con) != scope:
+                        abort(409, "The event or LinkedIn Live connection changed.")
+                    prior = con.execute(linkedin_live_job.READ, key).fetchone()
+                    if prior:
+                        if (prior["state"], prior["video"], prior["event_revision"], prior["revision"]) == (
+                                "scheduled", video, event_revision, revision):
+                            return private(dict(state="scheduled", post_urn=prior["post"]))
+                        abort(409, "This occurrence already has a LinkedIn Live schedule.")
+                page = connection.scheduled_events(revision, owner, starts_ms, start)
+                selected = next((item for item in page["items"] if item["id"] == video), None)
+                if selected is None:
+                    abort(409, "Choose an available LinkedIn Live event at this occurrence's start time.")
+                with tx() as con:
+                    if access(con) != scope:
+                        abort(409, "The event or LinkedIn Live connection changed.")
+                    if con.execute("SELECT 1 FROM linkedin_live_creation WHERE video=?", (video,)).fetchone():
+                        abort(409, "This LinkedIn Live event already belongs to an occurrence.")
+                    con.execute("INSERT INTO linkedin_live_creation VALUES(?,?,?,?,?,'scheduled',?,?)",
+                                (*key, event_revision, revision, video, selected["post_urn"]))
+        except Timeout:
+            abort(409, "Another request is changing this LinkedIn Live occurrence.")
+        return private(dict(state="scheduled", post_urn=selected["post_urn"]), 201)
 
     @app.post("/api/live-events/<uid>/<int:opens>/destinations/linkedin/prepare")
     def prepare_linkedin_live(uid, opens):
