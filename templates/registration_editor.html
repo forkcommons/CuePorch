@@ -93,6 +93,17 @@
         <button type="button" id="registrationCampaignMonitorStop" hidden>Stop Campaign Monitor delivery</button>
         <p id="registrationCampaignMonitorStatus" role="status"></p>
       </fieldset>
+      <fieldset id="registrationKeap" hidden>
+        <legend>Keap tags</legend>
+        <button type="button" id="registrationKeapLoad">Load Keap tags</button>
+        <label for="registrationKeapList">Keap tag</label>
+        <select id="registrationKeapList"></select>
+        <button type="button" id="registrationKeapMore">More Keap tags</button>
+        <button type="button" id="registrationKeapSave">Save Keap delivery</button>
+        <button type="button" id="registrationKeapRefresh">Reload Keap delivery</button>
+        <button type="button" id="registrationKeapStop" hidden>Stop Keap delivery</button>
+        <p id="registrationKeapStatus" role="status"></p>
+      </fieldset>
       {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>

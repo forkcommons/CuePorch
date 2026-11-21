@@ -1,6 +1,6 @@
 import { checked } from "./team_api.js";
 
-type Provider = "constant-contact" | "campaign-monitor";
+type Provider = "constant-contact" | "campaign-monitor" | "keap";
 
 type Receipt = {
   available: boolean;
@@ -60,10 +60,12 @@ async function request<T>(
 }
 
 function receiptStatus(receipt: Receipt, ready: boolean, provider: Provider): string {
-  const name = provider === "constant-contact" ? "Constant Contact" : "Campaign Monitor";
+  const name = provider === "constant-contact" ? "Constant Contact" : provider === "campaign-monitor" ? "Campaign Monitor" : "Keap";
   let status: string;
   if (receipt.state === "stale") {
-    status = `Reconnect ${name} and choose a list again.`;
+    status = provider === "keap"
+      ? `Reconnect ${name} and choose a tag again.`
+      : `Reconnect ${name} and choose a list again.`;
   } else if (!receipt.available) {
     status = `Connect ${name} in Integrations.`;
   } else if (!ready) {
@@ -89,11 +91,13 @@ export function setupLibraryListDelivery(
 ) {
   const prefix = provider === "constant-contact"
     ? "registrationConstantContact"
-    : "registrationCampaignMonitor";
+    : provider === "campaign-monitor"
+      ? "registrationCampaignMonitor"
+      : "registrationKeap";
   const control = <T extends HTMLElement>(suffix: string) =>
     panel.querySelector<T>("#" + prefix + suffix);
   const load = control<HTMLButtonElement>("Load")!;
-  const more = provider === "constant-contact" ? control<HTMLButtonElement>("More")! : null;
+  const more = provider === "campaign-monitor" ? null : control<HTMLButtonElement>("More")!;
   const client = provider === "campaign-monitor" ? control<HTMLSelectElement>("Client")! : null;
   const picker = control<HTMLSelectElement>("List")!;
   const save = control<HTMLButtonElement>("Save")!;
@@ -138,7 +142,7 @@ export function setupLibraryListDelivery(
         options.set(receipt.list_id, receipt.list_name);
       }
       picker.replaceChildren(
-        new Option("Choose a list", ""),
+        new Option(provider === "keap" ? "Choose a tag" : "Choose a list", ""),
         ...Array.from(options, ([id, name]) => new Option(name, id)),
       );
       picker.value = options.has(selected) ? selected : "";
@@ -173,8 +177,11 @@ export function setupLibraryListDelivery(
 
     async function loadLists(cursor?: string) {
       const query = cursor ? "?" + new URLSearchParams({cursor}) : "";
+      const path = provider === "keap"
+        ? "/api/integrations/keap/tags"
+        : "/api/integrations/constant-contact/lists";
       const page = await request<ListPage>(
-        credential, "/api/integrations/constant-contact/lists" + query,
+        credential, path + query,
       );
       if (!active()) return;
       if (!cursor) lists.clear();
@@ -224,10 +231,10 @@ export function setupLibraryListDelivery(
     drawLists("");
     picker.onchange = drawControls;
     load.onclick = () => {
-      if (provider === "constant-contact") {
-        void run(() => loadLists());
-      } else {
+      if (provider === "campaign-monitor") {
         void run(() => loadClients());
+      } else {
+        void run(() => loadLists());
       }
     };
     if (more) {

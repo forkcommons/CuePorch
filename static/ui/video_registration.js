@@ -10,6 +10,7 @@ export function setupRegistration(call, download, credential, saved, registratio
     const listDeliveryHandlers = [
         ["constant-contact", "#registrationConstantContact"],
         ["campaign-monitor", "#registrationCampaignMonitor"],
+        ["keap", "#registrationKeap"],
     ].flatMap(([provider, id]) => {
         const panel = form.querySelector(id);
         return panel && registrationEndpoint

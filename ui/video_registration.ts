@@ -57,6 +57,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   const listDeliveryHandlers = ([
     ["constant-contact", "#registrationConstantContact"],
     ["campaign-monitor", "#registrationCampaignMonitor"],
+    ["keap", "#registrationKeap"],
   ] as const).flatMap(([provider, id]) => {
     const panel = form.querySelector<HTMLElement>(id);
     return panel && registrationEndpoint

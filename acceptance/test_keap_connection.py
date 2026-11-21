@@ -404,3 +404,91 @@ class KeapRegistrationDeliveryTest(unittest.TestCase):
         self.assertEqual(receipt(), {'skipped': 1, 'sent': 1})
         self.assertEqual(len(self.provider.creates), 1)
         self.assertEqual(len(self.provider.applies), 1)
+
+    def test_editors_and_playback(self):
+        res = self.client.post(
+            "/api/integrations/keap/connect",
+            json={},
+            headers=self.auth,
+        )
+        self.assertEqual(res.status_code, 200)
+        authorization_url = res.get_json()["authorization_url"]
+        state = parse_qs(urlsplit(authorization_url).query)["state"][0]
+        callback = "/integration/oauth/keap/callback"
+        params = {"state": state, "code": "fixture-code"}
+        res = self.client.get(callback, query_string=params)
+        self.assertEqual(res.status_code, 303)
+        self.assertIn("result=connected", res.headers["Location"])
+        from browser import chromium
+        from playwright.sync_api import expect, sync_playwright
+        from test_drive_import import QuietHandler, service_worker
+        from werkzeug.serving import make_server
+
+        embed_path, _ = cc_fixture.ConstantContactFormsTest.enable_video(
+            self, configure_delivery=False
+        )
+        video_id = embed_path.rsplit("/", 1)[-1]
+        sid = cc_fixture.ConstantContactFormsTest.enable_showcase(self)
+        gallery = "/showcases/constant-contact-gallery"
+        video_path = f"/operator/videos/{video_id}/interactivity"
+        show_path = f"/operator/showcases?select={sid}"
+
+        def tick():
+            return forms.run_one(
+                *self.runner,
+                self.stop,
+                clock=lambda: self.now,
+                provider=forms.KEAP,
+            )
+
+        server = make_server(
+            "127.0.0.1", 0, self.client.application,
+            request_handler=QuietHandler, threaded=True,
+        )
+        base = f"http://127.0.0.1:{server.server_port}"
+
+        with service_worker(server), sync_playwright() as pw, chromium(pw) as browser:
+            staff = browser.new_page()
+            staff.add_init_script(
+                "sessionStorage.setItem('cueporchOperator', %s)" % json.dumps(OPERATOR)
+            )
+
+            def open_editor(path, showcase=False):
+                staff.goto(f"{base}{path}")
+                if showcase:
+                    staff.click("#showcaseRegistration")
+
+            def configure():
+                staff.click("#registrationKeapLoad")
+                staff.click("#registrationKeapMore")
+                staff.select_option("#registrationKeapList", "5")
+                staff.click("#registrationKeapSave")
+                expect(
+                    staff.locator("#registrationKeapStatus")
+                ).to_have_text("Keap delivery is enabled.")
+
+            open_editor(video_path)
+            configure()
+            open_editor(video_path)
+            expect(
+                staff.locator("#registrationKeapList")
+            ).to_have_value("5")
+
+            open_editor(show_path, True)
+            configure()
+            open_editor(show_path, True)
+            expect(
+                staff.locator("#registrationKeapList")
+            ).to_have_value("5")
+
+            r = self.client.put('/api/policy/event_contact_sync', json={'required': True}, headers=self.auth)
+            assert r.status_code == 200
+            cc_fixture.ConstantContactFormsTest.play_in_browser(self, browser, base, embed_path, 'fresh@example.test', True, embed=True, consent_field='keap_form_consent')
+            cc_fixture.ConstantContactFormsTest.play_in_browser(self, browser, base, gallery, 'manual@example.test', True, embed=False, consent_field='keap_form_consent')
+            r = self.client.get(f'/api/showcases/{sid}/registration/keap/outbound', headers=self.auth)
+            assert r.get_json()['states'] == {'waiting': 1}
+            self.now = time.time() + 1
+            assert not tick() and not self.provider.creates and not self.provider.applies
+            staff.click("#registrationKeapStop")
+            expect(staff.locator("#registrationKeapStatus")).to_have_text("Keap delivery is off.")
+            cc_fixture.ConstantContactFormsTest.play_in_browser(self, browser, base, gallery, 'after-stop@example.test', consent=None, embed=False, consent_field='keap_form_consent')
