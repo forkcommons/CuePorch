@@ -26,6 +26,7 @@ from test_drive_import import QuietHandler, service_worker
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import facebook_upload as facebook
+import facebook_live
 from institution import create_app
 import social_publication
 
@@ -49,20 +50,27 @@ class FacebookPublication(unittest.TestCase):
             service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
             base = f"http://127.0.0.1:{service.server_port}"
             callback = base + "/integration/oauth/facebook/callback"
+            live_callback = base + "/integration/oauth/facebook-live/callback"
             database = root / "workspace.sqlite"
             chunks = {}
             posts = []
             exchanges = []
-            checkpoints = dict(rate=0, interrupted=False)
+            checkpoints = dict(rate=0, interrupted=False, live_permission=False)
             operator = secrets.token_urlsafe(32)
 
             cleanup.enter_context(patch.multiple(facebook, OAUTH=replace(
                 facebook.OAUTH, authorization_url=origin + "/oauth/authorize", token_url=origin + "/graph/oauth/access_token",
             ), GRAPH=origin + "/graph", MEDIA=origin + "/media"))
+            cleanup.enter_context(patch.object(facebook_live, "OAUTH", replace(
+                facebook_live.OAUTH, authorization_url=origin + "/oauth/authorize",
+                token_url=origin + "/graph/oauth/access_token",
+            )))
             cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
             cleanup.enter_context(patch.dict("os.environ", {
                 "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_FACEBOOK_CLIENT_ID": "cueporch",
                 "CUEPORCH_FACEBOOK_CLIENT_SECRET": "fixture-secret",
+                "CUEPORCH_FACEBOOK_LIVE_CLIENT_ID": "cueporch",
+                "CUEPORCH_FACEBOOK_LIVE_CLIENT_SECRET": "fixture-secret",
             }))
 
             def start_app():
@@ -82,9 +90,11 @@ class FacebookPublication(unittest.TestCase):
 
             @remote.get("/oauth/authorize")
             def authorize():
-                assert request.args["client_id"] == "cueporch" and request.args["redirect_uri"] == callback
-                assert set(request.args["scope"].split()) == set(facebook.OAUTH.scope.split())
-                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code="facebook-code")))
+                redirect_uri = request.args["redirect_uri"]
+                assert request.args["client_id"] == "cueporch" and redirect_uri in (callback, live_callback)
+                config = facebook_live.OAUTH if redirect_uri == live_callback else facebook.OAUTH
+                assert set(request.args["scope"].split()) == set(config.scope.split())
+                return redirect(redirect_uri + "?" + urlencode(dict(state=request.args["state"], code="facebook-code")))
 
             @remote.get("/graph/oauth/access_token")
             def token():
@@ -93,7 +103,7 @@ class FacebookPublication(unittest.TestCase):
                     assert request.args["fb_exchange_token"] == "fixture-short"
                     exchanges.append("long")
                     return dict(access_token="fixture-long", expires_in=5184000)
-                assert request.args["code"] == "facebook-code" and request.args["redirect_uri"] == callback
+                assert request.args["code"] == "facebook-code" and request.args["redirect_uri"] in (callback, live_callback)
                 exchanges.append("short")
                 return dict(access_token="fixture-short", expires_in=1000)
 
@@ -101,6 +111,12 @@ class FacebookPublication(unittest.TestCase):
                 assert request.headers["Authorization"] == "Bearer " + token
                 assert request.args["appsecret_proof"] == hmac.digest(b"fixture-secret", token.encode(), "sha256").hex()
                 assert "access_token" not in request.args and "access_token" not in request.form
+
+            @remote.get("/graph/me/permissions")
+            def permissions():
+                authenticated("fixture-long")
+                state = "granted" if checkpoints["live_permission"] else "declined"
+                return {"data": [{"permission": "publish_video", "status": state}]}
 
             @remote.get("/graph/me/accounts")
             def pages():
@@ -230,11 +246,34 @@ class FacebookPublication(unittest.TestCase):
                 player.goto(origin + "/playback")
                 self.assertEqual(640, player.locator("video").evaluate("async v => {v.muted = true; await v.play(); return v.videoWidth}"))
                 page.goto(base + "/operator/integrations")
+                catalog = base + "/api/integrations/facebook-live/pages"
+                self.assertEqual(403, api.get(catalog).status)
+                self.assertEqual(409, api.get(catalog, headers=auth).status)
+                with page.expect_response(lambda response: response.url.startswith(live_callback)) as response:
+                    page.get_by_role("button", name="Connect Facebook Live", exact=True).click()
+                self.assertEqual(403, response.value.status)
+                self.assertEqual(409, api.get(catalog, headers=auth).status)
+                page.goto(base + "/operator/integrations")
+                checkpoints["live_permission"] = True
+                page.get_by_role("button", name="Connect Facebook Live", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("Facebook Live is connected.", timeout=15000)
+                page.get_by_role("button", name="Show Facebook Live Pages", exact=True).click()
+                expect(page.get_by_text("Porch Station", exact=True)).to_be_visible()
+                expect(page.get_by_text("Porch Arts", exact=True)).to_be_visible()
+                listed = api.get(catalog, headers=auth)
+                self.assertEqual([{"id": "101", "name": "Porch Station"}, {"id": "202", "name": "Porch Arts"}],
+                                 listed.json()["items"])
+                self.assertNotIn("fixture-", listed.text() + page.content())
+                page.get_by_role("button", name="Disconnect Facebook Live", exact=True).click()
+                expect(page.get_by_role("button", name="Connect Facebook Live", exact=True)).to_be_visible()
+                self.assertEqual(409, api.get(catalog, headers=auth).status)
+                self.assertEqual(2, len(api.get(endpoint, headers=auth).json()["pages"]))
                 page.get_by_role("button", name="Disconnect Facebook Pages", exact=True).click()
                 expect(page.get_by_role("button", name="Connect Facebook Pages", exact=True)).to_be_visible()
                 self.assertEqual([], api.get(endpoint, headers=auth).json()["pages"])
         print("Facebook Pages OAuth long-lived scope, paginated Page selection, exact multipart restart and playback,"
               " rate-limit retry, optional approval and disconnect passed.")
+        print("Facebook Live verified a separate grant, declined permission denial, safe Page list and independent disconnect.")
 
 
 if __name__ == "__main__":

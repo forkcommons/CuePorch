@@ -5,9 +5,7 @@ import re
 from urllib.parse import urlsplit
 from flask import abort
 from werkzeug.exceptions import HTTPException, TooManyRequests
-from browser_account_security import secure_site
 import team_accounts
-from team_accounts import MANAGERS
 from workspace_oauth import Connection, response_object
 import youtube_upload
 
@@ -31,13 +29,7 @@ class WorkspaceConnection(Connection):
         self.access = access
 
     def save_authorization(self, con, tokens, context):
-        member_id = context.get("member")     # None => raw installation bearer
-        if member_id is not None:
-            current = team_accounts.current(con, secure_site(context["origin"]))
-            if (not current or current["id"] != member_id
-                    or current["role"] not in MANAGERS
-                    or not self.access(con, current)["outbound"]):
-                abort(403, "Your workspace session cannot connect this YouTube channel.")
+        team_accounts.require_live_connection_manager(con, context, self.access)
         return super().save_authorization(con, tokens, context)
 
 

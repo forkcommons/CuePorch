@@ -213,6 +213,16 @@ function render() {
           const moreButton = button("More YouTube channels", () => load(true));
           moreButton.hidden = true;
           card.append(button("Show YouTube channels", () => { next = null; return load(); }), channels, moreButton);
+        } else if (item.id === "facebook-live") {
+          const pages = document.createElement("ul");
+          card.append(button("Show Facebook Live Pages", async () => {
+            const result = await api<{items: {id: string; name: string}[]}>("/api/integrations/facebook-live/pages");
+            pages.replaceChildren(...result.items.map(item => {
+              const row = document.createElement("li");
+              row.textContent = item.name;
+              return row;
+            }));
+          }), pages);
         } else if (item.category !== "Marketing") card.append(button(item.meeting ? "Browse recordings" : "Browse videos", () => openPicker(item)));
       }
       card.append(button(`Disconnect ${item.name}`, async () => {

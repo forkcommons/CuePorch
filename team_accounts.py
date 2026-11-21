@@ -118,6 +118,16 @@ def actor_id(member):
     return "team:" + member["id"]
 
 
+def require_live_connection_manager(con, context, sharing_access):
+    member_id = context.get("member")
+    if member_id is None:
+        return
+    member = current(con, secure_site(context["origin"]))
+    if (not member or member["id"] != member_id or member["role"] not in MANAGERS
+            or not sharing_access(con, member)["outbound"]):
+        abort(403, "Your workspace session cannot connect this live destination.")
+
+
 def note(con, actor, action, subject, detail=None):
     con.execute("INSERT INTO team_membership_event(actor,action,subject,detail,at) VALUES(?,?,?,?,?)",
                 (actor, action, subject, detail, time.time()))
