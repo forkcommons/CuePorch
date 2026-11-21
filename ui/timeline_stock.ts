@@ -1,5 +1,6 @@
 import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
+import { mountTimelineStockCatalog } from "./timeline_stock_catalog.js";
 
 export interface StockRights {
   category: string;
@@ -263,6 +264,7 @@ export function mountTimelineStock(context: {
     }
   });
 
+  mountTimelineStockCatalog({credential: context.credential, folder: context.folder, async available(id) { await context.refresh(); showItem(id); }});
   rebuild();
   return { rebuild };
 }
