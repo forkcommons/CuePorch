@@ -91,10 +91,23 @@ def encode_audio_segment(pcm, pts, destination):
         temp.unlink(missing_ok=True)
 
 
+def discontinuities(lines):
+    base, marks, pending = None, [], False
+    for line in lines:
+        if line.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:"):
+            base = int(line.partition(":")[2])
+        elif line == "#EXT-X-DISCONTINUITY":
+            pending = True
+            if base is None:
+                base = 0
+        elif line and not line.startswith("#"):
+            marks.append(pending)
+            pending = False
+    return base, marks
+
+
 def paired_playlists(primary_text, selected, language, name):
     lines = primary_text.splitlines()
-    if any(line.startswith("#EXT-X-DISCONTINUITY") for line in lines):
-        raise ValueError("The programme timeline changed.")
     target_duration = next(int(line.split(":", 1)[1]) for line in lines
                            if line.startswith("#EXT-X-TARGETDURATION:"))
     primary = list(timed_fragments(primary_text))
@@ -105,12 +118,18 @@ def paired_playlists(primary_text, selected, language, name):
                      if line.startswith("#EXT-X-MEDIA-SEQUENCE:")), 0) + index
     headers = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{target_duration}",
                f"#EXT-X-MEDIA-SEQUENCE:{sequence}"]
+    discontinuity_base, markers = discontinuities(lines)
+    if discontinuity_base is not None:
+        headers.append(f"#EXT-X-DISCONTINUITY-SEQUENCE:{discontinuity_base + sum(markers[:index])}")
     video, audio = headers.copy(), headers.copy()
-    for fragment in selected:
+    for fragment, changed in zip(selected, markers[index:index + len(selected)], strict=True):
         if not re.fullmatch(r"0-\d+\.ts", fragment.name) or fragment.initialization:
             raise ValueError("Invalid programme segment.")
-        date = datetime.fromtimestamp(fragment.start, timezone.utc).isoformat()
-        tags = [f"#EXT-X-PROGRAM-DATE-TIME:{date}", f"#EXTINF:{fragment.duration:.6f},"]
+        tags = ["#EXT-X-DISCONTINUITY"] if changed else []
+        if discontinuity_base is None:
+            date = datetime.fromtimestamp(fragment.start, timezone.utc).isoformat()
+            tags.append(f"#EXT-X-PROGRAM-DATE-TIME:{date}")
+        tags.append(f"#EXTINF:{fragment.duration:.6f},")
         video.extend([*tags, fragment.name])
         audio.extend([*tags, "1-" + fragment.name[2:]])
     return audio_master(language, name), "\n".join(video) + "\n", "\n".join(audio) + "\n"
@@ -130,13 +149,13 @@ def audio_master(language, name):
     ]) + "\n"
 
 
-def read_timeline(directory, rendition):
+def read_timeline(directory, rendition, allow_discontinuity=False):
     with (directory / f"{rendition}.m3u8").open("rb") as playlist:
         payload = playlist.read(256 * 1024 + 1)
     if len(payload) > 256 * 1024:
         raise ValueError("The timed playlist is too large.")
     text = manifest_text(payload)
-    if "#EXT-X-DISCONTINUITY" in text:
+    if not allow_discontinuity and "#EXT-X-DISCONTINUITY" in text:
         raise ValueError("The input timeline changed.")
     fragments = list(timed_fragments(text))
     if (len(fragments) != sum(bool(line) and not line.startswith("#") for line in text.splitlines()) or
@@ -152,9 +171,10 @@ def number(fragment):
 class AlignedAudio:
     manifests = ("master.m3u8", "1.m3u8", "2.m3u8")
 
-    def __init__(self, primary, recording=None):
+    def __init__(self, primary, recording=None, *, allow_discontinuity=False):
         self.primary = primary
         self.recording = recording
+        self.allow_discontinuity = allow_discontinuity
         self.identity = uuid4().hex
         self.path = None
         self.latest = None
@@ -190,7 +210,7 @@ class AlignedAudio:
             self.recording.audio(destination, item, bool(sources))
 
     def update(self, item):
-        primary_text, programme = read_timeline(self.primary.path, 0)
+        primary_text, programme = read_timeline(self.primary.path, 0, self.allow_discontinuity)
         if len(programme) < 3:
             return
         interpreter_path = item.path
