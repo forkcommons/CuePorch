@@ -177,8 +177,7 @@ function cueporch_woo_enqueue_editor_picker( $hook ) {
     if ( ! get_option( 'cueporch_woo_origin' ) ) {
         return;
     }
-    $ver = (string) filemtime( plugin_dir_path( __FILE__ ) . 'editor-picker.js' );
-    wp_enqueue_script( 'cueporch-editor-picker', plugin_dir_url( __FILE__ ) . 'editor-picker.js', array(), $ver, true );
+    wp_enqueue_script( 'cueporch-editor-picker' );
 }
 
 function cueporch_woo_product_photo_candidates(WC_Product $product): array {

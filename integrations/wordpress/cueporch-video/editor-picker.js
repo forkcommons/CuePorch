@@ -1,25 +1,6 @@
 "use strict";
-// Loaded deferred on the WooCommerce classic product editor only.
 (() => {
-    const btn = document.getElementById("cueporchChooseVideo");
-    const ta = document.getElementById("_cueporch_video_urls");
-    const status = document.getElementById("cueporchPickerStatus");
-    if (!btn || !ta || !status)
-        return;
-    const raw = btn.dataset.origin ?? "";
-    let trustedOrigin;
-    try {
-        const u = new URL(raw);
-        const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
-        if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
-            throw 0;
-        trustedOrigin = u.origin;
-    }
-    catch {
-        status.textContent = "CuePorch picker unavailable: invalid trusted origin.";
-        btn.disabled = true;
-        return;
-    }
+    let active = null;
     const uuid = () => {
         if (typeof crypto.randomUUID === "function")
             return crypto.randomUUID();
@@ -30,107 +11,137 @@
         const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
         return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
     };
-    const createButton = document.getElementById("cueporchCreateProductVideo");
-    let creationRequested = false;
-    let sourceSent = false;
-    let popup = null;
-    let active = null;
-    const setStatus = (m) => {
-        status.textContent = m;
-    };
-    const append = (url) => {
-        const lines = ta.value
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-        if (lines.includes(url) || lines.length >= 10)
-            return false;
-        lines.push(url);
-        ta.value = lines.join("\n");
-        ta.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-    };
-    window.addEventListener("message", (ev) => {
-        if (!active || !popup || ev.source !== popup)
-            return;
-        if (ev.origin !== trustedOrigin)
-            return;
-        const d = ev.data;
-        if (!d || typeof d !== "object")
-            return;
-        const m = d;
-        if (m.type === "cueporch-wordpress-product-request") {
-            if (m.request === active &&
-                creationRequested &&
-                createButton &&
-                !sourceSent) {
-                sourceSent = true;
-                const request = active;
-                void sendProductSource(createButton, popup, trustedOrigin, request).finally(() => {
-                    if (active === request)
-                        sourceSent = false;
-                });
-            }
-            return;
-        }
-        if (m.type !== "cueporch-wordpress-selected" || m.request !== active)
-            return;
-        if (typeof m.embedUrl !== "string")
-            return;
-        let eu;
+    function trustedPickerEmbed(raw, origin) {
+        let u;
         try {
-            eu = new URL(m.embedUrl);
+            u = new URL(raw);
         }
         catch {
-            return;
+            return null;
         }
-        if (eu.origin !== trustedOrigin || eu.username || eu.password || eu.hash)
-            return;
-        if (!/^\/embed\/work\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(eu.pathname) ||
-            !(eu.search === "" || /^\?key=[A-Za-z0-9_-]{1,128}$/.test(eu.search)))
-            return;
-        const embedUrl = eu.href;
-        const ok = append(embedUrl);
-        setStatus(ok ? "Video added." : "Video rejected: duplicate or 10-item limit.");
-        active = null;
-    });
-    function openPicker(create) {
-        try {
-            if (popup && !popup.closed)
-                popup.close();
-        }
-        catch {
-            /* ignore */
-        }
-        active = uuid();
-        creationRequested = create;
-        sourceSent = false;
-        const qs = new URLSearchParams({
-            destination: location.origin,
-            request: active,
-        });
-        if (create)
-            qs.set("mode", "create");
-        const target = `${trustedOrigin}/operator/wordpress-media-picker?${qs.toString()}`;
-        let w = null;
-        try {
-            w = window.open(target, "cueporchPicker", "width=960,height=720");
-        }
-        catch {
-            /* ignore */
-        }
-        if (!w) {
-            active = null;
-            popup = null;
-            setStatus("Picker blocked or unavailable. Allow popups and retry.");
-            return;
-        }
-        popup = w;
-        setStatus("Picker opened. Select a video to continue.");
+        if (u.origin !== origin ||
+            u.username ||
+            u.password ||
+            u.hash ||
+            u.href.includes("#"))
+            return null;
+        if (!/^\/embed\/work\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(u.pathname))
+            return null;
+        if (u.search !== "" && !/^\?key=[A-Za-z0-9_-]{1,128}$/.test(u.search))
+            return null;
+        return u.href;
     }
-    btn.addEventListener("click", () => openPicker(false));
-    if (createButton)
-        createButton.addEventListener("click", () => openPicker(true));
+    function openPicker(origin, selected, status, sourceButton) {
+        try {
+            if (active) {
+                try {
+                    active.popup.close();
+                }
+                catch { }
+                active = null;
+            }
+            const parsed = new URL(origin);
+            const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+            if (parsed.origin !== origin ||
+                (parsed.protocol !== "https:" &&
+                    !(parsed.protocol === "http:" && loopback))) {
+                status("Invalid origin");
+                return;
+            }
+            const id = uuid();
+            const url = new URL("/operator/wordpress-media-picker", parsed.origin);
+            url.searchParams.set("destination", location.origin);
+            url.searchParams.set("request", id);
+            if (sourceButton)
+                url.searchParams.set("mode", "create");
+            const popup = window.open(url.toString(), "wordpress-media-picker", "width=1000,height=700");
+            if (!popup) {
+                status("Popup blocked");
+                return;
+            }
+            active = {
+                id,
+                popup,
+                origin: parsed.origin,
+                sourceButton,
+                selected,
+                readingPhotos: false,
+            };
+            status("Picker opened.");
+        }
+        catch {
+            status("Unable to open picker");
+        }
+    }
+    window.addEventListener("message", (event) => {
+        const binding = active;
+        if (!binding)
+            return;
+        if (event.origin !== binding.origin)
+            return;
+        if (event.source !== binding.popup)
+            return;
+        if (typeof event.data !== "object" || event.data === null)
+            return;
+        const data = event.data;
+        if (data.request !== binding.id)
+            return;
+        if (data.type === "cueporch-wordpress-product-request") {
+            if (!binding.sourceButton || binding.readingPhotos)
+                return;
+            binding.readingPhotos = true;
+            void sendProductSource(binding.sourceButton, binding.popup, binding.origin, binding.id).finally(() => {
+                binding.readingPhotos = false;
+            });
+            return;
+        }
+        if (data.type === "cueporch-wordpress-selected") {
+            if (typeof data.embedUrl !== "string")
+                return;
+            const url = trustedPickerEmbed(data.embedUrl, binding.origin);
+            if (url === null)
+                return;
+            active = null;
+            binding.selected(url);
+        }
+    });
+    function bindClassicProductPicker() {
+        const choose = document.getElementById("cueporchChooseVideo");
+        const textarea = document.getElementById("_cueporch_video_urls");
+        const status = document.getElementById("cueporchPickerStatus");
+        if (!choose || !textarea || !status)
+            return;
+        const create = document.getElementById("cueporchCreateProductVideo");
+        const origin = choose.dataset.origin ?? "";
+        const setStatus = (msg) => {
+            status.textContent = msg;
+        };
+        const selected = (url) => {
+            const line = url.trim();
+            const lines = textarea.value
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter(Boolean);
+            if (lines.includes(line) || lines.length >= 10) {
+                setStatus("Video rejected: duplicate or 10-item limit.");
+                return;
+            }
+            lines.push(line);
+            textarea.value = lines.join("\n");
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            setStatus("Video added.");
+        };
+        choose.addEventListener("click", () => {
+            openPicker(origin, selected, setStatus);
+        });
+        if (create) {
+            create.addEventListener("click", () => {
+                openPicker(origin, selected, setStatus, create);
+            });
+        }
+    }
+    window.cueporchPickVideo = openPicker;
+    bindClassicProductPicker();
 })();
 async function readProductPhoto(source) {
     const u = new URL(source.url);

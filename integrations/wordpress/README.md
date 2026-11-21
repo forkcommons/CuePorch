@@ -1,6 +1,6 @@
-# CuePorch Video for WooCommerce
+# CuePorch Video for WordPress and WooCommerce
 
-Optional WooCommerce host adapter for editable product video URLs, with a default **Videos** tab or placement before/after classic product gallery images.
+This optional WordPress adapter adds a **CuePorch Video** block to posts and pages. With WooCommerce, it also adds product videos in a **Videos** tab or before or after the product gallery.
 
 ## Install and Configure
 
@@ -21,6 +21,10 @@ The picker shows which WordPress site will receive the selected player URL. If C
 Select **Upload** in the CuePorch popup to add files to your Library. It uses the same upload defaults, folder settings, and approval policy as the CuePorch Library. A private or pending upload stays in CuePorch until its settings allow sharing. Uploading a file does not add it to the product.
 
 For a saved product with WordPress-hosted images, select **Create Product Video**, then **Create from product photos** in the CuePorch popup. CuePorch uses the saved title and up to eight featured and gallery images to make a short video. **Open draft in CuePorch editor** opens the private result. After its sharing settings permit an embed, choose it from the Library and update the product.
+
+## WordPress posts and pages
+
+In the block editor, add **CuePorch Video**. Select **Choose from CuePorch** to choose a shareable Library video, or paste a CuePorch watch or embed URL. Save or publish the post or page and preview it as a guest. WordPress checks the saved URL against the CuePorch origin configured in Settings, and CuePorch applies the current playback permissions.
 
 ## Compatibility
 
