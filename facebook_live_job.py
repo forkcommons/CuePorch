@@ -16,17 +16,26 @@ CREATE TABLE IF NOT EXISTS facebook_live_creation(
  state TEXT NOT NULL, destination TEXT, PRIMARY KEY(event,opens,page));
 CREATE TABLE IF NOT EXISTS facebook_live_auto(
  event TEXT NOT NULL, opens INTEGER NOT NULL, page TEXT NOT NULL, revision TEXT NOT NULL,
- event_revision TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(event,opens,page));
+ event_revision TEXT NOT NULL, state TEXT NOT NULL, privacy TEXT, PRIMARY KEY(event,opens,page));
 CREATE TABLE IF NOT EXISTS facebook_live_series(
  event TEXT NOT NULL, page TEXT NOT NULL, revision TEXT NOT NULL, event_revision TEXT NOT NULL,
- after_opens INTEGER NOT NULL, PRIMARY KEY(event,page));
+ after_opens INTEGER NOT NULL, privacy TEXT, PRIMARY KEY(event,page));
 """
 
 
-def queue(con, key, revision, event_revision, *, state="queued"):
-    con.execute("""INSERT INTO facebook_live_auto VALUES(?,?,?,?,?,?)
+def migrate(con):
+    for table in ("facebook_live_auto", "facebook_live_series"):
+        columns = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+        if "privacy" not in columns:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN privacy TEXT")
+
+
+def queue(con, key, revision, event_revision, *, state="queued", privacy=None):
+    con.execute("""INSERT INTO facebook_live_auto(event,opens,page,revision,event_revision,state,privacy)
+        VALUES(?,?,?,?,?,?,?)
         ON CONFLICT(event,opens,page) DO UPDATE SET revision=excluded.revision,
-        event_revision=excluded.event_revision,state=excluded.state""", (*key, revision, event_revision, state))
+        event_revision=excluded.event_revision,state=excluded.state,privacy=excluded.privacy""",
+        (*key, revision, event_revision, state, privacy))
 
 
 def due(con, now):
@@ -37,7 +46,7 @@ def due(con, now):
         LEFT JOIN facebook_live_creation c ON c.event=a.event AND c.opens=a.opens AND c.page=a.page
         WHERE a.state='queued' AND a.opens<=? AND c.event IS NULL
         UNION ALL
-        SELECT s.event,o.opens,s.page,s.revision,s.event_revision,'queued',1
+        SELECT s.event,o.opens,s.page,s.revision,s.event_revision,'queued',s.privacy,1
         FROM facebook_live_series s
         JOIN live_event e ON e.id=s.event AND e.revision=s.event_revision
         JOIN live_occurrence o ON o.event=s.event AND o.delivery='ready' AND o.opens>s.after_opens
@@ -49,10 +58,16 @@ def due(con, now):
 
 def claim(con, key, automatic):
     if automatic["series"]:
-        return con.execute("""INSERT OR IGNORE INTO facebook_live_auto VALUES(?,?,?,?,?,'attempted')""",
-                           (*key, automatic["revision"], automatic["event_revision"])).rowcount == 1
+        return con.execute("""INSERT OR IGNORE INTO facebook_live_auto
+            (event, opens, page, revision, event_revision, state, privacy)
+            VALUES(?,?,?,?,?,'attempted',?)""",
+            (*key, automatic["revision"], automatic["event_revision"],
+             automatic["privacy"])).rowcount == 1
     return con.execute("""UPDATE facebook_live_auto SET state='attempted'
-        WHERE event=? AND opens=? AND page=? AND state='queued'""", key).rowcount == 1
+        WHERE event=? AND opens=? AND page=? AND state='queued'
+          AND revision=? AND event_revision=? AND privacy IS ?""",
+        (*key, automatic["revision"], automatic["event_revision"],
+         automatic["privacy"])).rowcount == 1
 
 
 def start(app, tx, prepare):

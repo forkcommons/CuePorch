@@ -170,12 +170,15 @@ const facebookStatus = element("facebookLiveStatus");
 let facebookStatusRevision = 0;
 const facebookTarget = element<HTMLSelectElement>("facebookLiveTarget");
 const facebookPageLabel = element("facebookLivePageLabel");
+const facebookPrivacy = element<HTMLSelectElement>("facebookLivePrivacy");
+const facebookPrivacyLabel = element("facebookLivePrivacyLabel");
 const facebookLoad = button("loadFacebookLivePages");
 function clearFacebookAsyncStatus() {
   facebookStatusRevision++;
   facebookStatus.textContent = "";
   facebookCancel.disabled = true;
   facebookSeriesStop.disabled = true;
+  facebookPrivacy.value = "";
 }
 function facebookProfile() { return facebookTarget.value === "profile"; }
 function facebookBasePath() { return mediaPath(facebookProfile() ? "destinations/facebook-profile" : "destinations/facebook"); }
@@ -453,6 +456,8 @@ function choose(event: LiveEvent, instance: Occurrence) {
   youtubeSeriesStop.hidden = true;
   facebookForm.hidden = true;
   facebookTarget.value = "page";
+  facebookPrivacyLabel.hidden = true;
+  facebookPrivacy.value = "";
   facebookPageLabel.textContent = "Facebook Live Page";
   facebookLoad.textContent = "Load Facebook Live Pages";
   facebookPage.replaceChildren();
@@ -1187,11 +1192,12 @@ async function refreshFacebookAutoStatus() {
   const revision = ++facebookStatusRevision;
   const path = facebookBasePath();
   const page = facebookPage.value;
+  const privacyBefore = facebookPrivacy.value;
   facebookStatus.textContent = "";
   facebookCancel.disabled = true;
   facebookSeriesStop.disabled = true;
   try {
-    const result = await request<{state: string; series: boolean}>(`${path}/auto?page=${encodeURIComponent(page)}`);
+    const result = await request<{state: string; series: boolean; privacy?: string | null}>(`${path}/auto?page=${encodeURIComponent(page)}`);
     if (revision !== facebookStatusRevision || path !== facebookBasePath()) return;
     const labels: Record<string, string> = {
       queued: "Facebook Live will start when this occurrence is ready to stream.",
@@ -1202,6 +1208,9 @@ async function refreshFacebookAutoStatus() {
     facebookStatus.textContent = labels[result.state] ?? "";
     facebookCancel.disabled = !["queued", "failed"].includes(result.state);
     facebookSeriesStop.disabled = !result.series;
+    if (facebookProfile() && facebookPrivacy.value === privacyBefore) {
+      facebookPrivacy.value = result.privacy ?? "";
+    }
   } catch (error) {
     if (revision === facebookStatusRevision && path === facebookBasePath()) throw error;
   }
@@ -1214,6 +1223,7 @@ facebookTarget.onchange = () => {
   const profile = facebookProfile();
   facebookPageLabel.textContent = profile ? "Facebook profile" : "Facebook Live Page";
   facebookLoad.textContent = profile ? "Load Facebook profiles" : "Load Facebook Live Pages";
+  facebookPrivacyLabel.hidden = !profile;
 };
 facebookPage.onchange = () => void action(async () => {
   clearFacebookAsyncStatus();
@@ -1247,12 +1257,15 @@ facebookForm.onsubmit = event => {
   const page = facebookPage.value;
   const automatic = facebookAutomatic.checked;
   const series = automatic && !facebookSeriesControls.hidden && facebookSeries.checked;
+  const privacy = facebookProfile() ? (facebookPrivacy.value || null) : null;
   const revision = ++facebookStatusRevision;
   void action(async () => {
     facebookSubmit.disabled = true;
     try {
       const result = await request<{state: "prepared" | "unconfirmed" | "queued"}>(
-        automatic ? path + "/auto" : path, automatic ? "PUT" : "POST", {page, series});
+        automatic ? path + "/auto" : path,
+        automatic ? "PUT" : "POST",
+        facebookProfile() ? {page, series, privacy} : {page, series});
       if (revision !== facebookStatusRevision || path !== facebookBasePath()) return;
       facebookCancel.disabled = result.state !== "queued";
       if (result.state === "queued") {
