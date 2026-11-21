@@ -1,13 +1,13 @@
 # CuePorch by ForkCommons
-Version 0.2.0 · Windows, macOS and Linux
+Development version 0.3.0 · Windows, macOS and Linux
 
 Project site source: [docs/index.html](docs/index.html). Plain static HTML and CSS with no build step. To preview it, run `python -m http.server -d docs` and open http://localhost:8000/. It is written to be served by GitHub Pages from `/docs` on the default branch.
 
 CuePorch preserves and publishes video for public media stations and arts institutions. TypeScript drives the operator, creator and screening interfaces. Python owns the institutional service, Vimeo importer, grants and publication queue. The Rust desktop launcher starts the bundled service and opens your browser. PeerTube provides public hosting. CivicCast is optional.
 
-## Release baseline
+## Development status
 
-The installation and usage instructions below describe the public 0.2.0 release. This branch contains later development work.
+Full Vimeo parity is in development. The 0.2.0 installers have been withdrawn. The installation notes below describe the native package layout and setup flow. The next release will be tested on fresh installations on Windows, macOS, and Linux.
 
 ## Windows installation
 Double-click the signed Setup EXE, check the publisher is Scott Converse, and follow the wizard. Keep the suggested video library folder for a new institution. Open CuePorch from the Start menu. Enter your institution name and select **Save setup**, then **Open operator console**. To publish online, enter the HTTPS address and publishing credentials of an existing PeerTube host. Local library and exhibition workflows can start before a host is connected. A Windows desktop installation includes Python and FFmpeg. To provision a local video host, start a Docker-compatible Linux container engine and select **Set up a local video host**. Public hosting requires institution-controlled domains and HTTPS.
@@ -19,7 +19,7 @@ Stop the previous version and back up its complete private data directory and vi
 Install the native macOS package and open CuePorch in Applications, or install the Debian package and launch CuePorch from the applications menu. The Mac package uses an ad-hoc application signature and has no Apple notarization. The native launcher accepts --data PATH for a previous library and --headless for unattended runs. macOS defaults to ~/Library/Application Support/ForkCommons/CuePorch and Linux to $XDG_DATA_HOME/cueporch (normally ~/.local/share/cueporch).
 
 ## Use
-In **Move from Vimeo**, preview the owner account, transfer privately, then load the library and publish eligible imports. Supply the actual account owner's token when migrating from Vimeo. Check retrieval quality, captions, visibility and missing files before replacing embeds. For a museum loan, submit a private master, select its screening derivative and issue a separate timed grant for each exhibitor. The nine human approval switches default to automatic. Use **Quit CuePorch** on the desktop page before updating or backing up. Keep the private library folder and credentials outside the program installation folder.
+In **Move from Vimeo**, preview the owner account, transfer privately, then load the library and publish eligible imports. Supply the actual account owner's token when migrating from Vimeo. Check retrieval quality, captions, visibility and missing files before replacing embeds. For a museum loan, submit a private master, select its screening derivative and issue a separate timed grant for each exhibitor. All human approval switches default to automatic. Use **Quit CuePorch** on the desktop page before updating or backing up. Keep the private library folder and credentials outside the program installation folder.
 
 ## Build
 Install Python 3.13, Rust, Node.js with npm, the dependencies in requirements.txt, PyInstaller 6.17.0 and imageio-ffmpeg 0.6.0. Run python packaging/build.py build and then python packaging/build.py package on the target OS. Windows uses Inno Setup 6. The release process signs and verifies the native executables and the setup program through Scott Converse’s established Azure signing workflow before distributing them. The v0.1.0 tag preserves the prior runnable source.

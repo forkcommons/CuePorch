@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>{% if personal %}My connected apps{% else %}Integrations{% endif %} · CuePorch</title>
+<body{% if personal %} data-personal="1"{% endif %}>
+<main>
+  {% if personal %}
+  <nav aria-label="Team"><a href="/team">Back to team</a></nav>
+  {% else %}
+  {% include "operator_navigation.html" %}
+  {% endif %}
+  <h1>{% if personal %}My connected apps{% else %}Integrations{% endif %}</h1>
+  <form id="integrationAccess" method="post" hidden>
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open integrations</button>
+    <button type="button" id="integrationTeam">Use my team session</button>
+  </form>
+  <p id="integrationStatus" role="status" aria-live="polite"></p>
+  <section id="integrationDirectory" hidden aria-label="Integration directory">
+    <div>
+      <button type="button" id="discoverIntegrations" aria-pressed="true">Discover</button>
+      <button type="button" id="connectedIntegrations" aria-pressed="false">Connected</button>
+    </div>
+    <label>Find an integration <input type="search" id="findIntegration" maxlength="100"></label>
+    <label>Category
+      <select id="integrationCategory"><option value="">All categories</option></select>
+    </label>
+    <ul id="integrationList"></ul>
+    <p id="integrationEmpty" hidden>No integrations match.</p>
+  </section>
+  <section id="drivePicker" hidden aria-labelledby="drivePickerHeading">
+    <h2 id="drivePickerHeading">Import videos</h2>
+    <p id="cloudFolder" hidden>
+      <button type="button" id="cloudFolderUp">Parent folder</button>
+      <span id="cloudFolderPath"></span>
+    </p>
+    <form id="driveSearch" method="post">
+      <label>Video name <input type="search" name="videoName" maxlength="160"></label>
+      <button>Find videos</button>
+    </form>
+    <label>Library destination
+      <select id="driveDestination"></select>
+    </label>
+    <ul id="driveVideos"></ul>
+    <p id="driveEmpty" hidden>No downloadable videos on this page.</p>
+    <button type="button" id="driveMore" hidden>More videos</button>
+    <button type="button" id="importCloudSelection" hidden>Import selected videos</button>
+    <ul id="cloudBatchReceipts" aria-label="Selected import results" hidden></ul>
+    <p id="driveReceipt" aria-live="polite" hidden></p>
+    <section id="dropboxWatch" hidden aria-labelledby="dropboxWatchHeading">
+      <h3 id="dropboxWatchHeading">Dropbox auto-import</h3>
+      <p id="watchDescription">New videos in this Dropbox folder can be copied into the selected Library destination.</p>
+      <button type="button" id="enableDropboxWatch">Watch this folder</button>
+      <button type="button" id="disableDropboxWatch" hidden>Stop watching</button>
+      <button type="button" id="refreshDropboxWatch" hidden>Refresh watch status</button>
+      <p id="dropboxWatchStatus" role="status"></p>
+      <ul id="dropboxWatchJobs"></ul>
+    </section>
+  </section>
+</main>
+<script type="module" src="/static/ui/library_integrations.js"></script>
+</body>
+</html>

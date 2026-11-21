@@ -9,6 +9,7 @@ import uuid
 
 from flask import Response, abort, request
 
+import folder_slack_queue
 import review_notifications
 import review_push
 
@@ -54,10 +55,13 @@ def editorial_status(con, work, version):
 def set_editorial_status(con, work, version, status):
     if status not in STATUSES:
         abort(400, "Choose an available editorial status.")
+    approved = status == "Approved" and editorial_status(con, work, version) != status
     con.execute(
         "INSERT OR REPLACE INTO video_editorial_status VALUES(?,?,?)",
         (work, version, status),
     )
+    if approved:
+        folder_slack_queue.enqueue(con, work, "approval")
 
 
 def reviewer_token():
@@ -227,6 +231,8 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 con, uid, version, comment, reviewer_actor(), parent, targets
             )
             review_push.enqueue(con, uid, version, comment)
+            work = con.execute("SELECT work FROM review_link WHERE id=?", (uid,)).fetchone()
+            folder_slack_queue.enqueue(con, work["work"], "comment")
         return confidential(({"id": comment}, 201))
 
     @app.put("/review/<uid>/feedback/<version>/notices")
@@ -334,6 +340,37 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
             if not changed.rowcount:
                 abort(404)
         return confidential(("", 204))
+
+    @app.get("/review/<uid>/feedback/<version>/markers.json")
+    def review_markers(uid, version):
+        import json
+        with tx() as con:
+            export_access(con, uid, version)
+            comments = get_comments(con, uid, version, False)
+        markers = [
+            {
+                "id": row["id"],
+                "seconds": row["seconds"],
+                "author": row["author"],
+                "body": row["body"],
+            }
+            for row in comments
+            if row["parent"] is None
+        ]
+        payload = {
+            "schema": 1,
+            "version": version,
+            "markers": markers,
+        }
+        return confidential(
+            Response(
+                json.dumps(payload),
+                mimetype="application/json",
+                headers={
+                    "Content-Disposition": 'attachment; filename="cueporch-review-markers.json"'
+                },
+            )
+        )
 
     @app.get("/review/<uid>/feedback/<version>/comments.csv")
     def export_review_comments(uid, version):

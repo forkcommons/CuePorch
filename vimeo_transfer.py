@@ -1,13 +1,14 @@
 """Read-only Vimeo API transport and private, checkpointed collection migration."""
 
 import hashlib
+from http.client import HTTPException
 import json
 import os
 import re
 import tempfile
 import time
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -25,6 +26,15 @@ class SourceFailure(ValueError):
         super().__init__(
             f"Source returned HTTP {status}; resume to refresh source links"
         )
+
+
+class MediaFailure(ValueError):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
+INTERRUPTED = (URLError, HTTPException, ConnectionError, TimeoutError)
 
 
 class Source:
@@ -62,9 +72,7 @@ class Source:
                         delay = exc.headers.get("Retry-After", "2")
                         exc.close()
                         if not delay.isdigit() or int(delay) > 30:
-                            raise ValueError(
-                                "Source rate limit reached. Resume later."
-                            ) from None
+                            raise SourceFailure(429) from None
                         time.sleep(int(delay))
                         continue
                     if not authenticated and exc.code in (301, 302, 303, 307, 308):
@@ -106,12 +114,17 @@ class Source:
 
 
 def assets(video, tracks):
+    candidates = ((video.get("download") or []) + (video.get("files") or [])
+                  + ((video.get("play") or {}).get("progressive") or []))
     downloads = [
         f
-        for f in (video.get("download") or []) + (video.get("files") or [])
+        for f in candidates
         if f.get("link")
-        and f.get("quality") != "hls"
-        and f.get("type") != "application/x-mpegURL"
+        and f.get("quality") not in ("hls", "audio")
+        and f.get("rendition") not in ("adaptive", "audio")
+        and (f.get("type") or "").lower() not in (
+            "application/x-mpegurl", "application/vnd.apple.mpegurl", "application/dash+xml", "audio/mp4",
+        )
     ]
     if downloads:
         media = max(
@@ -134,6 +147,7 @@ def assets(video, tracks):
             media["link"],
             dict(role="original" if original else "playback", format=fmt),
             media.get("size"),
+            media.get("md5") or None,
         )
     for track in tracks:
         if not track.get("link"):
@@ -149,6 +163,7 @@ def assets(video, tracks):
                 source_track=track["uri"],
             ),
             None,
+            None,
         )
     pictures = [
         p for p in (video.get("pictures") or {}).get("sizes", []) if p.get("link")
@@ -158,24 +173,42 @@ def assets(video, tracks):
             max(pictures, key=lambda p: p["width"])["link"],
             dict(role="poster", format="image"),
             None,
+            None,
         )
 
 
-def store(root, source, link, expected):
+def store(root, source, link, expected, source_md5):
     digest = hashlib.sha256()
+    if source_md5 and (not isinstance(source_md5, str) or not re.fullmatch("[a-fA-F0-9]{32}", source_md5)):
+        raise MediaFailure("invalid_source_checksum")
+    source_digest = hashlib.md5(usedforsecurity=False) if source_md5 else None
     with tempfile.NamedTemporaryFile(dir=root, delete=False) as target:
         temporary = Path(target.name)
     try:
-        with temporary.open("wb") as target, source.open(link) as response:
+        try:
+            response = source.open(link)
+        except INTERRUPTED:
+            raise MediaFailure("media_connection_interrupted") from None
+        with response, temporary.open("wb") as target:
             announced = response.headers.get("Content-Length")
-            while block := response.read(1024 * 1024):
+            while True:
+                try:
+                    block = response.read(1024 * 1024)
+                except INTERRUPTED:
+                    raise MediaFailure("media_connection_interrupted") from None
+                if not block:
+                    break
                 target.write(block)
                 digest.update(block)
+                if source_digest:
+                    source_digest.update(block)
         size = temporary.stat().st_size
-        if not size or any(
-            n is not None and int(n) != size for n in (expected, announced)
-        ):
-            raise ValueError("Incomplete media transfer")
+        # The API size is approximate. Prefer the HTTP size and the supplied file digest.
+        length = announced if announced is not None else (None if source_digest else expected)
+        if not size or (length is not None and (not str(length).isdigit() or int(length) != size)):
+            raise MediaFailure("incomplete_media")
+        if source_digest and source_digest.hexdigest() != source_md5.lower():
+            raise MediaFailure("source_checksum_mismatch")
         key = digest.hexdigest()
         temporary.replace(root / "objects" / key)
         return dict(sha256=key, bytes=size)
@@ -254,18 +287,18 @@ def showcase_inventory(institution, source, account, video_ids):
     return result, None
 
 
-def migrate(institution, root, source, dry_run=False):
+def migrate(institution, root, source, dry_run=False, *, progress=None):
     from filelock import FileLock
 
     root.parent.mkdir(parents=True, exist_ok=True)
     with FileLock(str(root.parent / ("." + root.name + ".transfer.lock")), timeout=0):
         try:
-            return _migrate(institution, root, source, dry_run, refresh=True)
+            return _migrate(institution, root, source, dry_run, refresh=True, progress=progress)
         except RefreshLinks:
-            return _migrate(institution, root, source, dry_run, refresh=False)
+            return _migrate(institution, root, source, dry_run, refresh=False, progress=progress)
 
 
-def _migrate(institution, root, source, dry_run, refresh):
+def _migrate(institution, root, source, dry_run, refresh, progress):
     # The inventory is fully reconciled before creating local records or fetching files.
     videos = list(source.pages("/me/videos"))
     resource_ids = [v["uri"] for v in videos]
@@ -285,6 +318,8 @@ def _migrate(institution, root, source, dry_run, refresh):
     if job.exists() and json.loads(job.read_text(encoding="utf8")) != binding:
         raise ValueError("Source and destination do not match the previous migration")
     dump(job, binding)
+    if progress:
+        progress(0, len(videos))
     showcases, showcase_issue = showcase_inventory(institution, source, account,
                                                    {uri.split("/")[-1] for uri in resource_ids})
     (root / "objects").mkdir(exist_ok=True)
@@ -358,7 +393,12 @@ def _migrate(institution, root, source, dry_run, refresh):
         items = list(assets(video, tracks))
         checkpoint = root / "checkpoints" / (vid + ".json")
         revision = video.get("modified_time")
-        signature = [dict(meta, expected_bytes=size) for _, meta, size in items]
+        signature = []
+        for _, meta, size, source_md5 in items:
+            entry = dict(meta, expected_bytes=size)
+            if source_md5:
+                entry["expected_md5"] = source_md5
+            signature.append(entry)
         metadata = dict(record, files=[])
         if not dry_run and revision and checkpoint.exists():
             saved = json.loads(checkpoint.read_text(encoding="utf8"))
@@ -378,19 +418,25 @@ def _migrate(institution, root, source, dry_run, refresh):
                     if saved.get("caption_status"):
                         record["caption_status"] = saved["caption_status"]
         if not dry_run and not record["files"]:
-            for link, meta, size in items:
+            for link, meta, size, source_md5 in items:
                 try:
                     record["files"].append(
-                        dict(meta, **store(root, source, link, size))
+                        dict(meta, **store(root, source, link, size, source_md5))
+                    )
+                except MediaFailure as exc:
+                    record.setdefault("transfer_issues", []).append(
+                        dict(role=meta["role"], reason=exc.reason)
                     )
                 except SourceFailure as exc:
+                    if exc.status == 429:
+                        raise
                     if refresh and exc.status in (401, 403, 410):
                         raise RefreshLinks() from None
                     record.setdefault("transfer_issues", []).append(
                         dict(role=meta["role"], http_status=exc.status)
                     )
         roles = (
-            {meta["role"] for _, meta, _ in items}
+            {meta["role"] for _, meta, _, _ in items}
             if dry_run
             else {f["role"] for f in record["files"]}
         )
@@ -425,6 +471,8 @@ def _migrate(institution, root, source, dry_run, refresh):
                     ),
                 )
         works.append(record)
+        if progress:
+            progress(len(works), len(videos))
     manifest = dict(schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue)
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:

@@ -36,7 +36,8 @@ const audience = document.querySelector<HTMLElement>("#audienceChat");
 if (audience) {
   const section = audience;
   const path = section.dataset.endpoint!;
-  const viewer = document.querySelector<HTMLElement>("#eventLobby")?.dataset.viewerGrant || "";
+  const lobby = document.querySelector<HTMLElement>("#eventLobby");
+  const viewer = lobby?.dataset.viewerGrant || "";
   const form = section.querySelector<HTMLFormElement>("#sendChatMessage")!;
   const history = section.querySelector<HTMLOListElement>("#chatMessages")!;
   const notice = section.querySelector<HTMLElement>("#chatStatus")!;
@@ -70,6 +71,7 @@ if (audience) {
     try {
       const headers: Record<string, string> = {"X-CuePorch-Chat-Embed": section.dataset.embed || "no"};
       if (viewer) headers["X-CuePorch-Event-Viewer"] = viewer;
+      if (lobby?.dataset.audienceAccess) headers["X-CuePorch-Event-Access"] = lobby.dataset.audienceAccess;
       if (session) headers["X-CuePorch-Chat-Session"] = session;
       if (body) headers["Content-Type"] = "application/json";
       const response = await fetch(path, {method: body ? "POST" : "GET", headers,

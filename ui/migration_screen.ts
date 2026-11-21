@@ -1,3 +1,5 @@
+import { saveEmbedMap } from "./embed_map.js";
+
 const key = document.querySelector<HTMLInputElement>("input#key")!;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 const source = document.querySelector<HTMLInputElement>("input#source")!;
@@ -8,12 +10,32 @@ const rows = document.querySelector<HTMLTableSectionElement>("tbody#rows")!;
 const showcases = document.querySelector<HTMLElement>("#showcaseInventory")!;
 const showcaseIssue = document.querySelector<HTMLElement>("#showcaseInventoryIssue")!;
 const showcaseRows = document.querySelector<HTMLTableSectionElement>("#showcaseInventoryRows")!;
+const cutover = document.querySelector<HTMLElement>("#migrationCutover")!;
+const exportMap = document.querySelector<HTMLButtonElement>("#migrationExportMap")!;
+const cutoverStatus = document.querySelector<HTMLElement>("#migrationCutoverStatus")!;
+const summary = document.querySelector<HTMLElement>("#migrationSummary")!;
+const pagination = document.querySelector<HTMLElement>("#migrationPages")!;
+const pageNumber = document.querySelector<HTMLElement>("#migrationPageNumber")!;
+const previousPage = document.querySelector<HTMLButtonElement>("#migrationPreviousPage")!;
+const nextPage = document.querySelector<HTMLButtonElement>("#migrationNextPage")!;
+let currentPage = 1;
+const mediaIssueLabels: Record<string, string> = {
+  incomplete_media: "Incomplete download",
+  invalid_source_checksum: "Invalid Vimeo checksum",
+  source_checksum_mismatch: "Download did not match the Vimeo checksum",
+  media_connection_interrupted: "Media connection interrupted",
+};
 const headers = () => ({
   Authorization: "Bearer " + key.value,
   "Content-Type": "application/json",
 });
 async function run(dry: boolean) {
   inventory.disabled = transfer.disabled = true;
+  cutover.hidden = true;
+  cutoverStatus.textContent = "";
+  summary.textContent = "";
+  pagination.hidden = true;
+  currentPage = 1;
   statusBox.textContent = "Starting migration request…";
   try {
     const response = await fetch("/api/migration", {
@@ -32,16 +54,40 @@ function failed(error: unknown) {
   inventory.disabled = transfer.disabled = false;
   statusBox.textContent = error instanceof Error ? error.message : String(error);
 }
-async function poll() {
-  const r = await fetch("/api/migration", { headers: headers() });
+async function poll(page = currentPage) {
+  const r = await fetch("/api/migration?page=" + page, { headers: headers() });
   if (!r.ok) throw new Error(`Could not read migration progress (${r.status})`);
   const data = await r.json();
+  const active = data.state === "running" || data.state === "waiting";
+  inventory.disabled = transfer.disabled = active;
+  cutover.hidden = data.state !== "transferred";
   statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
+  if (data.counts) {
+    const dispositions = Object.entries(data.counts).map(([name, count]) => `${count} ${name}`);
+    summary.textContent = [`${data.total} videos`, ...dispositions,
+      `${data.metadata_incomplete} with unavailable source metadata`,
+      ...(data.transfer_incomplete ? [`${data.transfer_incomplete} with media errors`] : []),
+    ].join(" · ");
+  } else {
+    summary.textContent = typeof data.processed === "number"
+      ? `${data.processed} of ${data.total} videos processed` : "";
+  }
+  currentPage = data.page || 1;
+  pagination.hidden = !data.pages || data.pages < 2;
+  pageNumber.textContent = `Page ${currentPage} of ${data.pages || 1}`;
+  previousPage.disabled = currentPage <= 1;
+  nextPage.disabled = currentPage >= (data.pages || 1);
   rows.replaceChildren();
   for (const w of data.works || []) {
     const row = rows.insertRow();
     for (const v of [w.title, w.source_id, w.disposition, w.source_privacy])
       row.insertCell().textContent = v;
+    const exceptions = [
+      ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
+      ...(w.transfer_issues || []).map((issue: {role: string; http_status?: number; reason?: string}) =>
+        `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
+    ];
+    row.insertCell().textContent = exceptions.join(", ") || "None reported";
   }
   const albums = data.showcases || [];
   showcases.hidden = !albums.length && !data.showcase_issue;
@@ -63,8 +109,27 @@ async function poll() {
     }
     if (album.issues.length) target.append(" " + album.issues.join(" "));
   }
-  if (["running", "waiting"].includes(data.state)) setTimeout(() => void poll().catch(failed), 750);
-  else inventory.disabled = transfer.disabled = false;
+  if (active) setTimeout(() => void poll().catch(failed), 750);
 }
 inventory.onclick = () => run(true);
 transfer.onclick = () => run(false);
+previousPage.onclick = () => void poll(currentPage - 1).catch(failed);
+nextPage.onclick = () => void poll(currentPage + 1).catch(failed);
+exportMap.onclick = async () => {
+  exportMap.disabled = true;
+  cutoverStatus.textContent = "";
+  try {
+    const response = await fetch("/api/embed-map.csv", { headers: headers() });
+    if (!response.ok) throw new Error(`Could not download the embed map (${response.status}).`);
+    await saveEmbedMap(response);
+    cutoverStatus.textContent = "Embed map downloaded.";
+  } catch (error) {
+    cutoverStatus.textContent = error instanceof Error ? error.message : "Could not download the embed map.";
+  } finally {
+    exportMap.disabled = false;
+  }
+};
+if (key.value) {
+  inventory.disabled = transfer.disabled = true;
+  void poll().catch(failed);
+}

@@ -32,6 +32,7 @@ class Policy(unittest.TestCase):
                 app = create_app(library, root / (name + ".db"), secret, name)
                 services.callback(app.extensions["stop_event_capture"])
                 services.callback(app.extensions["stop_editor"])
+                services.callback(app.extensions["stop_file_links"])
                 return app.test_client()
 
             first = institution("station")

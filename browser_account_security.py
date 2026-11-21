@@ -5,7 +5,7 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
-from flask import abort, make_response, request
+from flask import abort, current_app, make_response, request
 
 from library_analytics import source_origin
 from library_registration import EMAIL
@@ -57,16 +57,20 @@ def is_loopback(value):
         return False
 
 
-def secure_site(public_origin):
+def secure_site(public_origin, required=True):
     site = source_origin(request.host_url)
     if site == "Unknown":
-        abort(400)
+        if required:
+            abort(400)
+        return None
     host = urlsplit(site).hostname
     if request.is_secure or (public_origin.startswith("https://") and
                              source_origin("https://" + request.host) == public_origin):
         return True
     if not is_loopback(host) or not is_loopback(request.remote_addr):
-        abort(403, "Open CuePorch using its HTTPS address.")
+        if required:
+            abort(403, "Open CuePorch using its HTTPS address.")
+        return None
     return False
 
 
@@ -96,3 +100,21 @@ def set_session_cookie(response, name, secure, lifetime, token):
     else:
         response.delete_cookie(name, **flags)
     return response
+
+
+def account_cookie(kind, secure):
+    return ("__Host-" if secure else "") + "cueporch-" + kind
+
+
+def workspace_session(kind, secure):
+    legacy = account_cookie(kind, secure)
+    scoped = f"{legacy}-{current_app.config['WORKSPACE_COOKIE_SCOPE']}"
+    return cookie_session(scoped) or cookie_session(legacy)
+
+
+def workspace_session_cookie(response, kind, secure, lifetime, token):
+    legacy = account_cookie(kind, secure)
+    scoped = f"{legacy}-{current_app.config['WORKSPACE_COOKIE_SCOPE']}"
+    if legacy in request.cookies:
+        set_session_cookie(response, legacy, secure, lifetime, None)
+    return set_session_cookie(response, scoped, secure, lifetime, token)

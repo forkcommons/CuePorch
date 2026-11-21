@@ -1,4 +1,4 @@
-import { drawRecording, drawTileGrid, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
+import { drawRecording, drawStudioLogo, drawTileGrid, mediaPreview, recordingMime, recordingSize } from "./recording_composition.js";
 import { openRecordingStorage } from "./recording_draft.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { BrowserBroadcast } from "./event_broadcast.js";
@@ -7,6 +7,8 @@ import { relaySummary } from "./event_health.js";
 import { StudioAudio } from "./studio_audio.js";
 import { setupStudioEngagement } from "./studio_engagement.js";
 import { setupSpeakers } from "./studio_speakers.js";
+import { StudioPrompter } from "./studio_prompter.js";
+import { studioScriptGenerator } from "./studio_script_generator.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const select = (id) => element(id);
@@ -20,8 +22,8 @@ const audioPanel = element("studioAudio");
 const film = element("takePreview");
 const title = input("recordTitle");
 const folder = select("recordFolder");
-const script = element("recordScript");
-const prompter = element("recordPrompter");
+const prompter = new StudioPrompter(() => camera?.stream.getAudioTracks().find(track => track.readyState === "live"), () => key.value);
+const loadScripts = studioScriptGenerator(() => key.value);
 const liveText = element("recordTime");
 const draftList = element("recordDrafts");
 const canvasStream = () => canvas.captureStream(30);
@@ -29,6 +31,7 @@ const broadcastEndpoint = document.body.dataset.eventBroadcast || "";
 const healthEndpoint = document.body.dataset.eventHealth;
 const relayHealth = document.querySelector("#studioRelayHealth");
 const mode = document.querySelector("#browserProductionMode");
+const recordKit = document.querySelector("#recordBrandKit");
 const sceneEndpoint = document.body.dataset.sceneEndpoint;
 const scenes = sceneEndpoint ? setupSceneDeck(sceneEndpoint, () => key.value, sceneChanged, selectClipAudio) : null;
 const speakerEndpoint = document.body.dataset.speakerEndpoint;
@@ -45,7 +48,8 @@ let studioClip;
 let busy = false;
 let pictureStream = null;
 let lastPaint = performance.now();
-let scrollTop = 0;
+let recordingLogo = null;
+let kitLoading = false;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 title.value = "Recording " + new Date().toLocaleDateString();
 function message(error) {
@@ -64,7 +68,7 @@ function closeSource(source) {
 }
 function updateControls() {
     const running = Boolean(active);
-    button("beginRecord").disabled = busy || running || !ready();
+    button("beginRecord").disabled = busy || running || kitLoading || !ready();
     const live = mode?.value === "broadcast";
     button("beginRecord").textContent = live ? "Go live" : "Start recording";
     button("pauseRecord").hidden = !running || Boolean(active?.broadcast);
@@ -81,7 +85,7 @@ function updateControls() {
     button("releaseScreen").hidden = !screen;
     button("saveRecord").disabled = !take || running || busy;
     button("downloadRecord").disabled = !take || running || busy;
-    prompter.hidden = Boolean(screen) || !script.value.trim();
+    prompter.setContext(Boolean(screen), Boolean(active?.paused));
     button("pipRecord").hidden = !document.pictureInPictureEnabled || !canvas.captureStream;
 }
 function sceneChanged() {
@@ -178,17 +182,16 @@ function draw(now) {
     else if (!painted) {
         drawRecording(context, options, presenter, screen?.preview || null);
     }
+    if (recordingLogo)
+        drawStudioLogo(context, recordingLogo);
     if (graphic)
         engagement?.paint(context, graphic);
     audio?.updateMeters();
     if (active) {
         const elapsed = Math.max(0, ((active.paused || now) - active.started - active.pausedTotal) / 1000);
         liveText.textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
-        if (!active.paused && !prompter.hidden) {
-            scrollTop += Math.min(100, now - lastPaint) * .023 * Number(select("recordScroll").value);
-            prompter.scrollTop = scrollTop;
-        }
     }
+    prompter.scroll(now - lastPaint);
     lastPaint = now;
 }
 function resize() {
@@ -270,8 +273,6 @@ if (mode)
     mode.onchange = updateControls;
 updateControls();
 select("recordQuality").onchange = select("recordRatio").onchange = resize;
-script.oninput = () => { prompter.textContent = script.value; updateControls(); };
-input("recordFont").oninput = () => { prompter.style.fontSize = input("recordFont").value + "px"; };
 function draftTitle(draft) {
     return draft.title || "Recording";
 }
@@ -347,7 +348,7 @@ async function start() {
                 persisted = false;
             }
         }
-        const session = { recorder, output: stream, draft, started: performance.now(),
+        const session = { recorder, output: stream, draft, started: 0,
             paused: 0, pausedTotal: 0, parts: [], sequence: 0,
             store: persisted, persistence: Promise.resolve(), storageError: false,
             broadcast: null, broadcastIssue: false };
@@ -385,9 +386,11 @@ async function start() {
         film.hidden = true;
         film.removeAttribute("src");
         film.load();
-        scrollTop = prompter.scrollTop = 0;
         recorder.start(broadcast ? 500 : 1000);
+        session.started = performance.now();
+        liveText.textContent = "0:00";
         active = session;
+        prompter.start();
         status.textContent = broadcast ? "Sending the live broadcast and keeping a local recording."
             : persisted ? "Recording." : "Recording. Save this take before leaving Studio.";
     }
@@ -411,6 +414,7 @@ function stop() {
 }
 async function finish(session) {
     busy = true;
+    prompter.stop();
     session.output.getTracks().forEach(track => track.stop());
     active = null;
     closeSource(camera);
@@ -509,6 +513,9 @@ element("recordDestination").onsubmit = event => {
             catch {
                 status.textContent = "Recording saved to the library. The browser still holds a local draft.";
             }
+            if (document.body.dataset.embedded === "timeline" && window.parent !== window) {
+                window.parent.postMessage({ type: "cueporch-recording-saved", work: receipt.id }, location.origin);
+            }
         }
         finally {
             busy = false;
@@ -534,6 +541,7 @@ async function open() {
     sessionStorage.setItem("cueporchOperator", key.value);
     identity.hidden = true;
     element("recordStudio").hidden = false;
+    void loadScripts();
     if (!navigator.mediaDevices) {
         element("recordSources").disabled = true;
         status.textContent = "Open Studio on localhost or HTTPS to access recording devices.";
@@ -549,7 +557,51 @@ async function open() {
         await listDevices();
     if (scenes)
         await scenes.load().catch(message);
+    if (recordKit)
+        void loadRecordKits(recordKit).catch(message);
     requestAnimationFrame(draw);
+}
+async function loadRecordKits(picker) {
+    const response = await fetch("/api/library/brand-kits", { headers: { Authorization: "Bearer " + key.value } });
+    if (!response.ok)
+        throw new Error("Brand kits could not be loaded.");
+    const shelf = await response.json();
+    picker.replaceChildren(new Option("None", ""), ...shelf.kits.map(kit => new Option(kit.name, kit.id)));
+    const color = input("recordColor");
+    let unbrandedColor;
+    let applied = "";
+    picker.onchange = () => run(async () => {
+        const kit = shelf.kits.find(item => item.id === picker.value);
+        kitLoading = picker.disabled = true;
+        updateControls();
+        try {
+            const source = kit?.style.logo && shelf.logos[kit.style.logo];
+            let logo = null;
+            if (source) {
+                logo = new Image();
+                logo.src = source;
+                await logo.decode();
+            }
+            if (kit) {
+                unbrandedColor ??= color.value;
+                color.value = kit.style.background;
+            }
+            else if (unbrandedColor) {
+                color.value = unbrandedColor;
+                unbrandedColor = undefined;
+            }
+            recordingLogo = logo;
+            applied = picker.value;
+        }
+        catch (error) {
+            picker.value = applied;
+            throw error;
+        }
+        finally {
+            kitLoading = picker.disabled = false;
+            updateControls();
+        }
+    });
 }
 identity.onsubmit = event => { event.preventDefault(); run(open); };
 if (key.value)

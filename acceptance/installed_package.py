@@ -1,23 +1,25 @@
-"""Exercise the actual installed launcher on a new institution and on 0.1.0 data."""
+"""Exercise the installed launcher or run a fresh headless source rehearsal."""
 
-import argparse, hashlib, json, os, socket, subprocess, sys, tempfile, threading, time
+import argparse, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from contextlib import ExitStack
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from demo_source import build_server
 from browser import chromium
-from installed_library import check_folders
+from installed_library import check_bulk_library, check_folders
 from installed_trash import check_private
 from installed_cards import check_cards
 from installed_versions import check_versions, generate_replacement
 from installed_review_links import check_review_defaults, check_review_links
 from installed_upload import check_uploads
 from installed_privacy import check_folder_privacy, check_privacy, check_privacy_defaults
-from installed_migrated_privacy import check_migrated_privacy
+from installed_migrated_privacy import TRANSFER_PASSWORD, check_migrated_privacy
 from installed_video_details import check_imported_video_details, check_video_details, check_workspace
+from installed_panorama import check_panorama
 from installed_embed_builder import check_embed_builder
+from installed_file_links import check_file_links
 from installed_appearance import check_appearance
 from installed_languages import check_languages
 from installed_audio_tracks import check_audio_tracks
@@ -33,18 +35,22 @@ from installed_discovery import check_discovery
 from installed_audience_accounts import check_audience_accounts
 from installed_audience_collections import check_audience_collections
 from installed_audience_comments import check_audience_comments
-from installed_team_accounts import check_team_accounts
+from installed_team_accounts import PASSWORD as TEAM_PASSWORD, TEAM, check_team_accounts
+from installed_workspaces import check_workspaces
 from installed_regions import PROXY_ADDRESS
 from installed_editing import check_editing, fixture as editor_fixture
-from installed_events import check_event_calendar, check_event_chat, check_event_engagement
-from installed_recording import check_recording
+from installed_events import check_event_calendar, check_event_chat, check_event_embed_policy, check_event_engagement, check_event_setup
+from installed_events import check_event_regions, check_restricted_events
+from installed_recording import check_recording, check_voice_prompter
 from installed_showcases import check_showcases, check_transferred_showcase
 from installed_timeline import check_timeline, timeline_fixtures
+from installed_brand_kits import check_brand_kits, check_studio_brand_kits
 
 p = argparse.ArgumentParser()
 p.add_argument("launcher", type=Path)
 p.add_argument("baseline", type=Path)
 p.add_argument("report", type=Path)
+p.add_argument("--source", action="store_true", help="Run desktop_service.py as the launcher for a fresh rehearsal")
 p.add_argument("--review-push", action="store_true", help="Use the local encrypted review push receiver")
 p.add_argument("--caption-speech", type=Path, help="Synthetic narration for the installed local TextFlowKit runtime")
 p.add_argument(
@@ -65,6 +71,12 @@ focused.add_argument("--discovery-only", action="store_true", help="Test migrati
 focused.add_argument("--audience-accounts-only", action="store_true", help="Test migration, discovery and viewer accounts on the installed package")
 focused.add_argument("--audio-tracks-only", action="store_true", help="Test migration and alternate audio on the installed package")
 focused.add_argument("--team-only", action="store_true", help="Test migration and team access on the installed package")
+focused.add_argument("--cutover-only", action="store_true", help="Test Vimeo migration, team access and embed replacement")
+focused.add_argument("--creator-only", action="store_true", help="Test recording, timeline editing and render recovery")
+focused.add_argument("--library-batch-only", action="store_true", help="Test bulk Library operations and individual playback")
+focused.add_argument("--panorama-only", action="store_true", help="Test migration and browser panoramic video playback")
+focused.add_argument("--brand-kits-only", action="store_true", help="Test branding in the player and the timeline")
+focused.add_argument("--event-setup-only", action="store_true", help="Test event presets, reuse, calendar and audience settings")
 p.add_argument("--analytics-region-proxy", action="store_true",
                help="Exercise the trusted region source and tracking opt-outs using a second loopback IP")
 p.add_argument("--analytics-bandwidth", action="store_true", help="Measure real ranged and full media responses")
@@ -72,11 +84,19 @@ p.add_argument("--analytics-unique", action="store_true", help="Check distinct v
 p.add_argument("--analytics-captions", action="store_true", help="Check usage of captions actually shown during playback")
 p.add_argument("--analytics-community", action="store_true", help="Check audience likes and published comment reporting")
 args = p.parse_args()
+if args.source and (args.only != "fresh" or args.windows_setup or args.windows_baseline_setup):
+    p.error("--source requires --only fresh and runs without an installer")
 if args.windows_baseline_setup and not args.windows_setup:
     p.error("--windows-baseline-setup requires --windows-setup")
 if args.only == "0.2.0" and not args.windows_baseline_setup:
     p.error("--only 0.2.0 requires --windows-baseline-setup")
 results = []
+
+
+def save_report():
+    execution = "source" if args.source else "installed"
+    report = [dict(result, execution=execution) for result in results]
+    args.report.write_text(json.dumps(report, indent=2), encoding="utf8")
 
 
 def serve(server):
@@ -126,7 +146,7 @@ def wait_for_desktop(proc, home):
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"{home.name}: installed service exited with code {proc.returncode}")
+            raise RuntimeError(f"{home.name}: CuePorch service exited with code {proc.returncode}")
         try:
             return json.loads(marker.read_text(encoding="utf8"))["url"]
         except (FileNotFoundError, PermissionError, json.JSONDecodeError):
@@ -134,6 +154,131 @@ def wait_for_desktop(proc, home):
     service_log = home / "service.log"
     log_size = service_log.stat().st_size if service_log.is_file() else None
     raise TimeoutError(f"{home.name}: no readable desktop session after 60 seconds. Service log bytes: {log_size}")
+
+
+def start_candidate(home, env):
+    launcher = str(args.launcher.resolve())
+    if args.source:
+        home.mkdir(parents=True, exist_ok=True)
+        with (home / "service.log").open("ab") as log:
+            return subprocess.Popen([sys.executable, launcher, "--data", str(home)],
+                                    stdout=log, stderr=log, env=env)
+    return subprocess.Popen([launcher, "--data", str(home), "--headless"], env=env)
+
+
+def stop_candidate(proc):
+    if proc.poll() is None:
+        import psutil
+
+        for child in psutil.Process(proc.pid).children(recursive=True):
+            child.terminate()
+        proc.terminate()
+        proc.wait()
+
+
+def prepare_recovery(base, auth, email):
+    def owner(method, path, body=None):
+        response = requests.request(method, base + path, headers=TEAM | auth, json=body, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    roster = owner("GET", "/api/team/members")
+    member = next(row["id"] for row in roster["members"] if row["email"] == email)
+    folders = owner("GET", "/api/library/folders")
+    parent = next(folder["id"] for folder in folders if folder["name"] == "Station programs")
+    group = owner("POST", "/api/team/groups", dict(name="Archive editors", members=[member], folders=[parent],
+                                                   edit_folders=[parent]))
+    inventory = owner("GET", "/api/library")
+    works = {work["title"]: work["id"] for work in inventory if work["quality"] != "owner file needed"}
+    public = owner("PUT", f"/api/library/work/{works['Station meeting']}/source-privacy", {})
+    restricted = owner("GET", f"/api/library/work/{works['Migrated password']}")
+    return group["id"], public["paths"]["watch"], restricted["embed"]
+
+
+def rehearse_workspace_switch(page, browser, base, home, env, auth, email, private_work, group):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    second = f"http://127.0.0.1:{port}"
+    directory = home.with_name(home.name + "-arts")
+    proc = start_candidate(directory, env | {"CUEPORCH_DESKTOP_PORT": str(port)})
+    try:
+        desktop = wait_for_desktop(proc, directory)
+        shell = {"Authorization": "Bearer " + desktop.split("#", 1)[1]}
+        requests.post(second + "/desktop/api/setup", headers=shell, timeout=15,
+                      json={"institution": "Independent arts workspace"}).raise_for_status()
+        keys = json.loads((directory / "operator.json").read_text(encoding="utf8"))
+        other_auth = {"Authorization": "Bearer " + keys["operator"]}
+        receipt = check_workspaces(page, browser, base, auth, second, other_auth, email, private_work, group)
+        shut_down(proc, second, desktop, directory)
+        return receipt
+    finally:
+        stop_candidate(proc)
+
+
+def rehearse_account_restore(browser, base, home, env, auth, email, private_work, recovery, museum, venue):
+    group, public_link, restricted_embed, work_ids, rendition_link = recovery
+    snapshot = home.with_name(home.name + "-recovered")
+    portable = home.with_name(home.name + "-portable")
+    export = Path(__file__).resolve().parents[1] / "export_institution.py"
+    subprocess.run([sys.executable, str(export), str(home / "collection"), str(home / "institution.sqlite"),
+                    str(portable)], check=True)
+    rights = json.loads((portable / "rights-and-routes.json").read_text(encoding="utf8"))
+    editor = next(member for member in rights["team_member"] if member["email"] == email)
+    assert "password_hash" not in editor and not {"team_session", "team_invitation"} & rights.keys()
+    assert any(edge["team_group"] == group and edge["member"] == editor["id"] for edge in rights["team_group_member"])
+    assert any(edge["team_group"] == group and edge["permission"] == "edit" for edge in rights["team_group_folder"])
+    assert any(row["work"] == private_work for row in rights["library_video_details"])
+    assert any(row["work"] == public_link.rsplit("/", 1)[1] for row in rights["video_file_link"])
+    brand, = rights["team_branding"]
+    assert brand["label"] == "Station archive" and brand["artwork"]["mime"] == "image/jpeg"
+    hashes = json.loads((portable / "SHA256.json").read_text(encoding="utf8"))
+    for file, digest in hashes.items():
+        with (portable / file).open("rb") as media:
+            assert hashlib.file_digest(media, "sha256").hexdigest() == digest
+
+    shutil.copytree(home, snapshot, ignore=shutil.ignore_patterns("desktop-session.json", "desktop.lock", "service.log"))
+    proc = start_candidate(snapshot, env)
+    previous = museum.embed
+    try:
+        desktop = wait_for_desktop(proc, snapshot)
+        response = requests.get(base + "/api/library", headers=auth, timeout=10)
+        response.raise_for_status()
+        assert {work["id"] for work in response.json()} == work_ids
+        rendition = requests.get(base + rendition_link, headers={"Range": "bytes=0-63"}, timeout=10)
+        assert rendition.status_code == 206 and len(rendition.content) == 64
+        with browser.new_context() as guest:
+            restored = guest.new_page()
+            assert restored.goto(base + "/watch").ok
+            expect(restored.locator(".workspace-mark")).to_have_text("Station archive")
+            assert restored.locator(".workspace-mark img").evaluate("async img => {await img.decode(); return img.naturalWidth}") == 48
+            assert restored.goto(base + public_link).ok
+            assert restored.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == 320
+            museum.embed = base + restricted_embed
+            restored.goto(venue)
+            frame = restored.frame_locator("iframe")
+            expect(frame.get_by_label("Video password")).to_be_visible()
+            frame.get_by_label("Video password").fill(TRANSFER_PASSWORD)
+            frame.get_by_role("button", name="Watch video").click()
+            width = frame.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}")
+            assert width == 320
+            media = f"{base}/team/video/{private_work}/media"
+            assert guest.request.get(media).status == 401
+            assert guest.request.post(base + "/api/team/session", headers=TEAM,
+                                      data={"email": email, "password": TEAM_PASSWORD}).ok
+            restored.goto(base + "/team")
+            restored.get_by_role("link", name="Exhibition cut", exact=True).click()
+            expect(restored.get_by_role("link", name="Edit video details")).to_be_visible()
+            assert restored.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth}") == 320
+            assert requests.get(media, timeout=10).status_code == 401
+        shut_down(proc, base, desktop, snapshot)
+        return dict(offline_copy_recovered=True, portable_hash_files=len(hashes), retained_inventory=len(work_ids),
+                    protected_embed_width=width, public_and_group_video_width=320,
+                    source_rights_and_edit_group_retained=True, portable_team_secrets_excluded=True,
+                    migrated_direct_link_recovered=True, workspace_branding_restored=True)
+    finally:
+        museum.embed = previous
+        stop_candidate(proc)
 
 
 def prepare_previous_windows(home, source, venue):
@@ -221,7 +366,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
 
         push_fixture = setup.enter_context(push_receiver(root))
     replacement = generate_replacement(root / "replacement.mp4")
-    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only):
+    if not (args.analytics_only or args.discovery_only or args.audience_accounts_only or args.audio_tracks_only
+            or args.team_only or args.cutover_only or args.library_batch_only or args.panorama_only or args.event_setup_only):
         editor_master = root / "editor-master.mp4"
         editor_fixture(editor_master)
         timeline_green, timeline_music = timeline_fixtures(root)
@@ -238,7 +384,8 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
         for version in baselines:
             if args.only and args.only != (version or "fresh"):
                 continue
-            print(f"Running installed baseline {version or 'fresh'}", flush=True)
+            target = "source" if args.source else "installed"
+            print(f"Running {target} rehearsal ({version or 'fresh'})", flush=True)
             upgrade = version is not None
             home = root / ("upgrade-" + version if upgrade else "new")
             if version == "0.2.0":
@@ -269,19 +416,17 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                 port = sock.getsockname()[1]
             base = f"http://127.0.0.1:{port}"
             analytics_env = {"CUEPORCH_ANALYTICS_PROXIES": PROXY_ADDRESS} if args.analytics_region_proxy else {}
-            proc = subprocess.Popen(
-                [str(args.launcher.resolve()), "--data", str(home), "--headless"],
-                env=dict(
-                    os.environ,
-                    CUEPORCH_DESKTOP_PORT=str(port),
-                    CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
-                    CUEPORCH_SIMULATOR=source,
-                ) | (push_fixture["env"] if push_fixture else {}) | analytics_env,
-            )
+            candidate_env = dict(
+                os.environ,
+                CUEPORCH_DESKTOP_PORT=str(port),
+                CUEPORCH_OPERATOR_KEYS=json.dumps({"Second operator": "fixture-distinct-operator-key"}),
+                CUEPORCH_SIMULATOR=source,
+            ) | (push_fixture["env"] if push_fixture else {}) | analytics_env
+            proc = start_candidate(home, candidate_env)
             try:
                 desktop = wait_for_desktop(proc, home)
                 with sync_playwright() as pw:
-                    browser = chromium(pw)
+                    browser = chromium(pw, args=["--enable-unsafe-swiftshader"] if args.panorama_only else None)
                     page = browser.new_page()
                     page.goto(desktop)
                     setup_seconds = None
@@ -376,14 +521,46 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                         "async v=>{v.muted=true;await v.play();return v.videoWidth}"
                     )
                     assert width > 0
-                    if args.team_only:
-                        team = check_team_accounts(page, browser, base, auth, replacement)
+                    if args.panorama_only:
+                        panorama = check_panorama(page, browser, base, auth, museum, venue, replacement)
+                        migration = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
+                        panorama.update(check_imported_video_details(base, auth))
+                        results.append(dict(panorama=panorama, migrated_playback_width=width, cutover=migration))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
+                    if args.library_batch_only:
+                        batches = check_bulk_library(page, base, auth, replacement)
+                        results.append(dict(library=library_result, library_batches=batches, migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
+                    if args.team_only or args.cutover_only:
+                        team, contributor_email = check_team_accounts(page, browser, base, auth, replacement, copy)
                         results.append(dict(upgrade=upgrade, baseline=version, inventory=3, missing_media=1,
                                             repeat_ids_unique=True, anonymous_denied=True, playback_width=width,
                                             setup_seconds=setup_seconds, team=team))
-                        browser.close()
+                        if args.cutover_only:
+                            results[-1]["cutover"] = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
+                            recovery = prepare_recovery(base, auth, contributor_email)
+                            results[-1]["workspaces"] = rehearse_workspace_switch(
+                                page, browser, base, home, candidate_env, auth, contributor_email, copy["work"], recovery[0],
+                            )
+                            files = check_file_links(page, browser, base, auth, venue, root, recovery[1], copy["work"])
+                            rendition_link = files.pop("migrated_video_link")
+                            results[-1]["file_links"] = files
+                            inventory = requests.get(base + "/api/library", headers=auth, timeout=10)
+                            inventory.raise_for_status()
+                            recovery += ({work["id"] for work in inventory.json()}, rendition_link)
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        if args.cutover_only:
+                            results[-1]["recovery"] = rehearse_account_restore(
+                                browser, base, home, candidate_env, auth, contributor_email, copy["work"], recovery, museum, venue,
+                            )
+                        browser.close()
+                        save_report()
                         continue
                     if args.discovery_only or args.audience_accounts_only:
                         discovery = check_discovery(page, browser, base, auth, replacement)
@@ -397,7 +574,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             results[-1]["audience_comments"] = check_audience_comments(browser, base, auth, replacement)
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     if args.audio_tracks_only:
                         audio = check_audio_tracks(page, browser, base, auth, museum, venue, replacement)
@@ -406,7 +583,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             playback_width=width, setup_seconds=setup_seconds, audio=audio))
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
                         continue
                     if args.analytics_only:
                         if args.analytics_captions:
@@ -431,7 +608,43 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                             advanced_analytics=advanced))
                         browser.close()
                         shut_down(proc, base, desktop, home)
-                        args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                        save_report()
+                        continue
+                    if args.creator_only:
+                        recording = check_recording(pw, base, auth, timeline_green)
+                        if args.caption_speech:
+                            recording["voice_prompter"] = check_voice_prompter(pw, base, auth, args.caption_speech)
+                        timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
+                                                  home / "institution.sqlite")
+                        results.append(dict(recording=recording, timeline=timeline, migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
+                    if args.brand_kits_only:
+                        timeline = check_timeline(page, browser, base, auth, editor_master, timeline_green, timeline_music,
+                                                  home / "institution.sqlite")
+                        brands = check_brand_kits(page, browser, base, auth, home, timeline_green)
+                        studio = check_studio_brand_kits(page, base, auth, pw, args.caption_speech)
+                        results.append(dict(timeline=timeline, brand_kits=brands, studio_brand_kits=studio,
+                                            migrated_playback_width=width))
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
+                        continue
+                    if args.event_setup_only:
+                        results.append(dict(event_calendar=check_event_calendar(page, base, auth),
+                                            event_chat=check_event_chat(page, browser, base, auth),
+                                            event_engagement=check_event_engagement(page, browser, base, auth),
+                                            event_setup=check_event_setup(page, base, auth),
+                                            event_embed_policy=check_event_embed_policy(page, browser, base, auth, museum, venue),
+                                            restricted_events=check_restricted_events(page, browser, base, auth, museum, venue),
+                                            migrated_playback_width=width))
+                        if args.analytics_region_proxy:
+                            results[-1]["event_regions"] = check_event_regions(page, browser, base, auth)
+                        browser.close()
+                        shut_down(proc, base, desktop, home)
+                        save_report()
                         continue
                     versions_result = check_versions(
                         page, base, auth, copy, grant, venue, museum.embed, replacement,
@@ -470,7 +683,9 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                                                                   verify_unique=args.analytics_unique,
                                                                   verify_captions=args.analytics_captions)
                     editing = check_editing(page, browser, base, auth, home / "collection", editor_master)
-                    recording = check_recording(pw, base, auth)
+                    recording = check_recording(pw, base, auth, timeline_green)
+                    if args.caption_speech:
+                        recording["voice_prompter"] = check_voice_prompter(pw, base, auth, args.caption_speech)
                     timeline = check_timeline(
                         page, browser, base, auth, editor_master, timeline_green, timeline_music,
                         home / "institution.sqlite",
@@ -479,12 +694,17 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                     event_calendar = check_event_calendar(page, base, auth)
                     event_chat = check_event_chat(page, browser, base, auth)
                     event_engagement = check_event_engagement(page, browser, base, auth)
+                    event_setup = check_event_setup(page, base, auth)
+                    event_embed_policy = check_event_embed_policy(page, browser, base, auth, museum, venue)
+                    restricted_events = check_restricted_events(page, browser, base, auth, museum, venue)
+                    event_regions = check_event_regions(page, browser, base, auth) if args.analytics_region_proxy else None
                     trash_result = check_private(
                         page, base, auth, home / "institution.sqlite", copy["work"], grant, museum.embed,
                         download_url,
                     )
                     migrated_privacy = check_migrated_privacy(page, browser, base, auth, src, museum, venue)
                     details.update(check_imported_video_details(base, auth))
+                    batches = check_bulk_library(page, base, auth, replacement)
                     browser.close()
                     results.append(
                         dict(
@@ -496,6 +716,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             playback_width=width,
                             anonymous_denied=True,
                             library=library_result,
+                            library_batches=batches,
                             card_actions=card_result,
                             video_versions=versions_result,
                             review_links=review_result,
@@ -517,18 +738,16 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as setup:
                             event_calendar=event_calendar,
                             event_chat=event_chat,
                             event_engagement=event_engagement,
+                            event_setup=event_setup,
+                            event_embed_policy=event_embed_policy,
+                            restricted_events=restricted_events,
+                            event_regions=event_regions,
                         )
                     )
                 shut_down(proc, base, desktop, home)
-                args.report.write_text(json.dumps(results, indent=2), encoding="utf8")
+                save_report()
             finally:
-                if proc.poll() is None:
-                    import psutil
-
-                    for child in psutil.Process(proc.pid).children(recursive=True):
-                        child.terminate()
-                    proc.terminate()
-                    proc.wait()
+                stop_candidate(proc)
     finally:
         src.shutdown()
         src.server_close()

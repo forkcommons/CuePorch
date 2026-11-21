@@ -21,12 +21,14 @@ const data = document.querySelector<HTMLTableSectionElement>("#retentionRows")!;
 const rows = document.querySelector<HTMLTableSectionElement>("#dailyRows")!;
 const amount = new Intl.NumberFormat(undefined, {maximumFractionDigits: 1});
 const percent = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
-const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+const teamPreview = document.body.dataset.teamPreview;
+const endpoint = (teamPreview ? "/api/team/video/" : "/api/library/work/") +
+  encodeURIComponent(document.body.dataset.work || "");
 
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
 async function call(suffix: string, body?: object) {
-  const headers: Record<string, string> = {Authorization: "Bearer " + key.value};
+  const headers: Record<string, string> = {Authorization: "Bearer " + (teamPreview ? "team-session" : key.value)};
   if (body) headers["Content-Type"] = "application/json";
   const response = await fetch(endpoint + suffix, {
     method: body ? "POST" : "GET", headers, body: body && JSON.stringify(body),
@@ -83,7 +85,8 @@ function render(report: Report) {
   rows.replaceChildren();
   for (const day of report.daily) {
     const row = rows.insertRow();
-    const values = [day.day, day.surface === "watch" ? "Watch page" : "Embed",
+    const surfaceName = {watch: "Watch page", embed: "Embed", showcase: "Showcase"} as Record<string, string>;
+    const values = [day.day, surfaceName[day.surface] || day.surface,
       amount.format(day.impressions), amount.format(day.views), percent.format(day.view_rate),
       amount.format(day.finishes), amount.format(day.watched_seconds) + " s"];
     for (const value of values) row.insertCell().textContent = value;
@@ -108,14 +111,19 @@ async function action(run: () => Promise<void>) {
 function open() {
   void action(async () => {
     const report: Report = await (await call("/analytics")).json();
-    const work: {preview: string | null} = await (await call("")).json();
-    if (work.preview) {
-      const ticket: {preview: string} = await (await call("/ticket", {sha256: work.preview})).json();
-      video.src = ticket.preview;
+    if (teamPreview) {
+      video.src = teamPreview;
       video.hidden = false;
+    } else {
+      const work: {preview: string | null} = await (await call("")).json();
+      if (work.preview) {
+        const ticket: {preview: string} = await (await call("/ticket", {sha256: work.preview})).json();
+        video.src = ticket.preview;
+        video.hidden = false;
+      }
+      sessionStorage.setItem("cueporchOperator", key.value);
     }
     render(report);
-    sessionStorage.setItem("cueporchOperator", key.value);
     identity.hidden = true;
     panel.hidden = false;
   });
@@ -134,4 +142,4 @@ document.querySelector<HTMLButtonElement>("#exportAnalytics")!.onclick = () => v
   link.click();
   setTimeout(() => URL.revokeObjectURL(file), 1000);
 });
-if (key.value) open();
+if (teamPreview || key.value) open();

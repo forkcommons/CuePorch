@@ -12,5 +12,6 @@ export function viewerVideo(node: HTMLElement) {
   const kind = node.dataset.kind || "";
   const slug = node.dataset.slug || "";
   const path = `${encodeURIComponent(kind)}/${encodeURIComponent(slug)}`;
-  return {kind, slug, path, account: "/account?" + new URLSearchParams({next: `/watch/${path}`})};
+  const next = node.dataset.next || `/watch/${path}`;
+  return {kind, slug, path, account: "/account?" + new URLSearchParams({next})};
 }

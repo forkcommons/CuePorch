@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>What's New · CuePorch</title>
+<body data-updates-team="{{ 'yes' if team else 'no' }}">
+{% if team %}<nav aria-label="Team"><a href="/team">Team workspace</a></nav>
+{% else %}{% include "operator_navigation.html" %}{% endif %}
+<main>
+  <h1>What's New</h1>
+  <nav aria-label="Announcements">
+    <a href="{{ url_for('whats_new', view='released', team=1 if team else none) }}"
+       {% if state == 'released' and not detail %}aria-current="page"{% endif %}>Released</a>
+    <a href="{{ url_for('whats_new', view='up-next', team=1 if team else none) }}"
+       {% if state == 'up-next' and not detail %}aria-current="page"{% endif %}>Up next</a>
+    <a id="updatesFeedback" href="{{ url_for('help_requests_page', team=1 if team else none, subject="What's New feedback") }}" hidden>Send feedback</a>
+    <a id="manageUpdates" href="{{ url_for('manage_updates', team=1 if team else none) }}" hidden>Manage announcements</a>
+  </nav>
+  {% if not detail %}
+  <form class="workspace-search" method="get" role="search">
+    {% if team %}<input type="hidden" name="team" value="1">{% endif %}
+    <input type="hidden" name="view" value="{{ state }}">
+    <label>Search announcements <input type="search" name="q" value="{{ query }}" maxlength="160"></label>
+    <label>Product area <select name="area" aria-label="Product area">
+      <option value="">All areas</option>
+      {% for choice in areas %}<option{% if area == choice %} selected{% endif %}>{{ choice }}</option>{% endfor %}
+    </select></label>
+    <label>Category <select name="category" aria-label="Category">
+      <option value="">All categories</option>
+      {% for choice in categories %}<option{% if category == choice %} selected{% endif %}>{{ choice }}</option>{% endfor %}
+    </select></label>
+    <button>Filter</button>
+  </form>
+  {% endif %}
+  {% if not entries %}<p>No {{ 'released' if state == 'released' else 'upcoming' }} announcements match.</p>{% endif %}
+  {% for entry in entries %}
+  <article class="workspace-overview" data-update="{{ entry.slug }}" aria-labelledby="announcement-{{ entry.slug }}">
+    <h2 id="announcement-{{ entry.slug }}">
+      {% if detail %}{{ entry.title }}
+      {% else %}<a href="{{ url_for('whats_new_entry', slug=entry.slug, team=1 if team else none) }}">{{ entry.title }}</a>
+      {% endif %}
+    </h2>
+    <p>{{ entry.area }} · {{ entry.category }} · {{ 'Released' if entry.state == 'released' else 'Updated' }}
+      <time datetime="{{ entry.date }}">{{ entry.date }}</time></p>
+    <p class="announcement-text">{{ entry.description }}</p>
+    <div data-update-votes hidden>
+      <button type="button" data-vote="up" aria-pressed="false">Thumbs up</button>
+      <button type="button" data-vote="down" aria-pressed="false">Thumbs down</button>
+      <span role="status"></span>
+    </div>
+  </article>
+  {% endfor %}
+</main>
+<script type="module" src="/static/ui/workspace_updates.js"></script>
+</body>
+</html>

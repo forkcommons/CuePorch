@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>{{ name }} · CuePorch</title>
+<body class="watch-catalog">
+  {% include "viewer_watch_nav.html" %}
+  <main>
+    <header>
+      <h1>{{ name }}</h1>
+      <p>@{{ handle }} · {{ video_count }} public {{ "video" if video_count == 1 else "videos" }}</p>
+      <p data-follower-count>{{ followers }} {{ "follower" if followers == 1 else "followers" }}</p>
+      {% set follow_handle = handle %}{% include "follow_creator.html" %}
+      {% if bio %}<p>{{ bio }}</p>{% endif %}
+      {% if links %}
+        <ul>{% for link in links %}<li><a href="{{ link }}" rel="noreferrer">{{ link }}</a></li>{% endfor %}</ul>
+      {% endif %}
+    </header>
+    {% if cover %}
+      <section class="watch-featured" aria-labelledby="creatorCoverHeading">
+        <h2 id="creatorCoverHeading">Cover video</h2>
+        <article class="watch-featured-item">
+          {% if cover.cover %}<img src="{{ cover.cover }}" alt="">{% endif %}
+          <h3><a href="{{ cover.watch }}">{{ cover.title }}</a></h3>
+        </article>
+      </section>
+    {% endif %}
+    {% if featured %}
+      <section class="watch-results" aria-labelledby="creatorFeaturedHeading">
+        <h2 id="creatorFeaturedHeading">Featured videos</h2>
+        <ol class="watch-grid">
+          {% for video in featured %}
+            <li><a class="watch-card" href="{{ video.watch }}">
+              {% if video.cover %}<img src="{{ video.cover }}" alt="" loading="lazy">{% endif %}
+              {{ video.title }}
+            </a></li>
+          {% endfor %}
+        </ol>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>

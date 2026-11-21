@@ -13,7 +13,7 @@ import imageio_ffmpeg
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 WINDOWS = sys.platform == "win32"
 MAC = sys.platform == "darwin"
 APP = DIST / "layout"
@@ -64,6 +64,8 @@ def build():
         "tzdata",
         "--collect-all",
         "pypdfium2_raw",
+        "--collect-data",
+        "onelogin.saml2",
         "--copy-metadata",
         "pypdfium2",
         "--copy-metadata",

@@ -1,0 +1,8 @@
+{% set media = module.video.media_bridge_object %}
+{% if media and media.oembed_response and media.oembed_response.provider_name == "CuePorch" and media.oembed_response.type == "video" and media.oembed_response.html %}
+<figure class="cueporch-video"{% if content and content.id %} data-cueporch-page="{{ content.id|escape_attr }}"{% endif %}>
+  {{ media.oembed_response.html|safe }}
+<label hidden data-cueporch-consent><input type="checkbox"> Share my playback with this publisher in HubSpot</label>
+<p role="status" data-cueporch-consent-status></p>
+</figure>
+{% endif %}

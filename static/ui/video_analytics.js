@@ -11,10 +11,12 @@ const data = document.querySelector("#retentionRows");
 const rows = document.querySelector("#dailyRows");
 const amount = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 const percent = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
-const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+const teamPreview = document.body.dataset.teamPreview;
+const endpoint = (teamPreview ? "/api/team/video/" : "/api/library/work/") +
+    encodeURIComponent(document.body.dataset.work || "");
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 async function call(suffix, body) {
-    const headers = { Authorization: "Bearer " + key.value };
+    const headers = { Authorization: "Bearer " + (teamPreview ? "team-session" : key.value) };
     if (body)
         headers["Content-Type"] = "application/json";
     const response = await fetch(endpoint + suffix, {
@@ -71,7 +73,8 @@ function render(report) {
     rows.replaceChildren();
     for (const day of report.daily) {
         const row = rows.insertRow();
-        const values = [day.day, day.surface === "watch" ? "Watch page" : "Embed",
+        const surfaceName = { watch: "Watch page", embed: "Embed", showcase: "Showcase" };
+        const values = [day.day, surfaceName[day.surface] || day.surface,
             amount.format(day.impressions), amount.format(day.views), percent.format(day.view_rate),
             amount.format(day.finishes), amount.format(day.watched_seconds) + " s"];
         for (const value of values)
@@ -95,14 +98,20 @@ async function action(run) {
 function open() {
     void action(async () => {
         const report = await (await call("/analytics")).json();
-        const work = await (await call("")).json();
-        if (work.preview) {
-            const ticket = await (await call("/ticket", { sha256: work.preview })).json();
-            video.src = ticket.preview;
+        if (teamPreview) {
+            video.src = teamPreview;
             video.hidden = false;
         }
+        else {
+            const work = await (await call("")).json();
+            if (work.preview) {
+                const ticket = await (await call("/ticket", { sha256: work.preview })).json();
+                video.src = ticket.preview;
+                video.hidden = false;
+            }
+            sessionStorage.setItem("cueporchOperator", key.value);
+        }
         render(report);
-        sessionStorage.setItem("cueporchOperator", key.value);
         identity.hidden = true;
         panel.hidden = false;
     });
@@ -120,6 +129,6 @@ document.querySelector("#exportAnalytics").onclick = () => void action(async () 
     link.click();
     setTimeout(() => URL.revokeObjectURL(file), 1000);
 });
-if (key.value)
+if (teamPreview || key.value)
     open();
 export {};

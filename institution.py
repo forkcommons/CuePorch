@@ -1,6 +1,7 @@
 """Institution-scoped operator policy, screening grants and complaint records."""
 
 import argparse
+from collections import Counter
 import csv
 import io
 import hashlib
@@ -26,28 +27,50 @@ from flask import (
     Flask,
     Response,
     abort,
+    g,
+    has_request_context,
     redirect,
     render_template,
     request,
     stream_with_context,
+    url_for,
 )
 from waitress import serve
 
-from cueporch import verify
+from cueporch import dump, verify
 import analytics_reports
+import account_email
+import account_recovery
+import account_totp
+import account_email_factor
 import audience_accounts
 import audience_comments
+import content_rating
+import event_api
+import event_registrants
+import event_simulcast
+import event_webhooks
 from browser_account_security import same_origin, secure_site
 import community_analytics
+import creator_profiles
 import library_actions
 import library_appearance
 import library_caption_jobs
+import library_ai_drafts
+import library_video_questions
+import studio_scripts
+import team_ai_policy
 import library_details
 import library_discovery
 import library_embed
 import library_events
 import library_folder_privacy
 import library_folders
+import library_hubspot_bridge
+import library_hubspot_folders
+import library_hubspot_media_events
+import library_file_links
+import folder_slack
 import library_languages
 import library_interactivity
 import library_ratings
@@ -61,18 +84,53 @@ import library_thumbnail
 import library_timeline
 import library_trash
 import library_upload
+import hubspot_crm
+import mailchimp_crm
+import constant_contact_crm
+import campaign_monitor_crm
+import keap_crm
+import salesforce_crm
+import library_mailchimp_forms
+import library_list_registration
+import library_salesforce_video_engagement
+import marketo_crm
+import event_hubspot_outbound
+import event_contact_delivery
+import event_hubspot_engagement
+import library_integrations
+import intake_watch
+import social_publication
 import library_worker
 import media_bandwidth
+import registration_return
 import review_links
 import review_push
+import subtitle_translation_batches
 import team_accounts
+import team_saml
+import team_scim
+import team_group_roles
+import team_sessions
+import team_brand_kits
+import team_branding
+import team_sharing_policy
+import team_workspaces
 import timeline_jobs
 import vimeo_privacy
+import workspace_activity
+import workspace_help
+import workspace_updates
+import workspace_oauth
 from review_settings import new_upload as create_upload_review
 
 STEPS = (
     "intake",
     "caption",
+    "translation",
+    *library_ai_drafts.FEATURES,
+    studio_scripts.STEP,
+    event_hubspot_outbound.STEP,
+    event_hubspot_engagement.STEP,
     "publication",
     "replay",
     "migration",
@@ -120,6 +178,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + SCHEMA
             + library_worker.SCHEMA
             + library_folders.SCHEMA
+            + library_file_links.SCHEMA
             + library_folder_privacy.SCHEMA
             + library_peer_handoff.SCHEMA
             + library_privacy.SCHEMA
@@ -128,14 +187,48 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_actions.SCHEMA
             + library_appearance.SCHEMA
             + library_caption_jobs.SCHEMA
+            + library_ai_drafts.SCHEMA
+            + library_video_questions.SCHEMA
+            + studio_scripts.SCHEMA
+            + team_ai_policy.SCHEMA
+            + subtitle_translation_batches.SCHEMA
             + library_details.SCHEMA
             + library_discovery.SCHEMA
             + audience_accounts.SCHEMA
+            + account_totp.SCHEMA
+            + account_email.SCHEMA
+            + account_email_factor.SCHEMA
+            + account_recovery.SCHEMA
             + team_accounts.SCHEMA
+            + team_saml.SCHEMA
+            + team_scim.SCHEMA
+            + team_group_roles.SCHEMA
+            + team_sessions.SCHEMA
+            + team_branding.SCHEMA
+            + team_brand_kits.SCHEMA
+            + team_sharing_policy.SCHEMA
+            + team_workspaces.SCHEMA
+            + workspace_help.SCHEMA
+            + workspace_activity.SCHEMA
+            + workspace_updates.SCHEMA
+            + workspace_oauth.SCHEMA
+            + intake_watch.SCHEMA
+            + folder_slack.SCHEMA
+            + social_publication.SCHEMA
             + library_interactivity.SCHEMA
             + library_ratings.SCHEMA
             + library_registration.SCHEMA
+            + library_mailchimp_forms.SCHEMA
+            + library_list_registration.SCHEMA
+            + library_salesforce_video_engagement.SCHEMA
+            + registration_return.SCHEMA
             + library_events.SCHEMA
+            + library_hubspot_bridge.SCHEMA
+            + library_hubspot_folders.SCHEMA
+            + library_hubspot_media_events.SCHEMA
+            + event_contact_delivery.SCHEMA
+            + event_api.SCHEMA
+            + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
             + library_analytics.SCHEMA
             + media_bandwidth.SCHEMA
@@ -149,8 +242,23 @@ def create_app(root, database, operator, institution, simulation=None):
         if existing and existing[0] != institution:
             raise ValueError("Policy database belongs to another institution")
         db.execute("INSERT OR IGNORE INTO owner VALUES(?)", (institution,))
+        team_accounts.initialize_permissions(db)
+        event_registrants.initialize(db)
+        event_simulcast.migrate(db)
+        team_sessions.initialize(db)
+        library_caption_jobs.initialize(db)
+        library_ai_drafts.initialize(db)
+        workspace_updates.initialize(db)
+        workspace_oauth.migrate_drive_connection(db)
+        social_publication.migrate(db)
+        intake_watch.migrate(db)
+        folder_slack.migrate(db)
     app = Flask(__name__)
+    app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536
+    app.config["WORKSPACE_COOKIE_SCOPE"] = hmac.digest(
+        operator.encode(), b"CuePorch workspace cookie", "sha256",
+    ).hex()[:32]
 
     @contextmanager
     def tx():
@@ -180,9 +288,12 @@ def create_app(root, database, operator, institution, simulation=None):
         raise ValueError("Each operator credential must contain at least 24 characters")
 
     team_origin = library_analytics.source_origin(os.environ.get("CUEPORCH_PUBLIC_URL", ""))
+    app.extensions["registration_sign_on"] = registration_return.SignOn(
+        tx, operator, team_origin, app.extensions["account_reset_delivery"],
+    )
 
     def team_member(con=None):
-        if request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:
+        if not has_request_context() or request.headers.get("Authorization") != "Bearer " + team_accounts.SESSION_MARKER:
             return None
         secure = secure_site(team_origin)
         same_origin(secure)
@@ -190,15 +301,18 @@ def create_app(root, database, operator, institution, simulation=None):
             return team_accounts.current(con, secure)
         with closing(sqlite3.connect(database, timeout=30)) as lookup:
             lookup.row_factory = sqlite3.Row
-            return team_accounts.current(lookup, secure)
+            with lookup:
+                return team_accounts.current(lookup, secure)
 
     def team_contributor(con=None):
         member = team_member(con)
-        if not member or member["role"] not in ("contributor", "admin"):
+        if not member or member["role"] not in (*team_accounts.CONTRIBUTORS, *team_accounts.MANAGERS):
             abort(403)
         return member
 
     def operator_name(con=None):
+        if actor := g.get("event_api_actor"):
+            return actor
         actor = next(
             (
                 name
@@ -210,13 +324,28 @@ def create_app(root, database, operator, institution, simulation=None):
         if actor is not None:
             return actor
         member = team_member(con)
-        return team_accounts.actor_id(member) if member and member["role"] == "admin" else None
+        return team_accounts.actor_id(member) if member and member["role"] in team_accounts.MANAGERS else None
 
     def staff():
         actor = operator_name()
         if not actor:
             abort(403)
         return actor
+
+    def credential_owner():
+        actor = staff()
+        member = team_member()
+        if member and member["role"] != "owner":
+            abort(403, "Only the workspace Owner can manage these credentials.")
+        return actor
+
+    workspace_brand = team_branding.register(app, tx, staff, institution, team_origin)
+    ai_actor = team_ai_policy.register(app, tx, team_origin, operator_name, team_member)
+    sharing_access, enforce_sharing = team_sharing_policy.register(app, tx, team_origin, team_member, operator_name)
+    workspace_help.register(app, tx, team_origin, team_member, operator_name,
+                            os.environ.get("CUEPORCH_SUPPORT_CONTACT", "Institutional support inbox"),
+                            os.environ.get("CUEPORCH_SUPPORT_HOURS", ""))
+    workspace_updates.register(app, tx, team_origin, team_member, operator_name)
 
     def action(con, uid, step, payload):
         if step not in STEPS:
@@ -285,13 +414,54 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator")
     def console():
-        return render_template("console.html", institution=institution)
+        with tx() as con:
+            brand = team_branding.read(con, institution)
+            _, picks = library_discovery.picks(con)
+            entries = public_listing(con) if picks else {}
+            featured = [library_discovery.entry_payload(entries[item]) for item in picks if item in entries]
+        return render_template("console.html", brand=brand, featured=featured[:6])
+
+    @app.get("/operator/search")
+    def operator_search():
+        query = request.args.get("q", "").strip()[:120]
+        if request.args.get("scope") == "watch":
+            return redirect(url_for("catalog", q=query))
+        return redirect(url_for("library_console", q=query))
 
     # Keep credentials in process memory. After a process restart a new request can
     # resume from disk using the same source identity and work checkpoints.
     transfer_lock = Lock()
     transfer_directory = database.parent / (database.stem + "-vimeo")
+    transfer_inventory = transfer_directory / "inventory.json"
+    transfer_progress = database.with_name(database.stem + "-vimeo-progress.json")
     transfer_status = {"state": "idle"}
+    try:
+        saved = json.loads(transfer_progress.read_text(encoding="utf8"))
+        if isinstance(saved, dict) and saved.get("state") in (
+            "running", "waiting", "inventoried", "transferred", "rejected", "failed"
+        ):
+            transfer_status = saved
+    except FileNotFoundError:
+        if transfer_inventory.is_file():
+            transfer_status = {"state": "inventoried"}
+    except (ValueError, OSError):
+        app.logger.warning("Could not read the saved Vimeo migration status")
+    if transfer_status["state"] in ("running", "waiting"):
+        transfer_status = {
+            "state": "interrupted",
+            "detail": "CuePorch restarted. Enter the Vimeo token again. Preview if no inventory is available.",
+        }
+
+    def update_transfer(state, uid, detail=None):
+        nonlocal transfer_status
+        status = dict(state=state, action=uid)
+        if detail:
+            status["detail"] = detail
+        try:
+            dump(transfer_progress, status)
+        except OSError:
+            app.logger.warning("Could not save the Vimeo migration status")
+        transfer_status = status
 
     @app.route("/operator/migration")
     def migration_screen():
@@ -300,20 +470,55 @@ def create_app(root, database, operator, institution, simulation=None):
     @app.get("/api/migration")
     def migration_status():
         staff()
-        return dict(transfer_status)
+        page = request.args.get("page", default=0, type=int)
+        if "page" in request.args and page < 1:
+            abort(400, "Choose a positive inventory page number.")
+        status = dict(transfer_status)
+        state = status["state"]
+        if state in ("inventoried", "transferred") or (state == "interrupted" and transfer_inventory.is_file()):
+            snapshot = transfer_directory / "manifest.json" if state == "transferred" else transfer_inventory
+            try:
+                data = json.loads(snapshot.read_text(encoding="utf8"))
+                showcases = data.get("showcases", [])
+                if state == "transferred" and showcases:
+                    with tx() as con:
+                        targets = library_showcases.imported_targets(con)
+                    for showcase in showcases:
+                        showcase["target"] = targets.get(showcase["uri"])
+                entries = data["works"]
+                counts = Counter(work["disposition"] for work in entries)
+                status.update(total=len(entries), counts=dict(counts),
+                              metadata_incomplete=sum(bool(work.get("unavailable_metadata")) for work in entries),
+                              transfer_incomplete=sum(bool(work.get("transfer_issues")) for work in entries))
+                if page:
+                    size = 100
+                    pages = max(1, (len(entries) + size - 1) // size)
+                    page = min(page, pages)
+                    entries = entries[(page - 1) * size:page * size]
+                    status.update(page=page, pages=pages)
+                status.update(works=entries, showcases=showcases,
+                              showcase_issue=data.get("showcase_issue"))
+            except (ValueError, OSError, KeyError):
+                return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
+        return status
 
     @app.post("/api/migration")
     def begin_transfer():
-        from vimeo_transfer import Source, migrate
+        from vimeo_transfer import Source, SourceFailure, migrate
 
         staff()
-        dry = request.json.get("dry_run")
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400, "Provide a migration request.")
+        dry = body.get("dry_run")
         if type(dry) is not bool:
             abort(400)
-        token = request.json.get("token") or os.environ.get("VIMEO_ACCESS_TOKEN")
+        token = body.get("token") or os.environ.get("VIMEO_ACCESS_TOKEN")
+        if token is not None and not isinstance(token, str):
+            abort(400, "Enter a Vimeo token as text.")
         if not simulation and not token:
             abort(400, "Supply the account owner's Vimeo token")
-        if not dry and not (transfer_directory / "inventory.json").exists():
+        if not dry and not transfer_inventory.is_file():
             abort(409, "Preview the source inventory before transfer")
         if not transfer_lock.acquire(blocking=False):
             abort(409, "A transfer is already running")
@@ -323,8 +528,11 @@ def create_app(root, database, operator, institution, simulation=None):
             with tx() as con:
                 if not dry:
                     action(con, uid, "migration", {"institution": institution})
-            transfer_status.clear()
-            transfer_status.update(state="running", action=uid)
+            update_transfer("running", uid)
+
+            def track(processed, total):
+                nonlocal transfer_status
+                transfer_status = dict(state="running", action=uid, processed=processed, total=total)
 
             def worker():
                 try:
@@ -335,14 +543,16 @@ def create_app(root, database, operator, institution, simulation=None):
                                     "SELECT status FROM action WHERE id=?", (uid,)
                                 ).fetchone()[0]
                             if state == "rejected":
-                                transfer_status.update(state="rejected")
+                                update_transfer("rejected", uid)
                                 return
                             if state == "eligible":
                                 break
-                            transfer_status.update(state="waiting")
+                            if transfer_status["state"] != "waiting":
+                                update_transfer("waiting", uid)
                             time.sleep(0.5)
-                    transfer_status.update(state="running")
-                    migrate(institution, transfer_directory, source, dry)
+                    if transfer_status["state"] != "running":
+                        update_transfer("running", uid)
+                    migrate(institution, transfer_directory, source, dry, progress=track)
                     filename = "inventory.json" if dry else "manifest.json"
                     data = json.loads(
                         (transfer_directory / filename).read_text(encoding="utf8")
@@ -379,18 +589,17 @@ def create_app(root, database, operator, institution, simulation=None):
                                             prior[1] if prior else 0,
                                             prior[2] if prior else "work",
                                         )
-                    transfer_status.update(
-                        state="inventoried" if dry else "transferred",
-                        works=data["works"],
-                        showcases=data.get("showcases", []),
-                        showcase_issue=data.get("showcase_issue"),
-                    )
+                    update_transfer("inventoried" if dry else "transferred", uid)
+                except SourceFailure as exc:
+                    detail = {
+                        401: "Vimeo rejected the token. Enter an active owner token and retry.",
+                        403: "Vimeo denied access. Check the token's scopes and account permissions.",
+                        404: "Vimeo could not find the requested source. Check the account and preview again.",
+                        429: "Vimeo asked CuePorch to slow down. Wait before resuming the transfer.",
+                    }.get(exc.status, "Check the source and retry from your saved progress.")
+                    update_transfer("failed", uid, f"Source HTTP {exc.status}. {detail}")
                 except (ValueError, OSError, KeyError) as exc:
-                    transfer_status.update(
-                        state="failed",
-                        detail=type(exc).__name__
-                        + ". Retry from the source inventory.",
-                    )
+                    update_transfer("failed", uid, type(exc).__name__ + ". Retry from the source inventory.")
                 finally:
                     transfer_lock.release()
 
@@ -444,7 +653,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/submit")
     def submission_form():
-        return render_template("submission_form.html")
+        return render_template("submission_form.html", brand=workspace_brand())
 
     @app.post("/api/submissions")
     def submit():
@@ -615,6 +824,44 @@ def create_app(root, database, operator, institution, simulation=None):
                     AND j.status IN ('queued','waiting'))""",
                     (step,),
                 )
+                if step in ("caption", "translation"):
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM caption_job WHERE state='queued')""", (step,))
+                if step in library_ai_drafts.FEATURES:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM library_ai_draft WHERE state='queued')""", (step,))
+                if step == studio_scripts.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM studio_script_job WHERE state='queued')""", (step,))
+                if step == "publication":
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM social_publication WHERE state='queued' AND final_sent=0
+                            AND (provider<>'youtube' OR (probe=0 AND offset=0)))""", (step,))
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT job FROM library_hubspot_media WHERE state='queued' AND operation='publish' AND create_attempted=0)""", (step,))
+                if step == event_hubspot_outbound.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM live_event_hubspot_delivery WHERE state='queued'
+                            UNION SELECT id FROM library_mailchimp_form_delivery WHERE state='queued'
+                            UNION SELECT id FROM library_constant_contact_form_delivery WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM library_campaign_monitor_form_delivery WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM library_keap_form_delivery WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM library_salesforce_form_delivery WHERE state='queued'
+                            UNION SELECT id FROM live_event_contact_delivery WHERE state='queued')""", (step,))
+                if step == event_hubspot_engagement.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued'
+                            UNION SELECT action FROM library_hubspot_media_event WHERE state='queued'
+                            UNION SELECT id FROM live_event_mailchimp_engagement WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM live_event_salesforce_engagement WHERE state='queued'
+                            UNION SELECT id FROM library_salesforce_video_report WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -967,6 +1214,7 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(400)
         step = "replay" if kind == "meeting" else "publication"
         with tx() as con:
+            enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": "public"})
             if library_peer_handoff.get(con, slug):
                 abort(409, "This library video uses CuePorch-managed viewer links.")
             if (
@@ -1010,18 +1258,28 @@ def create_app(root, database, operator, institution, simulation=None):
                    AND NOT EXISTS (SELECT 1 FROM library_deleted_item d WHERE d.kind='work' AND d.item=route.slug)""",
                 (kind, slug),
             ).fetchone()
+            creator = creator_profiles.for_work(con, slug) if row and kind == "work" and not embed else None
+            if row and kind in ("work", "meeting") and not embed and request.method in ("GET", "HEAD"):
+                retained = works.get(slug) if kind == "work" else None
+                notice = content_rating.screening_notice(
+                    row["description"] or row["slug"], viewing_preferences(con),
+                    library_details.details_for(con, retained) if retained else {},
+                )
+                if notice is not None:
+                    return notice
         if not row:
             abort(404)
         if request.method == "POST":
             abort(405)
         if embed:
             return redirect(library_embed.peertube_address(row["destination"], request.args), code=302)
-        return render_template(
+        return library_discovery.no_store(render_template(
             "watch.html",
             title=row["description"] or row["slug"],
             url=row["destination"],
             slug=slug, save_kind=kind if kind in ("work", "meeting") else None, save_slug=slug,
-        )
+            creator=creator,
+        ))
 
     @app.get("/support")
     def support():
@@ -1130,31 +1388,112 @@ def create_app(root, database, operator, institution, simulation=None):
     def public_listing(con, item=None):
         return library_discovery.listing(con, read_library_works, library_actions.title_for, vimeo_privacy.permits, item)
 
-    library_discovery.register(app, tx, staff, public_listing, root, institution)
-    audience_accounts.register(app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff)
-    team_accounts.register(app, tx, team_origin, operator, institution, operator_name, read_library_works,
-                           library_actions.title_for, root)
-    library_folders.register(app, tx, staff, action, read_library_works)
-    library_folder_privacy.register(app, tx, staff, action, read_library_works)
+    viewing_preferences = audience_accounts.register(
+        app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
+    )
+    library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
+    authorize_editor, team_works, can_edit = team_accounts.register(
+        app, tx, team_origin, operator, workspace_brand, operator_name, read_library_works,
+        library_actions.title_for, root, public_listing, library_discovery.entry_payload, sharing_access, social_publication.remove_member,
+    )
+    workspace_activity.register(app, tx, team_origin, team_member, operator_name, team_works,
+                                library_actions.title_for)
+    library_folders.register(app, tx, staff, action, read_library_works, enforce_sharing)
+    library_folder_privacy.register(app, tx, staff, action, read_library_works, sharing_access, enforce_sharing)
     library_trash.register(app, tx, staff, read_library_works)
     def remember_work(work):
         works[work["id"]] = work
 
-    start_editor = library_actions.register(
+    start_editor, start_file_links, start_ai_drafts = library_actions.register(
         app, tx, staff, read_library_works, root, remember_work, vimeo_privacy.permits, action, operator,
+        authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
+    hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
+    mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
+    constant_contact = workspace_oauth.Connection(constant_contact_crm.OAUTH, tx, operator)
+    campaign_monitor = campaign_monitor_crm.CampaignMonitorConnection(tx, operator)
+    keap = keap_crm.KeapConnection(tx, operator)
+    salesforce = salesforce_crm.SalesforceConnection(tx, operator)
+    def active_mailchimp_form(con, kind, uid, include_title=False):
+        if kind == "showcase":
+            library_showcases.get_showcase(con, uid)
+        elif kind == "video":
+            item = next((i for i in read_library_works() if i.get("id") == uid), None)
+            if item is None:
+                abort(404)
+            if item.get("asset_type", "video") != "video":
+                abort(404)
+            if library_privacy.blocked(con, uid):
+                abort(404)
+        else:
+            abort(404)
+        form = library_registration.active(con, kind, uid)
+        if kind == "video" and include_title and form:
+            from catalog import video_version_key
+            return dict(
+                form,
+                salesforce_title=library_actions.title_for(con,item),
+                salesforce_version=video_version_key(item),
+                salesforce_duration=item.get("duration_seconds"),
+                salesforce_first_due=library_salesforce_video_engagement.first_report_at(item)
+            )
+        return form
+
+    def active_salesforce_form(con, kind, uid):
+        if kind != "video":
+            abort(404)
+        return active_mailchimp_form(con, kind, uid, include_title=True)
+    app.extensions["mailchimp_form_consent"] = library_mailchimp_forms.Consent(mailchimp, action, operator)
+    library_mailchimp_forms.register_routes(app, tx, staff, team_origin, mailchimp, active_mailchimp_form)
+    app.extensions["stop_mailchimp_forms"] = library_mailchimp_forms.start(app, tx, database, mailchimp, active_mailchimp_form)
+    app.extensions["constant_contact_form_consent"] = library_list_registration.Consent(constant_contact, action, operator)
+    library_list_registration.register_routes(app, tx, staff, team_origin, constant_contact, active_mailchimp_form)
+    app.extensions["stop_constant_contact_forms"] = library_list_registration.start(app, tx, database, constant_contact, active_mailchimp_form)
+    app.extensions["campaign_monitor_form_consent"] = library_list_registration.Consent(campaign_monitor, action, operator, provider=library_list_registration.CAMPAIGN_MONITOR)
+    library_list_registration.register_routes(app, tx, staff, team_origin, campaign_monitor, active_mailchimp_form, provider=library_list_registration.CAMPAIGN_MONITOR)
+    app.extensions["stop_campaign_monitor_forms"] = library_list_registration.start(app, tx, database, campaign_monitor, active_mailchimp_form, provider=library_list_registration.CAMPAIGN_MONITOR)
+    app.extensions["keap_form_consent"] = library_list_registration.Consent(keap, action, operator, provider=library_list_registration.KEAP)
+    library_list_registration.register_routes(app, tx, staff, team_origin, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
+    app.extensions["stop_keap_forms"] = library_list_registration.start(app, tx, database, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
+    app.extensions["salesforce_form_consent"] = library_list_registration.Consent(salesforce, action, operator, provider=library_list_registration.SALESFORCE)
+    library_list_registration.register_routes(app, tx, staff, team_origin, salesforce, active_salesforce_form, provider=library_list_registration.SALESFORCE)
+    app.extensions["stop_salesforce_forms"] = library_list_registration.start(app, tx, database, salesforce, active_salesforce_form, provider=library_list_registration.SALESFORCE)
+    marketo = marketo_crm.configured_connection()
+    hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
-                            operator, root, read_library_works, institution, remember_work)
+                            operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
+                            ai_actor, hubspot, marketo=marketo, mailchimp=mailchimp, salesforce=salesforce)
+    event_api.register(app, tx, team_origin, credential_owner)
+    app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
+
+    def questions_enabled(con):
+        return team_ai_policy.load(con)[1]["viewer_questions"]
+
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
-        vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
+        vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""), questions_enabled,
     )
-    library_upload.register(app, tx, staff, team_contributor, action, root, database, institution, remember_work)
-    vimeo_privacy.register(app, tx, staff, action, read_library_works)
+    import_video = library_upload.register(
+        app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,
+    )
+    publishing = library_integrations.register(app, tx, staff, operator, team_origin, import_video, database,
+                                               sharing_access, hubspot, mailchimp,
+                                               constant_contact=constant_contact, campaign_monitor=campaign_monitor, keap=keap, salesforce=salesforce,
+                                               credential_owner=credential_owner, marketo=marketo)
+    app.extensions["stop_hubspot_media_bridge"] = library_hubspot_bridge.register(app, tx, database, team_origin, staff, action, hubspot, read_library_works, library_actions.title_for, vimeo_privacy.permits, enforce_sharing, credential_owner=credential_owner, hubspot_origins=hubspot_origins)
+    social_publication.register(app, tx, database, root, team_origin, publishing, read_library_works,
+                                library_actions.title_for, operator_name, team_member, authorize_editor,
+                                can_edit, action, sharing_access, enforce_sharing)
+    app.extensions["stop_folder_slack"] = folder_slack.register(app, tx, team_origin, staff, operator, database)
+    vimeo_privacy.register(app, tx, staff, action, read_library_works, enforce_sharing)
     local_watch = library_privacy.register(
         app, tx, staff, action, read_library_works, root, library_actions.title_for, operator,
-        vimeo_privacy.permits, library_details.details_for,
+        vimeo_privacy.permits, library_details.details_for, creator_profiles.for_work,
+        operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
+        questions_enabled,
+        hubspot=hubspot,
+        hubspot_origins=hubspot_origins,
     )
 
     @app.get("/api/library")
@@ -1262,6 +1601,8 @@ def create_app(root, database, operator, institution, simulation=None):
                 if not library_privacy.blocked(con, row["work"])
                 and not library_privacy.protected_route(con, row["work"])
             }
+            embed_pages = {row["work"]: json.loads(row["pages"])
+                           for row in con.execute("SELECT work,pages FROM library_embed_pages")}
         buf = io.StringIO(newline="")
         csvout = csv.writer(buf)
         csvout.writerow(
@@ -1285,7 +1626,7 @@ def create_app(root, database, operator, institution, simulation=None):
             else:
                 paths = dict(watch="/watch/" + prefix if kind else None,
                              embed_url="/embed/" + prefix if kind else None)
-            for site in w.get("known_embed_pages", []) or [""]:
+            for site in embed_pages.get(w["id"], w.get("known_embed_pages", [])) or [""]:
                 csvout.writerow(
                     [
                         w["source_id"],
@@ -1337,7 +1678,11 @@ def create_app(root, database, operator, institution, simulation=None):
 
     @app.get("/operator/record")
     def record_studio():
-        return render_template("record_studio.html")
+        embedded = request.args.get("timeline") == "1"
+        response = Response(render_template("record_studio.html", embedded=embedded, **studio_scripts.CONTROLS),
+                            mimetype="text/html")
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'self'" if embedded else "frame-ancestors 'none'"
+        return response
 
     @app.get("/operator/videos/<uuid:work>/editing")
     def operator_editing(work):
@@ -1372,10 +1717,11 @@ def create_app(root, database, operator, institution, simulation=None):
         work = works.get(work_id)
         if not work:
             abort(404)
-        if not os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
-            abort(503, "Configure the PeerTube destination")
         try:
             with tx() as con:
+                enforce_sharing(con, feature="outbound")
+                if not os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
+                    abort(503, "Configure the PeerTube destination")
                 if library_trash.hidden(con, "work", work_id):
                     abort(404)
                 public = request.json.get("public", False)
@@ -1388,6 +1734,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     or not math.isfinite(scheduled)
                 ):
                     abort(400)
+                if public:
+                    enforce_sharing(con, settings=library_privacy.DEFAULTS | {"visibility": "public"})
                 uid = library_worker.enqueue(con, work, public, scheduled, kind)
                 con.execute(
                     "UPDATE publication_job SET status='queued',error=NULL WHERE id=? AND status='failed'",
@@ -1403,6 +1751,7 @@ def create_app(root, database, operator, institution, simulation=None):
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf8"))
         queued = 0
         with tx() as con:
+            enforce_sharing(con, feature="outbound", settings=library_privacy.DEFAULTS | {"visibility": "public"})
             for item in manifest["works"]:
                 if (
                     item["provider"] != "vimeo"
@@ -1423,8 +1772,10 @@ def create_app(root, database, operator, institution, simulation=None):
         return {"queued": queued}, 202
 
     library_worker.start(app, root, database, tx, action, apply_routes)
-    library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_caption_jobs"] = library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_ai_drafts"] = start_ai_drafts()
     app.extensions["stop_editor"] = start_editor()
+    app.extensions["stop_file_links"] = start_file_links()
     review_push.start(app, tx, database)
     return app
 

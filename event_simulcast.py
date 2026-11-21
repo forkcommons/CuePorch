@@ -27,9 +27,17 @@ import event_peer
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_simulcast_destination(
  id TEXT PRIMARY KEY, event TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE,
- server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL,
+ server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL, opens INTEGER,
  UNIQUE(event,name));
 """
+
+
+def migrate(con):
+    columns = {row[1] for row in con.execute("PRAGMA table_info(live_simulcast_destination)")}
+    if "opens" not in columns:
+        con.execute("ALTER TABLE live_simulcast_destination ADD COLUMN opens INTEGER")
+
+
 MAX_DESTINATIONS = 20
 RECONNECT_SECONDS = 6
 TRANSPORT_ERRORS = (OSError, ValueError, KeyError, StopIteration, requests.RequestException)
@@ -52,6 +60,17 @@ def target(body):
     except ValueError:
         abort(422, "Enter an RTMP or RTMPS server URL with its application path and a separate key.")
     return name.strip(), server.rstrip("/"), key, enabled
+
+
+def destination_scope(body, server, opens):
+    preset = body.get("preset", "custom")
+    if preset == "custom":
+        return None
+    if preset != "patreon":
+        abort(422, "Choose a supported destination preset or use the custom option.")
+    if not server.startswith("rtmps://"):
+        abort(422, "Patreon destinations require an RTMPS server URL. Enter an RTMPS server or choose the custom option.")
+    return opens
 
 
 def highest_variant(master):
@@ -436,28 +455,35 @@ class Simulcast:
             job.thread.join(timeout=15)
 
 
-def register(app, tx, staff, event_access, outputs):
+def register(app, tx, staff, event_access, outputs, sharing_access, enforce_sharing):
     @app.route("/api/live-events/<uid>/<int:opens>/destinations", methods=["GET", "POST"])
     def event_destinations(uid, opens):
         staff()
         with tx() as con:
             available = event_access(con, uid, opens)
+            if not sharing_access(con)["outbound"] and request.method in ("GET", "HEAD"):
+                return dict(available=False, destinations=[])
             if request.method == "POST":
+                enforce_sharing(con, feature="outbound")
                 if not available:
                     abort(409, "Destinations require a public event without audience registration.")
                 body = request.get_json()
                 if not isinstance(body, dict):
                     abort(422, "Enter a destination.")
                 name, server, key, enabled = target(body)
+                scope = destination_scope(body, server, opens)
                 rows = con.execute("SELECT name FROM live_simulcast_destination WHERE event=?", (uid,)).fetchall()
                 if len(rows) >= MAX_DESTINATIONS:
                     abort(409, "An event supports up to 20 custom destinations.")
                 if any(row["name"].casefold() == name.casefold() for row in rows):
                     abort(409, "Choose a different destination name.")
-                con.execute("INSERT INTO live_simulcast_destination VALUES(?,?,?,?,?,?)",
-                            (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()), enabled))
-            rows = con.execute("SELECT id,name,server,enabled FROM live_simulcast_destination WHERE event=? ORDER BY name",
-                               (uid,)).fetchall()
+                con.execute("INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens)"
+                            " VALUES(?,?,?,?,?,?,?)",
+                            (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()), enabled, scope))
+            rows = con.execute(
+                "SELECT id,name,server,enabled,opens FROM live_simulcast_destination"
+                " WHERE event=? AND (opens IS NULL OR opens=?) ORDER BY name",
+                (uid, opens)).fetchall()
         return dict(available=available, destinations=[
             dict(row) | {"state": outputs.state(uid, opens, row["id"]) if row["enabled"] else "disabled"} for row in rows
         ])
@@ -467,8 +493,9 @@ def register(app, tx, staff, event_access, outputs):
         staff()
         with tx() as con:
             available = event_access(con, uid, opens)
-            saved = con.execute("SELECT id FROM live_simulcast_destination WHERE id=? AND event=?",
-                                (destination, uid)).fetchone()
+            saved = con.execute(
+                "SELECT id FROM live_simulcast_destination WHERE id=? AND event=? AND (opens IS NULL OR opens=?)",
+                (destination, uid, opens)).fetchone()
             if not saved:
                 abort(404)
             if request.method == "DELETE":
@@ -477,6 +504,8 @@ def register(app, tx, staff, event_access, outputs):
                 body = request.get_json()
                 if not isinstance(body, dict) or type(body.get("enabled")) is not bool:
                     abort(422, "Set whether this destination is enabled.")
+                if body["enabled"]:
+                    enforce_sharing(con, feature="outbound")
                 if body["enabled"] and not available:
                     abort(409, "Destinations require a public event without audience registration.")
                 con.execute("UPDATE live_simulcast_destination SET enabled=? WHERE id=?", (body["enabled"], destination))

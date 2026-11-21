@@ -13,17 +13,25 @@ export function sharingFields(body) {
     const download = form.querySelector("[name=download]");
     const save = form.querySelector("[type=submit]");
     let hasPassword = false;
+    let allowed;
     function toggleFields() {
         password.closest("label").hidden = visibility.value !== "password";
         password.placeholder = hasPassword ? "Leave blank to keep the saved password" : "";
         password.required = visibility.value === "password" && !hasPassword;
-        embed.disabled = download.disabled = visibility.value === "private";
-        domains.closest("label").hidden = embed.disabled || embed.value !== "domains";
-        domains.disabled = domains.closest("label").hidden;
+        download.disabled = visibility.value === "private";
+        embed.disabled = download.disabled || allowed?.domains === false;
+        domains.closest("label").hidden = download.disabled || embed.value !== "domains";
+        domains.disabled = domains.closest("label").hidden || allowed?.domains === false;
     }
     function populate(state) {
         hasPassword = state.has_password;
         const displayed = state.pending || state;
+        allowed = state.allowed;
+        for (const option of visibility.options) {
+            const blocked = Boolean(allowed && !allowed.modes.includes(option.value));
+            option.disabled = blocked;
+            option.hidden = blocked && option.value !== displayed.visibility;
+        }
         visibility.value = displayed.visibility;
         embed.value = displayed.embed;
         domains.value = displayed.domains.join("\n");

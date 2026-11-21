@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="live-events" data-public-url="{{ public_url }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/record">Record Studio</a></nav>
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Production"><a href="/operator/record">Record Studio</a></nav>
   <h1>Live events</h1>
   <form id="eventsIdentify">
     <label>Operator credential <input name="credential" type="password" autocomplete="current-password" required></label>
@@ -16,6 +17,25 @@
   <p role="status" id="eventsStatus"></p>
   <main id="eventsWorkspace" hidden>
     <p id="eventsHost" hidden>Connect a live-enabled PeerTube server from CuePorch setup to prepare an encoder.</p>
+    <details id="liveApiAccess">
+      <summary>Developer access</summary>
+      <p>Workspace Owners can issue scoped tokens for the event API. Copy each token when it is created.</p>
+      <form id="liveApiCredential" hidden>
+        <label>Token name <input name="name" maxlength="80" required></label>
+        <label>Expires in days <input name="days" type="number" min="1" max="365" value="90" required></label>
+        <fieldset>
+          <legend>Token permissions</legend>
+          <label><input name="scope" value="read" type="checkbox" checked> Read calendar and stream health</label>
+          <label><input name="scope" value="schedule" type="checkbox"> Create and edit events</label>
+          <label><input name="scope" value="produce" type="checkbox"> Manage encoders and production</label>
+          <label><input name="scope" value="registrations" type="checkbox"> Manage and export registrations</label>
+        </fieldset>
+        <button type="submit">Create token</button>
+      </form>
+      <label id="liveApiReveal" hidden>New event API token <input readonly autocomplete="off" spellcheck="false"></label>
+      <ul id="liveApiCredentials" aria-label="Issued tokens"></ul>
+      <p id="liveApiStatus" role="status"></p>
+    </details>
     <section aria-labelledby="calendarHeading">
       <h2 id="calendarHeading">Event calendar</h2>
       <div class="library-tools">
@@ -30,7 +50,11 @@
     </section>
     <form id="newEventForm" hidden>
       <h2 id="eventEditorHeading">New event</h2>
-      <label id="eventReuse">Reuse event settings <select id="eventPreset"><option value="">Start from scratch</option></select></label>
+      <fieldset id="eventSetupMode">
+        <legend>Starting settings</legend>
+        <label>Setup <select id="eventMode"><option value="scratch">Set up from scratch</option><option value="type">Choose event type</option><option value="reuse">Reuse settings</option></select></label>
+        <label id="eventReuse" hidden>Reuse event settings <select id="eventPreset"><option value="">Choose an earlier event</option></select></label>
+      </fieldset>
       <label>Event type <select name="type"><option value="live">Live broadcast</option><option value="webinar">Webinar</option><option value="team">Team event</option><option value="learning">Online learning</option><option value="custom">Custom event</option></select></label>
       <label>Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000"></textarea></label>
@@ -55,12 +79,46 @@
       </fieldset>
       <fieldset>
         <legend>Production and viewers</legend>
-        <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option></select></label>
-        <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">High buffer</option></select></label>
+        <label>Preferred streaming method <select name="method"><option value="browser">Browser studio</option><option value="encoder">External encoder</option></select></label>
+        <label>Visibility <select name="visibility"><option value="private">Private production</option><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="password">Password</option><option value="embed_only">Embed only</option></select></label>
+        <label id="eventViewingPassword" hidden>Viewing password <input type="password" name="view_password" maxlength="256" autocomplete="new-password"></label>
+        <label>Where may this event be embedded? <select name="embed_mode"><option value="anywhere">Anywhere</option><option value="disabled">Nowhere</option><option value="domains">Specific domains</option></select></label>
+        <label id="eventEmbedDomains" hidden>Allowed domains, one per line <textarea name="embed_domains" rows="3" placeholder="example.org"></textarea></label>
+        <label>Regional availability <select name="region_mode"><option value="anywhere">Anywhere</option><option value="allow">Allow listed locations</option><option value="deny">Block listed locations</option></select></label>
+        <div id="eventRegionFields" hidden>
+          <label>Locations, one per line <textarea name="region_areas" rows="3" placeholder="CA&#10;US-CO | Longmont&#10;80501"></textarea></label>
+          <label>Import regional availability CSV <input type="file" id="importEventRegions" accept=".csv,text/csv"></label>
+          <button type="button" id="exportEventRegions" hidden>Download saved regions CSV</button>
+        </div>
+        <label>Latency <select name="latency"><option value="standard">Standard</option><option value="low">Low</option><option value="fail-safe">Fail-safe or hosted high buffer</option></select></label>
         <label>Live DVR window in seconds <input name="dvr_seconds" type="number" min="0" max="14400" step="1" aria-describedby="eventDvrHelp"></label>
         <small id="eventDvrHelp">Leave blank for the host default. Enter 0 to turn DVR off. The host sets the maximum.</small>
         <label><input name="save_replay" type="checkbox" checked> Record replay on the video host</label>
         <label><input name="archive_replay" type="checkbox" checked> Keep a private copy in the Library</label>
+      </fieldset>
+      <details id="eventContentSettings">
+        <summary>Content and disclosures</summary>
+        <label>Content rating <select name="rating"><option value="unrated">Unrated</option><option value="all">All audiences</option><option value="mature">Mature audiences</option></select></label>
+        <fieldset id="eventContentDescriptors" hidden>
+          <legend>Content descriptors</legend>
+          {% for code, label in rating_labels.items() %}
+          <label><input type="checkbox" name="content_descriptor" value="{{ code }}"> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+        <label><input type="checkbox" name="advertisement"> Contains advertising</label>
+        <label><input type="checkbox" name="realistic_ai"> Contains realistic AI-generated material</label>
+      </details>
+      <fieldset id="eventStartingOptions">
+        <legend>Starting audience settings</legend>
+        <label><input name="registration" type="checkbox"> Require event registration</label>
+        <label><input name="chat" type="checkbox"> Enable audience chat</label>
+        <label>Chat delay in seconds <input name="chat_interval" type="number" min="0" max="120" value="0" required></label>
+        <label><input name="captions" type="checkbox"> Enable automatic captions</label>
+        <label>Caption language <select name="caption_language"><option value="en">English</option><option value="de">German</option><option value="fr">French</option><option value="es">Spanish</option><option value="it">Italian</option><option value="nl">Dutch</option><option value="pl">Polish</option></select></label>
+        <label><input name="qa" type="checkbox"> Enable audience Q&amp;A</label>
+        <label><input name="qa_anonymous" type="checkbox"> Allow anonymous questions</label>
+        <label><input name="qa_review" type="checkbox"> Review questions before publishing</label>
+        <label><input name="preview_encoder" type="checkbox"> Hold external signal for private preview</label>
       </fieldset>
       <button type="submit">Save event</button>
       <button type="button" id="closeEventEditor">Close editor</button>
@@ -68,11 +126,32 @@
     <section id="eventProduction" aria-labelledby="productionHeading" hidden>
       <h2 id="productionHeading">Event production</h2>
       <p id="productionTitle"></p>
+      <p id="productionPreference"></p>
       <button type="button" id="editEvent">Edit event</button>
       <button type="button" id="configureEventRegistration">Registration</button>
       <a id="eventStudio">Open browser studio</a>
       <label><input type="checkbox" id="privateEncoderPreview"> Preview external encoder privately</label>
       <button type="button" id="prepareEncoder">Prepare encoder</button>
+      <div id="backupEncoderOptions" hidden>
+        <label><input type="checkbox" id="enableBackupEncoder"> Use an independent backup encoder</label>
+        <label id="backupOutput" hidden>Backup programme output
+          <select id="backupOutputHeight">
+            <option value="360">360p</option>
+            <option value="720" selected>720p</option>
+            <option value="1080">1080p</option>
+            <option value="2160">2160p</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" id="prepareLowRtmp" hidden>Prepare low-latency RTMP</button>
+      <button type="button" id="stopLowRtmp" hidden>Stop low-latency RTMP</button>
+      <button type="button" id="prepareDash" hidden>Prepare MPEG-DASH contribution</button>
+      <button type="button" id="stopDash" hidden>Stop MPEG-DASH contribution</button>
+      <div id="dashSettings" hidden>
+        <label>DASH manifest endpoint <input id="dashManifest" readonly></label>
+        <label>DASH upload token <input id="dashUploadToken" type="password" readonly></label>
+        <button type="button" id="copyDashToken">Copy DASH upload token</button>
+      </div>
       <section id="encoderPreview" aria-labelledby="encoderPreviewHeading" hidden>
         <h3 id="encoderPreviewHeading">Encoder preview</h3>
         <p id="encoderPreviewStatus" role="status"></p>
@@ -83,6 +162,170 @@
       <button type="button" id="withdrawEvent">Withdraw this occurrence</button>
       <p id="eventHealth" role="status"></p>
       <p id="eventHealthDetails"></p>
+      <details id="eventRoster">
+        <summary>Attendees for this occurrence</summary>
+        <form id="eventRosterSearch">
+          <label>Filter by email <input type="search" name="email" maxlength="254"></label>
+          <button type="submit">Filter</button>
+        </form>
+        <table>
+          <caption>Attendees registered for the selected occurrence</caption>
+          <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th>
+            <th scope="col">Source</th><th scope="col">Live watch time</th><th scope="col">Replay watch time</th></tr></thead>
+          <tbody id="eventRosterRows"></tbody>
+        </table>
+        <button type="button" id="eventRosterPrevious" disabled>Previous attendees</button>
+        <button type="button" id="eventRosterNext" disabled>Next attendees</button>
+        <button type="button" id="eventRosterDownload">Download occurrence CSV</button>
+        <p id="eventRosterStatus" role="status"></p>
+        <fieldset id="eventHubSpot">
+          <legend>Import attendees from HubSpot</legend>
+          <a href="/operator/integrations">Manage HubSpot connection</a>
+          <button type="button" id="eventHubSpotLists">Load contact segments</button>
+          <button type="button" id="eventHubSpotMore" hidden>More segments</button>
+          <label>Contact segment
+            <select id="eventHubSpotSegment">
+              <option value="">Choose a contact segment</option>
+            </select>
+          </label>
+          <button type="button" id="eventHubSpotImport" disabled>Import selected segment</button>
+          <p id="eventHubSpotStatus" role="status"></p>
+          <button type="button" disabled id="eventHubSpotStartSync">Enable automatic refresh</button>
+          <button hidden id="eventHubSpotStopSync">Stop automatic refresh</button>
+          <button id="eventHubSpotReadSync">Refresh sync status</button>
+          <p id="eventHubSpotSyncStatus" role="status"></p>
+        </fieldset>
+        <fieldset id="eventHubSpotOutbound" hidden>
+          <legend>Send consented registrations to HubSpot</legend>
+          <p>Choose a static contact segment above and an email subscription below.</p>
+          <button type="button" id="eventHubSpotLoadSubscriptions">Load email subscriptions</button>
+          <label>Email subscription
+            <select id="eventHubSpotSubscription">
+              <option value="">Choose an email subscription</option>
+            </select>
+          </label>
+          <label id="eventHubSpotEngagementSettings" hidden>HubSpot custom event (optional)
+            <input id="eventHubSpotEngagementEvent" type="text" maxlength="128" />
+            <span>Only used for consented registration and watch time events.</span>
+          </label>
+          <button type="button" id="eventHubSpotEnableOutbound">Enable registration delivery</button>
+          <button type="button" id="eventHubSpotDisableOutbound">Stop registration delivery</button>
+          <button type="button" id="eventHubSpotReadOutbound">Refresh delivery status</button>
+          <p id="eventHubSpotOutboundStatus" role="status"></p>
+        </fieldset>
+        <fieldset id="eventSalesforceImport">
+          <legend>Import attendees from Salesforce</legend>
+          <p><a href="/operator/integrations">Manage Salesforce connection</a></p>
+          <button type="button" id="sfCampaignLoad" disabled>Load Salesforce campaigns</button>
+          <button type="button" id="sfCampaignMore" hidden>More Salesforce campaigns</button>
+          <label>Campaign
+            <select id="sfCampaign" disabled>
+              <option value="">Choose a campaign</option>
+            </select>
+          </label>
+          <button type="button" id="sfImportNow" disabled>Import selected campaign</button>
+          <button type="button" id="sfImportSchedule" disabled>Enable automatic import</button>
+          <button type="button" id="sfImportStop" hidden>Stop automatic import</button>
+          <button type="button" id="sfImportRefresh">Refresh import status</button>
+          <p role="status" id="sfImportStatus"></p>
+            <h4>Send registrations to Salesforce</h4>
+            <label>Company for new Salesforce leads
+              <input type="text" id="sfLeadCompany" value="Individual" maxlength="255">
+            </label>
+            <label>
+              <input type="checkbox" id="sfOutboundEngagement">
+              Report consented webinar attendance and watch time
+            </label>
+            <button type="button" id="sfOutboundEnable" disabled>Enable Salesforce delivery</button>
+            <button type="button" id="sfOutboundComplete" hidden>Start Salesforce reporting now</button>
+            <button type="button" id="sfOutboundStop" hidden>Stop Salesforce delivery</button>
+            <button type="button" id="sfOutboundRefresh">Refresh Salesforce delivery status</button>
+            <p role="status" id="sfOutboundStatus"></p>
+        </fieldset>
+        <fieldset id="eventMarketoImportPanel" hidden>
+          <legend>Import attendees from Marketo</legend>
+          <button type="button" id="eventMarketoListLoad">Load static lists and fields</button>
+          <button type="button" id="eventMarketoListMore" hidden>More lists</button>
+          <label>Static list
+            <select id="eventMarketoList">
+              <option value="">Choose a static list</option>
+            </select>
+          </label>
+          <div id="eventMarketoImportMapping"></div>
+          <button type="button" id="eventMarketoImportNow" disabled>Import selected list</button>
+          <button type="button" id="eventMarketoImportSchedule" disabled>Enable automatic import</button>
+          <button type="button" id="eventMarketoImportStop" hidden>Stop automatic import</button>
+          <button type="button" id="eventMarketoImportRefresh">Refresh import status</button>
+          <p role="status" id="eventMarketoImportStatus"></p>
+        </fieldset>
+
+        <fieldset id="eventMailchimp" hidden>
+          <legend>Send consented registrations to Mailchimp</legend>
+          <button type="button" id="eventMailchimpLoad">Load Mailchimp audiences</button>
+          <button type="button" id="eventMailchimpMore" hidden>More Mailchimp audiences</button>
+          <label>Mailchimp audience
+            <select id="eventMailchimpAudience">
+              <option value=""></option>
+            </select>
+          </label>
+          <div id="eventMailchimpMapping"></div>
+          <p role="status" id="eventMailchimpMappingStatus"></p>
+          <label><input type="checkbox" id="eventMailchimpEngagement" disabled> Send consented attendee activity after the webinar</label>
+          <button type="button" id="eventMailchimpEnable" disabled>Save Mailchimp delivery</button>
+          <button type="button" id="eventMailchimpStop" hidden>Stop Mailchimp delivery</button>
+          <button type="button" id="eventMailchimpRefresh">Refresh Mailchimp delivery status</button>
+          <p role="status" id="eventMailchimpStatus"></p>
+        </fieldset>
+        <fieldset id="eventMarketo" hidden>
+          <legend>Send consented registrations to Marketo</legend>
+          <button type="button" id="eventMarketoLoad">Load programs and fields</button>
+          <button type="button" id="eventMarketoMore" hidden>More programs</button>
+          <label>Event program
+            <select id="eventMarketoProgram">
+              <option value="">Choose a program</option>
+            </select>
+          </label>
+          <div id="eventMarketoMapping"></div>
+          <label><input type="checkbox" id="eventMarketoEngagement"> Send consented attendee activity after the webinar</label>
+          <small>Fields are created in Marketo.</small>
+          <button type="button" id="eventMarketoEnable" disabled>Save Marketo delivery</button>
+          <button type="button" id="eventMarketoStop" hidden>Stop Marketo delivery</button>
+          <button type="button" id="eventMarketoRefresh">Refresh delivery status</button>
+          <p role="status" id="eventMarketoStatus"></p>
+        </fieldset>
+
+      </details>
+      <details id="eventCsvSettings">
+        <summary>Import attendee CSV</summary>
+        <form id="eventCsvForm">
+          <label>Attendee CSV <input type="file" accept=".csv,text/csv" name="attendees" required></label>
+          <fieldset id="eventCsvColumns" hidden disabled>
+            <legend>Match columns to the registration form</legend>
+            <div id="eventCsvMapping"></div>
+            <button type="submit">Import attendees</button>
+          </fieldset>
+        </form>
+        <p id="eventCsvStatus" role="status"></p>
+      </details>
+      <details id="eventMailSettings">
+        <summary>Webinar emails</summary>
+        <p id="eventMailRelay"></p>
+        <form id="eventMailForm">
+          <fieldset disabled>
+            <legend>Automatic mail for this event</legend>
+            <label><input type="checkbox" name="confirmation"> Send registration confirmations</label>
+            <label>Minutes before start for each reminder (comma-separated)
+              <input name="reminders" placeholder="1440, 60" maxlength="100">
+            </label>
+            <label>Hours after the end to send a follow-up (blank to turn off)
+              <input type="number" name="followUp" min="0" max="168" step="1">
+            </label>
+            <button type="submit">Save webinar emails</button>
+          </fieldset>
+        </form>
+        <p id="eventMailDeliveries"></p>
+        <p id="eventMailStatus" role="status"></p>
+      </details>
       <details id="eventAnalytics">
         <summary>Audience analytics</summary>
         <table>
@@ -170,21 +413,43 @@
         </form>
       </details>
       <div id="encoderSettings" hidden>
-        <label>RTMP server <input id="rtmpServer" readonly></label>
+        <label>RTMP or RTMPS server <input id="rtmpServer" readonly></label>
         <label id="secureEncoder">RTMPS server <input id="rtmpsServer" readonly></label>
         <label>Stream key <input id="encoderKey" type="password" readonly></label>
         <button type="button" id="copyEncoderKey">Copy stream key</button>
+        <div id="backupEncoderSettings" hidden>
+          <label>Backup stream key <input id="backupEncoderKey" type="password" readonly></label>
+          <button type="button" id="copyBackupEncoderKey">Copy backup stream key</button>
+          <p>Start the primary encoder first. Then start the backup on the same server with its own key.</p>
+        </div>
       </div>
       <details id="eventSrtPanel">
         <summary>SRT encoder</summary>
         <label>Receiving interface <input id="srtInterface" value="127.0.0.1"></label>
         <label>UDP port <input id="srtPort" type="number" min="1024" max="65535" value="9180"></label>
+        <label id="srtBackupChoice" hidden><input type="checkbox" id="enableSrtBackup"> Use an independent SRT backup encoder</label>
+        <div id="srtBackupOptions" hidden>
+          <label>Backup listening port <input id="srtBackupPort" type="number" min="1024" max="65535" value="9181"></label>
+          <label>SRT programme output
+            <select id="srtBackupHeight">
+              <option value="360">360p</option>
+              <option value="720" selected>720p</option>
+              <option value="1080">1080p</option>
+              <option value="2160">2160p</option>
+            </select>
+          </label>
+        </div>
         <button type="button" id="prepareSrt">Start SRT listener</button>
         <button type="button" id="stopSrt">Stop SRT listener</button>
         <div id="srtSettings" hidden>
           <label>SRT endpoint <input id="srtServer" readonly></label>
           <label>SRT passphrase <input id="srtPassphrase" type="password" readonly></label>
           <button type="button" id="copySrtPassphrase">Copy SRT passphrase</button>
+          <div id="srtBackupCredentials" hidden>
+            <label>Backup endpoint <input id="srtBackupServer" readonly></label>
+            <label>Backup passphrase <input id="srtBackupPassphrase" type="password" readonly></label>
+            <button type="button" id="copySrtBackupPassphrase">Copy backup SRT passphrase</button>
+          </div>
           <p>Use caller mode with MPEG-TS and a 128-bit encryption key.</p>
         </div>
       </details>
@@ -193,6 +458,8 @@
         <p id="destinationStatus" role="status"></p>
         <ul id="destinationList"></ul>
         <form id="addDestination">
+          <label>Destination type <select name="preset"><option value="custom">Custom RTMP or RTMPS</option><option value="patreon">Patreon Live</option></select></label>
+          <p id="patreonDestinationHelp" hidden>Create a Live in Patreon, choose Other streaming source, copy the RTMPS server and key for this occurrence, select the audience, and start it in Patreon.</p>
           <label>Destination name <input name="name" maxlength="80" required></label>
           <label>RTMP or RTMPS server <input name="server" maxlength="500" required></label>
           <label>Destination stream key <input name="key" maxlength="512" type="password" autocomplete="off" required></label>
@@ -226,7 +493,7 @@
       <p id="eventShare" hidden><a id="eventWatch">Open event page</a></p>
       <label id="eventEmbedField" hidden>Embed code <input id="eventEmbedCode" readonly></label>
     </section>
-    {% include 'registration_editor.html' %}
+    {% with event_registration_editor = true %}{% include 'registration_editor.html' %}{% endwith %}
   </main>
   <script src="{{ url_for('static', filename='vendor/hls.min.js') }}"></script>
   <script type="module" src="{{ url_for('static', filename='ui/live_events.js') }}"></script>

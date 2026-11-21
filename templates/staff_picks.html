@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body>
-  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="{{ url_for('catalog', section='picks') }}">View Staff Picks</a></nav>
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Publishing"><a href="{{ url_for('catalog', section='picks') }}">View Staff Picks</a></nav>
   <main>
     <h1>Manage Staff Picks</h1>
     <form id="picksAccess">

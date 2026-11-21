@@ -6,13 +6,18 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video analytics · CuePorch</title>
 </head>
-<body data-work="{{ work }}">
-  <nav aria-label="Operator">
+<body data-work="{{ work }}"{% if team_preview %} data-team-preview="{{ team_preview }}"{% endif %}>
+  {% if team_preview %}
+  <nav aria-label="Team"><a href="/team/video/{{ work }}">Back to video</a></nav>
+  {% else %}
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Video">
     <a href="/operator/videos/{{ work }}">Video workspace</a>
     <a href="/operator/analytics?video={{ work }}">Advanced report</a>
   </nav>
+  {% endif %}
   <h1 id="analyticsTitle">Video analytics</h1>
-  <form id="identify">
+  <form id="identify"{% if team_preview %} hidden{% endif %}>
     <label>Operator credential <input id="analyticsKey" type="password" autocomplete="current-password" required></label>
     <button type="submit">Open analytics</button>
   </form>
@@ -22,7 +27,7 @@
       <label>From (UTC) <input type="date" name="from" required></label>
       <label>To (UTC) <input type="date" name="to" required></label>
       <label>Playback surface <select name="surface">
-        <option value="">All surfaces</option><option value="watch">Watch page</option><option value="embed">Embed</option>
+        <option value="">All surfaces</option><option value="watch">Watch page</option><option value="embed">Embed</option><option value="showcase">Showcase</option>
       </select></label>
       <button type="submit">Apply filters</button>
     </form>

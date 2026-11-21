@@ -1,4 +1,8 @@
 <div class="save-video" data-save-video data-kind="{{ save_kind }}" data-slug="{{ save_slug }}">
+  {% if creator %}
+    <a href="{{ url_for('creator_page', handle=creator.handle) }}">{{ creator.name }}</a>
+    {% set follow_handle = creator.handle %}{% include "follow_creator.html" %}
+  {% endif %}
   <button type="button" data-save-toggle hidden>Save to Watch Later</button>
   <button type="button" data-like-toggle hidden aria-pressed="false">Like video</button>
   <span data-like-count hidden></span>
@@ -18,5 +22,6 @@
   </dialog>
 </div>
 {% include "watch_comments.html" %}
+<script type="module" src="{{ url_for('static', filename='ui/watch_comments.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='ui/save_video.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='ui/video_community.js') }}"></script>

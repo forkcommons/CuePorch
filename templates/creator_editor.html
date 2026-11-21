@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Edit creator profile · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team">Team workspace</a></nav>
+  <h1>Edit creator profile</h1>
+  <p id="creatorStatus" role="status"></p>
+  <div id="creatorEditor" hidden>
+    <form id="creatorForm">
+      <label>Creator name <input name="name" required maxlength="120"></label>
+      <label>Profile handle <input name="handle" required minlength="3" maxlength="40"
+        pattern="[a-z0-9][a-z0-9\-]{1,38}[a-z0-9]" autocapitalize="none" spellcheck="false"></label>
+      <label>Biography <textarea name="bio" maxlength="2000"></textarea></label>
+      <label>Profile links, one per line <textarea name="links" rows="3"></textarea></label>
+      <label>Cover video <select name="cover"></select></label>
+      <fieldset>
+        <legend>Featured videos</legend>
+        <label>Add a video <select id="creatorVideo"></select></label>
+        <button type="button" id="creatorAdd">Add featured video</button>
+        <ol id="creatorFeatured"></ol>
+      </fieldset>
+      <label><input type="checkbox" name="visible"> Publish profile</label>
+      <p>Only videos currently available in public Watch appear on this profile.</p>
+      <button type="submit">Save creator profile</button>
+    </form>
+    <a id="publicCreatorLink" hidden>Open public profile</a>
+  </div>
+</main>
+<script type="module" src="/static/ui/creator_editor.js"></script>
+</html>

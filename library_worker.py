@@ -99,6 +99,7 @@ def start(app, root, db, tx, action, apply_routes):
                             process(origin)
                             sync_edits(tx, receipts, origin, root, connect)
                             if time.monotonic() >= next_replay_check:
+                                library_events.observe_delivery(tx, db, origin, connect)
                                 library_events.publish_replays(tx, db, origin, connect, action)
                                 next_replay_check = time.monotonic() + 5
                 except Timeout:

@@ -1,40 +1,75 @@
 """Institution event schedules and the operator's live production controls."""
 
 from datetime import date, datetime, time, timedelta, timezone
+from csv import Error as CSVError
 from email.utils import parsedate_to_datetime
+import hmac
 import json
 import math
 import re
+import secrets
 import uuid
 
 from filelock import FileLock, Timeout
 from flask import abort, make_response, render_template, request, url_for
-from itsdangerous import BadSignature, URLSafeTimedSerializer
+from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
 import requests
+from werkzeug.exceptions import Conflict, UnprocessableEntity
+from werkzeug.security import check_password_hash, generate_password_hash
 
-from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, root_path
+from browser_account_security import private, same_origin, secure_site
+from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, dash_hls, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
 import event_peer
+import event_rtmp
+import event_dash_buffer
+import event_dash_format
 import event_analytics
+import event_attendance
 import event_chat
 import event_captions
 import event_engagement
+import event_hubspot_sync
+import event_salesforce_sync
+import event_salesforce_registration
+import event_salesforce_engagement
+import salesforce_crm
+import event_hubspot_outbound
+import event_contact_delivery
+import event_mailchimp_engagement
+import event_mailchimp_registration
+import event_marketo_engagement
+import marketo_crm
+import event_hubspot_engagement
+import hubspot_crm
 import event_library_recordings
+import event_mail
 import event_player
 import event_playlist
 import event_program
+import event_questions
+import event_registrants
 import event_replay_captions
 import event_schedule
 import event_scenes
 import event_simulcast
 import event_slide_decks
 import event_speakers
+import event_webhooks
 from catalog import video_version_key
+import content_rating
 from library_actions import title_for
 import library_analytics
 from library_interactivity import text_field
+from library_privacy import allowed_ancestor, frame_policy, normalize_domain, try_password
 import library_registration
+import mail_relay
 import media_bandwidth
+import regional_availability
+import registration_csv
+import studio_voice
+import studio_scripts
+from team_accounts import note
 
 
 SCHEMA = """
@@ -48,14 +83,20 @@ CREATE TABLE IF NOT EXISTS live_encoder_preview(
  event TEXT NOT NULL, opens INTEGER NOT NULL, source TEXT, cutoff REAL, server TEXT, key BLOB,
  PRIMARY KEY(event,opens));
 CREATE TABLE IF NOT EXISTS live_encoder_preference(event TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TEXT, password_hash TEXT);
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
-       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA)
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
+       + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
+       + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
+       + event_mailchimp_engagement.SCHEMA + event_salesforce_engagement.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
-PUBLIC_MODES = ("public", "private")
+EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
+RESTRICTED_AUDIENCES = ("unlisted", "password", "embed_only")
 DELIVERED = ("ready", "replay")
+UNRESTRICTED_EMBED = dict(mode="anywhere", domains=[])
 
 
 def read(con, value, by_slug=False):
@@ -67,7 +108,7 @@ def read(con, value, by_slug=False):
 
 
 def publication(con, row, event):
-    if event["visibility"] != "public":
+    if event["visibility"] == "private":
         return "private"
     status = con.execute("SELECT status FROM action WHERE id=?", (row["publication"],)).fetchone()
     return status["status"] if status else "private"
@@ -77,9 +118,130 @@ def occurrence(con, uid, opens):
     return con.execute("SELECT * FROM live_occurrence WHERE event=? AND opens=?", (uid, opens)).fetchone()
 
 
+def find_open(event, opens):
+    try:
+        instant = datetime.fromtimestamp(opens, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
+                 if value["id"] == opens), None)
+
+
+def observe_delivery(tx, database, origin, connect):
+    now = datetime.now(timezone.utc)
+    with tx() as con:
+        hooks = event_webhooks.subscribed(con, ("live-event-started", "live-event-ended"))
+        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed,
+                                      p.generation AS marketo_generation,
+                                      q.generation AS mailchimp_generation,
+                                      s.generation AS salesforce_generation
+                               FROM live_occurrence o
+                               JOIN live_event e ON e.id=o.event
+                               LEFT JOIN live_webhook_feed f
+                                 ON f.event=o.event AND f.occurrence=o.opens
+                               LEFT JOIN live_event_contact_plan p
+                                 ON p.provider='marketo' AND p.event=o.event AND p.opens=o.opens
+                                AND p.event_revision=e.revision
+                                AND json_extract(p.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_marketo_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=p.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_marketo_completion c
+                                                WHERE c.generation=p.generation)
+                               LEFT JOIN live_event_contact_plan q
+                                 ON q.provider='mailchimp' AND q.event=o.event AND q.opens=o.opens
+                                AND q.event_revision=e.revision
+                                AND json_extract(q.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_mailchimp_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=q.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_mailchimp_completion c
+                                                WHERE c.generation=q.generation)
+                               LEFT JOIN live_event_contact_plan s
+                                 ON s.provider='salesforce' AND s.event=o.event AND s.opens=o.opens
+                                AND s.event_revision=e.revision
+                                AND json_extract(s.destination,'$.engagement')=1
+                                AND EXISTS (SELECT 1 FROM live_event_salesforce_engagement m
+                                            WHERE m.event=o.event AND m.opens=o.opens
+                                              AND m.generation=s.generation AND m.state='queued')
+                                AND NOT EXISTS (SELECT 1 FROM live_event_salesforce_completion c
+                                                WHERE c.generation=s.generation)
+                               WHERE o.origin=? AND o.opens<=?
+                                 AND ((? AND o.delivery='ready' AND (f.state IS NULL OR f.state='live'))
+                                      OR ((p.generation IS NOT NULL OR q.generation IS NOT NULL
+                                           OR s.generation IS NOT NULL)
+                                          AND o.delivery IN ('ready','replay')))""",
+                            (origin, now.timestamp(), hooks)).fetchall()
+    for item in entries:
+        uid, opens = item["event"], item["opens"]
+        slot = find_open(json.loads(item["settings"]), opens)
+        if not slot:
+            continue
+        try:
+            with lock_event(database, uid, timeout=0):
+                marketo_generation = item["marketo_generation"]
+                mailchimp_generation = item["mailchimp_generation"]
+                salesforce_generation = item["salesforce_generation"]
+                any_generation = any(generation is not None for generation in (marketo_generation,mailchimp_generation,salesforce_generation))
+                with tx() as con:
+                    current = occurrence(con, uid, opens)
+                    if not current or current["remote"] != item["remote"]:
+                        continue
+                    if current["delivery"] != "ready" and not (
+                        any_generation and current["delivery"] == "replay"
+                    ):
+                        continue
+                if any_generation:
+                    observed = event_peer.observe(connect(origin), item["remote"], include_duration=True)
+                else:
+                    observed = event_peer.observe(connect(origin), item["remote"])
+                state = observed["state"]
+                duration = observed.get("duration")
+                with tx() as con:
+                    current = occurrence(con, uid, opens)
+                    if (hooks and current and current["delivery"] == "ready"
+                            and item["observed"] in (None, "live")):
+                        if state == "waiting_for_encoder" and datetime.fromisoformat(slot["end"]) <= now:
+                            if item["observed"] == "live":
+                                event_webhooks.observe(con, uid, opens, "ended")
+                            else:
+                                con.execute("INSERT OR IGNORE INTO live_webhook_feed VALUES(?,?,'closed')", (uid, opens))
+                        else:
+                            event_webhooks.observe(con, uid, opens, state)
+                    if (any_generation and state in ("ended", "replay")
+                            and current and current["remote"] == item["remote"]
+                            and current["delivery"] in ("ready", "replay")):
+                        row = con.execute("SELECT revision FROM live_event WHERE id=?", (uid,)).fetchone()
+                        revision = row[0] if row else None
+                        for provider, module, generation in (
+                            ("marketo", event_marketo_engagement, marketo_generation),
+                            ("mailchimp", event_mailchimp_engagement, mailchimp_generation),
+                            ("salesforce", event_salesforce_engagement, salesforce_generation),
+                        ):
+                            if generation is None:
+                                continue
+                            plan = event_contact_delivery.get(con, provider, uid, opens)
+                            if (not plan or plan["generation"] != generation
+                                    or plan["event_revision"] != revision):
+                                continue
+                            if (type(duration) in (int, float)
+                                    and math.isfinite(duration)
+                                    and duration > 0):
+                                observed_duration = duration
+                            else:
+                                observed_duration = max(
+                                    1,
+                                    min(now.timestamp(), datetime.fromisoformat(slot["end"]).timestamp()) - opens,
+                                )
+                            module.complete(con, generation, now.timestamp(), observed_duration)
+        except (Timeout, ValueError, requests.RequestException, KeyError):
+            continue
+
+
 def private_delivery(con, event, uid, opens):
-    return bool(event.get("cueporch_delivery") or con.execute(
-        "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
+    return bool(event.get("cueporch_delivery") or event["visibility"] in RESTRICTED_AUDIENCES
+                or territories(event)["mode"] != "anywhere" or con.execute(
+                    "SELECT 1 FROM live_encoder_preview WHERE event=? AND opens=?", (uid, opens)).fetchone())
 
 
 def encoder_preview_enabled(con, uid):
@@ -88,10 +250,10 @@ def encoder_preview_enabled(con, uid):
 
 
 def publishing_action(con, action, uid, event):
-    if event["visibility"] != "public":
+    if event["visibility"] == "private":
         return None
     key = f"live-event-{uid}-{uuid.uuid4().hex}"
-    action(con, key, "publication", dict(title=event["title"], event=uid, visibility="public"))
+    action(con, key, "publication", dict(title=event["title"], event=uid, visibility=event["visibility"]))
     return key
 
 
@@ -118,9 +280,9 @@ def publish_replays(tx, database, origin, connect, action):
             """SELECT o.event,o.opens,o.remote FROM live_occurrence o JOIN live_event e ON e.id=o.event
                JOIN action a ON a.id=e.publication WHERE o.origin=? AND a.status='eligible'
                AND json_extract(e.settings,'$.save_replay')=1 AND o.opens<=? AND
-               (o.delivery='ready' OR (o.delivery='replay' AND EXISTS (
-                   SELECT 1 FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens AND s.enabled=1
-               ) AND NOT EXISTS (
+               (o.delivery='ready' OR (o.delivery='replay' AND COALESCE((
+                   SELECT enabled FROM live_caption_setting s WHERE s.event=o.event AND s.opens=o.opens
+               ),json_extract(e.settings,'$.setup.captions.enabled'),0)=1 AND NOT EXISTS (
                    SELECT 1 FROM live_replay_captions c WHERE c.event=o.event AND c.opens=o.opens
                )))""",
             (origin, datetime.now(timezone.utc).timestamp()),
@@ -152,6 +314,7 @@ def publish_replays(tx, database, origin, connect, action):
                         host.set_public(remote, True)
                     with tx() as con:
                         con.execute("UPDATE live_occurrence SET delivery='replay' WHERE event=? AND opens=?", (uid, opens))
+                        event_webhooks.enqueue(con, "live-event-archive-available", uid, opens, data=dict(clip=remote))
         except (Timeout, ValueError, requests.RequestException, KeyError):
             continue
 
@@ -162,7 +325,7 @@ def edit(raw):
     title = text_field(raw.get("title"), "an event title", 128, True)
     description = text_field(raw.get("description", ""), "an event description", 5000)
     kind, latency, visibility = raw.get("type"), raw.get("latency"), raw.get("visibility")
-    if kind not in TYPES or latency not in tuple(event_peer.LATENCY) or visibility not in PUBLIC_MODES:
+    if kind not in TYPES or latency not in tuple(event_peer.LATENCY) or visibility not in EVENT_VISIBILITY:
         abort(422, "Choose the event type, latency and visibility.")
     replay = raw.get("save_replay", False)
     if type(replay) is not bool:
@@ -182,11 +345,136 @@ def edit(raw):
         value["dvr_seconds"] = dvr
     if "archive_replay" in raw:
         value["archive_replay"] = raw["archive_replay"]
+    if "embed_policy" in raw:
+        value["embed_policy"] = embed_policy(raw["embed_policy"])
+    if "regional_policy" in raw:
+        try:
+            value["regional_policy"] = regional_availability.validated(raw["regional_policy"])
+        except ValueError as error:
+            abort(422, str(error))
+    if "content_rating" in raw:
+        value["content_rating"] = content_rating.validate(raw["content_rating"], 422)
     return value
+
+
+def embed_policy(body):
+    if not isinstance(body, dict) or body.get("mode") not in ("anywhere", "disabled", "domains"):
+        abort(422, "Choose where the event can be embedded.")
+    domains = body.get("domains", [])
+    if not isinstance(domains, list) or len(domains) > 50:
+        abort(422, "Enter up to 50 allowed embed domains.")
+    mode = body["mode"]
+    if mode != "domains":
+        return dict(mode=mode, domains=[])
+    try:
+        domains = sorted(set(map(normalize_domain, domains)))
+    except (ValueError, UnicodeError):
+        abort(422, "Use domain names such as example.org, with an optional port.")
+    if not domains:
+        abort(422, "Enter at least one allowed embed domain.")
+    return dict(mode=mode, domains=domains)
+
+
+def sharing_settings(event):
+    policy = event.get("embed_policy", UNRESTRICTED_EMBED)
+    if event["visibility"] == "embed_only" and policy["mode"] == "disabled":
+        abort(422, "Choose where an embed-only event can be watched.")
+    return dict(visibility=event["visibility"], embed=policy["mode"], domains=policy["domains"])
+
+
+def territories(event):
+    return event.get("regional_policy", regional_availability.DEFAULT)
+
+
+def validate_setup(raw):
+    if not isinstance(raw, dict) or raw.get("method") not in ("browser", "encoder"):
+        abort(422, "Choose a preferred method for the event.")
+    for key in ("registration", "preview_encoder"):
+        if type(raw.get(key)) is not bool:
+            abort(422, "Choose the event setup options.")
+    chat, captions, qa = (raw.get(key) for key in ("chat", "captions", "qa"))
+    if any(not isinstance(value, dict) or type(value.get("enabled")) is not bool for value in (chat, captions, qa)):
+        abort(422, "Choose the audience options.")
+    interval, language = chat.get("interval"), captions.get("language")
+    if type(interval) is not int or not 0 <= interval <= 120 or language not in event_captions.LANGUAGES:
+        abort(422, "Choose a valid chat delay and caption language.")
+    if any(type(qa.get(key)) is not bool for key in ("anonymous", "review")):
+        abort(422, "Choose the Q&A options.")
+    return dict(method=raw["method"], registration=raw["registration"], preview_encoder=raw["preview_encoder"],
+                chat=dict(enabled=chat["enabled"], interval=interval),
+                captions=dict(enabled=captions["enabled"], language=language),
+                qa={key: qa[key] for key in ("enabled", "anonymous", "review")})
+
+
+def reuse_setup(con, uid, event):
+    # Occurrence-specific overrides take precedence over defaults at the source.
+    chat, interval = event_chat.settings(con, uid, latest_setting(con, "live_chat_settings", uid))
+    captions = event_captions.settings(con, uid, latest_setting(con, "live_caption_setting", uid))
+    qa = event_questions.settings(con, uid, latest_setting(con, "live_qa_settings", uid))
+    qa.pop("highlighted")
+    return dict(method=event.get("setup", {}).get("method", "browser"),
+                registration=library_registration.active(con, "event", uid) is not None,
+                preview_encoder=encoder_preview_enabled(con, uid), chat=dict(enabled=chat, interval=interval),
+                captions=captions, qa=qa)
+
+
+def latest_setting(con, table, uid):
+    return con.execute(f"SELECT MAX(opens) FROM {table} WHERE event=?", (uid,)).fetchone()[0]
+
+
+def apply_setup(con, uid, event, setup, reference):
+    if setup["preview_encoder"]:
+        con.execute("INSERT INTO live_encoder_preference VALUES(?,1)", (uid,))
+    if reference:
+        player = event_player.settings(con, reference)
+        con.execute("INSERT INTO live_player_settings VALUES(?,?)", (uid, json.dumps(player)))
+        if event["schedule"]["repeat"] != "none":
+            playlist = event_playlist.settings(con, reference)
+            con.execute("INSERT INTO live_playlist VALUES(?,?,?,?)", (uid, *playlist.values()))
+    if reference or setup["registration"]:
+        _, form = library_registration.read_form(con, "event", reference)
+        form["enabled"] = setup["registration"]
+        con.execute("INSERT INTO viewer_form VALUES('event',?,?,?)", (uid, uuid.uuid4().hex, json.dumps(form)))
+
+
+def access_settings(con, uid):
+    row = con.execute("SELECT link_key,password_hash FROM live_event_access WHERE event=?", (uid,)).fetchone()
+    return tuple(row) if row else (None, None)
+
+
+def requested_access(event, body, previous=(None, None)):
+    key, password_hash = previous
+    password = body.get("view_password", "")
+    if not isinstance(password, str) or len(password) > 256:
+        abort(422, "Enter a viewing password of up to 256 characters.")
+    if event["visibility"] == "unlisted":
+        return key or secrets.token_urlsafe(21), None
+    if event["visibility"] == "password":
+        if not (password or password_hash):
+            abort(422, "Enter a password for event viewers.")
+        if password and (not password_hash or not check_password_hash(password_hash, password)):
+            password_hash = generate_password_hash(password)
+        return None, password_hash
+    return None, None
+
+
+def store_access(con, uid, access):
+    if any(access):
+        con.execute("INSERT OR REPLACE INTO live_event_access VALUES(?,?,?)", (uid, *access))
+    else:
+        con.execute("DELETE FROM live_event_access WHERE event=?", (uid,))
+
+
+def viewer_url(row, event, embed, key=None, opens=None):
+    if event["visibility"] == "embed_only" and not embed:
+        return None
+    return url_for("event_embed" if embed else "event_page", slug=row["slug"], key=key, occurrence=opens)
 
 
 def summary(con, row, event, first, last):
     visible = publication(con, row, event)
+    can_embed = visible == "eligible" and event.get("embed_policy", UNRESTRICTED_EMBED)["mode"] != "disabled"
+    key, _ = access_settings(con, row["id"]) if event["visibility"] == "unlisted" else (None, None)
     sessions = []
     for upcoming in event_schedule.occurrences(event["schedule"], first, last):
         target = occurrence(con, row["id"], upcoming["id"])
@@ -197,8 +485,8 @@ def summary(con, row, event, first, last):
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
                 preview_encoder=encoder_preview_enabled(con, row["id"]),
                 publication=visible, occurrences=sessions,
-                watch=url_for("event_page", slug=row["slug"]) if visible == "eligible" else None,
-                embed=url_for("event_embed", slug=row["slug"]) if visible == "eligible" else None)
+                watch=viewer_url(row, event, False, key) if visible == "eligible" else None,
+                embed=viewer_url(row, event, True, key) if can_embed else None)
 
 
 def calendar_window():
@@ -226,13 +514,29 @@ def overlapping(entries):
     return sorted(conflicts)
 
 
-def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work):
+def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, marketo=None):
+    marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
+    rtmp_config = event_rtmp.configured()
+    event_rtmp.register(app, rtmp_config, studio)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
     recordings = event_library_recordings.Recordings(app, tx, media, database, root, institution, remember_work)
+    stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
 
     def stop():
+        app.extensions["account_reset_delivery"].stop()
+        if stop_webhooks := app.extensions.get("stop_event_webhooks"):
+            stop_webhooks()
+        stop_hubspot()
+        stop_hubspot_outbound()
+        stop_marketo()
+        stop_mailchimp()
+        stop_marketo_sync()
+        stop_salesforce_sync()
+        stop_salesforce_outbound()
+        stop_mail()
         outputs.close()
         preview_outputs.close()
         programs.close()
@@ -240,9 +544,17 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         captions.close()
         replay_captions.close()
         recordings.close()
+        stop_voice()
+        stop_scripts()
 
     app.extensions["stop_event_capture"] = stop
     forms = URLSafeTimedSerializer(signing_key, salt="cueporch-event-enrollment")
+    attendance_links = URLSafeSerializer(signing_key, salt="cueporch-event-attendance")
+    mail_origin = library_analytics.source_origin(public_url)
+    stop_mail = event_mail.register(app, tx, database, mail_origin, staff, read, attendance_links)
+    mail_configured = bool(mail_relay.configured(mail_origin))
+    frames = URLSafeTimedSerializer(signing_key, salt="cueporch-event-frame")
+    audiences = URLSafeTimedSerializer(signing_key, salt="cueporch-event-audience")
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
@@ -253,15 +565,37 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
 
-    def viewer_enrolled(token, scope, released_archive):
+    def enforce_territories(event):
+        if not regional_availability.permits(territories(event), analytics_proxies):
+            response = make_response("This event is unavailable in your region.", 403)
+            response.headers["Content-Type"] = "text/plain; charset=utf-8"
+            response.headers["Cache-Control"] = "no-store"
+            abort(response)
+
+    def check_territories(event):
+        if territories(event)["mode"] != "anywhere" and not analytics_proxies:
+            abort(422, "Connect a trusted region proxy before setting territories.")
+
+    def viewer_enrollment(con, token, scope, released_archive):
         try:
             registered_scope = guests.loads(token, max_age=12 * 3600)
         except BadSignature:
-            return False
+            return False, None, None
+        if isinstance(registered_scope, list) and len(registered_scope) == 6:
+            joined = registered_scope[5]
+            admitted = registered_scope[:5] == scope and event_attendance.active(con, joined, scope)
+            return admitted, joined if admitted else None, None
+        sharing = None
+        if isinstance(registered_scope, list) and len(registered_scope) == 7:
+            candidate = registered_scope[6]
+            registered_scope = registered_scope[:5]
+            if registered_scope == scope and event_registrants.sharing_active(con, candidate, scope[0], scope[2]):
+                sharing = candidate
         # A submitted registration covers the other released entries of the same event playlist.
         # Media, captions and engagement continue to check the exact occurrence being requested.
-        return registered_scope == scope or (released_archive and isinstance(registered_scope, list)
-            and len(registered_scope) == 5 and registered_scope[:2] == scope[:2] and registered_scope[3:] == scope[3:])
+        carried = (released_archive and isinstance(registered_scope, list) and len(registered_scope) == 5
+                   and registered_scope[:2] == scope[:2] and registered_scope[3:] == scope[3:])
+        return bool(registered_scope == scope or carried), None, sharing
 
     def locked(uid):
         if not re.fullmatch(r"[a-f0-9]{32}", uid):
@@ -270,7 +604,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     @app.get("/operator/live-events")
     def live_event_dashboard():
-        return render_template("live_events.html", public_url=public_url)
+        return render_template("live_events.html", public_url=public_url, rating_labels=content_rating.DESCRIPTORS)
 
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
@@ -279,7 +613,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                health_endpoint=url_for("event_health", uid=uid, opens=opens),
                                speaker_endpoint=url_for("event_speakers", event=uid, opens=opens),
                                engagement_endpoint=url_for("operator_event_engagement", uid=uid, opens=opens),
-                               speaker_public_url=public_url)
+                               script_endpoint=url_for("studio_event_scripts", uid=uid, opens=opens),
+                               speaker_public_url=public_url, **studio_scripts.CONTROLS)
 
     @app.route("/api/live-events", methods=["GET", "POST"])
     def list_events():
@@ -290,11 +625,33 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 entries = [summary(con, row, json.loads(row["settings"]), first, last) for row in con.execute(
                     "SELECT * FROM live_event ORDER BY created DESC"
                 )]
-                return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available())
+                return dict(events=entries, overlaps=overlapping(entries), host_ready=event_peer.host_available(),
+                            direct_rtmp=bool(rtmp_config))
             body = request.get_json()
             event = edit(body)
+            setup = validate_setup(body["starting_options"]) if "starting_options" in body else None
+            reference = body.get("reuse_event")
+            if reference is not None:
+                if not isinstance(reference, str) or not re.fullmatch(r"[a-f0-9]{32}", reference):
+                    abort(422, "Choose a stored event to reuse.")
+                _, previous = read(con, reference)
+                if setup is None:
+                    setup = reuse_setup(con, reference, previous)
+                if "embed_policy" in previous:
+                    event.setdefault("embed_policy", previous["embed_policy"])
+                if "regional_policy" in previous:
+                    event.setdefault("regional_policy", previous["regional_policy"])
+                if "content_rating" in previous:
+                    event.setdefault("content_rating", previous["content_rating"])
+            enforce_sharing(con, settings=sharing_settings(event))
+            check_territories(event)
+            access = requested_access(event, body)
             event.setdefault("archive_replay", True)
             event["cueporch_delivery"] = True
+            if setup:
+                if setup["captions"]["enabled"]:
+                    event_captions.require_generation(con, ai_actor)
+                event["setup"] = {key: setup[key] for key in ("method", "captions", "chat", "qa")}
             uid = uuid.uuid4().hex
             slug = body.get("slug") or uid
             if not isinstance(slug, str) or not SLUG.fullmatch(slug):
@@ -302,10 +659,60 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if con.execute("SELECT 1 FROM live_event WHERE slug=?", (slug,)).fetchone():
                 abort(409, "This event link name is already used.")
             approval = publishing_action(con, action, uid, event)
-            con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, uuid.uuid4().hex,
+            revision = uuid.uuid4().hex
+            con.execute("INSERT INTO live_event VALUES(?,?,?,?,?,?)", (uid, slug, revision,
                         json.dumps(event), approval, datetime.now(timezone.utc).isoformat()))
+            event_webhooks.enqueue(con, "live-event-updated", uid, marker=revision, data=dict(change="created", revision=revision))
+            store_access(con, uid, access)
+            if setup:
+                apply_setup(con, uid, event, setup, reference)
             row, _ = read(con, uid)
             return summary(con, row, event, first, last), 201
+
+    @app.get("/api/live-events/<uid>/setup")
+    def event_setup(uid):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            return reuse_setup(con, uid, event)
+
+    @app.get("/api/live-events/<uid>")
+    def event_details(uid):
+        staff()
+        first, last = calendar_window()
+        with tx() as con:
+            row, event = read(con, uid)
+            result = summary(con, row, event, first, last)
+            key = access_settings(con, uid)[0] if event["visibility"] == "unlisted" else None
+            for session in result["occurrences"]:
+                if session["delivery"] == "replay":
+                    session["watch"] = viewer_url(row, event, False, key, session["id"]) if result["watch"] else None
+                    session["embed"] = viewer_url(row, event, True, key, session["id"]) if result["embed"] else None
+        return result
+
+    @app.post("/api/live-events/regions/import")
+    def event_region_import():
+        staff()
+        request.max_content_length = regional_availability.MAX_BYTES * 2
+        body = request.get_json()
+        text = body.get("csv") if isinstance(body, dict) else None
+        if not isinstance(text, str) or len(text.encode("utf-8", "replace")) > regional_availability.MAX_BYTES:
+            abort(422, "Choose a UTF-8 territory CSV under 256 KiB.")
+        try:
+            return regional_availability.from_csv(text.lstrip("\ufeff"))
+        except (CSVError, ValueError) as error:
+            abort(422, str(error))
+
+    @app.get("/api/live-events/<uid>/regions/export")
+    def event_region_export(uid):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            response = make_response(regional_availability.csv_text(territories(event)))
+        response.mimetype = "text/csv"
+        response.headers["Content-Disposition"] = 'attachment; filename="cueporch-event-regions.csv"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.put("/api/live-events/<uid>")
     def revise_event(uid):
@@ -322,14 +729,34 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     changed["cueporch_delivery"] = True
                 if "archive_replay" in prior:
                     changed.setdefault("archive_replay", prior["archive_replay"])
-                if changed == prior:
+                if "embed_policy" in prior:
+                    changed.setdefault("embed_policy", prior["embed_policy"])
+                if "regional_policy" in prior:
+                    changed.setdefault("regional_policy", prior["regional_policy"])
+                if "content_rating" in prior:
+                    changed.setdefault("content_rating", prior["content_rating"])
+                if "setup" in prior:
+                    changed["setup"] = prior["setup"]
+                if "preferred_method" in body:
+                    if body["preferred_method"] not in ("browser", "encoder"):
+                        abort(422, "Choose a preferred method for the event.")
+                    changed["setup"] = prior.get("setup", {}) | {"method": body["preferred_method"]}
+                enforce_sharing(con, settings=sharing_settings(changed), prior=sharing_settings(prior))
+                if territories(changed) != territories(prior):
+                    check_territories(changed)
+                previous_access = access_settings(con, uid)
+                access = requested_access(changed, body, previous_access)
+                if changed == prior and access == previous_access:
                     return summary(con, row, prior, first, last)
                 if not editable(con, uid):
                     abort(409, "Withdraw prepared occurrences before changing this event.")
                 supersede_publication(con, row["publication"])
                 approval = publishing_action(con, action, uid, changed)
+                revision = uuid.uuid4().hex
                 con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
-                            (uuid.uuid4().hex, json.dumps(changed), approval, uid))
+                            (revision, json.dumps(changed), approval, uid))
+                event_webhooks.enqueue(con, "live-event-updated", uid, marker=revision, data=dict(change="updated", revision=revision))
+                store_access(con, uid, access)
                 row, _ = read(con, uid)
                 if prior["schedule"] != changed["schedule"]:
                     for program in con.execute("SELECT * FROM live_program WHERE event=?", (uid,)).fetchall():
@@ -363,23 +790,639 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             read(con, uid)
             return library_registration.export(con, "event", uid)
 
-    def find_open(event, opens):
-        try:
-            instant = datetime.fromtimestamp(opens, timezone.utc)
-        except (ValueError, OverflowError, OSError):
-            return None
-        return next((value for value in event_schedule.occurrences(event["schedule"], instant, instant + timedelta(seconds=1))
-                     if value["id"] == opens), None)
-
     def selected_open(event, opens):
         candidate = find_open(event, opens)
         if not candidate:
             abort(404)
         return candidate
 
+    event_registrants.register(app, tx, staff, read, selected_open)
+
+    def registration_intake(con, uid, opens):
+        row, event = read(con, uid)
+        slot = selected_open(event, opens)
+        delivery = occurrence(con, uid, opens)
+        form = library_registration.active(con, "event", uid)
+        if (not form or event["visibility"] not in event_mail.WATCHABLE
+                or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn", "replay"))):
+            abort(409, "Choose a current watchable occurrence with registration enabled.")
+        if event_attendance.expires_at(slot) <= datetime.now(timezone.utc).timestamp():
+            abort(409, "This occurrence has ended.")
+        return row, slot, form
+
+    def enroll_attendee(con, row, slot, form, body, *, source):
+        uid, opens = row["id"], slot["id"]
+        added = False
+
+        def remember(email, answers):
+            nonlocal added
+            _, added = event_registrants.record(con, uid, opens, email, answers, source)
+
+        registrant, created = event_attendance.enroll(
+            con, uid, row["revision"], slot, form, body, on_record=remember)
+        if mail_configured:
+            _, rules = event_mail.settings(con, uid)
+            event_mail.schedule(con, registrant["id"], opens, registrant["expires_at"], rules,
+                                int(datetime.now(timezone.utc).timestamp()), confirmation=created and source == "api")
+        return registrant, created, added
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registrants")
+    def add_event_registrant(uid, opens):
+        staff()
+        body = request.get_json()
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            registrant, created, _ = enroll_attendee(con, row, slot, form, body, source="api")
+        address = url_for("event_attendance_join", slug=row["slug"])
+        return dict(registrant, join=address + "#" + attendance_links.dumps(registrant["id"])), 201 if created else 200
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/import")
+    def import_event_registrants(uid, opens):
+        secure_site(mail_origin)
+        actor = staff()
+        request.max_content_length = registration_csv.MAX_BYTES + 32768
+        headers, rows = registration_csv.read_file(request.files.get("attendees"))
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            available = registration_csv.destinations(form)
+            if request.form.get("preview") == "1":
+                return private(dict(headers=headers, fields=available, mapping=registration_csv.suggested(available, headers),
+                                    rows=len(rows), revision=form["revision"]))
+            if request.form.get("revision", form["revision"]) != form["revision"]:
+                abort(409, "The registration form changed. Reopen the CSV mapping.")
+            assigned = registration_csv.mapping(request.form.get("mapping"), available, headers)
+            contacts = {}
+            for line, cells in rows:
+                fields = registration_csv.attendee_fields(line, cells, assigned)
+                contacts[fields["email"].casefold()] = (line, fields)
+            added = 0
+            for line, fields in contacts.values():
+                try:
+                    _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source="csv")
+                    added += int(enrolled)
+                except (Conflict, UnprocessableEntity) as error:
+                    abort(error.code, f"CSV line {line}: {error.description}")
+            note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} attendees")
+        return private(dict(added=added, existing=len(contacts) - added, duplicates=len(rows) - len(contacts), occurrence=opens))
+
+    def enroll_hubspot_contacts(con, row, slot, form, contacts, *, job=None):
+        added = 0
+        existing = 0
+        duplicates = 0
+        seen = set()
+        for contact in contacts:
+            email = (contact.get("email") or "").strip()
+            key = email.casefold()
+            if not key or key in seen:
+                duplicates += 1
+                continue
+            seen.add(key)
+            if job:
+                tracked = con.execute(
+                    "SELECT 1 FROM live_event_hubspot_member WHERE event=? AND opens=? AND connection=? AND segment=? AND contact_id=?",
+                    (job["event"], job["opens"], job["connection"], job["segment"], contact["contact_id"]),
+                ).fetchone()
+                if tracked:
+                    existing += 1
+                    continue
+            hit = con.execute(
+                "SELECT id FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?",
+                (row["id"], slot["id"], key),
+            ).fetchone()
+            if hit:
+                existing += 1
+                continue
+            fields = {
+                "email": email,
+                "first_name": contact.get("first_name", ""),
+                "last_name": contact.get("last_name", ""),
+            }
+            attendee, _, enrolled = enroll_attendee(
+                con, row, slot, form, fields,
+                source="hubspot-scheduled" if job else "hubspot",
+            )
+            if enrolled:
+                added += 1
+            if enrolled and job:
+                registrant = con.execute(
+                    "SELECT id FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?",
+                    (row["id"], slot["id"], key),
+                ).fetchone()
+                event_hubspot_sync.track_member(
+                    con, job, contact["contact_id"], registrant["id"], attendee["id"]
+                )
+        return dict(added=added, existing=existing, duplicates=duplicates)
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/hubspot")
+    def live_event_hubspot_registration(uid, opens):
+        import hubspot_crm
+        from browser_account_security import json_mutation
+        actor = staff()
+        body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
+        connection = hubspot
+        revision = connection.revision()
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            saved = (row["revision"], form["revision"])
+        contacts, skipped = hubspot_crm.contacts(connection, revision, body.get("segment"))
+        with tx() as con:
+            connection.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            if (row["revision"], form["revision"]) != saved:
+                abort(409, "The event or registration form changed. Reopen this occurrence and try again.")
+            result = enroll_hubspot_contacts(con, row, slot, form, contacts)
+            note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {len(contacts)} HubSpot contacts")
+        return private(dict(result, skipped=skipped, occurrence=opens))
+
+    def enroll_marketo_members(con, row, slot, form, members, mapping, *, source):
+        contacts = (marketo_crm.static_list_attendee(member, mapping) for member in members)
+        return enroll_crm_contacts(con, row, slot, form, contacts, source=source)
+
+    def enroll_crm_contacts(con, row, slot, form, contacts, *, source):
+        added = 0
+        existing = 0
+        duplicates = 0
+        skipped = 0
+        seen = set()
+        for fields in contacts:
+            if fields is None:
+                skipped += 1
+                continue
+            key = fields["email"].casefold()
+            if key in seen:
+                duplicates += 1
+                continue
+            found = con.execute(
+                'SELECT 1 FROM live_event_registrant WHERE event=? AND opens=? AND email_key=?',
+                (row["id"], slot["id"], key),
+            ).fetchone()
+            if found is not None:
+                existing += 1
+                seen.add(key)
+                continue
+            values = dict(fields)
+            for k, v in values.items():
+                if isinstance(v, bool):
+                    values[k] = "yes" if v else "no"
+            error, _ = library_registration.answers_from(form, values)
+            if error:
+                skipped += 1
+                continue
+            _, _, enrolled = enroll_attendee(con, row, slot, form, fields, source=source)
+            if enrolled:
+                added += 1
+            seen.add(key)
+        return dict(added=added, existing=existing, duplicates=duplicates, skipped=skipped)
+
+    def marketo_import_target(body, form):
+        list_id = body.get("list")
+        mapping = body.get("mapping", {})
+        if isinstance(list_id, bool) or not isinstance(list_id, int) or list_id <= 0:
+            abort(422)
+        if not isinstance(mapping, dict):
+            abort(422)
+        marketo_crm.static_list(marketo, list_id)
+        if mapping:
+            try:
+                mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
+            except ValueError:
+                abort(422)
+        return list_id, mapping
+
+    @app.post("/api/live-events/<uid>/<int:opens>/registration/marketo")
+    def import_marketo_registration(uid, opens):
+        actor = staff()
+        from browser_account_security import json_mutation
+        body = json_mutation(secure_site(mail_origin), "X-CuePorch-Integration")
+        if marketo is None:
+            abort(404)
+
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            event_revision = row["revision"]
+            form_revision = form["revision"]
+        list_id, mapping = marketo_import_target(body, form)
+        fields = [entry["name"] for entry in mapping.values()]
+        members = marketo_crm.static_list_members(marketo, list_id, fields=fields)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            if row["revision"] != event_revision or form["revision"] != form_revision:
+                abort(409)
+            result = enroll_marketo_members(con, row, slot, form, members, mapping, source="marketo")
+            if result.get("added"):
+                note(con, actor, "live_event_attendees_imported", uid, f"{opens}, {result['added']} Marketo attendees")
+        return private(dict(result, occurrence=opens))
+
+
+    def validate_hubspot_plan(con, job):
+        row, slot, form = registration_intake(con, job["event"], job["opens"])
+        if (
+            row["revision"] != job["event_revision"]
+            or form["revision"] != job["form_revision"]
+        ):
+            abort(409, "The event or registration form changed.")
+        return row, slot, form
+
+
+    def authorize_marketo_sync(con, revision):
+        if marketo_revision is None or revision != marketo_revision:
+            abort(409)
+
+
+    def fetch_marketo_sync(job):
+        target = json.loads(job["segment"])
+        mapping = target["mapping"]
+        members = marketo_crm.static_list_members(
+            marketo,
+            target["list"],
+            fields=[entry["name"] for entry in mapping.values()],
+        )
+        return members, mapping
+
+
+    def apply_marketo_sync(con, job, members, mapping):
+        row, slot, form = validate_hubspot_plan(con, job)
+        result = enroll_marketo_members(
+            con,
+            row,
+            slot,
+            form,
+            members,
+            mapping,
+            source="marketo-scheduled",
+        )
+        if result["added"]:
+            note(
+                con,
+                job["actor"],
+                "live_event_attendees_imported",
+                job["event"],
+                f"{job['opens']}, {result['added']} Marketo attendees",
+            )
+        return dict(result, occurrence=job["opens"])
+
+    def marketo_sync_receipt(job):
+        receipt = event_hubspot_sync.receipt(job)
+        if job:
+            target = json.loads(receipt.pop("segment"))
+            receipt["list"] = target["list"]
+            receipt["mapping"] = {
+                key: descriptor["name"]
+                for key, descriptor in target["mapping"].items()
+            }
+            if job["connection"] != marketo_revision:
+                receipt.update(
+                    enabled=False,
+                    state="problem",
+                    problem="Marketo configuration changed. Enable synchronization again.",
+                )
+        return dict(receipt, available=marketo is not None)
+
+    def apply_hubspot_plan(con, job, contacts, skipped, membership):
+        row, slot, form = validate_hubspot_plan(con, job)
+        active = membership["active"]
+        removed, restored = event_hubspot_sync.reconcile_members(con, job, membership["ids"]) if active else (0, 0)
+        result = enroll_hubspot_contacts(con, row, slot, form, contacts, job=job if active else None)
+        if result.get("added"):
+            note(
+                con,
+                job["actor"],
+                "live_event_attendees_imported",
+                job["event"],
+                f"{job['opens']}, {len(contacts)} HubSpot contacts",
+            )
+        return dict(result, skipped=skipped, occurrence=job["opens"], removed=removed, restored=restored)
+
+    def save_marketo_sync(uid, opens, actor, body):
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+        list_id, mapping = marketo_import_target(body, form)
+        with tx() as con:
+            current_row, current_slot, current_form = registration_intake(con, uid, opens)
+            if current_row["revision"] != row["revision"] or current_form["revision"] != form["revision"]:
+                abort(409)
+            now = int(datetime.now(timezone.utc).timestamp())
+            closes = event_attendance.expires_at(current_slot)
+            if now >= min(closes, opens + 7200):
+                abort(409)
+            zone = json.loads(current_row["settings"])["schedule"]["timezone"]
+            first_due = max(now, event_hubspot_sync.local_midnight(opens, zone))
+            return event_hubspot_sync.set_sync(con, uid, opens, segment=json.dumps({"list": list_id, "mapping": mapping}), connection=marketo_revision, actor=actor, event_revision=current_row["revision"], form_revision=current_form["revision"], closes=closes, zone=zone, now=now, first_due=first_due, provider="marketo")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/marketo/sync", methods=["GET", "PUT", "DELETE"])
+    def schedule_marketo_registration(uid, opens):
+        actor = staff()
+        secure = secure_site(mail_origin)
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(marketo_sync_receipt(event_hubspot_sync.get(con, uid, opens, provider="marketo")))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_sync.remove(con, uid, opens, provider="marketo")
+            return private(marketo_sync_receipt(None))
+        if marketo is None:
+            abort(404)
+        return private(marketo_sync_receipt(save_marketo_sync(uid, opens, actor, body)))
+
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/sync", methods=["GET", "PUT", "DELETE"])
+    def schedule_hubspot_registration(uid, opens):
+        actor = staff()
+        secure = secure_site(mail_origin)
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(event_hubspot_sync.receipt(event_hubspot_sync.get(con, uid, opens)))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_sync.remove(con, uid, opens)
+            return private(dict(enabled=False, state="off"))
+        import hubspot_crm
+        segment = body.get("segment")
+        if not hubspot_crm.segment_id(segment):
+            abort(400)
+        revision = hubspot.revision()
+        with tx() as con:
+            hubspot.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            now = int(datetime.now(timezone.utc).timestamp())
+            closes = event_attendance.expires_at(slot)
+            if now >= min(closes, opens + 7200):
+                abort(409)
+            zone = json.loads(row["settings"])["schedule"]["timezone"]
+            event_hubspot_sync.set_sync(con, uid, opens, segment=segment, connection=revision, actor=actor, event_revision=row["revision"], form_revision=form["revision"], closes=closes, zone=zone, now=now)
+            return private(event_hubspot_sync.receipt(event_hubspot_sync.get(con, uid, opens)))
+
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/outbound", methods=["GET", "PUT", "DELETE"])
+    def configure_hubspot_outbound(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        available = hubspot_crm.outbound_available(hubspot)
+        engagement_available = hubspot_crm.engagement_available(hubspot)
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(dict(
+                    event_hubspot_outbound.receipt(con, uid, opens),
+                    available=available,
+                    engagement_available=engagement_available,
+                ))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_outbound.disable(con, uid, opens)
+            return private(dict(enabled=False, state="off"))
+        if not available:
+            abort(400)
+        engagement_event = body.get("engagement_event", "")
+        if not isinstance(engagement_event, str):
+            abort(400)
+        if engagement_event and (not engagement_available or not event_hubspot_engagement.name_valid(engagement_event)):
+            abort(400)
+        segment = body.get("segment")
+        subscription = body.get("subscription")
+        if not hubspot_crm.segment_id(segment) or not hubspot_crm.segment_id(subscription):
+            abort(400)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            event_revision = row["revision"]
+            form_revision = form["revision"]
+            if engagement_event and not form["attendance_analytics"]:
+                abort(400)
+        revision = hubspot.revision()
+        if not hubspot_crm.outbound_segment(hubspot, revision, segment):
+            abort(400)
+        chosen = next((item for item in hubspot_crm.subscriptions(hubspot, revision) if item["id"] == subscription), None)
+        if chosen is None:
+            abort(400)
+        unit = chosen.get("business_unit", 0)
+        if not isinstance(unit, int) or isinstance(unit, bool) or unit < 0:
+            abort(400)
+        with tx() as con:
+            hubspot.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            if row["revision"] != event_revision or form["revision"] != form_revision:
+                abort(409, "The event or registration form changed.")
+            plan = event_hubspot_outbound.set_destination(
+                con,
+                uid,
+                opens,
+                connection=revision,
+                event_revision=row["revision"],
+                form_revision=form["revision"],
+                segment=segment,
+                subscription=subscription,
+                business_unit=unit,
+                deadline=event_attendance.expires_at(slot),
+            )
+            if engagement_event:
+                event_hubspot_engagement.configure(con, plan["generation"], engagement_event)
+            return private(dict(
+                event_hubspot_outbound.receipt(con, uid, opens),
+                available=available,
+                engagement_available=engagement_available,
+            ))
+
+    def set_marketo_destination(uid, opens, body):
+        if marketo is None:
+            abort(404)
+        program_id = body.get('program')
+        if type(program_id) is not int or program_id <= 0:
+            abort(422)
+        engagement = body.get('engagement', False)
+        if type(engagement) is not bool:
+            abort(422)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            if engagement and not form.get('attendance_analytics'):
+                abort(409, description='attendance_analytics is required when engagement is enabled')
+            row_revision, form_revision = row['revision'], form['revision']
+        try:
+            marketo_crm.program(marketo, program_id, engagement=engagement)
+            mapping = body.get('mapping', {})
+            mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
+        except ValueError:
+            abort(422)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            if row['revision'] != row_revision or form['revision'] != form_revision:
+                abort(409)
+            event_contact_delivery.set_destination(
+                con, 'marketo', uid, opens,
+                provider_revision=marketo_revision,
+                event_revision=row['revision'],
+                form_revision=form['revision'],
+                deadline=int(event_attendance.expires_at(slot)),
+                destination={'program': program_id, 'mapping': mapping, 'engagement': engagement},
+            )
+
+    @app.route('/api/live-events/<uid>/<int:opens>/registration/marketo/outbound', methods=['GET', 'PUT', 'DELETE'])
+    def marketo_outbound(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        if request.method == 'GET':
+            same_origin(secure)
+        else:
+            from browser_account_security import json_mutation
+            body = json_mutation(secure, 'X-CuePorch-Integration')
+            if request.method == 'PUT':
+                set_marketo_destination(uid, opens, body)
+        with tx() as con:
+            row, event = read(con, uid)
+            selected_open(event, opens)
+            if request.method == 'DELETE':
+                event_contact_delivery.disable(con, 'marketo', uid, opens)
+            return private(event_contact_delivery.receipt(con, 'marketo', uid, opens, marketo_revision))
+
+    def validate_hubspot_engagement(con, plan):
+        row, event = read(con, plan["event"])
+        slot = selected_open(event, plan["opens"])
+        form = library_registration.active(con, "event", row["id"])
+        delivery = occurrence(con, row["id"], slot["id"])
+        if (row["revision"] != plan["event_revision"]
+                or not form
+                or form["revision"] != plan["form_revision"]
+                or not form["attendance_analytics"]
+                or event["visibility"] not in event_mail.WATCHABLE
+                or event_attendance.expires_at(slot) != plan["deadline"]
+                or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
+            abort(409)
+        return event["title"]
+
+    event_mailchimp_registration.register_routes(app, tx, staff, mail_origin, mailchimp, read, selected_open, registration_intake)
+    stop_mailchimp = event_mailchimp_registration.start(app, tx, database, mailchimp, validate_hubspot_plan, engagement_validate=validate_hubspot_engagement)
+    stop_marketo = event_contact_delivery.start_marketo(
+        app, tx, database, marketo, marketo_revision, validate_hubspot_plan,
+        engagement_validate=validate_hubspot_engagement,
+    )
+    stop_hubspot = event_hubspot_sync.start(
+        app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
+    )
+    stop_marketo_sync = (
+        event_hubspot_sync.start(
+            app,
+            tx,
+            database,
+            marketo,
+            validate_hubspot_plan,
+            apply_marketo_sync,
+            provider="marketo",
+            fetch=fetch_marketo_sync,
+            authorize=authorize_marketo_sync,
+        )
+        if marketo is not None
+        else lambda: None
+    )
+    salesforce_apply = event_salesforce_sync.register(
+        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake, enroll_crm_contacts,
+    )
+
+    def fetch_salesforce_sync(job):
+        return (salesforce_crm.campaign_members(salesforce, job["connection"], job["segment"]),)
+
+    def apply_salesforce_sync(con, job, fields):
+        row, slot, form = validate_hubspot_plan(con, job)
+        return salesforce_apply(con, row, slot, form, fields, job["actor"], "salesforce-scheduled")
+
+    stop_salesforce_sync = event_hubspot_sync.start(
+        app, tx, database, salesforce, validate_hubspot_plan, apply_salesforce_sync,
+        provider="salesforce", fetch=fetch_salesforce_sync,
+    ) if salesforce.configured else lambda: None
+
+    event_salesforce_registration.register_routes(
+        app, tx, staff, mail_origin, salesforce, read, selected_open, registration_intake,
+        validate_hubspot_engagement)
+    stop_salesforce_outbound = event_salesforce_registration.start(
+        app, tx, database, salesforce, validate_hubspot_plan,
+        engagement_validate=validate_hubspot_engagement,
+    ) if salesforce.configured else lambda: None
+
+    stop_hubspot_outbound = event_hubspot_outbound.start(
+        app, tx, database, hubspot, validate_hubspot_plan,
+        engagement_validate=validate_hubspot_engagement if hubspot_crm.engagement_available(hubspot) else None,
+    ) if hubspot_crm.outbound_available(hubspot) else lambda: None
+
+    @app.get("/api/live-events/<uid>/registrants/<registrant>")
+    def event_registrant_details(uid, registrant):
+        staff()
+        with tx() as con:
+            read(con, uid)
+            found = con.execute("SELECT * FROM live_event_registrant WHERE event=? AND id=?", (uid, registrant)).fetchone()
+            if found:
+                return event_registrants.describe(found, con)
+            found = con.execute("""SELECT r.email,r.registered,r.answers FROM live_webhook_registrant a
+                                   JOIN viewer_registrant r ON r.subject=a.event AND r.email_key=a.email_key
+                                   WHERE a.id=? AND a.event=? AND r.kind='event'""", (registrant, uid)).fetchone()
+            if not found:
+                abort(404)
+            return dict(id=registrant, email=found["email"], registered=found["registered"], answers=json.loads(found["answers"]))
+
+    @app.delete("/api/live-events/<uid>/<int:opens>/registrants/<registrant>/join")
+    def revoke_event_join(uid, opens, registrant):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            selected_open(event, opens)
+            event_attendance.revoke(con, uid, opens, registrant)
+        return "", 204
+
+    @app.route("/events/<slug>/join", methods=["GET", "POST"])
+    def event_attendance_join(slug):
+        origin = library_analytics.source_origin(public_url)
+        secure = secure_site(origin)
+        if request.method in ("GET", "HEAD"):
+            return private(render_template("event_attendance_join.html"))
+        same_origin(secure)
+        body = request.get_json()
+        supplied = body.get("token") if isinstance(body, dict) else None
+        joined = event_attendance.decode(attendance_links, supplied) if isinstance(supplied, str) and len(supplied) <= 150 else None
+        if not joined:
+            abort(404)
+        with tx() as con:
+            row, event = read(con, slug, True)
+            if event["visibility"] in ("private", "embed_only") or publication(con, row, event) != "eligible":
+                abort(404)
+            enforce_territories(event)
+            form = library_registration.active(con, "event", row["id"])
+            entry = con.execute("SELECT opens,expires FROM live_attendance_link WHERE id=?", (joined,)).fetchone()
+            if not form or not entry:
+                abort(404)
+            opens = entry["opens"]
+            scope = [row["id"], row["revision"], opens, form["revision"], False]
+            selected_open(event, opens)
+            delivery = occurrence(con, row["id"], opens)
+            if not event_attendance.active(con, joined, scope) or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
+                abort(404)
+            key = access_settings(con, row["id"])[0] if event["visibility"] == "unlisted" else None
+            watch = viewer_url(row, event, False, key, opens)
+        response = private(dict(watch=watch))
+        remaining = max(0, entry["expires"] - int(datetime.now(timezone.utc).timestamp()))
+        response.set_cookie("cueporch_event_" + row["id"], supplied, max_age=remaining, httponly=True,
+                            secure=secure, samesite="Lax", path=viewer_url(row, event, False))
+        return response
+
     def operator_chat(con, uid, opens):
         _, event = read(con, uid)
         selected_open(event, opens)
+
+    stop_scripts = studio_scripts.register(app, tx, database, action, ai_actor, operator_chat)
 
     def library_recording_access(con, uid, opens):
         _, event = read(con, uid)
@@ -411,9 +1454,12 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         delivery = occurrence(con, row["id"], opens)
         if publication(con, row, event) != "eligible" or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn")):
             abort(404)
+        embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
+        if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(row, embed):
+            abort(404)
+        enforce_territories(event)
         form = library_registration.active(con, "event", row["id"])
         scope = [row["id"], row["revision"], opens, form["revision"] if form else None]
-        embed = request.headers.get("X-CuePorch-Chat-Embed") == "yes"
         if form:
             on_playlist = (delivery and delivery["delivery"] == "replay"
                            and event_playlist.settings(con, row["id"])["enabled"]
@@ -422,24 +1468,93 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if not on_playlist and delivery and delivery["delivery"] == "replay" and event_player.settings(con, row["id"])["show_latest"]:
                 featured = event_playlist.latest_released(con, row["id"])
             carried_grant = on_playlist or (featured and featured["opens"] == opens)
-            if not viewer_enrolled(request.headers.get("X-CuePorch-Event-Viewer", ""), scope + [embed], carried_grant):
+            admitted, _, _ = viewer_enrollment(con, request.headers.get("X-CuePorch-Event-Viewer", ""),
+                                                scope + [embed], carried_grant)
+            if not admitted:
                 abort(404)
         now = datetime.now(timezone.utc)
         active = now < datetime.fromisoformat(slot["end"]) and (not delivery or delivery["delivery"] != "replay")
         return scope, active
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
-    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
+    def outbound_activity_sharing(con, scope, *, include_marketo=True):
+        if not library_analytics.permitted():
+            return None
+
+        admitted, _, sharing = viewer_enrollment(
+            con,
+            request.headers.get("X-CuePorch-Event-Viewer", ""),
+            scope + [request.headers.get("X-CuePorch-Chat-Embed") == "yes"],
+            False,
+        )
+
+        if not admitted or not sharing:
+            return None
+
+        salesforce_revision = event_salesforce_registration.connection_revision(con, salesforce)
+        if salesforce_revision:
+            matched = con.execute(
+                "SELECT 1 FROM live_event_salesforce_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='salesforce' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=? "
+                "AND json_extract(p.destination, '$.engagement_details')=1",
+                (sharing, salesforce_revision, *scope),
+            ).fetchone()
+            if matched:
+                return sharing
+        if marketo_revision and include_marketo:
+            row = con.execute(
+                "SELECT 1 FROM live_event_marketo_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='marketo' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=?",
+                (sharing, marketo_revision, *scope),
+            ).fetchone()
+            if row:
+                return sharing
+
+        mailchimp_connection = mailchimp.connection(con)
+        mailchimp_revision = mailchimp_connection["revision"] if mailchimp_connection else None
+        if mailchimp_revision:
+            row = con.execute(
+                "SELECT 1 FROM live_event_mailchimp_engagement j "
+                "JOIN live_event_contact_plan p ON p.generation=j.generation "
+                "WHERE j.sharing=? AND j.state='queued' AND p.provider='mailchimp' "
+                "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+                "AND p.opens=? AND p.form_revision=?",
+                (sharing, mailchimp_revision, *scope),
+            ).fetchone()
+            if row:
+                return sharing
+
+        return None
+
+    event_engagement.register(
+        app,
+        tx,
+        staff,
+        audience_session,
+        operator_chat,
+        audience_chat,
+        share_activity=outbound_activity_sharing,
+        share_upvotes=lambda con, scope: outbound_activity_sharing(
+            con, scope, include_marketo=False
+        ),
+    )
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
-    event_speakers.register(app, tx, staff, speaker_access, database)
-    event_captions.register(app, tx, staff, operator_chat, audience_chat)
+    event_speakers.register(app, tx, staff, speaker_access, database, start_voice, voice_audio)
+    event_captions.register(app, tx, staff, operator_chat, audience_chat, ai_actor)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
     event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
     replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)
 
     def can_simulcast(con, uid, event):
-        return event["visibility"] == "public" and library_registration.active(con, "event", uid) is None
+        return (event["visibility"] == "public" and territories(event)["mode"] == "anywhere"
+                and library_registration.active(con, "event", uid) is None)
 
     def destination_access(con, uid, opens):
         _, event = read(con, uid)
@@ -451,19 +1566,19 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         candidates = {}
         rows = con.execute("""SELECT o.*,e.settings FROM live_occurrence o JOIN live_event e ON e.id=o.event
             JOIN action a ON a.id=e.publication WHERE o.delivery='ready' AND o.opens<=? AND a.status='eligible'
-            AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1)""",
+            AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1 AND (d.opens IS NULL OR d.opens=o.opens))""",
                            (int(now.timestamp()),))
         for row in rows:
             uid, opens = row["event"], row["opens"]
             event = json.loads(row["settings"])
             slot = find_open(event, opens)
             if slot and datetime.fromisoformat(slot["end"]) > now and can_simulcast(con, uid, event):
-                targets = con.execute("SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1", (uid,)).fetchall()
+                targets = con.execute("SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1 AND (opens IS NULL OR opens=?)", (uid, opens)).fetchall()
                 candidates[uid, opens] = (row["origin"], row["remote"], targets, None)
         return candidates
 
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
-    event_simulcast.register(app, tx, staff, destination_access, outputs)
+    event_simulcast.register(app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing)
 
     def released_previews(con):
         now = datetime.now(timezone.utc)
@@ -494,7 +1609,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if visible in ("waiting", "rejected"):
                     abort(409, "This event's publication is waiting for approval or was declined.")
                 saved = occurrence(con, uid, opens)
-                registered = library_registration.active(con, "event", uid) is not None
+                broadcast = visible == "eligible" and can_simulcast(con, uid, event)
                 bridge = con.execute("SELECT source FROM live_encoder_preview WHERE event=? AND opens=?",
                                      (uid, opens)).fetchone()
                 state, expected = (saved["delivery"], saved["origin"]) if saved else (None, None)
@@ -509,7 +1624,6 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if state == "ready" and preview and not (bridge and bridge["source"]):
                     abort(409, "This occurrence already has a live delivery channel.")
             with event_peer.connected_host(expected) as host:
-                broadcast = visible == "eligible" and not registered
                 if state == "ready" and bridge and bridge["source"]:
                     if browser:
                         abort(409, "The original external encoder is already feeding this broadcast.")
@@ -529,6 +1643,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                             con.execute("INSERT OR IGNORE INTO live_encoder_preview(event,opens) VALUES(?,?)", (uid, opens))
                         con.execute("UPDATE live_occurrence SET delivery=? WHERE event=? AND opens=?",
                                     ("preview" if preview else "ready", uid, opens))
+                        if not preview:
+                            event_webhooks.enqueue(con, "live-event-clip-created", uid, opens, data=dict(clip=remote))
                 if browser and event_peer.observe(host, remote)["state"] != "waiting_for_encoder":
                     abort(409, "This event already has a live or finished signal.")
                 return dict(event_peer.encoder(host, remote), public=broadcast and not preview, preview=preview)
@@ -605,13 +1721,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     programs.start(locked, qualify_program, provision_event)
 
+    def direct_window(uid, connection):
+        with tx() as con:
+            _, event = read(con, uid)
+        seconds = event.get("dvr_seconds", 120)
+        if event["latency"] == "low" and not connection["preview"] and 4 <= seconds <= 120:
+            return seconds
+        return None
+
     @app.post("/api/live-events/<uid>/<int:opens>/browser")
     def start_event_capture(uid, opens):
         staff()
         try:
             with locked(uid):
                 connection = provision_event(uid, opens, browser=True, preview=False)
-                return dict(token=studio.start(uid, opens, connection)), 201
+                return dict(token=studio.start(uid, opens, connection, direct_window(uid, connection))), 201
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
@@ -653,25 +1777,152 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         body = request.get_json()
         if not isinstance(body, dict) or type(body.get("preview", False)) is not bool:
             abort(422, "Choose a receiving interface and port.")
+        backup_port = body.get("backup_port")
+        height = body.get("height", 720) if backup_port is not None else None
         try:
             endpoint = srt_endpoint(body.get("interface"), body.get("port"))
+            backup = srt_endpoint(body.get("interface"), backup_port) if backup_port is not None else None
         except ValueError as error:
             abort(422, str(error))
+        if backup == endpoint:
+            abort(422, "Choose different UDP ports for the primary and backup encoders.")
+        if backup and (type(height) is not int or height not in (360, 720, 1080, 2160)):
+            abort(422, "Choose a supported output height for the backup programme.")
+        endpoints = endpoint, backup
         try:
             with locked(uid):
-                prior = studio.srt_credentials(uid, opens, endpoint)
+                prior = studio.srt_credentials(uid, opens, endpoints)
                 if prior:
+                    if prior.get("output_height") != height:
+                        abort(409, "Stop the current SRT listeners before changing the output height.")
                     with tx() as con:
                         delivery = occurrence(con, uid, opens)
                         return dict(prior, preview=bool(delivery and delivery["delivery"] == "preview"))
-                connection = provision_event(uid, opens, browser=True, preview=body.get("preview"))
-                return dict(studio.srt(uid, opens, connection, endpoint), preview=connection["preview"])
+                end_at = None
+                if backup:
+                    with tx() as con:
+                        _, event = read(con, uid)
+                        shift = selected_open(event, opens)
+                        if body.get("preview") or encoder_preview_enabled(con, uid):
+                            abort(409, "Use the private encoder preview or turn off preview for this event.")
+                    if direct_window(uid, {"preview": False}) is None:
+                        abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
+                    end_at = datetime.fromisoformat(shift["end"]).timestamp()
+                connection = provision_event(uid, opens, browser=True, preview=False if backup else body.get("preview"))
+                return dict(studio.srt(uid, opens, connection, endpoints, direct_window(uid, connection), height, end_at),
+                            preview=connection["preview"])
         except Timeout:
             abort(409, "Another operation is preparing this event.")
         except BusyError as error:
             abort(409, str(error))
         except (OSError, ValueError):
             abort(502, "Could not start the SRT listener.")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/rtmp", methods=["POST", "DELETE"])
+    def event_rtmp_relay(uid, opens):
+        staff()
+        if not rtmp_config:
+            abort(409, "This station has no low-latency RTMP relay.")
+        try:
+            with locked(uid):
+                with tx() as con:
+                    _, event = read(con, uid)
+                    shift = selected_open(event, opens)
+                    if request.method == "POST" and encoder_preview_enabled(con, uid):
+                        abort(409, "Use the private encoder preview or turn off preview for this event.")
+                if request.method == "DELETE":
+                    studio.close_rtmp(uid, opens)
+                    return "", 204
+                window = direct_window(uid, {"preview": False})
+                if window is None:
+                    abort(409, "Choose Low latency and a DVR window of four to 120 seconds.")
+                body = request.get_json(silent=True)
+                if body is None:
+                    body = {}
+                if (not isinstance(body, dict) or type(body.get("backup", False)) is not bool or
+                        type(body.get("height", 720)) is not int or body.get("height", 720) not in (360, 720, 1080, 2160)):
+                    abort(422, "Choose whether to prepare a backup encoder and a supported output height.")
+                height = body.get("height", 720) if body.get("backup", False) else None
+                prior = studio.rtmp_credentials(uid, opens)
+                if prior:
+                    if prior.get("output_height") != height:
+                        abort(409, "Stop the current RTMP input before changing its encoder setup.")
+                    return private(prior)
+                connection = provision_event(uid, opens, browser=True, preview=False)
+                end_at = datetime.fromisoformat(shift["end"]).timestamp()
+                return private(studio.rtmp(uid, opens, connection, rtmp_config, window, height, end_at))
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the low-latency RTMP relay.")
+
+    @app.route("/api/live-events/<uid>/<int:opens>/dash", methods=["POST", "DELETE"])
+    def event_dash_relay(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        try:
+            with locked(uid):
+                with tx() as con:
+                    _, event = read(con, uid)
+                    shift = selected_open(event, opens)
+                    preview = encoder_preview_enabled(con, uid)
+                if request.method == "DELETE":
+                    studio.close_dash(uid, opens)
+                    return "", 204
+                window = event.get("dvr_seconds", 120)
+                if event["latency"] != "fail-safe" or not 4 <= window <= 120:
+                    abort(409, "Choose Fail-safe with a DVR window of four to 120 seconds.")
+                if preview:
+                    abort(409, "Use the private encoder preview or turn off preview for this event.")
+                room = studio.dash_contribution(uid, opens)
+                if room:
+                    settings = room.credentials()
+                else:
+                    encoder = provision_event(uid, opens, browser=True, preview=False)
+                    end_at = datetime.fromisoformat(shift["end"]).timestamp() + event_dash_buffer.TARGET_DELAY + 300
+                    settings = studio.dash(uid, opens, encoder, window, end_at)
+                origin = mail_origin if secure and mail_origin.startswith("https://") else (
+                    f"https://{request.host}" if secure else request.host_url.rstrip("/"))
+                upload = url_for("dash_ingest", uid=uid, opens=opens, receiver=settings.pop("receiver"), filename="feed.mpd")
+                return private(settings | {"manifest": origin + upload})
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
+        except BusyError as error:
+            abort(409, str(error))
+        except (OSError, ValueError):
+            abort(502, "Could not start the Fail-safe contribution.")
+
+    @app.route("/event-ingest/<uid>/<int:opens>/<receiver>/<filename>", methods=["PUT", "POST"])
+    def dash_ingest(uid, opens, receiver, filename):
+        secure_site(mail_origin)
+        room = studio.dash_contribution(uid, opens)
+        if not room or receiver != room.playback.identity:
+            abort(404)
+        authorization = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(authorization.encode("utf8"), ("Bearer " + room.key).encode("ascii")):
+            abort(403)
+        if filename != "feed.mpd" and not (event_dash_format.INIT_FILE.fullmatch(filename) or
+                                           event_dash_format.MEDIA_FILE.fullmatch(filename)):
+            abort(404)
+        try:
+            request.max_content_length = (
+                event_dash_format.MAX_MANIFEST if filename == "feed.mpd" else event_dash_buffer.MAX_FRAGMENT_BYTES)
+            payload = request.get_data(cache=False)
+            if filename == "feed.mpd":
+                room.playback.publish(payload)
+            else:
+                room.playback.put(filename, payload)
+        except FileNotFoundError:
+            abort(404)
+        except event_dash_buffer.FullBuffer as error:
+            return dict(error=str(error)), 507
+        except event_dash_buffer.ConflictingFragment as error:
+            abort(409, str(error))
+        except ValueError as error:
+            abort(422, str(error))
+        return "", 204
 
     @app.get("/api/live-events/<uid>/<int:opens>/health")
     def event_health(uid, opens):
@@ -730,6 +1981,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 with tx() as con:
                     con.execute("UPDATE live_occurrence SET delivery='withdrawn' WHERE event=? AND opens=?",
                                 (uid, opens))
+                    if con.execute("SELECT 1 FROM live_webhook_feed WHERE event=? AND occurrence=? AND state='live'",
+                                   (uid, opens)).fetchone():
+                        event_webhooks.observe(con, uid, opens, "ended")
                 return "", 204
         except Timeout:
             abort(409, "Another operation is preparing this event.")
@@ -793,6 +2047,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         con.execute("UPDATE live_encoder_preview SET source=?,cutoff=?,server=?,key=? WHERE event=? AND opens=?",
                                     (source, cutoff, server, protected_key, uid, opens))
                         con.execute("UPDATE live_occurrence SET delivery='ready',remote=? WHERE event=? AND opens=?", (remote, uid, opens))
+                        event_webhooks.enqueue(con, "live-event-clip-created", uid, opens, data=dict(clip=remote))
                     return dict(state="released", address=None)
 
             revision, _, _, delivery, _ = target()
@@ -825,9 +2080,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         except (BadSignature, ValueError, requests.RequestException):
             abort(404)
 
-    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope):
+    def playback_token(scope, delivery, replay, context, duration_ms, joined, sharing):
+        return measurement.dumps([*scope, delivery["remote"], replay, uuid.uuid4().hex,
+                                  [*context, duration_ms], joined, sharing])
+
+    def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope, joined=None, sharing=None):
         address = analytics_token = None
         status = "Scheduled"
+        attendance = [joined] if joined else []
         try:
             if native_video:
                 raw = media.metadata(delivery["origin"], delivery["remote"])
@@ -837,7 +2097,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 if available:
                     gateway, filename = hls_manifest(delivery, raw, host_private)
                     replay = observed["state"] == "replay"
-                    session = files.dumps(scope + [delivery["remote"], gateway, replay])
+                    session = files.dumps(scope + [delivery["remote"], gateway, replay] + attendance)
                     address = url_for("event_media_file", token=session, filename=filename)
                     status = "Replay" if replay else "Live"
                 duration = raw.get("duration")
@@ -851,8 +2111,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if address and analytics_scope is not None:
                 duration_ms = (round(duration * 1000) if replay and type(duration) in (int, float)
                                and math.isfinite(duration) and .001 <= duration <= 7 * 86400 else None)
-                analytics_token = measurement.dumps(scope + [delivery["remote"], replay, uuid.uuid4().hex,
-                                                              [*analytics_scope, duration_ms]])
+                analytics_token = playback_token(scope, delivery, replay, analytics_scope, duration_ms, joined, sharing)
                 if not native_video:
                     address += "?api=1"
             if observed["state"] == "waiting_for_encoder":
@@ -865,11 +2124,63 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             status = "The stream is unavailable"
         return address, analytics_token, status
 
+    def event_frame(row, event, embed, status_request):
+        if not embed:
+            return "'none'", None
+        policy = event.get("embed_policy", UNRESTRICTED_EMBED)
+        if policy["mode"] == "disabled":
+            abort(404)
+        if policy["mode"] == "anywhere":
+            return "*", None
+        scope = [row["id"], row["revision"]]
+        supplied = request.form.get("frame") or request.headers.get("X-CuePorch-Event-Frame", "")
+        if request.method == "POST" or status_request:
+            if not valid_ticket(frames, supplied, scope, 12 * 3600):
+                abort(404)
+        else:
+            if (request.headers.get("Sec-Fetch-Dest") not in (None, "iframe", "frame")
+                    or not allowed_ancestor(request.referrer or "", policy["domains"])):
+                abort(404)
+            supplied = frames.dumps(scope)
+        return frame_policy(policy["domains"]), supplied
+
+    def audience_allowed(row, embed, token=None):
+        if token is None:
+            token = request.headers.get("X-CuePorch-Event-Access", "")
+        return valid_ticket(audiences, token, [row["id"], row["revision"], embed], 12 * 3600)
+
+    def viewer_permission(con, row, event, embed, json_status):
+        mode = event["visibility"]
+        if mode not in RESTRICTED_AUDIENCES:
+            return None, None, False
+        key, password_hash = access_settings(con, row["id"])
+        received = request.form.get("event_access") or request.headers.get("X-CuePorch-Event-Access", "")
+        allowed = audience_allowed(row, embed, received)
+        if mode == "embed_only":
+            if not embed or (not allowed and (json_status or request.method != "GET"
+                    or request.headers.get("Sec-Fetch-Dest") not in ("iframe", "frame"))):
+                abort(404)
+        elif mode == "unlisted":
+            if not key or not hmac.compare_digest(request.args.get("key", "").encode(), key.encode()):
+                abort(404)
+        elif not allowed:
+            if json_status or not password_hash:
+                abort(404)
+            if request.method != "POST" or not try_password(con, signing_key, "event:" + row["id"],
+                                                             request.form.get("password", ""), password_hash):
+                return None, None, True
+        return received if allowed else audiences.dumps([row["id"], row["revision"], embed]), key, False
+
     def viewer(slug, embed):
         json_status = request.accept_mimetypes.best == "application/json"
         grant = None
+        joined = None
+        sharing = None
+        analytics_allowed = library_analytics.permitted() and request.args.get("dnt", "").lower() not in ("1", "true")
         enrollment = None
         form_error = None
+        registration_view = None
+        sign_on = None
         archives = None
         latest = latest_slot = None
         latest_captioned = False
@@ -877,6 +2188,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             row, event = read(con, slug, True)
             if publication(con, row, event) != "eligible":
                 abort(404)
+            ancestors, frame_grant = event_frame(row, event, embed, json_status)
+            access, link_key, locked = viewer_permission(con, row, event, embed, json_status)
+            enforce_territories(event)
+            if locked:
+                incorrect = request.method == "POST"
+                view = render_template("event_password.html", unlock_token=frame_grant, incorrect=incorrect)
+                return audience_response(view, ancestors, 403 if incorrect else 200, restricted=True)
+            artwork_access = dict(access=access, framed="yes" if embed else None) if access else {}
             context_key = [row["id"], row["revision"], embed]
             now = datetime.now(timezone.utc)
             upcoming = list(event_schedule.occurrences(event["schedule"], now - timedelta(days=1), now + timedelta(days=366)))
@@ -897,6 +2216,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             delivery = occurrence(con, row["id"], shown["id"]) if shown else None
             withdrawn = delivery and delivery["delivery"] in ("withdrawing", "withdrawn")
             form = library_registration.active(con, "event", row["id"]) if shown else None
+            offer_sharing = bool(form and form["attendance_analytics"] and analytics_allowed)
+            hubspot_consent = ""
+            hubspot_engagement_consent = ""
+            contact_plan = None
             options = event_playlist.settings(con, row["id"])
             playlist_enabled = options["enabled"] and event["schedule"]["repeat"] != "none"
             captioned = bool(shown and not withdrawn and (not delivery or delivery["delivery"] != "replay") and
@@ -904,35 +2227,166 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
+            salesforce_plan = None
+            salesforce_related_fields = False
+            salesforce_consent = ""
+            salesforce_engagement_consent = ""
+            salesforce_engagement_details = False
+            mailchimp_consent = ""
+            mailchimp_engagement_consent = ""
+            mailchimp_plan = None
+            if (
+                form
+                and not withdrawn
+                and (not delivery or delivery["delivery"] != "replay")
+                and event["visibility"] in event_mail.WATCHABLE
+            ):
+                salesforce_plan = event_salesforce_registration.offer(
+                    con, salesforce, row, shown, form, int(now.timestamp()))
+                if salesforce_plan:
+                    salesforce_scope = ["salesforce-outbound", scope, salesforce_plan["generation"]]
+                    salesforce_consent = forms.dumps(salesforce_scope)
+                    salesforce_destination = json.loads(salesforce_plan["destination"])
+                    salesforce_related_fields = salesforce_destination.get("related_fields") is True
+                    if offer_sharing and salesforce_destination.get("engagement") is True:
+                        salesforce_engagement_details = salesforce_destination.get("engagement_details") is True
+                        salesforce_engagement_scope = ["salesforce-engagement", scope, salesforce_plan["generation"]]
+                        salesforce_engagement_consent = forms.dumps(salesforce_engagement_scope)
+                current = mailchimp.connection(con)
+                candidate = event_contact_delivery.get(con, "mailchimp", row["id"], shown["id"])
+                if (
+                    current
+                    and candidate
+                    and candidate["provider_revision"] == current["revision"]
+                    and candidate["event_revision"] == row["revision"]
+                    and candidate["form_revision"] == form["revision"]
+                    and candidate["deadline"] > int(now.timestamp())
+                ):
+                    mailchimp_plan = candidate
+                    mailchimp_scope = ["mailchimp-outbound", scope, candidate["generation"]]
+                    mailchimp_consent = forms.dumps(mailchimp_scope)
+                    if offer_sharing and json.loads(candidate["destination"]).get("engagement") is True:
+                        mailchimp_engagement_scope = ["mailchimp-engagement", scope, candidate["generation"]]
+                        mailchimp_engagement_consent = forms.dumps(mailchimp_engagement_scope)
+            marketo_plan = None
+            marketo_consent = ""
+            marketo_engagement_consent = ""
+            if form and not withdrawn and (not delivery or delivery['delivery'] != 'replay') and event['visibility'] in event_mail.WATCHABLE and marketo_revision:
+                candidate = event_contact_delivery.get(con, 'marketo', row['id'], shown['id'])
+                if (
+                    candidate
+                    and candidate['provider_revision'] == marketo_revision
+                    and candidate['event_revision'] == row['revision']
+                    and candidate['form_revision'] == form['revision']
+                    and candidate['deadline'] > int(now.timestamp())
+                ):
+                    marketo_plan = candidate
+                    mark_scope = ['marketo-outbound', scope, candidate['generation']]
+                    marketo_consent = forms.dumps(mark_scope)
+                    if offer_sharing and json.loads(candidate["destination"]).get("engagement") is True:
+                        marketo_engagement_scope = ["marketo-engagement", scope, candidate["generation"]]
+                        marketo_engagement_consent = forms.dumps(marketo_engagement_scope)
+
+            if (form and not withdrawn and (not delivery or delivery["delivery"] != "replay")
+                    and event["visibility"] in event_mail.WATCHABLE
+                    and hubspot_crm.outbound_available(hubspot)):
+                candidate = event_hubspot_outbound.get(con, row["id"], shown["id"])
+                connection = hubspot.connection(con)
+                if (candidate and connection
+                        and candidate["connection"] == connection["revision"]
+                        and candidate["event_revision"] == row["revision"]
+                        and candidate["form_revision"] == form["revision"]
+                        and candidate["deadline"] > int(now.timestamp())):
+                    consent_scope = ["hubspot-outbound", scope, candidate["generation"]]
+                    hubspot_consent = forms.dumps(consent_scope)
+                    contact_plan = candidate
+                    if (offer_sharing
+                            and hubspot_crm.engagement_available(hubspot)
+                            and event_hubspot_engagement.definition(con, candidate["generation"])):
+                        engagement_scope = ["hubspot-engagement", scope, candidate["generation"]]
+                        hubspot_engagement_consent = forms.dumps(engagement_scope)
             if form:
-                if request.method == "POST" and not withdrawn:
+                just_unlocked = event["visibility"] == "password" and "password" in request.form and "enrollment" not in request.form
+                if request.method == "POST" and not withdrawn and not just_unlocked:
                     if not valid_ticket(forms, request.form.get("enrollment", ""), scope, 1200):
                         abort(403, "Open the registration form again.")
-                    form_error = library_registration.enroll(con, "event", row["id"], form, request.form, request.args)
-                    if not form_error:
-                        grant = guests.dumps(scope)
-                elif token := request.headers.get("X-CuePorch-Event-Viewer"):
+
+                    def remember(email, answers):
+                        nonlocal sharing
+                        registrant, created = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
+                        salesforce_agreed = bool(salesforce_plan and valid_ticket(forms, request.form.get("salesforce_consent", ""), salesforce_scope, 1200))
+                        if salesforce_agreed:
+                            event_salesforce_registration.enqueue(con, action, salesforce_plan, registrant, answers, int(now.timestamp()), form=form)
+                        if (created and contact_plan
+                                and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
+                            event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
+                        marketo_agreed = created and marketo_plan and valid_ticket(forms, request.form.get('marketo_consent', ''), mark_scope, 1200)
+                        if marketo_agreed:
+                            event_contact_delivery.enqueue(con,action,marketo_plan,registrant,int(now.timestamp()))
+                        mailchimp_agreed = bool(created and mailchimp_plan and valid_ticket(forms, request.form.get("mailchimp_consent",""),mailchimp_scope,1200))
+                        if mailchimp_agreed:
+                            event_contact_delivery.enqueue(con, action, mailchimp_plan, registrant,int(now.timestamp()))
+                        engagement_agreed = bool(hubspot_engagement_consent) and valid_ticket(
+                            forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
+                        marketo_engagement_agreed = bool(marketo_agreed and marketo_engagement_consent and valid_ticket(forms, request.form.get("marketo_engagement_consent", ""), marketo_engagement_scope, 1200))
+                        mailchimp_engagement_agreed = bool(mailchimp_agreed and mailchimp_engagement_consent and valid_ticket(forms, request.form.get("mailchimp_engagement_consent", ""), mailchimp_engagement_scope, 1200))
+                        salesforce_engagement_agreed = bool(salesforce_agreed and salesforce_engagement_consent and valid_ticket(forms, request.form.get('salesforce_engagement_consent', ''), salesforce_engagement_scope, 1200))
+                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed or mailchimp_engagement_agreed or salesforce_engagement_agreed):
+                            sharing = event_registrants.share(con, registrant)
+                            if engagement_agreed:
+                                event_hubspot_engagement.enqueue(con, action, contact_plan, registrant, sharing)
+                            if marketo_engagement_agreed:
+                                event_marketo_engagement.enqueue(con, action, marketo_plan, registrant, sharing)
+                            if mailchimp_engagement_agreed:
+                                event_mailchimp_engagement.enqueue(con, action, mailchimp_plan, registrant, sharing)
+                            if salesforce_engagement_agreed:
+                                event_salesforce_engagement.enqueue(con, action, salesforce_plan, registrant, sharing)
+
+                    admitted, sign_on, form_error = library_registration.admit(
+                        con, "event", row["id"], form, scope, shown["id"],
+                        on_record=remember)
+                    if admitted:
+                        grant = guests.dumps([*scope, None, sharing] if sharing else scope)
+                        if (mail_configured and not request.form.get("registration_action")
+                                and event["visibility"] in event_mail.WATCHABLE):
+                            _, rules = event_mail.settings(con, row["id"])
+                            if event_mail.enabled(rules):
+                                attendee, created = event_attendance.issue(
+                                    con, row["id"], row["revision"], shown, form, request.form["email"].strip())
+                                if attendee:
+                                    event_mail.schedule(con, attendee["id"], shown["id"], attendee["expires_at"], rules,
+                                                        int(now.timestamp()), confirmation=created)
+                else:
                     on_playlist = playlist_enabled and (withdrawn or (delivery and delivery["delivery"] == "replay"))
-                    if viewer_enrolled(token, scope, on_playlist):
+                    token = request.headers.get("X-CuePorch-Event-Viewer", "")
+                    admitted, joined, sharing = viewer_enrollment(con, token, scope, on_playlist)
+                    if admitted:
                         grant = token
+                    elif not embed and not withdrawn:
+                        saved = request.cookies.get("cueporch_event_" + row["id"], "")
+                        candidate = event_attendance.decode(attendance_links, saved) if len(saved) <= 150 else None
+                        if event_attendance.active(con, candidate, scope):
+                            joined = candidate
+                            grant = guests.dumps([*scope, joined])
                 if not grant and not json_status and not withdrawn:
                     enrollment = forms.dumps(scope)
-            if playlist_enabled and (not form or grant):
+                    registration_view = library_registration.presentation(con, form, sign_on)
+            if playlist_enabled and not joined and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
             managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
             latest_managed = False
-            if shown and not withdrawn and artwork["show_latest"] and (not form or grant):
+            if shown and not withdrawn and not joined and artwork["show_latest"] and (not form or grant):
                 saved = event_playlist.latest_released(con, row["id"])
                 if saved and saved["opens"] != shown["id"]:
                     latest = saved
                     latest_slot = selected_open(event, latest["opens"])
                     latest_managed = private_delivery(con, event, row["id"], latest["opens"])
                     latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
-            poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"]) if (
+            poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"], **artwork_access) if (
                 shown and not withdrawn and artwork["poster"]) else None
-            logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"]) if (
+            logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"], **artwork_access) if (
                 shown and not withdrawn and artwork["logo"]) else None
             viewers = event_analytics.current(con, row["id"], shown["id"], "live") if (
                 artwork["show_viewers"] and delivery and delivery["delivery"] == "ready" and (not form or grant)) else None
@@ -946,8 +2400,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             pre_live = event_player.lobby(artwork, event, next_broadcast, poster) if not withdrawn else None
         address = None
         analytics_token = None
+        transport = "hosted"
         reporting_scope = reporting_token = None
-        if library_analytics.permitted() and request.args.get("dnt", "").lower() not in ("1", "true"):
+        if analytics_allowed:
             origin = library_analytics.request_context(analytics_proxies)
             supplied = request.headers.get("X-CuePorch-Event-Context") or request.form.get("event_context")
             if supplied:
@@ -971,7 +2426,30 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if protected and not grant and not withdrawn:
             status = "Registration required"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
-            address, analytics_token, status = viewer_playback(event, delivery, scope, native_video, host_private, reporting_scope)
+            dash = event["latency"] == "fail-safe" and studio.dash_contribution(row["id"], shown["id"])
+            finished = dash and dash.playback.audience_finished()
+            source = studio.playback(row["id"], shown["id"]) if (
+                delivery["delivery"] == "ready" and not finished and
+                (dash or (event["latency"] == "low" and not captioned))) else None
+            if source:
+                transport = f"local:{source.identity}"
+                attendance = [joined] if joined else []
+                session = files.dumps(scope + [delivery["remote"], transport, False] + attendance)
+                address = url_for("event_media_file", token=session, filename="master.m3u8" if dash else "0.m3u8")
+                native_video, status = True, "Live"
+                if reporting_scope is not None:
+                    analytics_token = playback_token(scope, delivery, False, reporting_scope, None, joined, sharing)
+            elif finished and delivery["delivery"] == "ready":
+                status = "This event has ended"
+                if event["save_replay"]:
+                    _, _, remote_status = viewer_playback(event, delivery, scope, native_video, host_private, None)
+                    status = (remote_status if remote_status == "The replay is awaiting release" else
+                              "Preparing the replay")
+            elif dash and delivery["delivery"] == "ready":
+                status = "Buffering the Fail-safe signal"
+            else:
+                address, analytics_token, status = viewer_playback(
+                    event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
@@ -993,25 +2471,45 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         live_badge=status == "Live" and artwork["show_live_badge"],
                         viewers=viewers if status == "Live" else None)
         view = (dict(status=status, address=address, protected=protected, native_video=native_video, lobby_preview=pre_live,
+                     transport=transport,
                      captions=caption_endpoint, analytics_token=analytics_token, playlist=archives, occurrence=playing,
                      preview_replay=preview_replay, appearance=appearance, branding=branding)
                 if json_status
                 else render_template("live_event.html", event=event, occurrence=playing, audience_occurrence=shown,
-                                     address=address, status=status, embed=embed, protected=protected,
+                                     address=address, status=status, embed=embed, protected=protected, transport=transport,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
-                                     viewer_grant=grant, registration=form if enrollment else None,
+                                     viewer_grant=grant, registration=registration_view,
+                                     offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
+                                     hubspot_consent=hubspot_consent,
+                                     salesforce_consent=salesforce_consent,
+                                     salesforce_related_fields=salesforce_related_fields,
+                                     salesforce_engagement_consent=salesforce_engagement_consent,
+                                     salesforce_engagement_details=salesforce_engagement_details,
+                                     marketo_consent=marketo_consent,
+                                     mailchimp_consent=mailchimp_consent,
+                                     mailchimp_engagement_consent=mailchimp_engagement_consent,
+                                     marketo_engagement_consent=marketo_engagement_consent,
+                                     hubspot_engagement_consent=hubspot_engagement_consent,
+                                     unlock_token=frame_grant, event_access=access,
+                                     current_event_url=viewer_url(row, event, embed, link_key),
+                                     content_labels=content_rating.viewer_labels(event.get("content_rating", {})),
                                      enrollment=enrollment, registration_error=form_error,
                                      chat_endpoint=url_for("audience_event_chat", slug=slug, opens=shown["id"])
                                      if can_participate else None,
                                      engagement_endpoint=url_for("audience_event_engagement", slug=slug, opens=shown["id"])
                                      if can_participate else None))
-        response = make_response(view, 422 if form_error else 200)
+        return audience_response(view, ancestors, 422 if form_error else 200, bool(access))
+
+    def audience_response(view, ancestors, status, restricted):
+        response = make_response(view, status)
         response.headers["Vary"] = "Accept"
-        response.headers["Content-Security-Policy"] = "frame-ancestors " + ("*" if embed else "'none'")
+        response.headers["Content-Security-Policy"] = "frame-ancestors " + ancestors
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
+        if restricted:
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
     @app.route("/events/<slug>", methods=["GET", "POST"])
@@ -1031,6 +2529,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if (publication(con, row, event) != "eligible" or event_player.settings(con, row["id"])[kind] != digest
                     or (delivery and delivery["delivery"] in ("withdrawing", "withdrawn"))):
                 abort(404)
+            if event["visibility"] in RESTRICTED_AUDIENCES and not audience_allowed(
+                    row, request.args.get("framed") == "yes", request.args.get("access", "")):
+                abort(404)
+            enforce_territories(event)
             image = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
         if not image:
             abort(404)
@@ -1040,7 +2542,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def delivered(con, uid, revision, opens, form_revision, remote, replay):
+    def delivered(con, uid, revision, opens, form_revision, remote, replay, embed=False, joined=None):
         row, event = read(con, uid)
         delivery = occurrence(con, uid, opens)
         form = library_registration.active(con, "event", uid)
@@ -1049,36 +2551,74 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 replay != (delivery["delivery"] == "replay") or
                 (form["revision"] if form else None) != form_revision):
             abort(404)
+        if joined is not None and not event_attendance.active(con, joined, [uid, revision, opens, form_revision, embed]):
+            abort(404)
+        enforce_territories(event)
         return delivery
 
     @app.post("/api/event-playback")
     def event_playback_sample():
         try:
-            uid, revision, opens, form_revision, _, remote, replay, nonce, *reporting = measurement.loads(
+            uid, revision, opens, form_revision, embed, remote, replay, nonce, *reporting = measurement.loads(
                 request.headers.get("X-CuePorch-Playback", ""), max_age=12 * 3600
             )
         except (BadSignature, ValueError):
             abort(404)
         if library_analytics.permitted():
             with tx() as con:
-                delivered(con, uid, revision, opens, form_revision, remote, replay)
-                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, request.get_json(),
+                joined = reporting[1] if len(reporting) > 1 else None
+                delivered(con, uid, revision, opens, form_revision, remote, replay, embed, joined)
+                sample = request.get_json()
+                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, sample,
                                        report_scope=reporting[0] if reporting else None, viewer_key=viewer_key)
+                sharing = reporting[2] if len(reporting) > 2 else None
+                if sharing and sample["played"] and event_registrants.sharing_active(con, sharing, uid, opens):
+                    event_registrants.link_sample(con, nonce, sharing)
         return "", 204
+
+    @app.post("/api/event-playback/withdraw-sharing")
+    def withdraw_attendee_sharing():
+        same_origin(secure_site(mail_origin))
+        try:
+            uid, _, opens, _, _, _, sharing = guests.loads(request.headers.get("X-CuePorch-Event-Viewer", ""),
+                                                         max_age=12 * 3600)
+        except (BadSignature, ValueError, TypeError):
+            abort(404)
+        with tx() as con:
+            if event_registrants.sharing_active(con, sharing, uid, opens):
+                event_registrants.stop_sharing(con, sharing)
+                event_hubspot_engagement.cancel(con, sharing=sharing)
+                event_marketo_engagement.cancel(con, sharing=sharing)
+                event_mailchimp_engagement.cancel(con, sharing=sharing)
+                event_salesforce_engagement.cancel(con, sharing=sharing)
+                con.execute("DELETE FROM live_event_shared_qa_vote WHERE sharing=?", (sharing,))
+        return private("", 204)
 
     @app.get("/event-media/<token>/<filename>")
     def event_media_file(token, filename):
         try:
-            uid, revision, opens, form_revision, _, remote, gateway, replay = files.loads(token, max_age=12 * 3600)
+            uid, revision, opens, form_revision, embed, remote, gateway, replay, *attendance = files.loads(
+                token, max_age=12 * 3600)
         except (BadSignature, ValueError):
             abort(404)
-        if not replay and not LIVE_FILE.fullmatch(filename):
+        local = isinstance(gateway, str) and gateway.startswith("local:")
+        if not local and not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
         with tx() as con:
-            delivery = delivered(con, uid, revision, opens, form_revision, remote, replay)
+            delivery = delivered(con, uid, revision, opens, form_revision, remote, replay, embed,
+                                 attendance[0] if attendance else None)
+            if local and (replay or (not studio.dash_contribution(uid, opens) and event_captions.active_track(con, uid, opens))):
+                abort(404)
         try:
-            response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
-        except (ValueError, requests.RequestException):
+            if local:
+                source = studio.playback(uid, opens, gateway.removeprefix("local:"))
+                if not source:
+                    abort(404)
+                response = (dash_hls(source.resource(filename)) if isinstance(source, event_dash_buffer.Buffer)
+                            else local_hls(source.path, filename))
+            else:
+                response = media.media(delivery["origin"], remote, gateway, filename, request.headers.get("Range"))
+        except (OSError, ValueError, requests.RequestException):
             abort(404)
         return media_bandwidth.measure(response, tx, uid, "vod" if replay else "live")
 

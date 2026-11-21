@@ -4,7 +4,7 @@
 <link rel="stylesheet" href="/static/cueporch.css">
 <title>Team · CuePorch</title>
 <main id="teamWorkspace" hidden>
-  <h1>{{ institution }} team</h1>
+  {% set workspace_heading = brand.label ~ ' team' %}{% include "workspace_mark.html" %}
   {% if joining %}
   <form id="teamJoin">
     <h2>Accept team invitation</h2>
@@ -17,20 +17,41 @@
   <form id="teamSignIn">
     <label>Team email <input name="email" type="email" required maxlength="254" autocomplete="username"></label>
     <label>Password <input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
+    {% include "sign_in_factor.html" %}
     <button>Sign in to team</button>
+    <button type="submit" formnovalidate hidden data-send-email-factor>Send another code</button>
+    {% if can_recover %}<a href="{{ url_for('team_password_reset') }}">Forgot your password?</a>{% endif %}
+    {% if saml_available %}<a href="{{ url_for('start_team_saml') }}">Sign in with your organization</a>{% endif %}
   </form>
   <section id="teamLibrary" hidden>
     <h2 id="teamIdentity"></h2>
+    {% with activity_team=true %}{% include "workspace_activity.html" %}{% endwith %}
+    <a href="{{ url_for('help_center', team=1) }}">Help center</a>
+    <a href="{{ url_for('whats_new', team=1) }}">What's New</a>
+    <a href="{{ url_for('team_security_page') }}">Account security</a>
+    <a href="/team/integrations">My connected apps</a>
+    <a id="editCreatorProfile" href="/team/profile" hidden>Edit creator profile</a>
     <nav id="teamAdminLinks" aria-label="Administration" hidden>
       <a href="/operator/library">Manage Library</a> · <a href="/team/members">Manage team members</a>
+      <a href="{{ url_for('brand_kits_page', team=1) }}">Brand kits</a>
+    </nav>
+    <nav id="linkedWorkspaces" aria-label="Switch workspace" hidden>
+      <h3>Workspaces</h3>
+      <ul></ul>
     </nav>
     <button type="button" id="teamSignOut">Sign out</button>
     <form id="teamUpload" hidden>
       <label>Private video <input name="video" type="file" required accept=".mp4,.mov,.webm,.mkv"></label>
       <button>Upload to My Library</button> <progress max="100" hidden></progress>
     </form>
+    <form id="teamSearch" class="workspace-search" role="search" aria-label="Find videos">
+      <label>Search videos <input type="search" name="q" maxlength="120"></label>
+      <label>Search in <select name="scope"><option value="library">Team Library</option><option value="watch">Public Watch</option></select></label>
+      <button type="submit">Search</button>
+      <button type="button" id="clearTeamSearch" hidden>Clear search</button>
+    </form>
     <h3>Available videos</h3>
-    <p id="teamLibraryEmpty" hidden>There are no videos available to you yet.</p>
+    <p id="teamLibraryEmpty" role="status" hidden>There are no videos available to you yet.</p>
     <ul id="teamVideos"></ul>
   </section>
   {% endif %}

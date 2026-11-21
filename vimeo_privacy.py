@@ -55,7 +55,7 @@ def permits(work, settings):
     return work["provider"] != "vimeo" or target_settings(work)[0] == settings
 
 
-def register(app, tx, staff, action, read_works):
+def register(app, tx, staff, action, read_works, enforce_sharing):
     @app.route("/api/library/work/<uid>/source-privacy", methods=["GET", "PUT"])
     def restore_source_privacy(uid):
         staff()
@@ -82,6 +82,7 @@ def register(app, tx, staff, action, read_works):
                     dict(settings, password=body.get("password", "")),
                     current["password_hash"] if current and json.loads(current["settings"])["visibility"] == "password" else None,
                 )
+                enforce_sharing(con, settings=settings, prior=json.loads(current["settings"]) if current else None)
                 if managed_video:
                     handoff.request_handoff(con, uid, managed_video)
                     recent_handoff = handoff.get(con, uid)

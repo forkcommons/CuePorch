@@ -7,7 +7,8 @@
   <title>Player and page appearance · CuePorch</title>
 </head>
 <body data-work="{{ work }}">
-  <nav aria-label="Operator"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
+  {% include "operator_navigation.html" %}
+  <nav aria-label="Video"><a href="/operator/videos/{{ work }}">Video workspace</a></nav>
   <h1 id="appearanceTitle">Player and page appearance</h1>
   <form id="identify">
     <label>Operator credential <input id="appearanceKey" type="password" autocomplete="current-password" required></label>
@@ -22,6 +23,10 @@
         <button type="button" id="removePreset" disabled>Remove selected preset</button>
         <fieldset>
           <legend>Branding</legend>
+          <label for="appearanceBrandKit">Reusable brand kit</label>
+          <select id="appearanceBrandKit"><option value="">Choose a brand kit</option></select>
+          <button type="button" id="applyAppearanceKit" disabled>Use brand kit</button>
+          <a href="{{ url_for('brand_kits_page') }}">Manage brand kits</a>
           <div class="palette">
             <label>Primary color <input type="color" name="primary"></label>
             <label>Accent color <input type="color" name="accent"></label>
@@ -57,6 +62,7 @@
           <label><input type="checkbox" name="captions"> Captions</label>
           <label><input type="checkbox" name="audio_tracks"> Audio tracks</label>
           <label><input type="checkbox" name="chapters"> Chapters</label>
+          <label><input type="checkbox" name="viewer_questions"> Video questions</label>
           <label><input type="checkbox" name="speed"> Speed</label>
           <label><input type="checkbox" name="fullscreen"> Fullscreen</label>
           <label><input type="checkbox" name="pip"> Picture in picture</label>

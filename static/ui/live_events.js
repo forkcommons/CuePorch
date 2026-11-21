@@ -4,6 +4,10 @@ import { setupProducerEngagement } from "./event_engagement.js";
 import { relaySummary } from "./event_health.js";
 import { waitingPlayer } from "./event_waiting.js";
 import { playerColors, playerSwitches } from "./event_controls.js";
+import { setupLiveApi } from "./live_api.js";
+import { setupEventMail } from "./event_mail.js";
+import { setupAttendeeCsv } from "./attendee_csv.js";
+import { setupEventRoster } from "./event_roster.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -13,7 +17,18 @@ const status = element("eventsStatus");
 const workspace = element("eventsWorkspace");
 const form = element("newEventForm");
 const field = (name) => form.elements.namedItem(name);
+const mode = element("eventMode");
 const preset = element("eventPreset");
+const startingOptions = { method: "browser", registration: false, preview_encoder: false,
+    chat: { enabled: false, interval: 0 }, captions: { enabled: false, language: "en" },
+    qa: { enabled: false, anonymous: false, review: false } };
+const typeDefaults = {
+    live: { latency: "standard", chat: true, captions: true, method: "encoder" },
+    webinar: { latency: "standard", chat: true, captions: true, registration: true, qa: true },
+    team: { latency: "low", chat: true, captions: true },
+    learning: { latency: "standard", captions: true, registration: true, qa: true },
+    custom: { latency: "standard" },
+};
 const output = element("eventProduction");
 const health = element("eventHealth");
 const measurements = element("eventHealthDetails");
@@ -58,6 +73,14 @@ const destinationForm = element("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const backupKey = input("backupEncoderKey");
+const backupEnabled = input("enableBackupEncoder");
+const outputHeight = element("backupOutputHeight");
+backupEnabled.onchange = () => { element("backupOutput").hidden = !backupEnabled.checked; };
+const srtBackupEnabled = input("enableSrtBackup");
+const srtBackupSecret = input("srtBackupPassphrase");
+const srtBackupHeight = element("srtBackupHeight");
+srtBackupEnabled.onchange = () => { element("srtBackupOptions").hidden = !srtBackupEnabled.checked; };
 const previewEncoder = input("privateEncoderPreview");
 const encoderPreviewPanel = element("encoderPreview");
 const encoderPreviewStatus = element("encoderPreviewStatus");
@@ -86,11 +109,13 @@ let pending = false;
 let program;
 let programSources = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
-async function request(path, method = "GET", body) {
+async function request(path, method = "GET", body, integration = false) {
     const headers = { Authorization: "Bearer " + credential.value };
     const multipart = body instanceof FormData;
     if (body && !multipart)
         headers["Content-Type"] = "application/json";
+    if (integration)
+        headers["X-CuePorch-Integration"] = "1";
     const result = await fetch(path, { method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined });
     if (!result.ok) {
         const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;
@@ -98,6 +123,10 @@ async function request(path, method = "GET", body) {
     }
     return result.status === 204 ? undefined : result.json();
 }
+setupLiveApi(request);
+const chooseEmailEvent = setupEventMail(request);
+const chooseCsvOccurrence = setupAttendeeCsv(request);
+const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
 async function action(work, message = "") {
     if (pending)
         return;
@@ -196,24 +225,16 @@ async function downloadEventFile(path, filename) {
 }
 const { close: closeEngagement } = setupProducerEngagement(() => mediaPath("engagement"), request, (feature, filename) => action(() => downloadEventFile(mediaPath(`engagement/${feature}/export`), filename)));
 const registrationEditor = element("registrationEditor");
-const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), async () => {
-    const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
-        headers: { Authorization: "Bearer " + credential.value },
-    });
-    if (!response.ok)
-        throw new Error("Could not download the registrants.");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-event-registrants.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-});
+const openRegistration = setupRegistration((suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body), () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"), () => credential.value);
 function choose(event, instance) {
     if (registrationEvent !== event.id) {
         registrationEditor.hidden = true;
         registrationEvent = undefined;
     }
     active = { event, instance };
+    chooseEmailEvent(event.id);
+    chooseCsvOccurrence(event.id, instance.id);
+    chooseRosterOccurrence(event.id, instance.id);
     closeEngagement();
     chatPanel.open = false;
     chatMessages.replaceChildren();
@@ -225,8 +246,18 @@ function choose(event, instance) {
     output.hidden = false;
     encoder.hidden = true;
     key.value = "";
+    backupKey.value = "";
+    element("backupEncoderSettings").hidden = true;
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
+    srtBackupSecret.value = "";
+    element("srtBackupCredentials").hidden = true;
+    element("srtBackupChoice").hidden = event.event.latency !== "low";
+    srtBackupEnabled.checked = false;
+    element("srtBackupOptions").hidden = true;
+    srtBackupHeight.value = "720";
     previewEncoder.checked = event.preview_encoder;
     showEncoderPreview(instance.delivery === "preview");
     health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
@@ -257,19 +288,36 @@ function choose(event, instance) {
     button("editEvent").disabled = !event.editable;
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
+    const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
+    button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
+    element("backupEncoderOptions").hidden = !rtmpAvailable;
+    backupEnabled.checked = false;
+    element("backupOutput").hidden = true;
+    outputHeight.value = "720";
+    button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
+    button("prepareDash").hidden = button("stopDash").hidden = event.event.latency !== "fail-safe";
+    button("prepareDash").disabled = button("prepareEncoder").disabled;
     button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
         (instance.delivery !== "scheduled" && !calendar.host_ready);
     element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
+    const preference = event.event.setup?.method;
+    element("productionPreference").textContent = preference ?
+        `Preferred streaming method: ${preference === "encoder" ? "External encoder" : "Browser studio"}` : "";
     const watch = element("eventWatch");
     const studio = element("eventStudio");
     studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
     element("eventShare").hidden = !event.watch;
     element("eventEmbedField").hidden = !event.embed;
+    function occurrenceLink(path) {
+        const address = new URL(path, publicBase);
+        address.searchParams.set("occurrence", String(instance.id));
+        return address.href;
+    }
     if (event.watch)
-        watch.href = new URL(event.watch + "?occurrence=" + instance.id, publicBase).href;
-    const address = event.embed ? new URL(event.embed + "?occurrence=" + instance.id, publicBase).href : "";
-    input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
+        watch.href = occurrenceLink(event.watch);
+    const address = event.embed ? occurrenceLink(event.embed) : "";
+    input("eventEmbedCode").value = address ? `<iframe src="${address.replaceAll("&", "&amp;")}" title="Live event" allowfullscreen></iframe>` : "";
 }
 function releaseArtworkPreview(name) {
     if (artworkPreview[name])
@@ -391,7 +439,9 @@ eventPlayerForm.onsubmit = (event) => {
 function readCalendar(value) {
     calendar = value;
     element("eventsHost").hidden = value.host_ready;
-    preset.replaceChildren(new Option("Start from scratch", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+    const priorPreset = preset.value;
+    preset.replaceChildren(new Option("Choose an earlier event", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+    preset.value = value.events.some((entry) => entry.id === priorPreset) ? priorPreset : "";
     const rows = element("eventCalendarRows");
     rows.replaceChildren();
     const sorted = value.events.flatMap((event) => event.occurrences.map((instance) => ({ event, instance })))
@@ -416,16 +466,32 @@ function readCalendar(value) {
             choose(event, instance);
     }
 }
+const entry = new URL(location.href).searchParams;
+let startNew = entry.get("create") === "1";
+let activityEvent = entry.get("event");
 async function load() {
     const query = new URLSearchParams();
     if (starting.value)
         query.set("from", starting.value);
     if (ending.value)
         query.set("to", ending.value);
-    readCalendar(await request(root + "?" + query));
+    const calendar = await request(root + "?" + query);
+    readCalendar(calendar);
     sessionStorage.setItem("cueporchOperator", credential.value);
     identify.hidden = true;
     workspace.hidden = false;
+    if (startNew) {
+        startNew = false;
+        openEditor();
+    }
+    else if (activityEvent) {
+        const match = calendar.events.find(event => event.id === activityEvent);
+        activityEvent = null;
+        if (match)
+            openEditor(match);
+        else
+            throw new Error("This event is unavailable.");
+    }
 }
 identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
 if (credential.value)
@@ -435,7 +501,11 @@ function openEditor(current) {
     editing = current;
     form.reset();
     element("eventEditorHeading").textContent = current ? "Edit event" : "New event";
-    element("eventReuse").hidden = Boolean(current);
+    element("eventSetupMode").hidden = Boolean(current);
+    element("eventReuse").hidden = true;
+    element("eventStartingOptions").hidden = Boolean(current);
+    preset.value = "";
+    preset.required = false;
     field("slug").readOnly = Boolean(current);
     const values = current?.event;
     if (values) {
@@ -454,10 +524,15 @@ function openEditor(current) {
             weekday.checked = schedule.weekdays.includes(Number(weekday.value));
         }
         field("slug").value = current.slug;
+        field("method").value = values.setup?.method ?? "browser";
     }
     else {
         field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     }
+    showEmbedPolicy(values?.embed_policy);
+    showRegionalPolicy(values?.regional_policy);
+    showClassification(values?.content_rating);
+    syncViewingPassword();
     recurrence();
     syncArchiveOption();
     form.hidden = false;
@@ -470,6 +545,48 @@ function recurrence() {
 function syncArchiveOption() {
     field("archive_replay").disabled = !field("save_replay").checked;
 }
+function syncEmbedPolicy() {
+    const domains = field("embed_mode").value === "domains";
+    element("eventEmbedDomains").hidden = !domains;
+    field("embed_domains").required = domains;
+}
+function showEmbedPolicy(policy) {
+    field("embed_mode").value = policy?.mode ?? "anywhere";
+    field("embed_domains").value = policy?.domains.join("\n") ?? "";
+    syncEmbedPolicy();
+}
+function syncViewingPassword() {
+    const protectedEvent = field("visibility").value === "password";
+    element("eventViewingPassword").hidden = !protectedEvent;
+    field("view_password").required = protectedEvent && editing?.event.visibility !== "password";
+    if (!protectedEvent)
+        field("view_password").value = "";
+}
+function syncRegionalPolicy() {
+    const active = field("region_mode").value !== "anywhere";
+    element("eventRegionFields").hidden = !active;
+    field("region_areas").required = active;
+}
+function showRegionalPolicy(policy) {
+    field("region_mode").value = policy?.mode ?? "anywhere";
+    field("region_areas").value = policy?.areas.join("\n") ?? "";
+    syncRegionalPolicy();
+    button("exportEventRegions").hidden = !editing || (editing.event.regional_policy?.mode ?? "anywhere") === "anywhere";
+}
+function syncContentDescriptors() {
+    const mature = field("rating").value === "mature";
+    const options = element("eventContentDescriptors");
+    options.hidden = options.disabled = !mature;
+}
+function showClassification(values) {
+    field("rating").value = values?.rating ?? "unrated";
+    field("advertisement").checked = !!values?.advertisement;
+    field("realistic_ai").checked = !!values?.realistic_ai;
+    for (const item of form.querySelectorAll('input[name="content_descriptor"]')) {
+        item.checked = values?.content.includes(item.value) ?? false;
+    }
+    syncContentDescriptors();
+}
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -481,18 +598,89 @@ button("configureEventRegistration").onclick = () => void action(async () => {
 button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
-preset.onchange = () => {
-    const value = calendar.events.find((entry) => entry.id === preset.value)?.event;
-    if (!value)
+field("embed_mode").onchange = syncEmbedPolicy;
+field("visibility").onchange = syncViewingPassword;
+field("region_mode").onchange = syncRegionalPolicy;
+field("rating").onchange = syncContentDescriptors;
+const regionsFile = input("importEventRegions");
+regionsFile.onchange = () => void action(async () => {
+    const file = regionsFile.files?.[0];
+    if (!file)
         return;
-    for (const name of ["type", "description", "latency"])
+    if (file.size > 262144)
+        throw new Error("Choose a UTF-8 territory CSV under 256 KiB.");
+    const imported = await request(root + "/regions/import", "POST", { csv: await file.text() });
+    showRegionalPolicy(imported);
+    regionsFile.value = "";
+}, "Locations loaded into event settings.");
+button("exportEventRegions").onclick = () => void action(async () => {
+    if (!editing)
+        return;
+    const response = await fetch(`${root}/${editing.id}/regions/export`, {
+        headers: { Authorization: "Bearer " + credential.value },
+    });
+    if (!response.ok)
+        throw new Error("Could not download the saved locations.");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = "cueporch-event-regions.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
+function showStartingOptions(options) {
+    field("method").value = options.method;
+    field("registration").checked = options.registration;
+    field("preview_encoder").checked = options.preview_encoder;
+    field("chat").checked = options.chat.enabled;
+    field("chat_interval").value = String(options.chat.interval);
+    field("captions").checked = options.captions.enabled;
+    field("caption_language").value = options.captions.language;
+    field("qa").checked = options.qa.enabled;
+    field("qa_anonymous").checked = options.qa.anonymous;
+    field("qa_review").checked = options.qa.review;
+}
+function showTypeDefaults() {
+    const definition = typeDefaults[field("type").value];
+    field("latency").value = definition.latency;
+    showStartingOptions({ ...startingOptions, method: definition.method ?? "browser",
+        registration: !!definition.registration, chat: { ...startingOptions.chat, enabled: !!definition.chat },
+        captions: { ...startingOptions.captions, enabled: !!definition.captions },
+        qa: { ...startingOptions.qa, enabled: !!definition.qa } });
+}
+mode.onchange = () => {
+    const reuse = mode.value === "reuse";
+    element("eventReuse").hidden = !reuse;
+    preset.required = reuse;
+    preset.value = "";
+    if (mode.value === "type")
+        showTypeDefaults();
+    else {
+        field("latency").value = "standard";
+        showStartingOptions(startingOptions);
+    }
+};
+field("type").onchange = () => { if (!editing && mode.value === "type")
+    showTypeDefaults(); };
+preset.onchange = () => void action(async () => {
+    const prior = calendar.events.find((entry) => entry.id === preset.value);
+    if (!prior || mode.value !== "reuse")
+        return;
+    const options = await request(`${root}/${prior.id}/setup`);
+    const value = prior.event;
+    for (const name of ["title", "type", "description", "latency"])
         field(name).value = value[name];
+    field("visibility").value = "private";
+    syncViewingPassword();
     field("save_replay").checked = value.save_replay;
     field("archive_replay").checked = value.archive_replay ?? true;
     syncArchiveOption();
     field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
     field("timezone").value = value.schedule.timezone;
-};
+    showEmbedPolicy(value.embed_policy);
+    showRegionalPolicy(value.regional_policy);
+    showClassification(value.content_rating);
+    showStartingOptions(options);
+}, "Event settings loaded.");
 form.onsubmit = (event) => {
     event.preventDefault();
     void action(async () => {
@@ -503,10 +691,26 @@ form.onsubmit = (event) => {
             until: repeat !== "none" && field("until").value || null, count: repeat !== "none" && Number(field("count").value) || null };
         const target = editing ? root + "/" + editing.id : root;
         const method = editing ? "PUT" : "POST";
+        const setup = editing ? undefined : {
+            method: field("method").value, registration: field("registration").checked,
+            preview_encoder: field("preview_encoder").checked,
+            chat: { enabled: field("chat").checked, interval: Number(field("chat_interval").value) },
+            captions: { enabled: field("captions").checked, language: field("caption_language").value },
+            qa: { enabled: field("qa").checked, anonymous: field("qa_anonymous").checked, review: field("qa_review").checked },
+        };
         const created = await request(target, method, {
             revision: editing?.revision,
+            preferred_method: editing && field("method").value !== (editing.event.setup?.method ?? "browser") ? field("method").value : undefined,
+            starting_options: setup, reuse_event: !editing && mode.value === "reuse" ? preset.value : undefined,
             slug: field("slug").value, title: field("title").value, description: field("description").value,
             type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
+            view_password: field("view_password").value || undefined,
+            embed_policy: { mode: field("embed_mode").value,
+                domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean) },
+            regional_policy: { mode: field("region_mode").value,
+                areas: field("region_areas").value.split("\n").map((region) => region.trim()).filter(Boolean) },
+            content_rating: { rating: field("rating").value, content: read.getAll("content_descriptor"),
+                advertisement: field("advertisement").checked, realistic_ai: field("realistic_ai").checked },
             save_replay: field("save_replay").checked,
             archive_replay: field("archive_replay").checked,
             dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,
@@ -527,18 +731,51 @@ previewEncoder.onchange = () => void action(async () => {
         previewEncoder.checked = event.preview_encoder;
     }
 }, "Encoder preview preference saved.");
-button("prepareEncoder").onclick = () => void action(async () => {
-    const connection = await request(mediaPath("encoder"), "POST");
+function showEncoder(connection) {
     input("rtmpServer").value = connection.server;
     input("rtmpsServer").value = connection.secure_server || "";
     element("secureEncoder").hidden = !connection.secure_server;
     key.value = connection.key;
+    backupKey.value = connection.backup_key || "";
+    element("backupEncoderSettings").hidden = !connection.backup_key;
     encoder.hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
     showEncoderPreview(connection.preview);
     health.textContent = connection.preview ? "Encoder prepared for private preview." : "Waiting for the encoder.";
+}
+button("prepareEncoder").onclick = () => void action(async () => {
+    showEncoder(await request(mediaPath("encoder"), "POST"));
 });
+button("prepareLowRtmp").onclick = () => void action(async () => {
+    showEncoder(await request(mediaPath("rtmp"), "POST", { backup: backupEnabled.checked, height: Number(outputHeight.value) }));
+}, "Low-latency RTMP is ready for the encoder.");
+button("stopLowRtmp").onclick = () => void action(async () => {
+    await request(mediaPath("rtmp"), "DELETE");
+    encoder.hidden = true;
+    key.value = "";
+    backupKey.value = "";
+}, "Low-latency RTMP stopped.");
+button("copyBackupEncoderKey").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(backupKey.value);
+}, "Backup encoder key copied.");
+button("prepareDash").onclick = () => void action(async () => {
+    const connection = await request(mediaPath("dash"), "POST");
+    input("dashManifest").value = connection.manifest;
+    input("dashUploadToken").value = connection.token;
+    element("dashSettings").hidden = false;
+    button("withdrawEvent").textContent = "Withdraw this occurrence";
+    button("withdrawEvent").disabled = false;
+    health.textContent = `Waiting for a DASH contribution. Playback buffers ${connection.buffer_seconds} seconds.`;
+});
+button("stopDash").onclick = () => void action(async () => {
+    await request(mediaPath("dash"), "DELETE");
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
+}, "MPEG-DASH contribution stopped.");
+button("copyDashToken").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(input("dashUploadToken").value);
+}, "DASH upload token copied.");
 releasePreview.onclick = () => void action(async () => {
     await request(mediaPath("preview"), "POST");
     showEncoderPreview(false);
@@ -551,9 +788,14 @@ button("copyEncoderKey").onclick = () => void action(async () => {
 button("prepareSrt").onclick = () => void action(async () => {
     const result = await request(mediaPath("srt"), "POST", {
         interface: input("srtInterface").value, port: Number(input("srtPort").value),
+        backup_port: srtBackupEnabled.checked ? Number(input("srtBackupPort").value) : undefined,
+        height: srtBackupEnabled.checked ? Number(srtBackupHeight.value) : undefined,
     });
     input("srtServer").value = result.server;
     input("srtPassphrase").value = result.passphrase;
+    input("srtBackupServer").value = result.backup_server || "";
+    srtBackupSecret.value = result.backup_passphrase || "";
+    element("srtBackupCredentials").hidden = !result.backup_passphrase;
     element("srtSettings").hidden = false;
     button("withdrawEvent").textContent = "Withdraw this occurrence";
     button("withdrawEvent").disabled = false;
@@ -564,10 +806,14 @@ button("stopSrt").onclick = () => void action(async () => {
     await request(mediaPath("srt"), "DELETE");
     element("srtSettings").hidden = true;
     input("srtPassphrase").value = "";
+    srtBackupSecret.value = "";
 }, "SRT listener stopped.");
 button("copySrtPassphrase").onclick = () => void action(async () => {
     await navigator.clipboard.writeText(input("srtPassphrase").value);
 }, "SRT passphrase copied.");
+button("copySrtBackupPassphrase").onclick = () => void action(async () => {
+    await navigator.clipboard.writeText(srtBackupSecret.value);
+}, "Backup SRT passphrase copied.");
 async function refreshDestinations(result) {
     const selection = active;
     result = result || await request(mediaPath("destinations"));
@@ -581,7 +827,7 @@ async function refreshDestinations(result) {
     };
     destinationList.replaceChildren(...result.destinations.map(item => {
         const row = document.createElement("li");
-        row.textContent = `${item.name} · ${item.server} · ${labels[item.state] || item.state}`;
+        row.textContent = `${item.name}${item.opens !== null ? " · Patreon Live for this date" : ""} · ${item.server} · ${labels[item.state] || item.state}`;
         const control = document.createElement("button");
         control.type = "button";
         control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -611,12 +857,18 @@ destinationForm.onsubmit = event => {
     const values = new FormData(destinationForm);
     void action(async () => {
         const data = { name: values.get("name"), server: values.get("server"),
-            key: values.get("key"), enabled: values.has("enabled") };
+            key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset") };
         const result = await request(mediaPath("destinations"), "POST", data);
         destinationForm.reset();
         await refreshDestinations(result);
     });
 };
+const presetSelect = destinationForm.elements.namedItem("preset");
+const patreonDestinationHelp = element("patreonDestinationHelp");
+function syncPresetHelp() { patreonDestinationHelp.hidden = presetSelect.value !== "patreon"; }
+presetSelect.addEventListener("change", syncPresetHelp);
+destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+syncPresetHelp();
 window.setInterval(() => {
     if (destinations.open && !document.hidden && !pending) {
         void refreshDestinations().catch(() => { });
@@ -797,6 +1049,7 @@ async function updateCaptionSettings(update = false) {
         waiting_for_stream: "Waiting for the event stream",
         engine_unavailable: "Connect a local TextFlowKit streaming runtime",
         listening: "Transcribing the program",
+        blocked: "Automatic caption generation is disabled in workspace AI settings",
         media_or_engine_unavailable: "Waiting for usable live audio and a local transcription runtime",
         stopped: "Captioning stopped",
     };
@@ -818,6 +1071,7 @@ async function updateReplayCaptions(data) {
     const states = {
         queued: "Caption generation is queued.",
         running: "Transcribing the finished recording.",
+        blocked: "Workspace AI settings blocked generation. You can upload a subtitle file.",
         failed: "Could not generate captions. You can upload a subtitle file.",
         no_speech: "The caption engine did not find speech.",
         unavailable: result.archived ? "No caption track has been saved." : "The recording is still being prepared.",
@@ -872,7 +1126,11 @@ eventPlaylistPanel.ontoggle = () => { if (eventPlaylistPanel.open)
 eventPlaylistForm.onsubmit = (event) => { event.preventDefault(); void action(() => updatePlaylist(true)); };
 button("withdrawEvent").onclick = () => void action(async () => {
     encoder.hidden = true;
+    element("dashSettings").hidden = true;
+    input("dashUploadToken").value = "";
     key.value = "";
+    backupKey.value = "";
+    srtBackupSecret.value = "";
     await request(mediaPath("delivery"), "DELETE");
     await load();
 }, "Occurrence withdrawn.");

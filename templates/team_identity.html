@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team single sign-on · CuePorch</title>
+<main id="teamIdentitySettings">
+  <nav aria-label="Team"><a href="/team/members">Team members</a> · <a href="/team">Team workspace</a></nav>
+  <h1>Team single sign-on</h1>
+  <form id="teamIdentityAccess" method="post">
+    <label>Installation credential <input type="password" autocomplete="current-password" required></label>
+    <button>Open single sign-on settings</button>
+  </form>
+  <p id="teamIdentityStatus" role="status"></p>
+  <form id="teamSamlSettings" method="post" hidden>
+    {% if public_origin %}
+    <label>Service provider entity ID and metadata <input readonly value="{{ public_origin }}/team/sso/metadata"></label>
+    <label>Assertion consumer URL <input readonly value="{{ public_origin }}/team/sso/acs"></label>
+    <p>Use HTTP Redirect for requests and HTTP POST for responses. Sign assertions using SHA-256 or stronger.</p>
+    <label><input type="checkbox" name="enabled"> Allow team members to sign in with SAML</label>
+    <label>Identity provider entity ID <input name="entity_id" maxlength="512"></label>
+    <label>Identity provider sign-in URL <input type="url" name="login_url" maxlength="2048"></label>
+    <label>Identity provider signing certificate (PEM) <textarea name="signing_certificate" rows="7" maxlength="8192"></textarea></label>
+    <label>Authorized email domains, one per line <textarea name="domains" rows="3" maxlength="5000"></textarea></label>
+    <label>Email attribute name <input name="email_attribute" value="email" maxlength="256"></label>
+    <label><input type="checkbox" name="jit"> Create accounts for new members when they first sign in through SAML</label>
+    <label>Default role for new members
+      <select name="default_role">
+        <option value="viewer">Viewer</option><option value="contributor">Contributor</option>
+        <option value="contributor_plus">Contributor Plus</option><option value="admin">Administrator</option>
+      </select>
+    </label>
+    <label><input type="checkbox" name="force"> Require SAML for team members on authorized email domains</label>
+    <p>Requiring SAML signs out those members and disables their local password and email password reset.</p>
+    <label><input type="checkbox" name="idp_initiated"> Allow members to start sign-in from the identity provider</label>
+    <label><input type="checkbox" name="sync_groups"> Synchronize groups from signed SAML assertions</label>
+    <label>Signed group attribute name <input name="groups_attribute" value="groups" maxlength="256"></label>
+    <label><input type="checkbox" name="scim_adopt_members"> Match SCIM users to existing team accounts</label>
+    <p>The provider can manage an existing member on an authorized domain if it sends their exact email address and a directory ID. The member keeps their work and permissions and signs in through SAML. The Owner keeps their local account.</p>
+    <p>Saving a changed connection signs out members who used it. The workspace Owner signs in with their local account.</p>
+    <button>Save single sign-on settings</button>
+    {% else %}
+    <p>Configure the workspace public HTTPS address to enable single sign-on.</p>
+    {% endif %}
+  </form>
+  <section id="teamProvisioning" hidden aria-labelledby="teamProvisioningHeading">
+    <h2 id="teamProvisioningHeading">SCIM provisioning</h2>
+    <label>Provisioning base URL <input id="teamProvisioningEndpoint" readonly></label>
+    <p id="teamProvisioningStatus" role="status"></p>
+    <button id="createProvisioningToken" type="button">Create provisioning token</button>
+    <button id="revokeProvisioningToken" type="button" hidden>Revoke provisioning token</button>
+    <label id="newProvisioningToken" hidden>Copy this token to your identity provider. CuePorch displays it once.
+      <input readonly autocomplete="off">
+    </label>
+  </section>
+</main>
+<script type="module" src="/static/ui/team_identity.js"></script>
+</html>

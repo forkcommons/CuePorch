@@ -16,14 +16,22 @@ PROXY_ADDRESS = "127.0.0.2"
 
 
 @contextmanager
-def regional_proxy(base):
+def regional_proxy(base, region="US-CO", city=None, postal_code=None):
     upstream = urlsplit(base)
 
     class Relay(BaseHTTPRequestHandler):
         def relay(self):
-            names = ("Content-Type", "Range", "Referer", "User-Agent", "Sec-Fetch-Dest", "DNT", "Sec-GPC")
+            names = ("Accept", "Content-Type", "Range", "Referer", "User-Agent", "Sec-Fetch-Dest", "DNT", "Sec-GPC",
+                     "X-CuePorch-Event-Access", "X-CuePorch-Event-Viewer", "X-CuePorch-Event-Frame",
+                     "X-CuePorch-Event-Context", "X-CuePorch-Chat-Embed", "X-CuePorch-Chat-Session",
+                     "X-CuePorch-Engagement-Session", "X-CuePorch-Playback")
             headers = {name: self.headers[name] for name in names if name in self.headers}
-            headers["X-CuePorch-Region"] = "US-CO"
+            if region:
+                headers["X-CuePorch-Region"] = region
+            if city:
+                headers["X-CuePorch-City"] = city
+            if postal_code:
+                headers["X-CuePorch-Postal-Code"] = postal_code
             body = self.rfile.read(int(self.headers.get("Content-Length", "0"))) or None
             with closing(HTTPConnection(upstream.hostname, upstream.port, timeout=10,
                                         source_address=(PROXY_ADDRESS, 0))) as conn:

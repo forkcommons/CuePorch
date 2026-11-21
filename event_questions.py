@@ -26,10 +26,14 @@ CREATE TABLE IF NOT EXISTS live_question_vote(
 def settings(con, uid, opens):
     row = con.execute("""SELECT enabled,anonymous,review,highlighted FROM live_qa_settings
                          WHERE event=? AND opens=?""", (uid, opens)).fetchone()
-    if row is None:
-        return dict(enabled=False, anonymous=False, review=False, highlighted=None)
-    return dict(enabled=bool(row["enabled"]), anonymous=bool(row["anonymous"]),
-                review=bool(row["review"]), highlighted=row["highlighted"])
+    if row:
+        return dict(enabled=bool(row["enabled"]), anonymous=bool(row["anonymous"]),
+                    review=bool(row["review"]), highlighted=row["highlighted"])
+    saved = con.execute("""SELECT json_extract(settings,'$.setup.qa.enabled'),
+                         json_extract(settings,'$.setup.qa.anonymous'),json_extract(settings,'$.setup.qa.review')
+                         FROM live_event WHERE id=?""", (uid,)).fetchone()
+    return dict(enabled=bool(saved and saved[0]), anonymous=bool(saved and saved[1]),
+                review=bool(saved and saved[2]), highlighted=None)
 
 
 def save(con, uid, opens, body):
@@ -88,17 +92,23 @@ def audience_action(con, uid, opens, viewer, body):
                            (uid, opens, viewer)).fetchone()[0]
         if last and now - last < 2:
             abort(429, "Wait before submitting another question.")
+        identifier = uuid.uuid4().hex
         con.execute("INSERT INTO live_question VALUES(?,?,?,?,?,?,NULL,?,?,0)",
-                    (uuid.uuid4().hex, uid, opens, viewer, name, question, "pending" if policy["review"] else "published", now))
+                    (identifier, uid, opens, viewer, name, question, "pending" if policy["review"] else "published", now))
+        return None if anonymous else identifier
     elif body.get("type") == "vote":
         question = read(con, uid, opens, body.get("id"))
         enabled = body.get("enabled")
         if question["archived"] or question["state"] not in ("published", "answered") or type(enabled) is not bool:
             abort(422, "Choose a visible question to vote on.")
         if enabled:
-            con.execute("INSERT OR IGNORE INTO live_question_vote VALUES(?,?)", (question["id"], viewer))
+            cursor = con.execute("INSERT OR IGNORE INTO live_question_vote VALUES(?,?)", (question["id"], viewer))
+            if cursor.rowcount == 1 and question["name"] is not None:
+                return question["id"]
+            return None
         else:
             con.execute("DELETE FROM live_question_vote WHERE question=? AND viewer=?", (question["id"], viewer))
+            return question["id"]
     else:
         abort(422, "Choose an audience Q&A action.")
 

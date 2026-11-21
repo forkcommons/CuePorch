@@ -1,6 +1,7 @@
 import { setupPresentation } from "./video_presentation.js";
 import { setupRatings } from "./video_ratings.js";
 import { setupRegistration } from "./video_registration.js";
+import { sessionMarker } from "./team_api.js";
 
 interface Chapter { title: string; timecode: number; }
 interface Chapters { title: string; version: string; revision: string; chapters: Chapter[]; }
@@ -16,12 +17,14 @@ const list = document.querySelector<HTMLOListElement>("#chapterRows")!;
 const rowTemplate = document.querySelector<HTMLTemplateElement>("#chapterRow")!;
 const add = document.querySelector<HTMLButtonElement>("#addChapter")!;
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
+const teamPreview = document.body.dataset.teamPreview;
 let state: Chapters;
 
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
 async function call<T>(suffix: string, method = "GET", body?: object): Promise<T> {
-  const headers: Record<string, string> = {Authorization: "Bearer " + key.value};
+  const headers: Record<string, string> = {Authorization: "Bearer " + (teamPreview ? sessionMarker : key.value)};
+  if (teamPreview && body) headers["X-CuePorch-Team"] = "1";
   if (body) headers["Content-Type"] = "application/json";
   const response = await fetch(endpoint + suffix, {method, headers, body: body && JSON.stringify(body)});
   if (!response.ok) {
@@ -67,10 +70,11 @@ async function exportCsv(suffix: string, filename: string) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(uri), 1000);
 }
-const showRatings = setupRatings(call, timestamp, displayTime,
+const showRatings = teamPreview ? undefined : setupRatings(call, timestamp, displayTime,
   () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
-const showRegistration = setupRegistration(call,
-  () => exportCsv("/registration/export", "cueporch-registrants.csv"));
+const showRegistration = teamPreview ? undefined : setupRegistration(call,
+  () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value, undefined,
+  () => endpoint + "/registration");
 
 function appendChapter(chapter: Chapter) {
   const row = rowTemplate.content.firstElementChild!.cloneNode(true) as HTMLElement;
@@ -108,25 +112,30 @@ function present(value: Chapters) {
 async function show() {
   try {
     const settings = await call<Chapters>("/chapters");
-    const work = await call<{preview: string | null}>("");
-    if (work.preview) {
-      const ticket = await call<{preview: string}>("/ticket", "POST", {sha256: work.preview});
-      preview.src = ticket.preview;
+    if (teamPreview) {
+      preview.src = teamPreview;
       preview.hidden = false;
+    } else {
+      const work = await call<{preview: string | null}>("");
+      if (work.preview) {
+        const ticket = await call<{preview: string}>("/ticket", "POST", {sha256: work.preview});
+        preview.src = ticket.preview;
+        preview.hidden = false;
+      }
+      sessionStorage.setItem("cueporchOperator", key.value);
     }
     present(settings);
-    sessionStorage.setItem("cueporchOperator", key.value);
     identity.hidden = true;
     editor.hidden = false;
     status.textContent = "";
-    await Promise.all([showPresentation(), showRatings(), showRegistration()]);
+    await Promise.all([showPresentation(), showRatings?.(), showRegistration?.()]);
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
   }
 }
 
 identity.onsubmit = (event) => { event.preventDefault(); void show(); };
-if (key.value) void show();
+if (teamPreview || key.value) void show();
 
 add.onclick = () => appendChapter({title: "", timecode: Math.floor(preview.currentTime || 0)}).focus();
 form.onsubmit = async (event) => {

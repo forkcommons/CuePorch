@@ -1,0 +1,25 @@
+{% set active = request.path %}
+{% set deleted = active == '/operator/library' and request.args.get('view') == 'deleted' %}
+{% set destinations = [
+  ('Home', '/operator', active == '/operator'),
+  ('Watch', url_for('catalog'), false),
+  ('Staff Picks', url_for('operator_picks'), active == '/operator/staff-picks'),
+  ('Library', '/operator/library', (active == '/operator/library' and not deleted) or active.startswith('/operator/videos/')),
+  ('Live events', '/operator/live-events', active.startswith('/operator/live-events')),
+  ('Showcases', '/operator/showcases', active == '/operator/showcases'),
+  ('Analytics', '/operator/analytics', active == '/operator/analytics'),
+  ('Integrations', '/operator/integrations', active == '/operator/integrations'),
+  ('Recently deleted', '/operator/library?view=deleted', deleted),
+  ("What's New", '/whats-new', active.startswith('/whats-new')),
+  ('Help', '/help', active.startswith('/help'))
+] %}
+<details class="operator-navigation" open>
+  <summary>Workspace navigation</summary>
+  <nav aria-label="Operator workspace">
+    {% for title, address, selected in destinations %}
+      <a href="{{ address }}"{% if selected %} aria-current="page"{% endif %}>{{ title }}</a>
+    {% endfor %}
+  </nav>
+  {% with activity_team=false %}{% include "workspace_activity.html" %}{% endwith %}
+</details>
+<script type="module" src="{{ url_for('static', filename='ui/operator_navigation.js') }}"></script>

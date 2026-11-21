@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>CuePorch Webinar Q&amp;A</label>
+    <pluralLabel>CuePorch Webinar Q&amp;A</pluralLabel>
+    <nameField>
+        <displayFormat>CPQ-{000000}</displayFormat>
+        <label>CuePorch Webinar Q&amp;A</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <sharingModel>Private</sharingModel>
+    <externalSharingModel>Private</externalSharingModel>
+    <fields>
+        <fullName>External_Key__c</fullName>
+        <label>External Key</label>
+        <type>Text</type>
+        <length>64</length>
+        <unique>true</unique>
+        <externalId>true</externalId>
+        <caseSensitive>false</caseSensitive>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Registrant__c</fullName>
+        <label>Registrant</label>
+        <type>Lookup</type>
+        <referenceTo>CuePorch_Registrant__c</referenceTo>
+        <relationshipLabel>Questions and Answers</relationshipLabel>
+        <relationshipName>CuePorch_Webinar_QA</relationshipName>
+        <deleteConstraint>Restrict</deleteConstraint>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Question__c</fullName>
+        <label>Question</label>
+        <type>LongTextArea</type>
+        <length>1024</length>
+        <visibleLines>3</visibleLines>
+    </fields>
+    <fields>
+        <fullName>Answer__c</fullName>
+        <label>Answer</label>
+        <type>Text</type>
+        <length>255</length>
+        <required>true</required>
+    </fields>
+</CustomObject>

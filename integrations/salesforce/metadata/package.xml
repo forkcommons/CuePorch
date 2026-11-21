@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>CuePorch_Media__c</members>
+        <members>CuePorch_Registrant__c</members>
+        <members>CuePorch_Registration_Field__c</members>
+        <members>CuePorch_Webinar_Poll__c</members>
+        <members>CuePorch_Webinar_QA__c</members>
+        <name>CustomObject</name>
+    </types>
+    <types>
+        <members>Lead.CuePorch_Email_Key__c</members>
+        <name>CustomField</name>
+    </types>
+    <types>
+        <members>CuePorch_Media__c-CuePorch Media Reporting</members>
+        <members>CuePorch_Registrant__c-CuePorch Registrant Reporting</members>
+        <name>Layout</name>
+    </types>
+    <types>
+        <members>CuePorch_Reporting_Reader</members>
+        <name>PermissionSet</name>
+    </types>
+    <version>64.0</version>
+</Package>

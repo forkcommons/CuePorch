@@ -1,5 +1,7 @@
 export const sessionMarker = "team-session";
-export const roleLabels = { admin: "Administrator", contributor: "Contributor", viewer: "Viewer" };
+export const roleLabels = {
+    owner: "Owner", admin: "Administrator", contributor_plus: "Contributor Plus", contributor: "Contributor", viewer: "Viewer",
+};
 export async function teamRequest(path, method = "GET", body = {}, credential = "") {
     const headers = {};
     if (credential)

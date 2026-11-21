@@ -1,4 +1,25 @@
 import { privateSettings, sharingFields } from "./library_privacy.js";
+export function folderChoices(select, folders, excluded) {
+    select.replaceChildren(new Option("Library", ""));
+    function append(parent, prefix) {
+        for (const folder of folders) {
+            if (folder.parent !== parent || folder.id === excluded)
+                continue;
+            const label = prefix + folder.name;
+            select.append(new Option(label, folder.id));
+            append(folder.id, label + " / ");
+        }
+    }
+    append(null, "");
+}
+export async function readUploadPrivacy(folder, load) {
+    if (folder) {
+        const { settings, has_password, allowed } = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
+        if (settings)
+            return { ...privateSettings, ...settings, has_password, allowed, folder_override: true };
+    }
+    return { ...privateSettings, ...await (await load("/api/library/upload-defaults")).json() };
+}
 export function uploadLibraryFile(file, id, folder, credential, options, progress, endpoint = "/api/library/uploads") {
     const data = new FormData();
     data.set("file", file);

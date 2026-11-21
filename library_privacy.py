@@ -15,6 +15,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_peer_handoff
+import folder_slack_queue
 import library_share
 import library_embed
 import library_appearance
@@ -24,6 +25,11 @@ import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
+import library_salesforce_video_engagement as video_reports
+import library_hubspot_media_events as media_events
+from browser_account_security import json_mutation, secure_site
+import library_video_questions
+import content_rating
 import media_bandwidth
 from catalog import video_version_key
 from library_thumbnail import selected_thumbnail, thumbnail_type
@@ -33,6 +39,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_privacy(
  work TEXT PRIMARY KEY, settings TEXT NOT NULL, password_hash TEXT,
  revision TEXT NOT NULL, share_key TEXT);
+CREATE TABLE IF NOT EXISTS library_publication_time(
+ work TEXT PRIMARY KEY, published_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS library_privacy_change(
  work TEXT PRIMARY KEY, settings TEXT NOT NULL, password_hash TEXT,
  revision TEXT NOT NULL, share_key TEXT, approval TEXT NOT NULL, listing TEXT);
@@ -120,6 +128,11 @@ def get_privacy(con, uid):
     return con.execute("SELECT * FROM library_privacy WHERE work=?", (uid,)).fetchone()
 
 
+def current_settings(con, uid):
+    row = get_privacy(con, uid)
+    return json.loads(row["settings"]) if row else DEFAULTS
+
+
 def try_password(con, operator, uid, value, password_hash):
     if not value or len(value) > 256:
         return False
@@ -165,12 +178,21 @@ def apply_pending(con):
 
 
 def save(con, uid, settings, password_hash, revision, share_key):
+    previous = get_privacy(con, uid)
+    prior_settings = json.loads(previous["settings"]) if previous else DEFAULTS
+    prior_password = previous["password_hash"] if previous else None
     con.execute(
         """INSERT INTO library_privacy VALUES(?,?,?,?,?) ON CONFLICT(work) DO UPDATE SET
            settings=excluded.settings,password_hash=excluded.password_hash,
            revision=excluded.revision,share_key=excluded.share_key""",
         (uid, settings, password_hash, revision, share_key),
     )
+    if json.loads(settings)["visibility"] == "public":
+        con.execute("INSERT OR IGNORE INTO library_publication_time VALUES(?,?)", (uid, time.time()))
+    else:
+        con.execute("DELETE FROM library_publication_time WHERE work=?", (uid,))
+    if prior_settings != json.loads(settings) or prior_password != password_hash:
+        folder_slack_queue.enqueue(con, uid, "privacy")
 
 
 def cancel_pending(con, row):
@@ -236,6 +258,28 @@ def protected_route(con, uid):
     ).fetchone() is not None
 
 
+def public_oembed_eligible(con, work, permits):
+    if work is None or playback(work) is None:
+        return False
+    uid = work["id"]
+    row = get_privacy(con, uid)
+    if row is None:
+        return False
+    if blocked(con, uid) or protected_route(con, uid):
+        return False
+    handoff = library_peer_handoff.get(con, uid)
+    if handoff and handoff["state"] == "pending":
+        return False
+    if library_registration.active(con, "video", uid):
+        return False
+    settings = json.loads(row["settings"])
+    if settings.get("visibility") != "public" or settings.get("embed") != "anywhere":
+        return False
+    if not permits(work, settings):
+        return False
+    return True
+
+
 def operator_sharing(con, work, permits):
     uid = work["id"]
     row = get_privacy(con, uid)
@@ -287,7 +331,9 @@ def apply_settings(con, action, work, settings, password_hash):
     )
 
 
-def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for):
+def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
+             operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
+             questions_enabled, *, hubspot, hubspot_origins):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -305,13 +351,16 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         with tx() as con:
             settings, password = actor_defaults(con, actor)
             if request.method == "PUT":
-                settings, password = requested_settings(request.get_json(), password)
+                candidate, password = requested_settings(request.get_json(), password)
+                enforce_sharing(con, settings=candidate, prior=settings)
+                settings = candidate
                 con.execute(
                     """INSERT INTO library_upload_defaults VALUES(?,?,?) ON CONFLICT(actor) DO UPDATE SET
                        settings=excluded.settings,password_hash=excluded.password_hash""",
                     (actor, json.dumps(settings), password),
                 )
-        return dict(**settings, has_password=bool(password))
+            allowed = sharing_access(con)
+        return dict(**settings, has_password=bool(password), allowed=allowed)
 
     @app.put("/api/library/privacy")
     def bulk_privacy():
@@ -329,6 +378,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if any(not editable(work) for work in works) or any(protected_route(con, uid) for uid in members):
                 abort(409, "Select Library videos that can use these privacy settings.")
             for work in works:
+                enforce_sharing(con, settings=settings, prior=current_settings(con, work["id"]))
                 apply_settings(con, action, work, settings, password_hash)
             apply_pending(con)
             waiting = {row[0] for row in con.execute("SELECT work FROM library_privacy_change")}
@@ -336,9 +386,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
 
     @app.route("/api/library/work/<uid>/privacy", methods=["GET", "PUT"])
     def privacy(uid):
-        staff()
         body = request.get_json() if request.method == "PUT" else None
         with tx() as con:
+            team_editor = not operator_name(con)
+            if team_editor and not authorize_editor(con, uid):
+                abort(403)
             work = find_work(uid)
             if not work or hidden(con, "work", uid):
                 abort(404)
@@ -347,8 +399,13 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if protected_route(con, uid):
                 abort(409, "This institution has designated the video as a public record.")
             row = get_privacy(con, uid)
+            allowed = sharing_access(con)
+            previous = json.loads(row["settings"]) if row else DEFAULTS
+            if team_editor and (allowed["modes"] == ["private"] or previous["visibility"] not in allowed["modes"]):
+                abort(403, "This video’s sharing is managed by your workspace administrators.")
             if request.method == "PUT":
                 settings, password_hash = requested_settings(body, row["password_hash"] if row else None)
+                enforce_sharing(con, settings=settings, prior=previous)
                 apply_settings(con, action, work, settings, password_hash)
                 apply_pending(con)
                 row = get_privacy(con, uid)
@@ -359,7 +416,34 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             **paths,
             has_password=bool(row and row["password_hash"]),
             pending=json.loads(pending["settings"]) if pending else None,
+            allowed=allowed,
         )
+
+    @app.get("/api/public/oembed")
+    def public_oembed():
+        parsed = library_embed.parse_oembed_url(team_origin, request.args.get("url"))
+        if parsed is None or team_origin == "Unknown":
+            abort(404)
+        if request.args.get("format", "json") != "json":
+            abort(501)
+        def _dim(name):
+            v = request.args.get(name)
+            if v is None:
+                return None
+            if not re.fullmatch(r"[1-9][0-9]{0,4}", v, re.ASCII):
+                abort(400)
+            return int(v)
+        maxwidth = _dim("maxwidth")
+        maxheight = _dim("maxheight")
+        uid, start = parsed
+        with tx() as con:
+            work = find_work(uid)
+            if not public_oembed_eligible(con, work, permits):
+                abort(404)
+            body = library_embed.oembed_video(team_origin, uid, title_for(con, work), start, maxwidth, maxheight)
+        response = make_response(body)
+        response.cache_control.no_store = True
+        return response
 
     def watch(uid, embed, frame, alias_slug=None):
         with tx() as con:
@@ -405,6 +489,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             video = playback(work) if work else None
             if video is None or not permits(work, settings):
                 abort(404)
+            if mode == "public" and not embed and request.method in ("GET", "HEAD"):
+                notice = content_rating.screening_notice(title_for(con, work), viewing_preferences(con),
+                                                         details_for(con, work))
+                if notice is not None:
+                    return notice
             form = library_registration.active(con, "video", uid)
             enrollment = request.form.get("enrollment", "")
             enrollment_scope = [uid, row["revision"], alias["revision"] if alias else None,
@@ -420,18 +509,31 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 enrollment or (request.method == "POST"
                                and try_password(con, operator, uid, request.form.get("password", ""), row["password_hash"]))
             )
-            form_error = None
+            admitted = False
+            sign_on = form_error = None
             if enrollment:
-                form_error = library_registration.enroll(con, "video", uid, form, request.form, request.args)
-            needs_registration = not locked and form and (not enrollment or form_error)
+                admitted, sign_on, form_error = library_registration.admit(con, "video", uid, form, enrollment_scope)
+            needs_registration = not locked and form and not admitted
             can_watch = not locked and not needs_registration
-            appearance = library_appearance.read_settings(con, uid, "embed" if embed else "watch") if can_watch else None
-            options = library_embed.options(request.args if embed else {}, appearance)
             surface = "embed" if embed else "watch"
+            details = details_for(con, work) if can_watch else None
+            panorama = details["panorama"] if details else "flat"
+            if panorama == "source":
+                panorama = "360-mono" if work.get("source_projection") == "equirectangular" else "flat"
+            appearance = library_appearance.read_settings(con, uid, surface) if can_watch else None
+            if panorama != "flat" and appearance is None:
+                appearance = library_appearance.surface_defaults(surface)
+            options = library_embed.options(request.args if embed else {}, appearance)
             context = library_analytics.request_context(analytics_proxies) if (
                 can_watch and not options["dnt"] and library_analytics.permitted()
             ) else None
             grant = {}
+            salesforce = app.extensions.get("salesforce_form_consent")
+            salesforce_report = None
+            if salesforce and context and admitted and not request.form.get("registration_action"):
+                salesforce_report = salesforce.engagement_capture(con, work, form, enrollment_scope, request.form.get("email"), request.form.get("salesforce_form_consent", ""), request.form.get("salesforce_video_engagement_consent", ""))
+                if salesforce_report:
+                    grant["salesforce_engagement"] = salesforce_report
             if form and can_watch:
                 grant["registration"] = form["revision"]
             if context and settings["download"]:
@@ -442,8 +544,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if grant:
                 payload.append(grant)
             token = serializer.dumps(payload) if can_watch else None
+            questions = question_session(con, work, token, surface) if token else None
             title = "Protected video" if locked else title_for(con, work)
-            details = details_for(con, work) if can_watch and not embed else None
+            creator = creator_for_work(con, uid) if can_watch and mode == "public" and not embed else None
             logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
             chapters = library_interactivity.readable_chapters(work) if can_watch and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
@@ -460,6 +563,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 rating["session"] = rating_serializer.dumps(
                     [token, video_version_key(work), rating["mode"], secrets.token_urlsafe(18)]
                 )
+            hubspot_origin = None
+            if context and surface == "embed" and hubspot_origins:
+                if media_events.eligible(con, work, context[0], hubspot_origins, hubspot, permits):
+                    hubspot_origin = context[0]
             analytics = None
             if context:
                 analytics = analytics_serializer.dumps(
@@ -471,24 +578,38 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if duration and start >= duration:
                 start = 0
             form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
+            registration_view = library_registration.presentation(con, form, sign_on, mailchimp_target=("video", uid, enrollment_scope)) if form_token else None
+            if registration_view and salesforce and not options["dnt"] and library_analytics.permitted():
+                registration_view["salesforce_video_engagement_consent"] = salesforce.engagement_offer(con, work, form, enrollment_scope)
+        oembed_discovery = (
+            library_embed.oembed_url(team_origin, uid)
+            if not embed and mode == "public" and settings["embed"] == "anywhere"
+            and form is None and alias_slug is None
+            else None
+        )
         response = make_response(
-            render_template("library_watch.html", work=uid, title=title, embed=embed,
+            render_template("library_watch.html", work=uid, title=title, oembed_discovery=oembed_discovery, embed=embed,
                             save_kind="work" if mode == "public" and not embed else None, save_slug=uid,
+                            creator=creator,
                             token=token, tracks=viewer_tracks(work), download=settings["download"],
                             audio_tracks=library_audio.tracks_for(work) if can_watch else [],
                             audio_labels=library_audio.KINDS,
                             wrong_password=locked and request.method == "POST",
-                            unlock_token=unlock_token, details=details, start=start,
+                            unlock_token=unlock_token, details=None if embed else details, start=start,
+                            content_labels=content_rating.viewer_labels(details) if details else [],
+                            descriptor_labels=content_rating.DESCRIPTORS,
+                            panorama=panorama if panorama != "flat" else None,
                             options=options, appearance=appearance, logo=logo, chapters=chapters,
-                            presentation=presentation, poster=poster, rating=rating, analytics=analytics,
-                            share=share_paths(uid, row)["watch"], registration=form if form_token else None,
+                            presentation=presentation, poster=poster, rating=rating, analytics=analytics, hubspot_origin=hubspot_origin, questions=questions,
+                            share=share_paths(uid, row)["watch"], registration=registration_view,
+                            salesforce_report=bool(salesforce_report),
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
         if mode != "public" or embed:
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
-        if analytics or form:
+        if analytics or form or questions or not embed:
             response.cache_control.private = True
             response.cache_control.no_store = True
         return response
@@ -517,6 +638,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if video is None or video["sha256"] != digest or not permits(work, settings):
             abort(404)
         return work, video, settings, extra
+
+    question_session = library_video_questions.register(
+        app, tx, root, viewer_key, team_origin, questions_enabled, lambda con, token: authorized_playback(con, token)[0],
+    )
 
     @app.get("/shared-video/<token>")
     @app.get("/shared-video/<token>/caption/<int:track>")
@@ -610,6 +735,57 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 abort(404)
             return library_ratings.rate(con, work, nonce, mode, body.get("score"))
 
+    @app.route("/viewer-analytics/<session>/hubspot", methods=["PUT", "POST", "DELETE"])
+    def viewer_hubspot_analytics(session):
+        if not hubspot_origins:
+            abort(404)
+        try:
+            token, version, surface, nonce, *context = analytics_serializer.loads(session, max_age=14400)
+        except (BadSignature, ValueError):
+            abort(404)
+        if not context:
+            abort(404)
+        if surface != "embed":
+            abort(404)
+        source = context[0][0]
+        if source not in hubspot_origins:
+            abort(404)
+        request.max_content_length = 65536
+        body = json_mutation(secure_site(team_origin), "X-CuePorch-HubSpot-View")
+        with tx() as con:
+            if request.method == "DELETE" or not library_analytics.permitted():
+                media_events.withdraw(con, nonce)
+                return "", 403 if request.method == "PUT" else 204
+            work, _, _, _ = authorized_playback(con, token)
+            if video_version_key(work) != version:
+                abort(404)
+            catalog = media_events.eligible(con, work, source, hubspot_origins, hubspot, permits)
+            if not catalog:
+                abort(404)
+            if request.method == "PUT":
+                media_events.enable(con, hubspot, nonce, work, version, catalog, source, body, time.time())
+            elif request.method == "POST":
+                duration_ms = round((work.get("duration_seconds") or 0) * 1000)
+                seq, intervals, played = media_events.sample_fields(body, duration_ms)
+                media_events.observe(con, nonce, seq, intervals, duration_ms, played, time.time(), action)
+            return "", 204
+
+    @app.delete("/viewer-analytics/<session>/salesforce")
+    def viewer_salesforce_withdraw(session):
+        json_mutation(secure_site(team_origin),"X-CuePorch-Salesforce-View")
+        try:
+            token,version,*_ = analytics_serializer.loads(session,max_age=4*3600)
+        except (BadSignature, ValueError):
+            abort(404)
+        with tx() as con:
+            work,_,_,grant = authorized_playback(con,token)
+            report = grant.get("salesforce_engagement")
+            if not report or video_version_key(work) != version:
+                abort(404)
+            video_reports.revoke(con,report=report)
+        return "",204
+
+
     @app.post("/viewer-analytics/<session>")
     def viewer_analytics(session):
         try:
@@ -618,13 +794,17 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             abort(404)
         request.max_content_length = 128 * 1024
         with tx() as con:
-            work, _, _, _ = authorized_playback(con, token)
+            work, _, _, grant = authorized_playback(con, token)
             if video_version_key(work) != version:
                 abort(404)
             if library_analytics.permitted():
                 library_analytics.record(con, work, nonce, surface, request.get_json(),
                                          context[0] if context else None, viewer_key=viewer_key,
                                          source_language=context[1] if len(context) > 1 else None)
+                if report := grant.get("salesforce_engagement"):
+                    video_reports.link_sample(con, report, work["id"], version, nonce)
+            elif report := grant.get("salesforce_engagement"):
+                video_reports.revoke(con, report=report)
         return "", 204
 
     return watch

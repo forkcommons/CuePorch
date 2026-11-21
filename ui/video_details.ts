@@ -1,8 +1,12 @@
 import { embedBuilder } from "./embed_builder.js";
+import {sessionMarker} from "./team_api.js";
+import {sharingFields, type Sharing} from "./library_privacy.js";
+import {videoAIDrafts} from "./video_ai_drafts.js";
 
 interface VideoDetails {
   title: string;
   description: string;
+  embed_pages: string[];
   tags: string[];
   categories: string[];
   credits: {name: string; role: string}[];
@@ -21,6 +25,7 @@ interface VideoDetails {
   } | null;
   duration_seconds: number | null;
   projection: string | null;
+  panorama: string;
   added_at: string | null;
 }
 
@@ -74,16 +79,19 @@ const privacy = document.querySelector<HTMLAnchorElement>("#editVideoPrivacy")!;
 const sourcePrivacy = document.querySelector<HTMLAnchorElement>("#restoreSourcePrivacy")!;
 const builder = embedBuilder();
 
-key.value = sessionStorage.getItem("cueporchOperator") || "";
+const teamPreview = document.body.dataset.teamPreview;
+key.value = teamPreview ? sessionMarker : sessionStorage.getItem("cueporchOperator") || "";
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 let info: WorkspaceInfo;
 let sharing: ShareLink;
 let editorialState: EditorialStatus;
 
 async function call<T>(resource = "", method = "GET", body?: object): Promise<T> {
+  const headers = {Authorization: "Bearer " + key.value, "Content-Type": "application/json",
+    ...(teamPreview ? {"X-CuePorch-Team": "1"} : {})};
   const response = await fetch(endpoint + resource, {
     method,
-    headers: {Authorization: "Bearer " + key.value, "Content-Type": "application/json"},
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
@@ -93,6 +101,13 @@ async function call<T>(resource = "", method = "GET", body?: object): Promise<T>
   return response.status === 204 ? undefined as T : response.json();
 }
 
+const loadAIDrafts = videoAIDrafts(call, ({title, description, tags}) => {
+  heading.textContent = title;
+  input("title").value = title;
+  input("description").value = description;
+  input("tags").value = tags.join("\n");
+});
+
 function contentVisibility() {
   descriptors.hidden = descriptors.disabled = rating.value !== "mature";
 }
@@ -100,10 +115,11 @@ rating.onchange = contentVisibility;
 
 function show(details: VideoDetails) {
   heading.textContent = details.title;
-  for (const name of ["title", "description", "license", "rating"] as const) {
+  for (const name of ["title", "description", "license", "rating", "panorama"] as const) {
     input(name).value = details[name] || "";
   }
   for (const name of ["tags", "categories"] as const) input(name).value = details[name].join("\n");
+  input("embed_pages").value = details.embed_pages.join("\n");
   input("credits").value = details.credits.map(({ name, role }) => role ? `${name} | ${role}` : name).join("\n");
   input("realistic_ai").checked = details.realistic_ai;
   input("advertisement").checked = details.advertisement;
@@ -118,7 +134,7 @@ function show(details: VideoDetails) {
     "File size": media ? `${media.bytes.toLocaleString()} bytes` : "",
     "Frame rate": media?.fps ? `${media.fps} fps` : "",
     Audio: media?.audio,
-    Projection: details.projection,
+    "Imported projection": details.projection,
     Duration: details.duration_seconds === null ? "" : `${details.duration_seconds} seconds`,
     Added: details.added_at ? new Date(details.added_at).toLocaleDateString() : "",
   };
@@ -174,7 +190,50 @@ function populateCustom() {
   renderLinks();
 }
 
+async function loadTeamSharing() {
+  const container = document.querySelector<HTMLElement>("#teamVideoPrivacy");
+  if (!container) return;
+  const fields = sharingFields(container);
+  const notice = document.querySelector<HTMLElement>("#teamVideoPrivacyStatus")!;
+  const watch = document.querySelector<HTMLInputElement>("#teamVideoWatch")!;
+  function render(settings: Sharing) {
+    fields.populate(settings);
+    watch.value = settings.watch ? address(settings.watch).href : "";
+    watch.parentElement!.hidden = !settings.watch;
+    notice.textContent = settings.pending ? "Waiting for the configured publication approval." : "";
+  }
+  try {
+    render(await call<Sharing>("/privacy"));
+  } catch (error) {
+    container.hidden = true;
+    notice.textContent = String(error);
+    return;
+  }
+  fields.form.onsubmit = async event => {
+    event.preventDefault();
+    fields.save.disabled = true;
+    try {
+      const updated = await call<Sharing>("/privacy", "PUT", fields.values());
+      render(updated);
+      if (!updated.pending) notice.textContent = "Video sharing saved.";
+    } catch (error) {
+      notice.textContent = String(error);
+    } finally {
+      fields.save.disabled = false;
+    }
+  };
+}
+
 async function loadWorkspace() {
+  if (teamPreview) {
+    editorialState = await call<EditorialStatus>("/editorial-status");
+    editorial.value = editorialState.status;
+    editorial.disabled = false;
+    preview.src = teamPreview;
+    preview.hidden = false;
+    await loadTeamSharing();
+    return;
+  }
   const [work, viewerSharing, state, reviews] = await Promise.all([
     call<WorkspaceInfo>(), call<ShareLink>("/share-link"), call<EditorialStatus>("/editorial-status"),
     call<{path: string; enabled: boolean; expires: number}[]>("/review-links"),
@@ -201,10 +260,11 @@ async function loadWorkspace() {
 async function load() {
   try {
     show(await call<VideoDetails>("/details"));
-    sessionStorage.setItem("cueporchOperator", key.value);
+    if (!teamPreview) sessionStorage.setItem("cueporchOperator", key.value);
     identify.hidden = true;
     pane.hidden = false;
     status.textContent = "";
+    void loadAIDrafts();
     await loadWorkspace();
   } catch (error) {
     status.textContent = String(error);
@@ -223,6 +283,7 @@ form.onsubmit = async (event) => {
     const body = {
       title: input("title").value,
       description: input("description").value,
+      embed_pages: lines("embed_pages"),
       tags: lines("tags"),
       categories: lines("categories"),
       credits: lines("credits").map((value) => {
@@ -234,6 +295,7 @@ form.onsubmit = async (event) => {
       content: new FormData(form).getAll("content"),
       realistic_ai: input("realistic_ai").checked,
       advertisement: input("advertisement").checked,
+      panorama: input("panorama").value,
     };
     show(await call<VideoDetails>("/details", "PUT", body));
     status.textContent = "Video details saved.";

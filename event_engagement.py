@@ -2,6 +2,7 @@
 
 import csv
 from io import StringIO
+from time import time
 
 from flask import Response, abort, request
 
@@ -10,8 +11,155 @@ import event_questions
 from library_registration import csv_cell
 
 
-SCHEMA = event_polls.SCHEMA + event_questions.SCHEMA
+SCHEMA = event_polls.SCHEMA + event_questions.SCHEMA + """
+CREATE TABLE IF NOT EXISTS live_event_shared_activity(
+ feature TEXT NOT NULL, activity TEXT NOT NULL, viewer TEXT NOT NULL, sharing TEXT NOT NULL,
+ PRIMARY KEY(feature,activity,viewer));
+CREATE INDEX IF NOT EXISTS live_event_shared_activity_sharing ON live_event_shared_activity(sharing);
+CREATE TABLE IF NOT EXISTS live_event_shared_qa_vote(
+ question TEXT NOT NULL, viewer TEXT NOT NULL, sharing TEXT NOT NULL, sent REAL NOT NULL,
+ PRIMARY KEY(question,viewer));
+CREATE INDEX IF NOT EXISTS live_event_shared_qa_vote_sharing ON live_event_shared_qa_vote(sharing);
+"""
 
+
+ROW_LIMIT = 500
+
+
+def activity_snapshot(con, job, completed_at):
+    import json
+
+    event = job["event"]
+    opens = job["opens"]
+    sharing = job["sharing"]
+
+    played_count, live_ms, replay_ms = con.execute(
+        """
+        SELECT COALESCE(SUM(CASE WHEN p.phase = 'live' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN p.phase = 'live' THEN p.watched ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN p.phase = 'replay' THEN p.watched ELSE 0 END), 0)
+          FROM live_attendee_session s
+          JOIN live_playback p
+            ON p.id = s.session
+           AND p.event = ?
+           AND p.opens = ?
+           AND p.phase IN ('live', 'replay')
+           AND p.played = 1
+           AND p.seen <= ?
+         WHERE s.sharing = ?
+        """,
+        (event, opens, completed_at, sharing),
+    ).fetchone()
+
+    attended_live = played_count > 0
+
+    question_rows = con.execute(
+        """
+        SELECT q.sent AS sent, q.id AS id, q.question AS question
+          FROM live_question q
+          JOIN live_event_shared_activity sa
+            ON sa.feature = 'qa'
+           AND sa.activity = q.id
+           AND sa.viewer = q.viewer
+           AND sa.sharing = ?
+         WHERE q.event = ?
+           AND q.opens = ?
+           AND q.name IS NOT NULL
+           AND q.archived = 0
+           AND q.state IN ('published', 'answered')
+           AND q.sent <= ?
+         ORDER BY q.sent ASC, q.id ASC
+         LIMIT ?
+        """,
+        (sharing, event, opens, completed_at, ROW_LIMIT),
+    ).fetchall()
+
+    poll_rows = con.execute(
+        """
+        SELECT v.sent AS sent, p.id AS id, p.question AS question,
+               p.choices AS choices, v.choice AS choice
+          FROM live_poll p
+          JOIN live_poll_vote v
+            ON v.poll = p.id
+          JOIN live_event_shared_activity sa
+            ON sa.feature = 'poll'
+           AND sa.activity = p.id
+           AND sa.viewer = v.viewer
+           AND sa.sharing = ?
+         WHERE p.event = ?
+           AND p.opens = ?
+           AND v.sent <= ?
+         ORDER BY v.sent ASC, p.id ASC
+         LIMIT ?
+        """,
+        (sharing, event, opens, completed_at, ROW_LIMIT),
+    ).fetchall()
+
+    upvote_records = [
+        (row["id"], row["question"].strip(), "Upvoted")
+        for row in con.execute(
+            '''
+            SELECT q.id, q.question
+            FROM live_event_shared_qa_vote AS sqv
+            JOIN live_question AS q ON q.id = sqv.question
+            JOIN live_question_vote AS v
+              ON v.question = sqv.question
+             AND v.viewer = sqv.viewer
+            WHERE sqv.sharing = ?
+              AND q.event = ?
+              AND q.opens = ?
+              AND q.name IS NOT NULL
+              AND q.archived = 0
+              AND q.state IN ('published', 'answered')
+              AND q.sent <= ?
+              AND sqv.sent <= ?
+            ORDER BY sqv.sent, q.id
+            LIMIT ?
+            ''',
+            (sharing, event, opens, completed_at, completed_at, ROW_LIMIT),
+        )
+        if row["question"] is not None
+    ]
+    questions = []
+    question_records = []
+    for row in question_rows:
+        text = (row["question"] or "").strip()
+        if text:
+            questions.append(text)
+            question_records.append((row["id"], text, "Asked"))
+
+    polls = []
+    poll_records = []
+    for row in poll_rows:
+        try:
+            choices = json.loads(row["choices"])
+        except (TypeError, ValueError):
+            continue
+        index = row["choice"]
+        if (
+            not isinstance(choices, list)
+            or type(index) is not int
+            or not 0 <= index < len(choices)
+            or not isinstance(choices[index], str)
+        ):
+            continue
+        question = (row["question"] or "").strip()
+        answer = choices[index].strip()
+        if question and answer:
+            polls.append(f"{question}: {answer}")
+            poll_records.append((row["id"], question, answer))
+
+    return {
+        "attended_live": attended_live,
+        "live_ms": live_ms,
+        "replay_ms": replay_ms,
+        "questions": questions,
+        "upvotes": [text for _, text, _ in upvote_records],
+        "upvote_records": upvote_records,
+        "polls": polls,
+        "question_records": question_records,
+        "poll_records": poll_records,
+    }
 
 def report(rows, filename):
     output = StringIO(newline="")
@@ -23,7 +171,7 @@ def report(rows, filename):
     })
 
 
-def register(app, tx, staff, session, operator_access, audience_access):
+def register(app, tx, staff, session, operator_access, audience_access, *, share_activity=None, share_upvotes=None):
     def overview(con, uid, opens, viewer=None, operator=False):
         return dict(qa=event_questions.overview(con, uid, opens, viewer, operator),
                     polls=event_polls.overview(con, uid, opens, viewer, operator))
@@ -83,9 +231,29 @@ def register(app, tx, staff, session, operator_access, audience_access):
                 if not isinstance(body, dict):
                     abort(422, "Choose an engagement action.")
                 if body.get("feature") == "qa":
-                    event_questions.audience_action(con, uid, opens, viewer, body)
+                    activity = event_questions.audience_action(con, uid, opens, viewer, body)
                 elif body.get("feature") == "poll":
-                    event_polls.audience_action(con, uid, opens, viewer, body)
+                    activity = event_polls.audience_action(con, uid, opens, viewer, body)
                 else:
                     abort(422, "Choose Q&A or a poll.")
+                if activity is not None and body["feature"] == "qa" and body["type"] == "vote":
+                    if not body["enabled"]:
+                        con.execute(
+                            "DELETE FROM live_event_shared_qa_vote WHERE question = ? AND viewer = ?",
+                            (activity, viewer),
+                        )
+                    elif share_upvotes is not None:
+                        sharing = share_upvotes(con, scope)
+                        if sharing:
+                            con.execute(
+                                "INSERT INTO live_event_shared_qa_vote(question, viewer, sharing, sent) VALUES (?, ?, ?, ?)",
+                                (activity, viewer, sharing, time()),
+                            )
+                elif activity is not None and share_activity is not None:
+                    sharing = share_activity(con, scope)
+                    if sharing:
+                        con.execute(
+                            "INSERT INTO live_event_shared_activity(feature, activity, viewer, sharing) VALUES (?, ?, ?, ?)",
+                            (body["feature"], activity, viewer, sharing),
+                        )
             return dict(overview(con, uid, opens, viewer), session=token, active=active)

@@ -1,10 +1,15 @@
 import { renderCommentText } from "./review_comment_text.js";
-import { libraryUploader } from "./library_upload.js";
+import { folderChoices, libraryUploader, readUploadPrivacy } from "./library_upload.js";
+import { saveEmbedMap } from "./embed_map.js";
 import { openPrivacy, privateSettings, sharingFields } from "./library_privacy.js";
 const key = document.querySelector("#key");
 const deleteFolder = document.querySelector("#deleteFolder");
 const deleteWorks = document.querySelector("#deleteWorks");
 const privacySelected = document.querySelector("#privacySelected");
+const showcaseSelected = document.querySelector("#showcaseSelected");
+const ratingSelected = document.querySelector("#ratingSelected");
+const translateSelected = document.querySelector("#translateSelected");
+const translationBatches = document.querySelector("#translationBatches");
 const uploadDefaults = document.querySelector("#uploadDefaults");
 const workBrowse = document.querySelector("#workBrowse");
 const trashBrowse = document.querySelector("#trashBrowse");
@@ -20,6 +25,8 @@ const starFolder = document.querySelector("#starFolder");
 const library = document.querySelector("#library");
 const tree = document.querySelector("#folderTree");
 const heading = document.querySelector("#folderTitle");
+const folderBrowse = document.querySelector("#folderBrowse");
+const folderResults = document.querySelector("#folderResults");
 const items = document.querySelector("#items");
 const empty = document.querySelector("#empty");
 const table = document.querySelector("#workTable");
@@ -30,6 +37,9 @@ const sort = document.querySelector("#sort");
 const view = document.querySelector("#view");
 const editFolder = document.querySelector("#editFolder");
 const folderPrivacy = document.querySelector("#folderPrivacy");
+const folderSlack = document.querySelector("#folderSlack");
+const folderHubSpot = document.querySelector("#folderHubSpot");
+const translateFolder = document.querySelector("#translateFolder");
 const destination = document.querySelector("#destination");
 const move = document.querySelector("#move");
 const editor = document.querySelector("#folderEditor");
@@ -47,13 +57,16 @@ let editing;
 let section = "Library";
 let deletions = [];
 let trashTimer;
+let translationTimer;
 const selected = new Set();
-function request(path, method = "GET", body) {
+let closeCardPreview;
+function request(path, method = "GET", body, headers = {}) {
     return fetch(path, {
         method,
         headers: {
             Authorization: "Bearer " + key.value,
             "Content-Type": "application/json",
+            ...headers,
         },
         body: body ? JSON.stringify(body) : undefined,
     });
@@ -82,22 +95,16 @@ function action(button, run) {
     };
 }
 function folderOptions(select) {
-    select.replaceChildren(new Option("Library", ""));
-    function append(parent, prefix) {
-        for (const folder of folders.filter((entry) => entry.parent === parent)) {
-            if (select === folderParent && folder.id === editing?.id)
-                continue;
-            const label = prefix + folder.name;
-            select.append(new Option(label, folder.id));
-            append(folder.id, label + " / ");
-        }
-    }
-    append(null, "");
+    folderChoices(select, folders, select === folderParent ? editing?.id : undefined);
 }
 function updateMove() {
     destination.disabled = !selected.size;
     deleteWorks.disabled = move.disabled = !selected.size;
     privacySelected.disabled = !selected.size || ![...selected].every((uid) => works.some((work) => work.id === uid && work.editable_privacy));
+    showcaseSelected.disabled = ratingSelected.disabled = !selected.size || selected.size > 50 ||
+        ![...selected].every(uid => works.some(work => work.id === uid && work.asset_type === "video"));
+    translateSelected.disabled = !selected.size || selected.size > 500 ||
+        ![...selected].some(uid => works.some(work => work.id === uid && work.asset_type === "video"));
 }
 function renderTree() {
     function branch(parent) {
@@ -126,16 +133,31 @@ function renderTree() {
     document.querySelector("#uploadLibrary").hidden = section !== "Library";
     uploadDefaults.hidden = section !== "Library";
     trashBrowse.hidden = section !== "Recently deleted";
+    for (const link of document.querySelectorAll(".operator-navigation a")) {
+        if (!["/operator/library", "/operator/library?view=deleted"].includes(link.getAttribute("href")))
+            continue;
+        const isDeletedView = link.getAttribute("href").includes("?view=deleted");
+        if (isDeletedView === (section === "Recently deleted"))
+            link.setAttribute("aria-current", "page");
+        else
+            link.removeAttribute("aria-current");
+    }
     const folder = folders.find((entry) => entry.id === current);
     heading.textContent =
         section === "Library" ? folder?.name || "Library" : section;
     deleteFolder.hidden = editFolder.hidden = starFolder.hidden = !folder;
     folderPrivacy.hidden = !folder;
+    folderSlack.hidden = !folder;
+    folderHubSpot.hidden = !folder;
+    translateFolder.hidden = !folder;
     starFolder.textContent = folder?.starred ? "Unstar folder" : "Star folder";
     if (folder) {
         action(starFolder, () => setStar("folder", folder.id, !folder.starred));
         action(deleteFolder, () => removeItems("folder", [folder.id]));
         action(folderPrivacy, () => editFolderPrivacy(folder));
+        action(folderSlack, () => editFolderSlack(folder));
+        action(folderHubSpot, () => editFolderHubSpot(folder));
+        action(translateFolder, async () => requestTranslations([], folder));
     }
     folderOptions(destination);
     destination.value = current || "";
@@ -200,14 +222,121 @@ function durationText(seconds) {
             ":" +
             String(Math.floor(seconds % 60)).padStart(2, "0");
 }
+function renderFolderResults(query, creatorFilter) {
+    const matching = !creatorFilter && !privacy.value && (assetType.value === "" || assetType.value === "folders")
+        ? folders.filter(folder => (section === "Library" ? folder.parent === current : section === "Starred" && folder.starred)
+            && folder.name.toLocaleLowerCase().includes(query)) : [];
+    if (sort.value === "title-desc")
+        matching.reverse();
+    folderBrowse.hidden = !matching.length;
+    folderResults.dataset.view = view.value;
+    folderResults.replaceChildren();
+    for (const folder of matching) {
+        const row = document.createElement("li");
+        row.style.setProperty("--folder-color", folder.color);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = folder.name;
+        action(open, async () => {
+            if (assetType.value === "folders")
+                assetType.value = "";
+            search.value = "";
+            await navigate("Library", folder.id);
+        });
+        row.append(open);
+        folderResults.append(row);
+    }
+}
+function cardPreview(work) {
+    const area = document.createElement("div");
+    area.className = "work-quick-preview";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Preview";
+    button.setAttribute("aria-label", "Preview " + work.title);
+    button.setAttribute("aria-pressed", "false");
+    const status = document.createElement("span");
+    status.setAttribute("aria-live", "polite");
+    area.append(button, status);
+    let loading;
+    let player;
+    let revision = 0;
+    function close() {
+        revision += 1;
+        window.clearTimeout(loading);
+        loading = undefined;
+        if (closeCardPreview === close)
+            closeCardPreview = undefined;
+        status.textContent = "";
+        button.setAttribute("aria-pressed", "false");
+        player?.pause();
+        player?.removeAttribute("src");
+        player?.load();
+        player?.remove();
+        player = undefined;
+    }
+    async function play() {
+        if (closeCardPreview === close || !area.isConnected)
+            return;
+        closeCardPreview?.();
+        closeCardPreview = close;
+        const attempt = ++revision;
+        status.textContent = "Loading preview…";
+        try {
+            const info = await getWorkInfo(work);
+            if (!info.preview)
+                throw new Error("No retained video to preview.");
+            if (revision !== attempt || !area.isConnected)
+                return;
+            const ticket = await mediaTicket(work, info.preview);
+            if (revision !== attempt || !area.isConnected)
+                return;
+            const video = document.createElement("video");
+            video.muted = true;
+            video.playsInline = true;
+            video.loop = true;
+            video.setAttribute("aria-label", work.title + " preview");
+            video.src = ticket.preview;
+            player = video;
+            area.append(video);
+            await video.play();
+            if (player !== video)
+                return;
+            button.setAttribute("aria-pressed", "true");
+            status.textContent = "";
+        }
+        catch (error) {
+            if (revision !== attempt)
+                return;
+            close();
+            status.textContent = error instanceof Error ? error.message : String(error);
+        }
+    }
+    button.onclick = () => {
+        if (closeCardPreview === close)
+            close();
+        else
+            void play();
+    };
+    area.onpointerenter = event => {
+        if (event.pointerType === "mouse")
+            loading = window.setTimeout(() => void play(), 180);
+    };
+    area.onpointerleave = close;
+    area.onkeydown = event => { if (event.key === "Escape")
+        close(); };
+    return area;
+}
 function renderWorks() {
+    closeCardPreview?.();
     const query = search.value.trim().toLocaleLowerCase();
     const author = creator.value.trim().toLocaleLowerCase();
-    const visible = works.filter((work) => (section === "Starred"
+    renderFolderResults(query, author);
+    const visible = assetType.value === "folders" ? [] : works.filter((work) => (section === "Starred"
         ? work.starred
         : section === "Watch later"
             ? work.watch_later
-            : work.folder === current) &&
+            : (workspaceSearch && Boolean(query) && current === null) || work.folder === current) &&
         (!author || work.creator?.toLocaleLowerCase().includes(author)) &&
         work.title.toLocaleLowerCase().includes(query) &&
         (!assetType.value || (assetType.value === "video") === (work.asset_type === "video")) &&
@@ -232,7 +361,7 @@ function renderWorks() {
     items.replaceChildren();
     table.hidden = !visible.length;
     table.dataset.view = view.value;
-    empty.hidden = !!visible.length;
+    empty.hidden = Boolean(visible.length) || !folderBrowse.hidden;
     for (const work of visible) {
         const row = items.insertRow();
         row.dataset.workId = work.id;
@@ -265,6 +394,8 @@ function renderWorks() {
             .filter(Boolean)
             .join(" · ");
         title.append(info);
+        if (work.asset_type === "video" && work.quality !== "owner file needed")
+            title.append(cardPreview(work));
         const sharing = row.insertCell();
         if (work.editable_privacy) {
             const button = document.createElement("button");
@@ -348,6 +479,8 @@ function cardMenu(work) {
         ["Copy link", () => shareDialog(work, "watch")],
         ["Review link", () => reviewLinksDialog(work)],
         ["Copy embed code", () => shareDialog(work, "embed")],
+        ["Add to showcases", () => addShowcaseMembers([work.id])],
+        ["Set video rating", () => editRatings([work.id])],
         [
             work.watch_later ? "Remove from Watch later" : "Watch later",
             () => saveForLater(work),
@@ -381,6 +514,8 @@ function cardMenu(work) {
     return menu;
 }
 function openWorkDialog(title) {
+    clearTimeout(translationTimer);
+    delete workDialogBody.dataset.translationBatch;
     workDialogTitle.textContent = title;
     workDialogBody.replaceChildren();
     workDialogStatus.textContent = "";
@@ -388,6 +523,186 @@ function openWorkDialog(title) {
         workDialog.showModal();
     return workDialogBody;
 }
+function videoBatch(title, label, count, submit) {
+    const body = openWorkDialog(title);
+    const summary = document.createElement("p");
+    summary.textContent = typeof count === "string" ? count : `${count} selected ${count === 1 ? "video" : "videos"}`;
+    const form = document.createElement("form");
+    form.className = "library-batch-form";
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = label;
+    body.append(summary, form);
+    form.append(save);
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        save.disabled = true;
+        workDialogStatus.textContent = "";
+        try {
+            const message = await submit(new FormData(form));
+            if (form.isConnected)
+                workDialogStatus.textContent = message;
+        }
+        catch (error) {
+            if (form.isConnected)
+                workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+        }
+        finally {
+            save.disabled = false;
+        }
+    };
+    return { form, save };
+}
+async function addShowcaseMembers(works) {
+    const response = await completed(await request("/api/showcases"));
+    const destinations = await response.json();
+    const { form, save } = videoBatch("Add to showcases", "Add videos", works.length, async (fields) => {
+        const showcases = fields.getAll("showcase");
+        if (!showcases.length)
+            throw new Error("Choose at least one showcase.");
+        const response = await completed(await request("/api/showcases/selected-videos", "POST", { works, showcases }));
+        const { added, showcases: count } = await response.json();
+        return added ? `Added ${added} entries across ${count} ${count === 1 ? "showcase" : "showcases"}.`
+            : "These videos are already in the selected showcases.";
+    });
+    if (!destinations.length) {
+        save.hidden = true;
+        const link = document.createElement("a");
+        link.href = "/operator/showcases";
+        link.textContent = "Create a showcase first";
+        form.prepend(link);
+        return;
+    }
+    const choices = document.createElement("fieldset");
+    const legend = document.createElement("legend");
+    legend.textContent = "Showcases";
+    choices.append(legend);
+    for (const destination of destinations) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "showcase";
+        input.value = destination.id;
+        label.append(input, ` ${destination.settings.title} (${destination.settings.visibility.replace("_", " ")})`);
+        choices.append(label);
+    }
+    form.prepend(choices);
+}
+function editRatings(works) {
+    const { form } = videoBatch("Set video rating", "Apply rating", works.length, async (fields) => {
+        const response = await completed(await request("/api/library/ratings", "PUT", {
+            works, mode: fields.get("mode"), prompt: fields.get("prompt"), start: Number(fields.get("start")),
+        }));
+        const { updated } = await response.json();
+        return updated ? `Saved rating settings for ${updated} ${updated === 1 ? "video" : "videos"}.`
+            : "The selected videos already use these rating settings.";
+    });
+    const template = document.querySelector("#batchRatingFields");
+    form.prepend(template.content.cloneNode(true));
+    const mode = form.querySelector("[name=mode]");
+    const fields = form.querySelector("fieldset");
+    mode.onchange = () => { fields.disabled = fields.hidden = mode.value === "none"; };
+}
+const translationEndpoint = "/api/library/subtitle-translations";
+const translationLabels = {
+    queued: "Queued", running: "Translating", waiting: "Waiting for approval", complete: "Complete",
+    rejected: "Rejected", superseded: "Source or destination changed", failed: "Failed", skipped: "Skipped",
+};
+function requestTranslations(works, folder) {
+    let requestId = crypto.randomUUID();
+    let languages = "";
+    const scope = folder ? `${folder.name} and its subfolders` : works.length;
+    const { form } = videoBatch("Translate subtitles", "Queue translations", scope, async (fields) => {
+        const source = String(fields.get("source") || "").trim();
+        const target = String(fields.get("target") || "").trim();
+        const pair = source + ":" + target;
+        if (languages && languages !== pair)
+            requestId = crypto.randomUUID();
+        languages = pair;
+        const response = await completed(await request(translationEndpoint, "POST", {
+            id: requestId, works, folder: folder?.id, source_language: source, target_language: target,
+        }));
+        if (form.isConnected)
+            showTranslations(await response.json());
+        return "";
+    });
+    const fields = document.querySelector("#batchTranslationFields");
+    form.prepend(fields.content.cloneNode(true));
+}
+async function translationReport(id, method = "GET") {
+    return (await completed(await request(`${translationEndpoint}/${id}`, method))).json();
+}
+function showTranslations(batch) {
+    const body = openWorkDialog(`Subtitle translations · ${batch.source} → ${batch.target}`);
+    body.dataset.translationBatch = batch.id;
+    const list = document.createElement("ul");
+    for (const item of batch.items) {
+        const row = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = `/operator/videos/${encodeURIComponent(item.work)}/languages`;
+        link.textContent = item.title;
+        row.append(link, ` · ${translationLabels[item.state] || item.state}`);
+        if (item.reason)
+            row.append(` · ${item.reason}`);
+        list.append(row);
+    }
+    const finished = batch.items.filter(item => item.state === "complete").length;
+    workDialogStatus.textContent = `${finished} of ${batch.items.length} complete.`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry failed or skipped";
+    retry.disabled = !batch.items.some(item => ["blocked", "failed", "superseded", "rejected", "skipped"].includes(item.state));
+    const pending = batch.items.some(item => ["queued", "running", "waiting"].includes(item.state));
+    let generation = 0;
+    function schedule() {
+        if (pending)
+            translationTimer = window.setTimeout(() => { if (workDialog.open)
+                void refresh("GET"); }, 1200);
+    }
+    async function refresh(method) {
+        clearTimeout(translationTimer);
+        const attempt = ++generation;
+        try {
+            const next = await translationReport(batch.id, method);
+            if (attempt !== generation || !workDialog.open || body.dataset.translationBatch !== batch.id)
+                return;
+            if (method === "GET" && JSON.stringify(next.items) === JSON.stringify(batch.items))
+                schedule();
+            else
+                showTranslations(next);
+        }
+        catch (error) {
+            if (workDialog.open && body.dataset.translationBatch === batch.id) {
+                retry.disabled = false;
+                workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+            }
+        }
+    }
+    retry.onclick = () => { retry.disabled = true; void refresh("PUT"); };
+    body.append(retry, list);
+    schedule();
+}
+async function recentTranslations() {
+    const { batches } = await (await completed(await request(translationEndpoint))).json();
+    const body = openWorkDialog("Subtitle translation batches");
+    if (!batches.length) {
+        workDialogStatus.textContent = "No subtitle translation batches yet.";
+        return;
+    }
+    for (const batch of batches) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${batch.source} → ${batch.target} · ${batch.items} items · ${new Date(batch.created * 1000).toLocaleString()}`;
+        action(button, async () => showTranslations(await translationReport(batch.id)));
+        const row = document.createElement("p");
+        row.append(button);
+        body.append(row);
+    }
+}
+action(showcaseSelected, () => addShowcaseMembers([...selected]));
+action(ratingSelected, async () => editRatings([...selected]));
+action(translateSelected, async () => requestTranslations([...selected]));
+action(translationBatches, recentTranslations);
 function publicAddress(path) {
     return new URL(path, document.body.dataset.publicUrl || location.origin).href;
 }
@@ -495,15 +810,6 @@ async function folderPolicy(id) {
     const response = await completed(await request(`/api/library/folders/${id}/privacy`));
     return response.json();
 }
-async function uploadPrivacy(folder) {
-    if (folder) {
-        const policy = await folderPolicy(folder);
-        if (policy.settings) {
-            return { ...privateSettings, ...policy.settings, has_password: policy.has_password, folder_override: true };
-        }
-    }
-    return defaultPrivacy();
-}
 async function editFolderPrivacy(folder) {
     const existing = await folderPolicy(folder.id);
     const body = openWorkDialog("Folder privacy");
@@ -512,7 +818,8 @@ async function editFolderPrivacy(folder) {
         : "Apply these settings to videos in this folder and its subfolders. Subfolders with their own override keep it.";
     body.append(summary);
     const fields = sharingFields(body);
-    fields.populate({ ...privateSettings, ...existing.settings, has_password: existing.enabled && existing.has_password });
+    fields.populate({ ...privateSettings, ...existing.settings, has_password: existing.enabled && existing.has_password,
+        allowed: existing.allowed });
     fields.save.textContent = "Apply folder override";
     const remove = document.createElement("button");
     remove.type = "button";
@@ -526,7 +833,8 @@ async function editFolderPrivacy(folder) {
                 ...fields.values(), enabled,
             }));
             const policy = await response.json();
-            fields.populate({ ...privateSettings, ...policy.settings, has_password: policy.enabled && policy.has_password });
+            fields.populate({ ...privateSettings, ...policy.settings, has_password: policy.enabled && policy.has_password,
+                allowed: policy.allowed });
             remove.hidden = !policy.enabled;
             workDialogStatus.textContent = enabled ? `Folder override saved for ${policy.affected} video(s).`
                 : "Folder override removed. Existing video settings were kept.";
@@ -541,6 +849,157 @@ async function editFolderPrivacy(folder) {
     }
     fields.form.onsubmit = (event) => { event.preventDefault(); void save(true); };
     remove.onclick = () => { void save(false); };
+}
+async function editFolderHubSpot(folder) {
+    const path = "/api/library/hubspot-media-bridge/folder";
+    const response = await request(path);
+    const bridge = await (await completed(response)).json();
+    const localSync = bridge.active && bridge.folder === folder.id;
+    openWorkDialog("HubSpot Media Bridge");
+    const status = document.createElement("p");
+    status.setAttribute("role", "status");
+    status.textContent = !bridge.configured
+        ? "Configure HubSpot Media Bridge to sync library folders."
+        : !bridge.connected
+            ? "Connect HubSpot to sync this folder."
+            : localSync
+                ? `HubSpot sync is active for ${folder.name}.`
+                : bridge.active
+                    ? bridge.folder
+                        ? `HubSpot sync is active for a different folder. Syncing ${folder.name} will replace it as the HubSpot folder.`
+                        : "HubSpot sync is active."
+                    : bridge.folder
+                        ? "The saved folder uses a different HubSpot connection."
+                        : `${folder.name} will become the HubSpot folder.`;
+    workDialogBody.append(status);
+    if (bridge.configured && bridge.connected && (!bridge.folder || bridge.active) && !localSync) {
+        const sync = document.createElement("button");
+        sync.textContent = "Sync this folder to HubSpot";
+        action(sync, async () => {
+            await completed(await request(path, "PUT", { folder: folder.id }, { "X-CuePorch-Integration": "1" }));
+            await editFolderHubSpot(folder);
+        });
+        workDialogBody.append(sync);
+    }
+    else if (localSync) {
+        const stop = document.createElement("button");
+        stop.textContent = "Stop HubSpot folder sync";
+        action(stop, async () => {
+            await completed(await request(path, "DELETE", {}, { "X-CuePorch-Integration": "1" }));
+            await editFolderHubSpot(folder);
+        });
+        workDialogBody.append(stop);
+    }
+}
+async function editFolderSlack(folder) {
+    const path = `/api/library/folders/${folder.id}/slack`;
+    const settings = await (await completed(await request(path))).json();
+    const body = openWorkDialog(`Slack notifications for ${folder.name}`);
+    const note = document.createElement("p");
+    note.textContent = settings.channel ? `Connected channel ${settings.channel}. Posts follow CuePorch access rules.`
+        : settings.configured ? "Posts link to the team video and follow CuePorch access rules."
+            : "Set the workspace HTTPS address to connect a Slack channel.";
+    body.append(note);
+    if (!settings.configured)
+        return;
+    const fields = document.createElement("form");
+    fields.method = "post";
+    const addressLabel = document.createElement("label");
+    addressLabel.textContent = settings.revision ? "Replace webhook (optional)" : "Slack incoming webhook";
+    const webhook = document.createElement("input");
+    webhook.type = "password";
+    webhook.required = !settings.revision;
+    webhook.maxLength = 220;
+    webhook.autocomplete = "off";
+    addressLabel.append(webhook);
+    fields.append(addressLabel);
+    function setting(text, initial) {
+        const label = document.createElement("label");
+        const option = document.createElement("input");
+        option.type = "checkbox";
+        option.checked = initial;
+        label.append(option, text);
+        fields.append(label);
+        return option;
+    }
+    const enabled = setting("Send Slack notifications", settings.enabled);
+    const recursive = setting("Include subfolders", settings.recursive);
+    const topics = { upload: "New uploads", comment: "Review comments", approval: "Approvals",
+        edit: "Titles, thumbnails and removals", privacy: "Privacy changes", showcase: "Additions to showcases" };
+    for (const [value, label] of Object.entries(topics)) {
+        const wrapper = document.createElement("label");
+        const option = document.createElement("input");
+        option.type = "checkbox";
+        option.name = "topics";
+        option.value = value;
+        option.checked = !settings.revision || settings.topics.includes(value);
+        wrapper.append(option, label);
+        fields.append(wrapper);
+    }
+    const label = document.createElement("label");
+    label.textContent = "Message language";
+    const language = document.createElement("select");
+    language.add(new Option("English", "en"));
+    language.add(new Option("Español", "es"));
+    language.value = settings.language;
+    label.append(language);
+    fields.append(label);
+    const save = document.createElement("button");
+    save.textContent = "Save Slack settings";
+    const disconnect = document.createElement("button");
+    disconnect.type = "button";
+    disconnect.textContent = "Disconnect Slack";
+    disconnect.hidden = !settings.revision;
+    const connect = document.createElement("button");
+    connect.type = "button";
+    connect.textContent = settings.channel ? "Change Slack channel" : "Choose channel in Slack";
+    connect.hidden = !settings.oauth_available;
+    fields.append(save, connect, disconnect);
+    body.append(fields);
+    const receipts = document.createElement("ul");
+    receipts.setAttribute("aria-label", "Recent Slack deliveries");
+    for (const entry of settings.deliveries) {
+        const item = document.createElement("li");
+        item.textContent = `${entry.topic === "delete" ? "Removed video" : topics[entry.topic]} · ${entry.state}`;
+        receipts.append(item);
+    }
+    body.append(receipts);
+    function preferences() {
+        return {
+            revision: settings.revision, topics: new FormData(fields).getAll("topics"),
+            enabled: enabled.checked, recursive: recursive.checked, language: language.value,
+        };
+    }
+    async function store(method) {
+        save.disabled = connect.disabled = disconnect.disabled = true;
+        try {
+            await completed(await request(path, method, {
+                ...preferences(), webhook: webhook.value.trim(),
+            }, { "X-CuePorch-Slack": "1" }));
+            await editFolderSlack(folder);
+            workDialogStatus.textContent = method === "PUT" ? "Slack settings saved." : "Slack disconnected.";
+        }
+        catch (error) {
+            workDialogStatus.textContent = String(error);
+        }
+        finally {
+            save.disabled = connect.disabled = disconnect.disabled = false;
+        }
+    }
+    fields.onsubmit = (event) => { event.preventDefault(); void store("PUT"); };
+    disconnect.onclick = () => { void store("DELETE"); };
+    connect.onclick = async () => {
+        save.disabled = connect.disabled = disconnect.disabled = true;
+        try {
+            const response = await completed(await request(`${path}/connect`, "POST", preferences(), { "X-CuePorch-Slack": "1" }));
+            const receipt = await response.json();
+            location.assign(receipt.authorization_url);
+        }
+        catch (error) {
+            workDialogStatus.textContent = String(error);
+            save.disabled = connect.disabled = disconnect.disabled = false;
+        }
+    };
 }
 const editUploadDefaults = () => openPrivacy({
     title: "Your upload defaults",
@@ -588,9 +1047,105 @@ async function copyText(field) {
         workDialogStatus.textContent = "Select and copy the highlighted text.";
     }
 }
+async function mediaBridgeControls(work) {
+    let receipt;
+    const path = workEndpoint(work) + "/hubspot-media-bridge";
+    try {
+        const response = await request(path);
+        const done = await completed(response);
+        receipt = await done.json();
+    }
+    catch {
+        return null;
+    }
+    const { configured, connected, eligible, state } = receipt;
+    if (!configured)
+        return null;
+    if (state === "off" && (!connected || !eligible))
+        return null;
+    const group = document.createElement("div");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "HubSpot Media Bridge");
+    const title = document.createElement("h3");
+    title.textContent = "HubSpot Media Bridge";
+    const status = document.createElement("p");
+    status.setAttribute("role", "status");
+    status.textContent = bridgeStatusText(receipt);
+    group.append(title, status);
+    const addButton = document.createElement("button");
+    addButton.textContent = state === "published" ? "Update HubSpot video" : "Add video to HubSpot";
+    const removeButton = document.createElement("button");
+    removeButton.textContent = "Remove video from HubSpot";
+    const refreshButton = document.createElement("button");
+    refreshButton.textContent = "Refresh HubSpot status";
+    if (!eligible || !connected || state === "queued" || state === "waiting") {
+        addButton.hidden = true;
+    }
+    if (state === "off" || state === "archived" || !connected || receipt.managed) {
+        removeButton.hidden = true;
+    }
+    action(addButton, async () => {
+        const response = await request(path, "PUT", {}, { "X-CuePorch-Integration": "1" });
+        await completed(response);
+        const updated = await mediaBridgeControls(work);
+        if (updated && group.isConnected)
+            group.replaceWith(updated);
+    });
+    action(removeButton, async () => {
+        const response = await request(path, "DELETE", {}, { "X-CuePorch-Integration": "1" });
+        await completed(response);
+        const updated = await mediaBridgeControls(work);
+        if (updated && group.isConnected)
+            group.replaceWith(updated);
+    });
+    action(refreshButton, async () => {
+        const updated = await mediaBridgeControls(work);
+        if (!group.isConnected)
+            return;
+        if (updated)
+            group.replaceWith(updated);
+        else
+            group.remove();
+    });
+    group.append(addButton, removeButton, refreshButton);
+    return group;
+}
+function bridgeStatusText(receipt) {
+    if (receipt.problem)
+        return receipt.problem;
+    switch (receipt.state) {
+        case "published": return "Published to HubSpot";
+        case "waiting": return "Waiting for publication approval";
+        case "queued": return "Queued for HubSpot";
+        case "unconfirmed": return "Unconfirmed by HubSpot";
+        case "archived": return "Archived in HubSpot";
+        case "canceled": return "Canceled";
+        default: return receipt.state || "Ready";
+    }
+}
 async function shareDialog(work, copy) {
     const info = await getWorkInfo(work);
     openWorkDialog("Share " + info.title);
+    if (!work.asset_type || work.asset_type === "video") {
+        for (const [label, destination] of [["YouTube", "youtube"], ["LinkedIn", "linkedin"], ["Facebook", "facebook"], ["X", "x"]]) {
+            const social = document.createElement("a");
+            social.href = `/operator/videos/${work.id}/social?destination=${destination}`;
+            social.textContent = `Publish to ${label}`;
+            workDialogBody.append(social);
+        }
+    }
+    if (!copy && (!work.asset_type || work.asset_type === "video")) {
+        const placeholder = document.createElement("div");
+        workDialogBody.append(placeholder);
+        void mediaBridgeControls(work).then(controls => {
+            if (!placeholder.isConnected)
+                return;
+            if (controls)
+                placeholder.replaceWith(controls);
+            else
+                placeholder.remove();
+        });
+    }
     if (!info.watch && !info.embed) {
         const link = document.createElement("a");
         link.href = "/operator/exhibitions";
@@ -860,11 +1415,14 @@ async function manageReviewFeedback(work, link, back) {
     const list = document.createElement("ol");
     const download = document.createElement("button");
     download.textContent = "Download comments CSV";
+    const markers = document.createElement("button");
+    markers.textContent = "Download Premiere markers";
     const url = () => link.path + "/feedback/" + picker.value;
     const render = async () => {
         if (!picker.value) {
             workDialogStatus.textContent = "This review has no playable version.";
             download.disabled = true;
+            markers.disabled = true;
             return;
         }
         const data = await (await completed(await request(url()))).json();
@@ -897,16 +1455,22 @@ async function manageReviewFeedback(work, link, back) {
         }
     };
     picker.onchange = () => render().catch((error) => { workDialogStatus.textContent = String(error); });
-    action(download, async () => {
-        const response = await completed(await request(url() + "/comments.csv"));
-        const object = URL.createObjectURL(await response.blob());
-        const file = document.createElement("a");
-        file.href = object;
-        file.download = "review-comments.csv";
-        file.click();
-        window.setTimeout(() => URL.revokeObjectURL(object), 1000);
-    });
-    workDialogBody.append(backButton, label, download, list);
+    const downloadEntries = [
+        { button: download, path: "/comments.csv", name: "review-comments.csv" },
+        { button: markers, path: "/markers.json", name: "cueporch-review-markers.json" },
+    ];
+    for (const { button, path, name } of downloadEntries) {
+        action(button, async () => {
+            const response = await completed(await request(url() + path));
+            const object = URL.createObjectURL(await response.blob());
+            const file = document.createElement("a");
+            file.href = object;
+            file.download = name;
+            file.click();
+            window.setTimeout(() => URL.revokeObjectURL(object), 1000);
+        });
+    }
+    workDialogBody.append(backButton, label, download, markers, list);
     await render();
 }
 let thumbnailUrl;
@@ -1352,15 +1916,33 @@ libraryUploader({
     folder: () => current,
     folderOptions,
     credential: () => key.value,
-    defaults: uploadPrivacy,
+    defaults: folder => readUploadPrivacy(folder, path => request(path).then(completed)),
     reload: () => load(),
 });
 const loadButton = document.querySelector("#load");
 const linked = new URL(location.href).searchParams;
+const workspaceSearch = linked.has("q");
+if (workspaceSearch)
+    search.value = (linked.get("q") ?? "").slice(0, 120);
+if (linked.get("view") === "deleted")
+    section = "Recently deleted";
 let workspaceAction = linked.get("action");
+let slackResult = linked.get("slack");
 action(loadButton, async () => {
     await load();
+    sessionStorage.setItem("cueporchOperator", key.value);
     result.textContent = "Library loaded.";
+    if (slackResult) {
+        const folder = folders.find(item => item.id === linked.get("folder"));
+        const connected = slackResult === "connected";
+        slackResult = null;
+        history.replaceState(null, "", "/operator/library");
+        if (folder) {
+            await navigate("Library", folder.id);
+            await editFolderSlack(folder);
+            workDialogStatus.textContent = connected ? "Slack channel connected." : "Slack channel selection was canceled.";
+        }
+    }
     const uid = linked.get("work");
     if (uid && workspaceAction) {
         const work = works.find((item) => item.id === uid);
@@ -1371,8 +1953,9 @@ action(loadButton, async () => {
         await fromWorkspace(work, next);
     }
 });
-if (linked.has("work") && workspaceAction && key.value)
+if (key.value && (workspaceSearch || section === "Recently deleted" || slackResult || linked.has("work") && workspaceAction)) {
     loadButton.click();
+}
 async function fromWorkspace(work, next) {
     const actions = {
         versions: () => versionsDialog(work),
@@ -1410,10 +1993,5 @@ action(document.querySelector("#publishImports"), async () => {
         "Queued eligible imports: " + (await response.json()).queued;
 });
 action(document.querySelector("#exportMap"), async () => {
-    const response = await completed(await request("/api/embed-map.csv"));
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-embed-map.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    await saveEmbedMap(await completed(await request("/api/embed-map.csv")));
 });

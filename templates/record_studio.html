@@ -8,8 +8,10 @@
 </head>
 <body data-event-broadcast="{{ broadcast_endpoint or '' }}" data-scene-endpoint="{{ scene_endpoint or '' }}" data-event-health="{{ health_endpoint or '' }}"
       data-speaker-endpoint="{{ speaker_endpoint or '' }}" data-public-url="{{ speaker_public_url or '' }}"
-      data-engagement-endpoint="{{ engagement_endpoint or '' }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a>{% if broadcast_endpoint %} · <a href="/operator/live-events">Live events</a>{% endif %}</nav>
+      data-engagement-endpoint="{{ engagement_endpoint or '' }}" {% if embedded %}data-embedded="timeline"{% endif %}>
+  {% if not embedded %}
+  {% include "operator_navigation.html" %}
+  {% endif %}
   <h1>{{ "Live Studio" if broadcast_endpoint else "Record Studio" }}</h1>
   <form id="recordIdentity">
     <label>Operator credential <input id="recordKey" type="password" autocomplete="current-password" required></label>
@@ -17,12 +19,20 @@
   </form>
   <p id="recordStatus" role="status"></p>
   <main id="recordStudio" hidden>
+    {% if broadcast_endpoint %}
+    {% set tour_steps = [
+      ("#recordSources", "Connect your sources", "Choose a camera and microphone or share your screen. Check the preview before starting."),
+      ("#studioScenes", "Prepare scenes and graphics", "Add the layouts, graphics and slides you intend to show. Choose Take scene when you want it on the preview or program."),
+      ("#recordProductionMode", "Choose a production mode", "Choose whether to broadcast from this browser or make a recording for later.")
+    ] %}
+    {% include "workspace_tour.html" %}
+    {% endif %}
     <div class="video-workspace">
       <section aria-label="Recording preview">
         <canvas id="recordCanvas" width="1280" height="720" aria-label="Live recording preview"></canvas>
         <video id="takePreview" controls playsinline hidden aria-label="Finished recording"></video>
         {% if broadcast_endpoint %}
-        <label>Production mode <select id="browserProductionMode">
+        <label id="recordProductionMode">Production mode <select id="browserProductionMode">
           <option value="broadcast">Broadcast from this browser</option><option value="record">Recording only</option>
         </select></label>
         {% endif %}
@@ -79,8 +89,15 @@
             <button type="button" id="deleteStudioScene">Delete scene</button>
           </form>
           <form id="studioBrandForm">
+            <label for="studioBrandKit">Reusable brand kit</label>
+            <select id="studioBrandKit"><option value="">Choose a brand kit</option></select>
+            <button type="button" id="applyStudioBrandKit" disabled>Use brand kit</button>
             <label>Graphic color <input name="primary" type="color"></label>
             <label>Graphic text color <input name="text" type="color"></label>
+            <label for="studioGraphicFont">Graphic font</label>
+            <select name="font" id="studioGraphicFont">
+              <option value="sans">Sans-serif</option><option value="serif">Serif</option><option value="mono">Monospace</option>
+            </select>
             <label>Event logo <select name="logo"></select></label>
             <button type="submit" id="saveStudioBrand" disabled>Save brand</button>
           </form>
@@ -130,17 +147,12 @@
           </select></label>
           <label>Background <select id="recordBackground"><option value="solid">Solid</option><option value="gradient">Gradient</option></select></label>
           <label>Canvas color <input type="color" id="recordColor" value="#244b4d"></label>
+          {% if not scene_endpoint %}
+          <label for="recordBrandKit">Recording brand kit</label>
+          <select id="recordBrandKit"><option value="">None</option></select>
+          {% endif %}
         </fieldset>
-        <details id="recordPrompterSettings">
-          <summary>Teleprompter</summary>
-          <label>Script <textarea id="recordScript" rows="5"></textarea></label>
-          <label>Scroll speed <select id="recordScroll">
-            <option value="0">Off</option><option value=".5">0.5×</option><option value="1" selected>1×</option>
-            <option value="1.5">1.5×</option><option value="2">2×</option>
-          </select></label>
-          <label>Font size <input id="recordFont" type="range" min="16" max="56" value="24"></label>
-          <div id="recordPrompter" tabindex="0" aria-label="Teleprompter script"></div>
-        </details>
+        {% include "studio_prompter.html" %}
         <form id="recordDestination">
           <fieldset>
             <legend>Save to library</legend>
@@ -148,7 +160,7 @@
             <label for="recordFolder">Destination folder</label>
             <select id="recordFolder"><option value="">Library root</option></select>
             <p>Recordings follow this folder’s privacy settings or your upload defaults.</p>
-            <button type="submit" id="saveRecord" disabled>Save recording</button>
+            <button type="submit" id="saveRecord" disabled>{{ "Add recording to timeline" if embedded else "Save recording" }}</button>
             <button type="button" id="downloadRecord" disabled>Download recording</button>
           </fieldset>
         </form>

@@ -1,3 +1,10 @@
+{% macro player(item, label, preload) -%}
+<video controls playsinline preload="{{ preload }}" controlslist="nodownload" aria-labelledby="{{ label }}"
+       src="{{ item.media }}" {% if item.poster %}poster="{{ item.poster }}"{% endif %}>
+  {% for track in item.captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}"
+         src="{{ track.url }}" data-analytics-track="{{ track.key }}">{% endfor %}
+</video>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -5,7 +12,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{{ 'Protected showcase' if locked else settings.seo_title or settings.title }} · CuePorch</title>
   {% if not locked and not internal and not embed and settings.visibility == 'public' and settings.indexable %}
-    {% if settings.seo_description %}<meta name="description" content="{{ settings.seo_description }}">{% endif %}
+    {% if settings.seo_description or settings.description %}<meta name="description" content="{{ settings.seo_description or settings.description }}">{% endif %}
     {% if settings.seo_keywords %}<meta name="keywords" content="{{ settings.seo_keywords }}">{% endif %}
   {% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
@@ -24,8 +31,12 @@
       <button type="submit">Unlock showcase</button>
     </form>
     {% else %}
+    {% if settings.navigation %}
+    <nav aria-label="Watch navigation"><a href="/watch" {% if embed %}target="_blank" rel="noopener noreferrer"{% endif %}>Browse Watch</a></nav>
+    {% endif %}
     <header class="showcase-header">
       {% if internal %}<p class="showcase-note">Private operator preview</p>{% endif %}
+      {% if settings.product_brand %}<p class="showcase-note">Hosted on CuePorch</p>{% endif %}
       {% if logo %}<img src="{{ logo }}" alt="Publisher logo">{% endif %}
       <h1>{{ settings.title }}</h1>
       {% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
@@ -33,35 +44,71 @@
     {% if enrollment %}
       <div class="showcase-access">{% include 'viewer_registration.html' %}</div>
     {% else %}
-      {% if settings.headline or settings.summary or settings.button_url %}
-      <section class="showcase-feature" aria-label="Featured information">
-        {% if settings.headline %}<h2>{{ settings.headline }}</h2>{% endif %}
-        {% if settings.summary %}<p>{{ settings.summary }}</p>{% endif %}
-        {% if settings.button_url %}<a href="{{ settings.button_url }}" rel="noopener noreferrer">{{ settings.button_label }}</a>{% endif %}
+      {% if settings.headline or settings.summary or settings.button_url or feature_image %}
+      <section class="showcase-feature" aria-label="Featured information" data-alignment="{{ settings.feature_alignment }}">
+        {% if feature_image %}<img class="showcase-feature-image" src="{{ feature_image }}" alt="">{% endif %}
+        <div class="showcase-feature-text">
+          {% if settings.headline %}<h2>{{ settings.headline }}</h2>{% endif %}
+          {% if settings.summary %}<p>{{ settings.summary }}</p>{% endif %}
+          {% if settings.button_url %}<a href="{{ settings.button_url }}" rel="noopener noreferrer">{{ settings.button_label }}</a>{% endif %}
+        </div>
       </section>
       {% endif %}
       {% if entries %}
+      {% set grid_players = settings.layout == 'grid' and settings.grid_media == 'players' %}
+      {% set active = entries[playing] %}
       <div class="showcase-watch">
         <section class="showcase-screen" aria-labelledby="nowPlaying">
-          <h2 id="nowPlaying" aria-live="polite">{{ entries[0].title }}</h2>
-          <video controls playsinline preload="metadata" controlslist="nodownload" aria-labelledby="nowPlaying"
-                 src="{{ entries[0].media }}" {% if entries[0].poster %}poster="{{ entries[0].poster }}"{% endif %}>
-            {% for track in entries[0].captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}" src="{{ track.url }}">{% endfor %}
-          </video>
+          <h2 id="nowPlaying" aria-live="polite">{{ active.title }}</h2>
+          <p id="showcasePlayingDescription" {% if not active.description %}hidden{% endif %}>{{ active.description }}</p>
+          <a id="showcaseDownload" {% if active.download %}href="{{ active.download }}"{% else %}hidden{% endif %}>Download video</a>
+          {% if settings.copy_link and not internal and not embed %}
+          <button type="button" id="showcaseCopyVideo">Copy link to this video</button>
+          <span id="showcaseCopyVideoStatus" role="status"></span>
+          {% endif %}
+          {% if not grid_players %}{{ player(active, 'nowPlaying', 'metadata') }}{% endif %}
+          {% if entries | selectattr("questions") | list %}
+            {% with question_id="showcaseQuestions", question_path=url_for("viewer_showcase_questions"),
+                    question_label="Ask AI about this video", questions=active.questions %}
+              {% include "video_questions.html" %}
+            {% endwith %}
+          {% endif %}
         </section>
         <section aria-label="Playlist" class="showcase-playlist">
           {% if settings.search %}<label>Search videos <input type="search" id="showcaseSearch"></label>{% endif %}
           <ol>
             {% for item in entries %}
-            <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.first %} aria-current="true"{% endif %}>
+            {% if grid_players %}
+            <li data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
+              <p id="showcaseCardTitle{{ loop.index0 }}">{{ item.title }}</p>
+              {{ player(item, 'showcaseCardTitle' ~ loop.index0, 'none') }}
+            </li>
+            {% else %}
+            <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
               {% if item.poster %}<img alt="" src="{{ item.poster }}" loading="lazy">{% endif %}
               <span>{{ item.title }}</span>
             </button></li>
+            {% endif %}
             {% endfor %}
           </ol>
           <p id="showcaseNoMatches" hidden>No videos match your search.</p>
         </section>
       </div>
+      {% if entries | selectattr("comments") | list or entries | selectattr("likes") | list %}
+      <div id="showcaseCommunity"></div>
+      <template id="showcaseCommunityTemplate">
+        {% if settings.likes %}
+        <div class="save-video" data-showcase-likes data-kind="work">
+          <button type="button" data-like-toggle hidden aria-pressed="false">Like video</button>
+          <span data-like-count hidden></span>
+          <span role="status" data-like-status></span>
+        </div>
+        {% endif %}
+        {% if settings.comments %}
+          {% with save_kind="work", save_slug="" %}{% include "watch_comments.html" %}{% endwith %}
+        {% endif %}
+      </template>
+      {% endif %}
       <script type="application/json" id="showcaseContents">{{ entries | tojson }}</script>
       {% else %}<p>No videos are available in this showcase.</p>{% endif %}
     {% endif %}

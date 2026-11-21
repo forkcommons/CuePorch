@@ -1,5 +1,8 @@
 """Drive the packaged operator's folder workflow with imported records."""
 
+import json
+from uuid import uuid4
+
 import requests
 from playwright.sync_api import expect
 
@@ -31,14 +34,30 @@ def check_folders(page, base, auth, works):
 
     root = tree.get_by_role("button", name="Library", exact=True)
     root.click()
+    selector = page.locator("#assetType")
+    selector.select_option("folders")
+    results = page.locator("#folderResults")
+    expect(results.get_by_role("button", name="Station programs")).to_be_visible()
+    expect(page.locator("#workTable")).to_be_hidden()
+    results.get_by_role("button", name="Station programs").click()
+    expect(results.get_by_role("button", name="November meetings")).to_be_visible()
+    expect(selector).to_have_value("")
+    root.click()
+    preview = page.get_by_role("button", name="Preview Station meeting", exact=True)
+    preview.hover()
+    video = page.get_by_label("Station meeting preview", exact=True)
+    expect(video).to_be_visible()
+    assert video.evaluate("v => new Promise(resolve => v.requestVideoFrameCallback(() => resolve(v.videoWidth)))") == 320
+    expect(preview).to_have_attribute("aria-pressed", "true")
     search = page.get_by_label("Search titles")
     search.fill(works[0]["title"])
+    expect(video).to_have_count(0)
     expect(page.locator("#items tr")).to_have_count(sum(work["title"] == works[0]["title"] for work in works))
     search.clear()
     columns = page.locator("#items .work-title")
     page.get_by_label("Sort").select_option("title-desc")
     expect(columns).to_have_text(sorted((work["title"] for work in works), reverse=True))
-    page.locator("#workBrowse").get_by_label("View").select_option("grid")
+    page.locator("#workBrowse").get_by_role("combobox", name="View", exact=True).select_option("grid")
     expect(page.locator("#workTable")).to_have_attribute("data-view", "grid")
 
     boxes = page.locator("#items input[type=checkbox]")
@@ -114,4 +133,106 @@ def check_folders(page, base, auth, works):
         "bulk_move": 2,
         "authorization_and_cycle_check": True,
         "invalid_batch_rejected": True,
+        "folder_type_filter_and_grid_navigation": True,
+        "decoded_authorized_hover_preview": True,
     }
+
+
+def check_bulk_library(page, base, auth, clip):
+    def call(method, path, **values):
+        response = requests.request(method, base + path, headers=auth, timeout=25, **values)
+        response.raise_for_status()
+        return response.json()
+
+    def copy(uid, title):
+        return call("POST", f"/api/library/work/{uid}/copy", json={"title": title})["id"]
+
+    def showcase(title, visibility):
+        route = "/api/showcases"
+        item = call("POST", route)
+        return call("PUT", route + "/" + item["id"], json=item | {
+            "settings": item["settings"] | {"title": title, "visibility": visibility},
+        })
+
+    def ratings(uid):
+        return call("GET", f"/api/library/work/{uid}/rating")
+
+    with clip.open("rb") as stream:
+        public = call("POST", "/api/library/uploads", files={"file": ("Batch public.mp4", stream, "video/mp4")},
+                      data={"upload_id": str(uuid4()), "privacy": json.dumps(dict(visibility="public", embed="anywhere",
+                                                                                 domains=[], download=False))})["id"]
+    withheld = copy(public, "Batch private")
+    call("POST", "/api/library/uploads", files={"file": ("Batch handout.txt", b"Station show notes", "text/plain")},
+         data={"upload_id": str(uuid4())})
+    first = showcase("Station schedule", "public")
+    second = showcase("Archive shortlist", "private")
+    page.goto(base + "/operator/library")
+    page.get_by_role("button", name="Load library").click()
+    page.locator("#assetType").select_option("files")
+    expect(page.locator("#items .work-title")).to_have_text(["Batch handout"])
+    page.get_by_role("checkbox", name="Select Batch handout", exact=True).check()
+    expect(page.locator("#showcaseSelected")).to_be_disabled()
+    expect(page.locator("#ratingSelected")).to_be_disabled()
+    page.locator("#assetType").select_option("video")
+    expect(page.get_by_role("checkbox", name="Select Batch handout", exact=True)).to_have_count(0)
+    page.get_by_role("checkbox", name="Select Batch public", exact=True).check()
+    page.get_by_role("checkbox", name="Select Batch private", exact=True).check()
+    page.locator("#showcaseSelected").click()
+    dialog = page.locator("#workDialog")
+    dialog.get_by_role("checkbox", name="Station schedule (public)").check()
+    dialog.get_by_role("checkbox", name="Archive shortlist (private)").check()
+    save = dialog.get_by_role("button", name="Add videos", exact=True)
+    save.click()
+    status = page.locator("#workDialogStatus")
+    expect(status).to_have_text("Added 4 entries across 2 showcases.")
+    save.click()
+    expect(status).to_have_text("These videos are already in the selected showcases.")
+    for item in (first, second):
+        saved = call("GET", "/api/showcases/" + item["id"])
+        assert saved["settings"]["videos"] == [public, withheld] and saved["revision"] != item["revision"]
+    with page.context.browser.new_context() as guest:
+        view = guest.new_page()
+        assert view.goto(base + first["watch"]).ok
+        expect(view.get_by_role("button", name="Batch public")).to_be_visible()
+        expect(view.get_by_role("button", name="Batch private")).to_have_count(0)
+        assert view.goto(base + f"/watch/work/{withheld}").status == 404
+
+    dialog.get_by_role("button", name="Close", exact=True).click()
+    page.locator("#ratingSelected").click()
+    dialog.get_by_label("Rating prompt").fill("Would you recommend this program?")
+    dialog.get_by_role("button", name="Apply rating").click()
+    expect(status).to_have_text("Saved rating settings for 2 videos.")
+    assert ratings(public)["settings"] == ratings(withheld)["settings"]
+    with page.context.browser.new_context() as guest:
+        view = guest.new_page()
+        view.goto(base + f"/watch/work/{public}")
+        assert view.locator("video").evaluate("async v => {v.muted=true; await v.play(); v.pause(); v.currentTime=.25; return v.videoWidth}") == 256
+        expect(view.get_by_role("button", name="4 stars", exact=True)).to_be_visible()
+        view.get_by_role("button", name="4 stars", exact=True).click()
+        expect(view.get_by_text("Rating recorded.")).to_be_visible()
+
+    batch = [public, withheld, *(copy(public, f"Batch item {index}") for index in range(48))]
+    path = "/api/library/ratings"
+    payload = dict(works=batch, mode="thumbs", prompt="Was the program useful?", start=0)
+    vote = ratings(public)["report"]
+    assert sum(record["responses"] for record in vote) == 1
+    assert requests.put(base + path, json=payload, timeout=15).status_code == 403
+    assert requests.put(base + path, headers=auth, json=payload | {"works": batch + ["missing"]}, timeout=15).status_code == 422
+    assert requests.put(base + path, headers=auth, json=payload | {"works": [public, "missing"]}, timeout=15).status_code == 404
+    assert requests.put(base + path, headers=auth, json=payload | {"start": 100000}, timeout=15).status_code == 422
+    assert ratings(public)["settings"]["mode"] == "stars" and ratings(batch[-1])["settings"]["mode"] == "none"
+    assert call("PUT", path, json=payload) == {"selected": 50, "updated": 50}
+    assert call("PUT", path, json=payload) == {"selected": 50, "updated": 0}
+    assert ratings(batch[-1])["settings"]["mode"] == "thumbs" and ratings(public)["report"] == vote
+
+    showcase_path = "/api/showcases/selected-videos"
+    payload = {"works": batch, "showcases": [first["id"], "missing"]}
+    assert requests.post(base + showcase_path, headers=auth, json=payload, timeout=15).status_code == 404
+    assert call("GET", f"/api/showcases/{first['id']}")["settings"]["videos"] == [public, withheld]
+    payload["showcases"] = [first["id"], second["id"]]
+    assert call("POST", showcase_path, json=payload) == {"showcases": 2, "added": 96}
+    assert call("POST", showcase_path, json=payload) == {"showcases": 2, "added": 0}
+    assert call("GET", f"/api/showcases/{first['id']}")["settings"]["videos"] == batch
+    return dict(multi_showcase_and_rating_actions=True, public_showcase_respects_source_privacy=True,
+                selected_rating_records_a_real_vote=True, retained_votes_after_rating_change=True,
+                validated_single_transaction_and_retry=50)

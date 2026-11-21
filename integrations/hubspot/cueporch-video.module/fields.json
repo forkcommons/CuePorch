@@ -1,0 +1,14 @@
+[
+  {
+    "name": "video",
+    "label": "CuePorch video",
+    "type": "embed",
+    "supported_source_types": ["media_bridge"],
+    "supported_media_bridge_providers": [],
+    "default": {
+      "source_type": "media_bridge"
+    },
+    "required": false,
+    "locked": false
+  }
+]

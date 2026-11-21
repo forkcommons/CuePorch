@@ -1,6 +1,56 @@
-<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/static/cueporch.css"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CuePorch operator</title>
-<h1>{{ institution }} &middot; CuePorch</h1><p><a href="/operator/migration">Move from Vimeo</a></p><label>Operator credential <input id="key" type="password"></label>
-<p><a href="/operator/library">Manage library and embeds</a> · <a href="/team/members">Team members</a> · <a href="/team">Team sign-in</a> · <a href="/operator/exhibitions">Exhibitions</a> · <a href="/support">Support and appeals</a> · <a href="/submit">Submit a work</a></p>
+<!doctype html><html lang="en"><meta charset="utf-8"><link rel="stylesheet" href="/static/cueporch.css"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Home · CuePorch</title>
+<body>
+{% include "operator_navigation.html" %}
+<main>
+{% set workspace_heading = brand.label ~ ' · CuePorch' %}{% include "workspace_mark.html" %}
+<form class="workspace-search" method="get" action="{{ url_for('operator_search') }}" role="search" aria-label="Find videos">
+  <label>Search videos <input type="search" maxlength="120" name="q" required></label>
+  <label>Search in <select name="scope"><option value="library">Library</option><option value="watch">Public Watch</option></select></label>
+  <button type="submit">Search</button>
+</form>
+<form class="workspace-search" id="workspaceHomeIdentity">
+  <label>Operator credential <input id="key" type="password" autocomplete="current-password"></label>
+  <button type="submit">Open workspace overview</button>
+</form>
+<p role="status" id="workspaceHomeStatus"></p>
+<section class="workspace-overview" id="workspaceHomeData" aria-label="Workspace overview" hidden>
+  <div class="workspace-home-actions">
+    <button type="button" id="uploadLibrary">Upload</button>
+    <a href="/operator/record">Record</a>
+    <a href="/operator/live-events?create=1">Host an event</a>
+    <details>
+      <summary>Create</summary>
+      <ul>
+        <li><button type="button" id="homeCreateUpload">Upload files</button></li>
+        <li><a href="/operator/migration">Import from Vimeo</a></li>
+        <li><a href="/operator/record">Record video</a></li>
+        <li><a href="/operator/live-events?create=1">Create a live event</a></li>
+        <li><a href="/operator/showcases">Create a showcase</a></li>
+      </ul>
+      <form id="homeCreateProject">
+        <label>Start a project with <select id="homeProjectVideo" required></select></label>
+        <button type="submit">Open project editor</button>
+      </form>
+      <p id="homeNoProjectVideo">Upload a video to start an editing project.</p>
+    </details>
+  </div>
+  <section aria-labelledby="homeRecentHeading">
+    <h2 id="homeRecentHeading">Recently added</h2>
+    <ul id="homeRecentWorks"></ul>
+    <p id="homeNoRecent" hidden>Upload or import to add your first work.</p>
+  </section>
+  <section aria-labelledby="homeAnalyticsHeading">
+    <h2 id="homeAnalyticsHeading">Playback in the last 30 days</h2>
+    <dl id="homePlaybackSummary">
+      <div><dt>Views</dt><dd id="homeViews"></dd></div>
+      <div><dt>Impressions</dt><dd id="homeImpressions"></dd></div>
+      <div><dt>Unique viewers</dt><dd id="homeUniqueViewers"></dd></div>
+    </dl>
+  </section>
+  {% include "library_upload_dialog.html" %}
+</section>
+{% include "watch_featured.html" %}
+<p><a href="/operator/migration">Move from Vimeo</a> · <a href="/operator/library">Manage library and embeds</a> · <a href="/team/members">Team members</a> · <a href="/team">Team sign-in</a> · <a href="/operator/exhibitions">Exhibitions</a> · <a href="/support">Support and appeals</a> · <a href="/submit">Submit a work</a></p>
 <button id="load">Load settings and review queue</button><div id="settings"></div><h2>Awaiting approval</h2><div id="queue"></div><p role="status" id="result"></p>
 <section id="public-comments" aria-labelledby="public-comments-title" hidden>
   <h2 id="public-comments-title">Public comments</h2>
@@ -11,4 +61,7 @@
   <ul></ul><p role="status"></p>
   <button type="button" data-more-comments hidden>Load more published comments</button>
 </section>
+</main>
 <script type="module" src="/static/ui/console.js"></script>
+<script type="module" src="/static/ui/operator_home.js"></script>
+</body></html>

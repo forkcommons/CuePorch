@@ -74,7 +74,7 @@ def backup(host, collection, db, destination):
                         ".",
                         stdout=stream,
                     )
-            shutil.copytree(collection, output / "collection")
+            shutil.copytree(collection, output / "collection", ignore=shutil.ignore_patterns("*.lock", ".render-*"))
             shutil.copyfile(host / ".env", output / ".env")
             os.chmod(output / ".env", 0o600)
             shutil.copyfile(host / "compose.yml", output / "compose.yml")

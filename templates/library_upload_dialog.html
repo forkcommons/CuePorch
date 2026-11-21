@@ -1,0 +1,16 @@
+<dialog id="uploadDialog" class="library-dialog" aria-labelledby="uploadHeading">
+  <h2 id="uploadHeading">Upload files</h2>
+  <label>Upload to <select id="uploadFolder"></select></label>
+  <label>Choose files <input type="file" id="libraryFiles" multiple accept=".mp4,.mov,.webm,.mkv,.jpg,.jpeg,.png,.webp,.mp3,.wav,.flac,.ogg,.m4a,.pdf,.docx,.txt"></label>
+  <div id="uploadDrop">Drop video, audio, images or documents here.</div>
+  <p id="uploadVisibility">New files start private.</p>
+  <details id="uploadPrivacy">
+    <summary>Customize privacy for these videos</summary>
+    <div id="uploadSharingFields"></div>
+  </details>
+  <ul id="uploadFiles"></ul>
+  <p id="uploadStatus" role="status"></p>
+  <button type="button" id="startUpload" disabled>Upload selected files</button>
+  <button type="button" id="closeUpload">Close</button>
+</dialog>
+{% include "video_privacy_fields.html" %}

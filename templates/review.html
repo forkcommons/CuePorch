@@ -21,6 +21,12 @@
     </form>
     <script type="module" src="/static/ui/review_unlock.js"></script>
     {% elif selected %}
+    {% set tour_steps = [
+      ("#reviewTourPlayer", "Play the selected version", "Use the player to watch or pause at a moment you want to inspect."),
+      ("#reviewPlayerControls", "Inspect a moment", "Change playback speed or loop the video. Step a frame at a time when frame controls are available."),
+      ("#reviewTourFeedback", "Find feedback", "Search or sort existing comments. If commenting is available, choose Use current time to attach your comment to a moment.")
+    ] %}
+    {% include "workspace_tour.html" %}
     {% if operator_preview %}
     <form id="uploadReviewVersion" action="{{ url_for('replace_review_video', uid=uid) }}" method="post" enctype="multipart/form-data" data-token="{{ replacement_token }}">
       <input type="hidden" name="current" value="{{ current_version }}">
@@ -41,7 +47,7 @@
       <button>View version</button>
     </form>
     {% endif %}
-    <video controls preload="metadata" data-frame-rate="{{ renditions[0].fps or '' }}" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
+    <video id="reviewTourPlayer" controls preload="metadata" data-frame-rate="{{ renditions[0].fps or '' }}" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
       {% for item in tracks %}
       <track kind="captions" srclang="{{ item.language }}" label="{{ item.language }}" src="{{ url_for('review_media', uid=uid, version=selected, track=loop.index0) }}">
       {% endfor %}
@@ -74,7 +80,7 @@
       {% endif %}
     </aside>
     <section id="reviewFeedback" data-feedback="{{ url_for('review_feedback', uid=uid, version=selected) }}">
-      <h2>Feedback</h2>
+      <h2 id="reviewTourFeedback">Feedback</h2>
       <p id="reviewStatus" role="status"></p>
       <form id="reviewDecision" hidden>
         <label>Review status

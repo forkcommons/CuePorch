@@ -3,13 +3,18 @@ export const playerColors = ["primary", "accent", "icon"];
 export function eventControls(player, title, initial) {
     let appearance = initial;
     let refresh = () => { };
+    let listeners;
     const template = document.querySelector("#eventControls");
+    const returnLive = document.querySelector("#eventReturnLive");
     function setAppearance(value) {
         appearance = value;
         title.hidden = value.customize && !value.show_title;
         refresh();
     }
-    function attach(video, live) {
+    function attach(video, live, livePosition) {
+        reset();
+        listeners = new AbortController();
+        const { signal } = listeners;
         const controls = template.content.firstElementChild.cloneNode(true);
         const get = (name) => controls.querySelector(`[data-control="${name}"]`);
         const play = get("play");
@@ -35,6 +40,9 @@ export function eventControls(player, title, initial) {
         function syncPosition() {
             const range = seekable();
             position.disabled = !range;
+            returnLive.hidden = !live || !appearance.live_seek || !range;
+            const target = live ? livePosition() : null;
+            returnLive.disabled = target === null || target <= video.currentTime + 1;
             if (!range) {
                 clock.textContent = "";
                 return;
@@ -65,6 +73,14 @@ export function eventControls(player, title, initial) {
             else
                 video.pause();
         };
+        returnLive.onclick = () => {
+            const target = livePosition();
+            if (returnLive.hidden || returnLive.disabled || target === null)
+                return;
+            video.currentTime = target;
+            if (video.paused)
+                void video.play().catch(fail);
+        };
         position.oninput = () => { video.currentTime = position.valueAsNumber; };
         mute.onclick = () => { video.muted = !video.muted; };
         volume.oninput = () => {
@@ -79,12 +95,12 @@ export function eventControls(player, title, initial) {
             const change = document.pictureInPictureElement ? document.exitPictureInPicture() : video.requestPictureInPicture();
             void change.catch(fail);
         };
-        video.addEventListener("play", () => { started = true; syncPlayback(); });
-        video.addEventListener("pause", syncPlayback);
-        video.addEventListener("ended", syncPlayback);
+        video.addEventListener("play", () => { started = true; syncPlayback(); }, { signal });
+        video.addEventListener("pause", syncPlayback, { signal });
+        video.addEventListener("ended", syncPlayback, { signal });
         for (const event of ["timeupdate", "loadedmetadata", "progress"])
-            video.addEventListener(event, syncPosition);
-        video.addEventListener("volumechange", syncVolume);
+            video.addEventListener(event, syncPosition, { signal });
+        video.addEventListener("volumechange", syncVolume, { signal });
         refresh = () => {
             const { customize, progress, live_seek } = appearance;
             player.classList.toggle("archive-player", customize);
@@ -107,6 +123,9 @@ export function eventControls(player, title, initial) {
         refresh();
     }
     function reset() {
+        listeners?.abort();
+        returnLive.hidden = true;
+        returnLive.onclick = null;
         refresh = () => { };
         player.classList.remove("archive-player");
     }

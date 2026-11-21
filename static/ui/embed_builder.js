@@ -7,6 +7,7 @@ export function embedBuilder() {
     const code = document.querySelector("#workspaceEmbed");
     const label = document.querySelector("#workspaceEmbedLabel");
     const copy = document.querySelector("#copyEmbed");
+    const websites = document.querySelector("#embedWebsites");
     const scriptLabel = document.querySelector("#embedApiOption");
     const privacyLabel = document.querySelector("#embedPrivacyOption");
     const input = (name) => controls.querySelector(`[name=${name}]`);
@@ -48,7 +49,7 @@ export function embedBuilder() {
             path = url;
             title = playerTitle;
             native = ownPlayer;
-            controls.hidden = label.hidden = copy.hidden = !path;
+            controls.hidden = label.hidden = copy.hidden = websites.hidden = !path;
             scriptLabel.hidden = privacyLabel.hidden = !native;
             update();
         },

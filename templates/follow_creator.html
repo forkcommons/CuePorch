@@ -1,0 +1,6 @@
+<span data-follow-creator="{{ follow_handle }}">
+  <button type="button" aria-pressed="false" hidden>Follow creator</button>
+  <a href="{{ url_for('viewer_account_page', next=url_for('creator_page', handle=follow_handle)) }}" hidden>Sign in to follow</a>
+  <span role="status"></span>
+</span>
+<script type="module" src="/static/ui/follow_creator.js"></script>

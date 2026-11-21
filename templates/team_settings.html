@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Team settings · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/members">Team members</a></nav>
+  <h1>Team settings</h1>
+  <p><a href="/team/sharing-policy">Sharing restrictions</a></p>
+  <p><a href="/team/session-policy">Session controls</a></p>
+  <p><a href="/team/ai">AI settings</a></p>
+  <p><a href="{{ url_for('brand_kits_page') }}">Brand kits</a></p>
+  <form id="teamSettingsAccess">
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open team settings</button>
+  </form>
+  <p id="teamSettingsStatus" role="status"></p>
+  <form id="teamBranding" hidden>
+    <p>This name, accent and logo appear in the team workspace, creator intake and public catalog.</p>
+    <label>Workspace name <input name="name" maxlength="32" required></label>
+    <label>Accent color <input type="color" name="accent" required></label>
+    <img id="workspaceLogoPreview" alt="Current workspace logo" hidden>
+    <label>Upload workspace logo <input name="logo" type="file" accept="image/jpeg,image/png"></label>
+    <p>JPEG or PNG, up to 5 MB.</p>
+    <label id="removeWorkspaceLogo" hidden><input type="checkbox" name="remove_logo" value="yes"> Remove current logo</label>
+    <button>Save workspace branding</button>
+  </form>
+</main>
+<script type="module" src="/static/ui/team_settings.js"></script>
+</html>

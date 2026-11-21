@@ -1,0 +1,241 @@
+"""Exercise Page selection and the Meta Graph video upload contract in a source browser."""
+
+from contextlib import ExitStack, closing
+from dataclasses import replace
+import hashlib
+import hmac
+import json
+from pathlib import Path
+import secrets
+import sqlite3
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
+import unittest
+from unittest.mock import patch
+from urllib.parse import urlencode
+from uuid import uuid4
+
+from flask import Flask, Response, redirect, request
+from playwright.sync_api import expect, sync_playwright
+from werkzeug.serving import make_server
+
+from browser import chromium
+from test_drive_import import QuietHandler, service_worker
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import facebook_upload as facebook
+from institution import create_app
+import social_publication
+
+
+class FacebookPublication(unittest.TestCase):
+    def test_selected_page_posts_after_restart_and_recovers_from_rate_limit(self):
+        with ExitStack() as cleanup:
+            root = Path(cleanup.enter_context(TemporaryDirectory()))
+            (root / "objects").mkdir()
+            (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
+            clip = root / "Porch arts premiere.mp4"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                            "-i", "testsrc2=size=640x360:rate=24", "-t", "5", "-c:v", "libx264", "-preset", "ultrafast",
+                            "-crf", "18", "-movflags", "+faststart", str(clip)], check=True, capture_output=True)
+            video = clip.read_bytes()
+            middle = len(video) // 2
+            digest = hashlib.sha256(video).hexdigest()
+            remote = Flask("facebook-fixture")
+            provider = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
+            origin = f"http://127.0.0.1:{provider.server_port}"
+            service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
+            base = f"http://127.0.0.1:{service.server_port}"
+            callback = base + "/integration/oauth/facebook/callback"
+            database = root / "workspace.sqlite"
+            chunks = {}
+            posts = []
+            exchanges = []
+            checkpoints = dict(rate=0, interrupted=False)
+            operator = secrets.token_urlsafe(32)
+
+            cleanup.enter_context(patch.multiple(facebook, OAUTH=replace(
+                facebook.OAUTH, authorization_url=origin + "/oauth/authorize", token_url=origin + "/graph/oauth/access_token",
+            ), GRAPH=origin + "/graph", MEDIA=origin + "/media"))
+            cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
+            cleanup.enter_context(patch.dict("os.environ", {
+                "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_FACEBOOK_CLIENT_ID": "cueporch",
+                "CUEPORCH_FACEBOOK_CLIENT_SECRET": "fixture-secret",
+            }))
+
+            def start_app():
+                with patch("institution.library_worker.start", return_value=lambda: None):
+                    app = create_app(root, database, operator, "station")
+                stops = [stop for name, stop in app.extensions.items() if name.startswith("stop_")]
+
+                def stop_app():
+                    while stops:
+                        stops.pop()()
+
+                cleanup.callback(stop_app)
+                service.app = app
+                return stop_app
+
+            stop = start_app()
+
+            @remote.get("/oauth/authorize")
+            def authorize():
+                assert request.args["client_id"] == "cueporch" and request.args["redirect_uri"] == callback
+                assert set(request.args["scope"].split()) == set(facebook.OAUTH.scope.split())
+                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code="facebook-code")))
+
+            @remote.get("/graph/oauth/access_token")
+            def token():
+                assert request.args["client_secret"] == "fixture-secret" and request.args["client_id"] == "cueporch"
+                if request.args.get("grant_type") == "fb_exchange_token":
+                    assert request.args["fb_exchange_token"] == "fixture-short"
+                    exchanges.append("long")
+                    return dict(access_token="fixture-long", expires_in=5184000)
+                assert request.args["code"] == "facebook-code" and request.args["redirect_uri"] == callback
+                exchanges.append("short")
+                return dict(access_token="fixture-short", expires_in=1000)
+
+            def authenticated(token):
+                assert request.headers["Authorization"] == "Bearer " + token
+                assert request.args["appsecret_proof"] == hmac.digest(b"fixture-secret", token.encode(), "sha256").hex()
+                assert "access_token" not in request.args and "access_token" not in request.form
+
+            @remote.get("/graph/me/accounts")
+            def pages():
+                authenticated("fixture-long")
+                if request.args.get("after") == "second-page":
+                    return dict(data=[dict(id="202", name="Porch Arts", access_token="fixture-arts",
+                                           tasks=["CREATE_CONTENT"])])
+                assert request.args.get("after") is None
+                return dict(data=[
+                    dict(id="101", name="Porch Station", access_token="fixture-station", tasks=["CREATE_CONTENT"]),
+                    dict(id="303", name="Read Only", access_token="fixture-read", tasks=["ANALYZE"]),
+                ], paging=dict(next="https://invalid.example/untrusted/?access_token=never-forward",
+                               cursors=dict(after="second-page")))
+
+            @remote.post("/media/<page_id>/videos")
+            def transfer(page_id):
+                assert page_id == "202"
+                authenticated("fixture-arts")
+                phase = request.form["upload_phase"]
+                if phase == "start":
+                    assert request.form["published"] == "false" and int(request.form["file_size"]) == len(video)
+                    assert not chunks
+                    return dict(upload_session_id="5001", video_id="6002", start_offset="0", end_offset=str(middle))
+                assert request.form["upload_session_id"] == "5001"
+                if phase == "transfer":
+                    offset = int(request.form["start_offset"])
+                    data = request.files["video_file_chunk"].read()
+                    assert data == (video[:middle] if offset == 0 else video[middle:])
+                    if offset == 0:
+                        assert not chunks
+                        chunks[0] = data
+                        return dict(start_offset=str(middle), end_offset=str(len(video)))
+                    assert offset == middle and 0 in chunks
+                    if not checkpoints["interrupted"]:
+                        checkpoints["interrupted"] = True
+                        return "transfer temporarily unavailable", 503
+                    chunks[middle] = data
+                    return dict(start_offset=str(len(video)), end_offset=str(len(video)))
+                assert phase == "finish" and request.form["published"] == "true" and request.form["secret"] == "false"
+                assert request.form["title"] == clip.stem and request.form["description"] == "An arts screening."
+                assert list(chunks) == [0, middle]
+                checkpoints["rate"] += 1
+                if checkpoints["rate"] == 1:
+                    return dict(error=dict(code=613)), 400, {"Retry-After": "4"}
+                posts.append(page_id)
+                return dict(success=True)
+
+            @remote.get("/playback")
+            def playback():
+                if not posts:
+                    return "", 404
+                return Response(b"".join(chunks.values()), mimetype="video/mp4")
+
+            cleanup.enter_context(service_worker(provider))
+            cleanup.enter_context(service_worker(service))
+            with sync_playwright() as playwright, chromium(playwright) as browser:
+                page = browser.new_page()
+                api = page.context.request
+                auth = {"Authorization": "Bearer " + operator}
+                page.goto(base + "/operator/integrations")
+                page.get_by_label("Operator credential").fill(operator)
+                page.get_by_role("button", name="Open integrations").click()
+                page.get_by_role("button", name="Connect Facebook Pages", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("Facebook Pages is connected.", timeout=15000)
+                self.assertEqual(["short", "long"], exchanges)
+                with closing(sqlite3.connect(database)) as db:
+                    token_data, = db.execute("SELECT token FROM workspace_integration_connection WHERE provider='facebook'").fetchone()
+                    self.assertNotIn(b"fixture-arts", token_data)
+
+                upload = api.post(base + "/api/library/uploads", headers=auth, multipart={
+                    "upload_id": str(uuid4()),
+                    "file": {"name": clip.name, "mimeType": "video/mp4", "buffer": video},
+                }, timeout=30000)
+                self.assertEqual(201, upload.status, upload.text())
+                uid = upload.json()["id"]
+                endpoint = base + f"/api/library/work/{uid}/social/facebook"
+                self.assertEqual(403, api.get(endpoint).status)
+                page.goto(base + f"/operator/videos/{uid}")
+                page.get_by_role("link", name="Publish to Facebook").click()
+                form = page.locator("#socialForm")
+                expect(form).to_be_visible()
+                selector = form.get_by_label("Facebook Page", exact=True)
+                expect(selector.locator("option")).to_have_text(["Choose a Page", "Porch Station", "Porch Arts"])
+                self.assertNotIn("fixture-", api.get(endpoint, headers=auth).text())
+                consent = form.get_by_label("Publish a public video on this Facebook Page")
+                expect(consent).not_to_be_checked()
+                invalid = api.post(endpoint, headers=auth | {"X-CuePorch-Social": "1"}, data={
+                    "id": str(uuid4()), "title": clip.stem, "visibility": "public", "company": "303",
+                    "cut": api.get(endpoint, headers=auth).json()["cut"],
+                })
+                self.assertEqual(400, invalid.status)
+                selector.select_option("202")
+                consent.check()
+                form.get_by_label("Post text").fill("An arts screening.")
+                form.get_by_role("button", name="Post to Facebook").click()
+
+                deadline = monotonic() + 15
+                checkpoint = None
+                while monotonic() < deadline:
+                    with closing(sqlite3.connect(database)) as db:
+                        checkpoint = db.execute("SELECT session,offset,attempts FROM social_publication").fetchone()
+                    if checkpoint and checkpoint[2]:
+                        break
+                    sleep(.05)
+                self.assertEqual((middle, 1), checkpoint[1:])
+                self.assertNotIn(b"5001", checkpoint[0])
+                self.assertEqual({0}, chunks.keys())
+                self.assertEqual([], posts)
+                stop()
+                start_app()
+                page.reload()
+                deadline = monotonic() + 15
+                while checkpoints["rate"] == 0 and monotonic() < deadline:
+                    sleep(.05)
+                self.assertEqual(1, checkpoints["rate"])
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                waiting = api.get(endpoint, headers=auth).json()["jobs"][0]
+                self.assertEqual([], posts)
+                self.assertTrue(api.post(base + f"/api/actions/{waiting['id']}/decision", headers=auth,
+                                        data={"decision": "approve"}).ok)
+                expect(page.locator("#socialJobs").get_by_role("link", name="Open on Facebook Pages")).to_have_attribute(
+                    "href", "https://www.facebook.com/202/videos/6002/", timeout=15000)
+                self.assertEqual(["202"], posts)
+                self.assertEqual(digest, hashlib.sha256(b"".join(chunks.values())).hexdigest())
+                player = browser.new_page()
+                player.goto(origin + "/playback")
+                self.assertEqual(640, player.locator("video").evaluate("async v => {v.muted = true; await v.play(); return v.videoWidth}"))
+                page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Disconnect Facebook Pages", exact=True).click()
+                expect(page.get_by_role("button", name="Connect Facebook Pages", exact=True)).to_be_visible()
+                self.assertEqual([], api.get(endpoint, headers=auth).json()["pages"])
+        print("Facebook Pages OAuth long-lived scope, paginated Page selection, exact multipart restart and playback,"
+              " rate-limit retry, optional approval and disconnect passed.")
+
+
+if __name__ == "__main__":
+    unittest.main()

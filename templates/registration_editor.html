@@ -14,14 +14,116 @@
         <option value="off">Off</option><option value="optional">Optional</option><option value="required">Required</option>
       </select></label>
       <label><input type="checkbox" name="collect_utm"> Save UTM campaign fields</label>
+      {% if event_registration_editor %}
+      <label><input type="checkbox" name="attendance_analytics"> Offer attendees a choice to share watch time</label>
+      {% endif %}
       <fieldset>
         <legend>Custom fields</legend>
         <ol id="registrationFields"></ol>
         <button type="button" id="addRegistrationField">Add field</button>
       </fieldset>
+      <fieldset>
+        <legend>Form translations</legend>
+        <label>Language to edit <select name="translation_language">
+          {% for code, name in registration_languages.items() if code != 'en' %}
+          <option value="{{ code }}" lang="{{ code }}">{{ name }}</option>
+          {% endfor %}
+        </select></label>
+        <label><input type="checkbox" name="translation_enabled"> Show this language to viewers</label>
+        <div id="registrationTranslation" hidden>
+          <label>Translated heading <input name="translated_heading" maxlength="80"></label>
+          <label>Translated description <textarea name="translated_description" rows="3" maxlength="1000"></textarea></label>
+          <div id="registrationTranslatedFields"></div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Registration appearance</legend>
+        <label>Form alignment <select name="alignment"><option value="start">Left</option><option value="center">Center</option><option value="end">Right</option></select></label>
+        <label>Registration logo <input type="file" name="logo" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="button" data-clear-image="logo" hidden>Remove logo</button>
+        <label>Registration background image <input type="file" name="background_image" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="button" data-clear-image="background_image" hidden>Remove background image</button>
+        <label>Background color <input type="color" name="background"></label>
+        <label>Overlay color <input type="color" name="overlay"></label>
+        <label>Overlay opacity (%) <input type="number" name="opacity" min="0" max="100" step="1" required></label>
+        <label>Preview screen <select name="preview_screen"><option value="form">Registration form</option><option value="sign-on">Already registered</option></select></label>
+        <label>Preview language <select name="preview_language"><option value="en">English</option></select></label>
+        <label>Form preview device <select name="preview_size"><option value="desktop">Desktop</option><option value="mobile">Mobile</option></select></label>
+        <button type="button" id="showRegistrationPreview">Preview registration</button>
+        <div class="registration-preview-container">
+          <iframe id="registrationPreview" title="Registration preview" class="registration-preview" sandbox hidden></iframe>
+        </div>
+      </fieldset>
       <label>Save as registration preset <input name="preset_name" maxlength="80"></label>
       <button type="submit">Save registration</button>
       <p id="registrationStatus" role="status"></p>
+      {% if not event_registration_editor %}
+      <fieldset id="registrationMailchimp" hidden>
+        <legend>Mailchimp delivery</legend>
+        <button type="button" id="registrationMailchimpLoad">Load Mailchimp audiences</button>
+        <button type="button" id="registrationMailchimpMore" hidden>More Mailchimp audiences</button>
+        <label>Audience <select id="registrationMailchimpAudience"></select></label>
+        <button type="button" id="registrationMailchimpAdd">Add audience</button>
+        <div id="registrationMailchimpDestinations"></div>
+        <button type="button" id="registrationMailchimpSave">Save Mailchimp delivery</button>
+        <button type="button" id="registrationMailchimpRefresh">Reload Mailchimp delivery</button>
+        <button type="button" id="registrationMailchimpStop" hidden>Stop Mailchimp delivery</button>
+        <p id="registrationMailchimpStatus" role="status"></p>
+      </fieldset>
+      <fieldset id="registrationConstantContact" hidden>
+        <legend>Constant Contact delivery</legend>
+        <button type="button" id="registrationConstantContactLoad">Load Constant Contact lists</button>
+        <button type="button" id="registrationConstantContactMore">More Constant Contact lists</button>
+        <button type="button" id="registrationConstantContactSave">Save Constant Contact delivery</button>
+        <button type="button" id="registrationConstantContactRefresh">Reload Constant Contact delivery</button>
+        <button type="button" id="registrationConstantContactStop" hidden>Stop Constant Contact delivery</button>
+        <label for="registrationConstantContactList">Constant Contact list</label>
+        <select id="registrationConstantContactList"></select>
+        <p id="registrationConstantContactStatus" role="status"></p>
+      </fieldset>
+      <fieldset id="registrationCampaignMonitor" hidden>
+        <legend>Campaign Monitor delivery</legend>
+        <button type="button" id="registrationCampaignMonitorLoad">Load Campaign Monitor clients</button>
+        <label for="registrationCampaignMonitorClient">Campaign Monitor client</label>
+        <select id="registrationCampaignMonitorClient"></select>
+        <label for="registrationCampaignMonitorList">Campaign Monitor list</label>
+        <select id="registrationCampaignMonitorList"></select>
+        <button type="button" id="registrationCampaignMonitorSave">Save Campaign Monitor delivery</button>
+        <button type="button" id="registrationCampaignMonitorRefresh">Reload Campaign Monitor delivery</button>
+        <button type="button" id="registrationCampaignMonitorStop" hidden>Stop Campaign Monitor delivery</button>
+        <p id="registrationCampaignMonitorStatus" role="status"></p>
+      </fieldset>
+      <fieldset id="registrationKeap" hidden>
+        <legend>Keap tags</legend>
+        <button type="button" id="registrationKeapLoad">Load Keap tags</button>
+        <label for="registrationKeapList">Keap tag</label>
+        <select id="registrationKeapList"></select>
+        <button type="button" id="registrationKeapMore">More Keap tags</button>
+        <button type="button" id="registrationKeapSave">Save Keap delivery</button>
+        <button type="button" id="registrationKeapRefresh">Reload Keap delivery</button>
+        <button type="button" id="registrationKeapStop" hidden>Stop Keap delivery</button>
+        <p id="registrationKeapStatus" role="status"></p>
+      </fieldset>
+      {% if video_registration_editor %}
+      <fieldset id="registrationSalesforce" hidden>
+        <legend>Salesforce delivery</legend>
+        <button type="button" id="registrationSalesforceLoad">Load Salesforce campaigns</button>
+        <button type="button" id="registrationSalesforceMore">More Salesforce campaigns</button>
+        <label for="registrationSalesforceList">Salesforce campaign</label>
+        <select id="registrationSalesforceList"></select>
+        <label for="registrationSalesforceCompany">Company</label>
+        <input id="registrationSalesforceCompany" type="text" maxlength="255" value="Individual">
+        <label>
+            <input type="checkbox" id="registrationSalesforceEngagement" disabled>
+            Report video views and watch progress daily
+        </label>
+        <button type="button" id="registrationSalesforceSave">Save Salesforce delivery</button>
+        <button type="button" id="registrationSalesforceRefresh">Refresh Salesforce delivery</button>
+        <button type="button" id="registrationSalesforceStop">Stop Salesforce delivery</button>
+        <p id="registrationSalesforceStatus" role="status"></p>
+      </fieldset>
+      {% endif %}
+      {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>
         <table><thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Registered</th></tr></thead>
@@ -34,11 +136,16 @@
     <li>
       <label>Field type <select name="kind">
         <option value="text">Text</option><option value="select">Dropdown</option>
-        <option value="checkbox">Checkbox</option><option value="description">Description</option>
+        <option value="checkbox">Checkbox</option><option value="description">Description</option><option value="hidden">Hidden</option>
       </select></label>
       <label>Field label <input name="label" maxlength="240" required></label>
       <label data-field-options hidden>Choices, one per line <textarea name="options" rows="3"></textarea></label>
+      <div data-field-hidden hidden>
+        <label>URL parameter after reg_ <input name="parameter" maxlength="40" pattern="[a-z][a-z0-9_]{0,39}"></label>
+        <label>Default answer <input name="default_value" maxlength="250"></label>
+      </div>
       <label data-field-required><input type="checkbox" name="required"> Required field</label>
+      <label data-field-link hidden>Terms link <input type="url" name="link" maxlength="2048"></label>
       <button type="button" data-remove-field>Remove field</button>
     </li>
   </template>

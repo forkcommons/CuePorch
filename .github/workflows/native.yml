@@ -1,5 +1,17 @@
 name: Native packages
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Installed acceptance suite
+        type: choice
+        options: [cutover, full]
+        default: cutover
+      platform:
+        description: Native runner selection
+        type: choice
+        options: [all, windows-2025, macos-15, ubuntu-24.04]
+        default: all
 permissions:
   contents: read
 jobs:
@@ -7,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: ${{ fromJSON(inputs.platform == 'all' && '["windows-2025","macos-15","ubuntu-24.04"]' || format('["{0}"]', inputs.platform)) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 50
     steps:
@@ -24,11 +36,20 @@ jobs:
         run: |
           python -m pip install -r requirements.txt pyinstaller==6.17.0 imageio-ffmpeg==0.6.0
           rustup show
+      - name: Locate Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installed = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $iscc = if ($installed) { $installed.Source } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe' }
+          if (!(Test-Path -LiteralPath $iscc)) { throw 'Inno Setup 6 is unavailable on this runner.' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
       - name: Build native layout and installer
         run: |
           python packaging/build.py build
           python packaging/build.py package
-      - name: Install actual package
+      - name: Install actual macOS or Linux package
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
@@ -38,27 +59,81 @@ jobs:
             sudo dpkg -i dist/*.deb
             echo 'LAUNCHER=/opt/cueporch/CuePorch' >> "$GITHUB_ENV"
           fi
-      - name: Prepare independent client and baseline
+      - name: Prepare independent test client
         run: |
           python -m pip install -r requirements-acceptance.txt
           python -m playwright install --with-deps chromium
-          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/fixture-tools"
-          git archive v0.1.0 | tar -x -C "$RUNNER_TEMP/base"
-          ln -s "$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')" "$RUNNER_TEMP/fixture-tools/ffmpeg"
-          echo "$RUNNER_TEMP/fixture-tools" >> "$GITHUB_PATH"
-      - name: Test fresh and upgraded installed application
-        run: python acceptance/installed_package.py "$LAUNCHER" "$RUNNER_TEMP/base" dist/installed-tests.json --review-push
+      - name: Set executable paths on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          (Join-Path $env:GITHUB_WORKSPACE 'build/media-tools') >> $env:GITHUB_PATH
+          "LAUNCHER=$(Join-Path $env:RUNNER_TEMP 'CuePorch Install/CuePorch.exe')" >> $env:GITHUB_ENV
+      - name: Set executable paths on macOS and Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/build/media-tools" >> "$GITHUB_PATH"
+      - name: Select a DASH-capable independent decoder on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          decoder="$GITHUB_WORKSPACE/build/media-tools/ffmpeg"
+          formats="$("$decoder" -hide_banner -demuxers)"
+          if ! grep -Eq '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"; then
+            echo 'The bundled encoder has no DASH demuxer. Use the libxml2-enabled Homebrew ffmpeg-full for playback.'
+            brew list --versions ffmpeg-full >/dev/null || brew install ffmpeg-full
+            decoder="$(brew --prefix ffmpeg-full)/bin/ffmpeg"
+          fi
+          formats="$("$decoder" -hide_banner -demuxers)"
+          grep -E '^[[:space:]]*D[[:space:]]+dash[[:space:]]' <<< "$formats"
+          echo "CUEPORCH_DASH_DECODER=$decoder" >> "$GITHUB_ENV"
+      - name: Verify Windows Setup, cutover and recovery
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter '*-Setup.exe' | Select-Object -ExpandProperty FullName
+          python acceptance/installed_package.py $env:LAUNCHER . dist/installed-tests.json --only fresh --cutover-only --windows-setup $setup
+      - name: Verify macOS and Linux cutover and recovery
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python acceptance/installed_package.py "$LAUNCHER" . dist/installed-tests.json --only fresh --cutover-only
+      - name: Exercise fresh application workflows on macOS and Linux
+        if: inputs.suite == 'full' && runner.os != 'Windows'
+        shell: bash
+        run: python acceptance/installed_package.py "$LAUNCHER" . dist/extended-installed-tests.json --only fresh --review-push
+      - name: Exercise fresh application workflows on Windows
+        if: inputs.suite == 'full' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter '*-Setup.exe' | Select-Object -ExpandProperty FullName
+          python acceptance/installed_package.py $env:LAUNCHER . dist/extended-installed-tests.json --only fresh --review-push --windows-setup $setup
       - name: Provision disposable PeerTube host
+        if: inputs.suite == 'full' && runner.os != 'Windows'
         shell: bash
         run: bash acceptance/ci-host.sh
       - name: Publish and play an actual PeerTube embed from the installed app
+        if: inputs.suite == 'full' && runner.os != 'Windows'
         run: python acceptance/installed_host.py "$LAUNCHER" http://localhost:19000 dist/hosted-playback.json
+      - name: Uninstall Windows test build
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (!$env:LAUNCHER) { exit 0 }
+          $uninstaller = Join-Path (Split-Path -Parent $env:LAUNCHER) 'unins000.exe'
+          if (Test-Path -LiteralPath $uninstaller) {
+            $process = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0 -or (Test-Path -LiteralPath $env:LAUNCHER)) { throw 'Windows test build did not uninstall.' }
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: CuePorch-0.2.0-${{ runner.os }}
+          name: CuePorch-development-${{ runner.os }}-${{ github.sha }}
           path: |
             dist/*.deb
             dist/*.pkg
+            dist/*-Setup.exe
             dist/installed-tests.json
+            dist/extended-installed-tests.json
             dist/hosted-playback.json
           retention-days: 1

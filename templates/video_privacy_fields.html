@@ -1,0 +1,20 @@
+<template id="privacySettings">
+  <form>
+    <label>Link privacy <select name="visibility">
+      <option value="private">Private</option>
+      <option value="password">Password</option>
+      <option value="unlisted">Unlisted</option>
+      <option value="public">Public</option>
+      <option value="embed_only">Embed only</option>
+    </select></label>
+    <label>Viewer password <input name="password" type="password" maxlength="256" autocomplete="new-password"></label>
+    <label>Embedding <select name="embed">
+      <option value="disabled">Off</option><option value="anywhere">Anywhere</option>
+      <option value="domains">Specific domains</option>
+    </select></label>
+    <label>Allowed embed domains <textarea name="domains" rows="3"></textarea></label>
+    <label><input type="checkbox" name="download"> Allow viewers to download</label>
+    <button type="submit">Save privacy</button>
+  </form>
+  <div data-privacy-links></div>
+</template>

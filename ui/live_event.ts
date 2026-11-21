@@ -24,7 +24,8 @@ const next = document.querySelector<HTMLButtonElement>("#archiveNext")!;
 interface ArchivePlaylist {entries: {id: number; label: string}[]; autoplay_next: boolean; loop: boolean;}
 interface EventBranding {logo: string | null; byline: string; live_badge: boolean; viewers: number | null;}
 interface EventView {
-  status: string; address: string | null; native_video: boolean; captions: string | null; analytics_token: string | null;
+  status: string; address: string | null; native_video: boolean; transport: string;
+  captions: string | null; analytics_token: string | null;
   occurrence: {id: number; start: string; local: string} | null; playlist: ArchivePlaylist | null;
   lobby_preview: BeforeEvent | null;
   preview_replay: boolean;
@@ -39,10 +40,11 @@ let playlist: ArchivePlaylist | null = null;
 let entrySignature = "";
 let playNextMuted: boolean | undefined;
 let checking = false;
-let hls: {destroy(): void} | undefined;
+let hls: HlsClient | undefined;
 let stopMeasuring: (() => void) | undefined;
 interface HlsClient {
   readonly playingDate: Date | null;
+  readonly liveSyncPosition: number | null;
   loadSource(url: string): void;
   attachMedia(video: HTMLVideoElement): void;
   destroy(): void;
@@ -50,8 +52,27 @@ interface HlsClient {
 type HlsFactory = {new (config: object): HlsClient; isSupported(): boolean};
 const Hls = (window as Window & {Hls?: HlsFactory}).Hls;
 const viewer = lobby.dataset.viewerGrant || "";
-const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
-const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
+const sharing = document.querySelector<HTMLButtonElement>("#stopAttendeeSharing");
+if (sharing) {
+  const status = document.querySelector("#attendeeSharingStatus")!;
+  sharing.onclick = async () => {
+    sharing.disabled = true;
+    try {
+      const reply = await fetch("/api/event-playback/withdraw-sharing", {method: "POST",
+        headers: {"X-CuePorch-Event-Viewer": viewer}});
+      if (!reply.ok) throw new Error("CuePorch couldn't change sharing. Try again.");
+      sharing.hidden = true;
+      status.textContent = "Watch-time sharing stopped for this viewing session.";
+    } catch {
+      sharing.disabled = false;
+      status.textContent = "CuePorch couldn't change sharing. Try again.";
+    }
+  };
+}
+const audienceAccess = lobby.dataset.audienceAccess || "";
+const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
+const latencyMode = lobby.dataset.latency || "standard";
+const liveSyncSegments = new Map([["low", 2], ["standard", 2], ["fail-safe", 10]]);
 
 function showBranding(value: EventBranding) {
   logo.hidden = !value.logo;
@@ -108,10 +129,13 @@ function viewArchive(opens: number, autoplayMuted?: boolean) {
   void checkStatus();
 }
 
-function renderVideo(address: string, phase: string, analytics: string, video?: HTMLVideoElement) {
+function renderVideo(address: string, phase: string, analytics: string, transport: string, video?: HTMLVideoElement) {
+  const local = transport.startsWith("local:");
+  const liveSegments = local ? 2 : liveSyncSegments.get(latencyMode) ?? 2;
   stopMeasuring?.();
   player.dataset.address = address;
   player.dataset.phase = phase;
+  player.dataset.transport = transport;
   hls?.destroy();
   hls = undefined;
   if (!video) {
@@ -123,8 +147,18 @@ function renderVideo(address: string, phase: string, analytics: string, video?: 
   }
   stopMeasuring = measureEventPlayback(video, analytics);
   const replay = phase === "Replay";
-  controls.attach(video, !replay);
   const currentVideo = video;
+  controls.attach(video, !replay, () => {
+    const ranges = currentVideo.seekable;
+    if (!ranges.length) return null;
+    const last = ranges.length - 1;
+    const start = ranges.start(last);
+    const end = ranges.end(last);
+    const seconds = local ? (latencyMode === "fail-safe" ? 2 : 1) : latencyMode === "low" ? 2 : 4;
+    const position = hls ? hls.liveSyncPosition : end - liveSegments * seconds;
+    return position === null || !Number.isFinite(position) || end - start < 1
+      ? null : Math.min(end - .5, Math.max(start, position));
+  });
   currentVideo.onended = replay ? () => {
     const following = neighboringArchive(1);
     if (playlist?.autoplay_next && following) viewArchive(following.id, currentVideo.muted);
@@ -139,7 +173,7 @@ function renderVideo(address: string, phase: string, analytics: string, video?: 
     const session = new Hls({
       enableWorker: true,
       liveDurationInfinity: true,
-      liveSyncDurationCount: liveSyncSegments.get(lobby.dataset.latency || "") ?? 5,
+      liveSyncDurationCount: liveSegments,
     });
     session.loadSource(address);
     session.attachMedia(video);
@@ -165,6 +199,7 @@ function closePlayer() {
   hls = undefined;
   player.dataset.address = "";
   player.dataset.phase = "";
+  player.dataset.transport = "";
   player.replaceChildren();
 }
 
@@ -175,11 +210,13 @@ async function checkStatus() {
   try {
     const headers: Record<string, string> = {Accept: "application/json"};
     if (viewer) headers["X-CuePorch-Event-Viewer"] = viewer;
+    if (audienceAccess) headers["X-CuePorch-Event-Access"] = audienceAccess;
+    if (lobby.dataset.frameGrant) headers["X-CuePorch-Event-Frame"] = lobby.dataset.frameGrant;
     if (lobby.dataset.analyticsContext) headers["X-CuePorch-Event-Context"] = lobby.dataset.analyticsContext;
     const response = await fetch(requested, {cache: "no-store", headers});
     if (requested !== location.href) return;
-    if (response.status === 404) {
-      eventStatus.textContent = "This event is unavailable";
+    if (response.status === 404 || response.status === 403) {
+      eventStatus.textContent = response.status === 403 ? "This event is unavailable in your region" : "This event is unavailable";
       closePlayer();
       waiting(null);
       showPlaylist(null);
@@ -187,7 +224,7 @@ async function checkStatus() {
       return;
     }
     if (!response.ok) return;
-    const {status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics,
+    const {status: next, address: src, native_video: native, transport, captions: captionPath, analytics_token: analytics,
       occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback,
       appearance, branding: brand}: EventView = await response.json();
     if (requested !== location.href) return;
@@ -210,8 +247,13 @@ async function checkStatus() {
       closePlayer();
       if (!archives) stopChecking();
     } else if (src && native) {
-      if (!player.querySelector("video") || player.dataset.phase !== next || changedOccurrence) {
-        renderVideo(src, next, analytics || "");
+      const video = player.querySelector("video");
+      if (!video || player.dataset.phase !== next || changedOccurrence) {
+        renderVideo(src, next, analytics || "", transport);
+      } else if (player.dataset.transport !== transport) {
+        const playing = !video.paused;
+        renderVideo(src, next, analytics || "", transport, video);
+        if (playing) void video.play().catch(() => {});
       }
     } else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
       closePlayer();
@@ -258,6 +300,6 @@ const initial = player.querySelector("video");
 if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence was withdrawn" ||
     (!initial && eventStatus.textContent === "Replay"))) stopChecking();
 if (initial && player.dataset.address) renderVideo(player.dataset.address, eventStatus.textContent || "",
-  player.dataset.analytics || "", initial);
+  player.dataset.analytics || "", player.dataset.transport || "hosted", initial);
 const initialFrame = player.querySelector("iframe");
 if (initialFrame) stopMeasuring = measurePeerEventPlayback(initialFrame, player.dataset.analytics || "");

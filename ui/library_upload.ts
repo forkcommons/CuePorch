@@ -23,6 +23,33 @@ interface UploadReceipt {
   visibility: Sharing["visibility"];
 }
 
+export interface UploadFolder {
+  id: string;
+  name: string;
+  parent: string | null;
+}
+
+export function folderChoices(select: HTMLSelectElement, folders: UploadFolder[], excluded?: string) {
+  select.replaceChildren(new Option("Library", ""));
+  function append(parent: string | null, prefix: string) {
+    for (const folder of folders) {
+      if (folder.parent !== parent || folder.id === excluded) continue;
+      const label = prefix + folder.name;
+      select.append(new Option(label, folder.id));
+      append(folder.id, label + " / ");
+    }
+  }
+  append(null, "");
+}
+
+export async function readUploadPrivacy(folder: string, load: (path: string) => Promise<Response>): Promise<Sharing> {
+  if (folder) {
+    const {settings, has_password, allowed} = await (await load(`/api/library/folders/${encodeURIComponent(folder)}/privacy`)).json();
+    if (settings) return {...privateSettings, ...settings, has_password, allowed, folder_override: true};
+  }
+  return {...privateSettings, ...await (await load("/api/library/upload-defaults")).json()};
+}
+
 export function uploadLibraryFile(
   file: File, id: string, folder: string, credential: string, options: object | null,
   progress: (value: number | null) => void,

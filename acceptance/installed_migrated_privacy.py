@@ -1,7 +1,6 @@
 """Check that mapped Vimeo source rules still govern installed guest playback."""
 
 import csv
-import io
 import time
 from urllib.parse import urlsplit
 
@@ -13,8 +12,12 @@ from browser import chromium
 from playwright.sync_api import sync_playwright
 
 
+TRANSFER_PASSWORD = "migration-replacement-password"
+
+
 def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
     previous_embed = museum.embed
+    legacy_embed = f"http://127.0.0.1:{source.server_port}/fixture/legacy-player"
     guest = browser.new_context()
     viewer = guest.new_page()
     source.privacy_domain = urlsplit(venue).netloc
@@ -25,6 +28,8 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         page.wait_for_function("typeof document.querySelector('#transfer')?.onclick === 'function'")
         page.get_by_role("button", name="Preview transfer").click()
         expect(page.locator("#status")).to_have_text("inventoried", use_inner_text=True, timeout=30000)
+        page.reload()
+        expect(page.locator("#status")).to_have_text("inventoried", use_inner_text=True)
         page.get_by_role("button", name="Transfer privately").click()
         page.wait_for_function("document.querySelector('#status').textContent.startsWith('transferred')")
 
@@ -42,7 +47,19 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         assert width == 320
         return locator.get_attribute("src")
 
+    def download_map():
+        page.goto(base + "/operator/migration")
+        with page.expect_download() as result:
+            page.get_by_role("button", name="Download embed map").click()
+        download = result.value
+        assert download.suggested_filename == "cueporch-embed-map.csv"
+        with download.path().open(encoding="utf8", newline="") as stream:
+            return list(csv.DictReader(stream))
+
     try:
+        museum.embed = legacy_embed
+        viewer.goto(venue)
+        play(viewer.frame_locator("iframe").locator("video"))
         transfer("initial")
         page.goto(base + "/operator/library")
         page.wait_for_function("typeof document.querySelector('#load')?.onclick === 'function'")
@@ -66,26 +83,51 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         viewer.goto(base + info["watch"])
         previously_unlisted_media = play(viewer.locator("video"))
         expect(viewer.get_by_role("link", name="Download video")).to_be_visible()
-        redirect_map = requests.get(base + "/api/embed-map.csv", headers=auth, timeout=10)
-        redirect_map.raise_for_status()
-        entry = next(row for row in csv.DictReader(io.StringIO(redirect_map.text)) if row["source_id"] == "74")
+        assert requests.get(base + "/api/embed-map.csv", timeout=10).status_code == 403
+        entry = next(row for row in download_map() if row["source_id"] == "74")
         assert entry["old_url"] == "https://vimeo.com/74/abcdef1234"
         assert entry["watch_url"] == base + info["watch"] and not entry["embed_url"]
 
         password_id = ids["Migrated password"]
-        password = "migration-replacement-password"
+        password = TRANSFER_PASSWORD
         paths = restore(password_id, password)["paths"]
         assert paths["watch"] and paths["embed_url"]
-        museum.embed = base + paths["embed_url"]
-        viewer.goto(venue)
+        pages = [venue + "/screenings/premiere", venue + "/screenings/matinee"]
+        page.goto(base + "/operator/videos/" + password_id)
+        page.get_by_label("Pages that embed this video").fill("\n".join(pages + pages[:1]))
+        page.get_by_role("button", name="Save video details").click()
+        expect(page.locator("#detailsStatus")).to_have_text("Video details saved.")
+        details_url = base + work_path(password_id, "/details")
+        assert requests.get(details_url, timeout=10).status_code == 403
+        details = requests.get(details_url, headers=auth, timeout=10).json()
+        assert details["embed_pages"] == pages
+        bad = requests.put(details_url, headers=auth, timeout=10,
+                           json=dict(details, embed_pages=["https://user:secret@example.org/"]))
+        assert bad.status_code == 400
+        rated = requests.put(details_url, headers=auth, timeout=10,
+                             json=dict(details, rating="mature", content=["violence"], advertisement=True))
+        rated.raise_for_status()
+        replacements = [row for row in download_map() if row["work_id"] == password_id]
+        assert [row["external_page"] for row in replacements] == pages
+        assert {row["embed_url"] for row in replacements} == {base + paths["embed_url"]}
+        replacement = replacements[0]
+        museum.embed = replacement["embed_url"]
+        viewer.goto(replacement["external_page"])
         frame = viewer.frame_locator("iframe")
         frame.get_by_label("Video password").fill(password)
         frame.get_by_role("button", name="Watch video").click()
         play(frame.locator("video"))
+        disclosures = frame.get_by_role("list", name="Content information")
+        expect(disclosures).to_contain_text("Mature audiences")
+        expect(disclosures).to_contain_text("Violence")
+        expect(disclosures).to_contain_text("Contains advertising")
         expect(frame.get_by_role("link", name="Download video")).to_have_count(0)
         response = requests.get(base + paths["embed_url"], timeout=10,
                                 headers={"Referer": "http://localhost:3/", "Sec-Fetch-Dest": "iframe"})
         assert response.status_code == 403
+        museum.embed = legacy_embed
+        viewer.goto(venue)
+        play(viewer.frame_locator("iframe").locator("video"))
 
         embed_id = ids["Migrated embed"]
         paths = restore(embed_id)["paths"]
@@ -103,12 +145,15 @@ def check_migrated_privacy(page, browser, base, auth, source, museum, venue):
         assert requests.get(base + previously_unlisted_media, timeout=10).status_code == 404
         response = requests.get(base + work_path(unlisted), headers=auth, timeout=10)
         assert response.json()["watch"] is None
+        assert requests.get(details_url, headers=auth, timeout=10).json()["embed_pages"] == pages
     finally:
         source.privacy_fixture = None
         museum.embed = previous_embed
         guest.close()
 
     return dict(unlisted_key_and_source_map=True, browser_playback_width=320,
+                preview_restored_on_reload=True, protected_map_download=True, controlled_embed_rollback=True,
+                known_embed_pages_survive_reimport=True,
                 replacement_password_and_embed_allowlist=True, embed_only_preserved=True,
                 missing_source_allowlist_stays_private=True, repeat_import_revokes_old_access=True)
 

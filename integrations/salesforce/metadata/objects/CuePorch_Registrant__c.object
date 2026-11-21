@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <label>CuePorch Registrant</label>
+    <pluralLabel>CuePorch Registrants</pluralLabel>
+    <nameField>
+        <displayFormat>CPR-{000000}</displayFormat>
+        <label>CuePorch Registrant</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <sharingModel>Private</sharingModel>
+    <externalSharingModel>Private</externalSharingModel>
+    <fields>
+        <fullName>External_Key__c</fullName>
+        <label>External Key</label>
+        <type>Text</type>
+        <length>64</length>
+        <unique>true</unique>
+        <externalId>true</externalId>
+        <caseSensitive>false</caseSensitive>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Media__c</fullName>
+        <label>Media</label>
+        <type>Lookup</type>
+        <referenceTo>CuePorch_Media__c</referenceTo>
+        <relationshipLabel>Registrants</relationshipLabel>
+        <relationshipName>CuePorch_Registrants</relationshipName>
+        <deleteConstraint>Restrict</deleteConstraint>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Lead__c</fullName>
+        <label>Lead</label>
+        <type>Lookup</type>
+        <referenceTo>Lead</referenceTo>
+        <relationshipLabel>Registrant Leads</relationshipLabel>
+        <relationshipName>CuePorch_Registrants_Lead</relationshipName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <required>false</required>
+    </fields>
+    <fields>
+        <fullName>Contact__c</fullName>
+        <label>Contact</label>
+        <type>Lookup</type>
+        <referenceTo>Contact</referenceTo>
+        <relationshipLabel>Registrant Contacts</relationshipLabel>
+        <relationshipName>CuePorch_Registrants_Contact</relationshipName>
+        <deleteConstraint>SetNull</deleteConstraint>
+        <required>false</required>
+    </fields>
+    <fields>
+        <fullName>Status__c</fullName>
+        <label>Status</label>
+        <type>Text</type>
+        <length>24</length>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Registered_At__c</fullName>
+        <label>Registered At</label>
+        <type>DateTime</type>
+        <required>true</required>
+    </fields>
+    <fields>
+        <fullName>Watch_Percent__c</fullName>
+        <label>Watch Percent</label>
+        <precision>3</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+    </fields>
+    <fields>
+        <fullName>Video_Views__c</fullName>
+        <label>Video Views</label>
+        <precision>18</precision>
+        <required>false</required>
+        <scale>0</scale>
+        <type>Number</type>
+    </fields>
+</CustomObject>

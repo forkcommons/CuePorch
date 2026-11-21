@@ -1,0 +1,394 @@
+"""Exercise browser publication and restart recovery using the documented YouTube API contract."""
+
+from contextlib import ExitStack, closing
+from dataclasses import replace
+import hashlib
+import json
+from pathlib import Path
+import re
+import secrets
+import sqlite3
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+from time import monotonic, sleep
+import unittest
+from unittest.mock import patch
+from urllib.parse import urlencode
+from uuid import uuid4
+
+from flask import Flask, Response, redirect, request
+from playwright.sync_api import expect, sync_playwright
+from werkzeug.serving import make_server
+
+from browser import chromium
+from test_drive_import import QuietHandler, service_worker
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from institution import create_app
+import social_publication
+import youtube_upload as youtube
+
+
+class YouTubePublication(unittest.TestCase):
+    def test_resume_across_restart_and_optional_approval(self):
+        with ExitStack() as cleanup:
+            root = Path(cleanup.enter_context(TemporaryDirectory()))
+            (root / "objects").mkdir()
+            (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
+            clip = root / "Porch program.mp4"
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                            "-i", "testsrc2=size=640x360:rate=24", "-t", "5", "-c:v", "libx264", "-preset", "ultrafast",
+                            "-crf", "13", "-movflags", "+faststart", str(clip)], check=True, capture_output=True)
+            video = clip.read_bytes()
+            chunk = 256 * 1024
+            self.assertGreater(len(video), 2 * chunk)
+            remote = Flask("youtube-fixture")
+            provider = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
+            origin = f"http://127.0.0.1:{provider.server_port}"
+            service = make_server("127.0.0.1", 0, remote, request_handler=QuietHandler, threaded=True)
+            base = f"http://127.0.0.1:{service.server_port}"
+            callback = base + "/integration/oauth/youtube/callback"
+            api_path = "/upload/youtube/v3/videos"
+            uploads = {}
+            probes, ranges = [], []
+            observed = dict(refresh=False, revoked=False)
+            cleanup.enter_context(patch.multiple(youtube, OAUTH=replace(
+                youtube.OAUTH, authorization_url=origin + "/oauth/authorize", token_url=origin + "/oauth/token",
+                revoke_url=origin + "/oauth/revoke",
+            ), UPLOAD=origin + api_path, CHUNK=chunk))
+            cleanup.enter_context(patch.object(social_publication, "RETRY_SECONDS", (3, 3)))
+            cleanup.enter_context(patch.dict("os.environ", {
+                "CUEPORCH_PUBLIC_URL": "", "CUEPORCH_YOUTUBE_CLIENT_ID": "cueporch",
+                "CUEPORCH_YOUTUBE_CLIENT_SECRET": "fixture-secret",
+            }))
+            operator = secrets.token_urlsafe(32)
+            database = root / "workspace.sqlite"
+
+            def start_app():
+                with patch("institution.library_worker.start", return_value=lambda: None):
+                    app = create_app(root, database, operator, "station")
+                stops = [stop for name, stop in app.extensions.items() if name.startswith("stop_")]
+
+                def stop_app():
+                    while stops:
+                        stops.pop()()
+
+                cleanup.callback(stop_app)
+                service.app = app
+                return stop_app
+
+            stop = start_app()
+
+            @remote.get("/oauth/authorize")
+            def authorize():
+                assert request.args["client_id"] == "cueporch" and request.args["redirect_uri"] == callback
+                assert request.args["scope"] == youtube.OAUTH.scope and request.args["access_type"] == "offline"
+                assert request.args["code_challenge_method"] == "S256"
+                code = "fixture-code"
+                if request.args.get("fixture_account") == "alice":
+                    code = "fixture-code-alice"
+                elif request.args.get("fixture_account") == "bob":
+                    code = "fixture-code-bob"
+                return redirect(callback + "?" + urlencode(dict(state=request.args["state"], code=code)))
+
+            @remote.post("/oauth/token")
+            def token():
+                assert request.form["client_id"] == "cueporch" and request.form["client_secret"] == "fixture-secret"
+                first = request.form["grant_type"] == "authorization_code"
+                if first:
+                    code = request.form["code"]
+                    assert code in ("fixture-code", "fixture-code-alice", "fixture-code-bob") and request.form["redirect_uri"] == callback
+                    assert request.form["code_verifier"]
+                    access_token = {"fixture-code": "old-access", "fixture-code-alice": "alice-access", "fixture-code-bob": "bob-access"}[code]
+                    refresh_token = {"fixture-code": "fixture-refresh", "fixture-code-alice": "alice-refresh", "fixture-code-bob": "bob-refresh"}[code]
+                else:
+                    token = request.form["refresh_token"]
+                    if token == "fixture-refresh":
+                        assert not observed["refresh"]
+                        observed["refresh"] = True
+                        access_token = "fresh-access"
+                        refresh_token = "fixture-refresh"
+                    else:
+                        assert token in ("alice-refresh", "bob-refresh")
+                        access_token = {"alice-refresh": "alice-access", "bob-refresh": "bob-access"}[token]
+                        refresh_token = token
+                return dict(access_token=access_token, refresh_token=refresh_token,
+                            scope=youtube.OAUTH.scope, token_type="Bearer", expires_in=3600)
+
+            @remote.post("/oauth/revoke")
+            def revoke():
+                token = request.form["token"]
+                if token in ("alice-refresh", "bob-refresh"):
+                    observed.setdefault("personal_revoked", []).append(token)
+                else:
+                    assert token == "fixture-refresh"
+                    observed["revoked"] = True
+                return "", 200
+
+            @remote.post(api_path)
+            def start_upload():
+                auth = request.headers["Authorization"]
+                if auth == "Bearer old-access":
+                    return "expired", 401
+                assert auth in ("Bearer fresh-access", "Bearer alice-access", "Bearer bob-access")
+                assert request.args["uploadType"] == "resumable" and request.args["notifySubscribers"] == "false"
+                assert request.headers["X-Upload-Content-Type"] == "video/mp4"
+                assert int(request.headers["X-Upload-Content-Length"]) == len(video)
+                uid = str(len(uploads) + 1)
+                uploads[uid] = dict(metadata=request.get_json(), received=bytearray(), authorization=auth)
+                return "", 200, {"Location": origin + api_path + "?upload_id=" + uid}
+
+            @remote.put(api_path)
+            def put_bytes():
+                auth = request.headers["Authorization"]
+                uid = request.args["upload_id"]
+                item = uploads[uid]
+                assert auth == item["authorization"]
+                received = item["received"]
+                position = request.headers["Content-Range"]
+                data = request.get_data()
+                if position == f"bytes */{len(video)}":
+                    assert not data
+                    probes.append(len(received))
+                else:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", position)
+                    start, end, total = map(int, match.groups())
+                    assert start == len(received) and end - start + 1 == len(data) and total == len(video)
+                    ranges.append((uid, start, end))
+                    received.extend(data)
+                    if uid == "1" and start == 0:
+                        return "disconnected after receiving bytes", 503
+                if len(received) == len(video):
+                    privacy = item["metadata"]["status"]["privacyStatus"]
+                    return dict(id=f"PorchVid00{uid}", status={"privacyStatus": privacy}), 201
+                return "", 308, {"Range": f"bytes=0-{len(received) - 1}"}
+
+            @remote.get("/playback/<uid>")
+            def remote_playback(uid):
+                return Response(bytes(uploads[uid]["received"]), mimetype="video/mp4")
+
+            cleanup.enter_context(service_worker(provider))
+            cleanup.enter_context(service_worker(service))
+            digest = hashlib.sha256(video).hexdigest()
+            with sync_playwright() as playwright, chromium(playwright) as browser:
+                page = browser.new_page()
+                api = page.context.request
+                auth = {"Authorization": "Bearer " + operator}
+                page.goto(base + "/operator/integrations")
+                page.get_by_label("Operator credential").fill(operator)
+                page.get_by_role("button", name="Open integrations").click()
+                page.get_by_role("button", name="Connect YouTube", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("YouTube is connected.", timeout=15000)
+                upload = api.post(base + "/api/library/uploads", headers=auth, multipart={
+                    "upload_id": "9504157e-212a-4ea8-aeb5-27661e9936bf",
+                    "file": {"name": clip.name, "mimeType": "video/mp4", "buffer": video},
+                }, timeout=30000)
+                self.assertEqual(201, upload.status, upload.text())
+                uid = upload.json()["id"]
+                endpoint = base + f"/api/library/work/{uid}/social/youtube"
+                self.assertEqual(403, api.get(endpoint).status)
+                page.goto(base + f"/operator/videos/{uid}")
+                page.get_by_role("link", name="Publish to YouTube").click()
+                form = page.locator("#socialForm")
+                expect(form).to_be_visible()
+                expect(form.get_by_label("Visibility on YouTube")).to_have_value("private")
+                expect(form.get_by_label("Title", exact=True)).to_have_value(clip.stem)
+                form.get_by_role("button", name="Upload to YouTube").click()
+
+                deadline = monotonic() + 15
+                checkpoint = None
+                while monotonic() < deadline:
+                    with closing(sqlite3.connect(database)) as db:
+                        checkpoint = db.execute("SELECT session,probe,attempts FROM social_publication").fetchone()
+                    if checkpoint and checkpoint[2]:
+                        break
+                    sleep(.05)
+                self.assertEqual((1, 1), checkpoint[1:])
+                self.assertNotIn(b"upload_id=1", checkpoint[0])
+                stop()
+                self.assertEqual(chunk, len(uploads["1"]["received"]))
+                self.assertEqual([], probes)
+                start_app()
+                page.reload()
+                history = page.get_by_role("list", name="", exact=True).filter(has_text="delivered")
+                expect(page.locator("#socialJobs")).to_contain_text("delivered", timeout=20000)
+                expect(history.get_by_role("link", name="Open on YouTube")).to_have_attribute(
+                    "href", "https://www.youtube.com/watch?v=PorchVid001")
+                first = api.get(endpoint, headers=auth).json()["jobs"][0]
+                self.assertEqual(("delivered", "private", len(video)), (first["state"], first["privacy"], first["sent"]))
+                self.assertEqual([chunk], probes)
+                self.assertEqual(digest, hashlib.sha256(uploads["1"]["received"]).hexdigest())
+                self.assertTrue(observed["refresh"])
+                player = browser.new_page()
+                player.goto(origin + "/playback/1")
+                self.assertEqual(640, player.locator("video").evaluate("async v => {v.muted = true; await v.play(); return v.videoWidth}"))
+
+                policy = api.put(base + "/api/policy/publication", headers=auth, data={"required": True})
+                self.assertTrue(policy.ok, policy.text())
+                form.get_by_label("Visibility on YouTube").select_option("unlisted")
+                form.get_by_label("This video is made for kids").check()
+                form.get_by_role("button", name="Upload to YouTube").click()
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                waiting = api.get(endpoint, headers=auth).json()["jobs"][0]
+                self.assertEqual(1, len(uploads))
+                self.assertTrue(api.post(base + f"/api/actions/{waiting['id']}/decision", headers=auth,
+                                        data={"decision": "approve"}).ok)
+                expect(page.locator("#socialJobs").get_by_role("link", name="Open on YouTube")).to_have_count(2, timeout=20000)
+                self.assertEqual({"privacyStatus": "unlisted", "selfDeclaredMadeForKids": True}, uploads["2"]["metadata"]["status"])
+                self.assertEqual(digest, hashlib.sha256(uploads["2"]["received"]).hexdigest())
+
+                form.get_by_label("Visibility on YouTube").select_option("public")
+                form.get_by_label("This video is made for kids").uncheck()
+                form.get_by_role("button", name="Upload to YouTube").click()
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": False}).ok)
+                expect(page.locator("#socialJobs").get_by_role("link", name="Open on YouTube")).to_have_count(3, timeout=20000)
+                self.assertEqual("public", uploads["3"]["metadata"]["status"]["privacyStatus"])
+                self.assertEqual(digest, hashlib.sha256(uploads["3"]["received"]).hexdigest())
+
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
+                form.get_by_role("button", name="Upload to YouTube").click()
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                cancel_id = api.get(endpoint, headers=auth).json()["jobs"][0]["id"]
+                self.assertEqual(403, api.post(endpoint + f"/{cancel_id}/cancel", headers=auth, data={}).status)
+                page.get_by_role("button", name="Cancel upload").click()
+                expect(page.locator("#socialState")).to_have_text("Upload canceled.")
+                self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
+                self.assertEqual(409, api.post(base + f"/api/actions/{cancel_id}/decision", headers=auth,
+                                               data={"decision": "approve"}).status)
+                self.assertEqual(3, len(uploads))
+
+                team = {"X-CuePorch-Team": "1"}
+                team_request = team | {"Authorization": "Bearer team-session", "X-CuePorch-Social": "1"}
+                detail = base + f"/team/video/{uid}/details"
+                policy_url = base + "/api/team/sharing-policy"
+
+                def join(role):
+                    invitation = api.post(base + "/api/team/invitations", headers=auth | team,
+                                          data={"email": f"{role}@example.test", "role": role})
+                    self.assertEqual(201, invitation.status, invitation.text())
+                    member = browser.new_context().new_page()
+                    member.goto(base + invitation.json()["path"])
+                    member.get_by_label("Display name").fill(role)
+                    member.get_by_label("Choose a password").fill("A temporary source fixture password!")
+                    member.get_by_role("button", name="Join team").click()
+                    expect(member.locator("#teamIdentity")).to_contain_text(role)
+                    account = member.request.get(base + "/api/team/account").json()["id"]
+                    grant = base + f"/api/team/members/{account}/works/{uid}"
+                    self.assertTrue(api.put(grant, headers=auth | team, data={"permission": "edit"}).ok)
+                    member.goto(detail)
+                    return member, grant
+
+                contributor, contributor_grant = join("contributor")
+                plus, _ = join("contributor_plus")
+                expect(contributor.get_by_role("link", name="Publish to YouTube")).to_have_count(0)
+                contributor_data = contributor.request.get(endpoint, headers=team_request).json()
+                self.assertFalse(contributor_data["allowed"])
+                private_request = dict(id=str(uuid4()), cut=contributor_data["cut"], title=clip.stem,
+                                       visibility="private", made_for_kids=False)
+                self.assertEqual(403, contributor.request.post(endpoint, headers=team_request, data=private_request).status)
+                restrictions = api.get(policy_url, headers=auth).json()
+                restrictions["rules"]["contributor"]["outbound"] = True
+                self.assertTrue(api.put(policy_url, headers=auth | team, data=restrictions).ok)
+                for member in (contributor, plus):
+                    member.reload()
+                    member.get_by_role("link", name="Publish to YouTube").click()
+                    expect(member.locator("#socialForm")).to_be_visible()
+                    expect(member.locator("[name=visibility] option[value=public]")).to_be_disabled()
+                    self.assertEqual([], member.request.get(endpoint, headers=team_request).json()["jobs"])
+                self.assertEqual(403, contributor.request.post(endpoint, headers=team_request,
+                                                                data=private_request | {"visibility": "public"}).status)
+                for member in (contributor, plus):
+                    member.get_by_role("button", name="Upload to YouTube").click()
+                    expect(member.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                contributor_jobs = contributor.request.get(endpoint, headers=team_request).json()["jobs"]
+                plus_jobs = plus.request.get(endpoint, headers=team_request).json()["jobs"]
+                revoked_id, allowed_id = contributor_jobs[0]["id"], plus_jobs[0]["id"]
+                self.assertEqual((1, 1), (len(contributor_jobs), len(plus_jobs)))
+                self.assertNotEqual(revoked_id, allowed_id)
+                self.assertEqual(409, contributor.request.post(endpoint + f"/{allowed_id}/cancel",
+                                                                headers=team_request, data={}).status)
+                self.assertTrue(api.put(contributor_grant, headers=auth | team, data={"permission": "view"}).ok)
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": False}).ok)
+                expect(plus.get_by_role("link", name="Open on YouTube")).to_have_count(1, timeout=20000)
+                self.assertEqual(404, contributor.request.get(endpoint, headers=team_request).status)
+                operator_jobs = {job["id"]: job for job in api.get(endpoint, headers=auth).json()["jobs"]}
+                self.assertEqual("failed", operator_jobs[revoked_id]["state"])
+                self.assertIn("no longer has access", operator_jobs[revoked_id]["error"])
+                self.assertEqual(("delivered", "private"), (operator_jobs[allowed_id]["state"], operator_jobs[allowed_id]["privacy"]))
+                self.assertEqual(digest, hashlib.sha256(uploads["4"]["received"]).hexdigest())
+                self.assertTrue(api.put(base + "/api/policy/publication", headers=auth, data={"required": True}).ok)
+
+                self.assertTrue(api.put(contributor_grant, headers=auth | team, data={"permission": "edit"}).ok)
+                for member, account in ((contributor, "alice"), (plus, "bob")):
+                    member.goto(base + "/team")
+                    member.get_by_role("link", name="My connected apps", exact=True).click()
+                    expect(member.get_by_role("heading", name="My connected apps")).to_be_visible()
+                    expect(member.locator("#integrationAccess")).to_be_hidden()
+                    expect(member.get_by_text("Google Drive")).to_have_count(0)
+                    expect(member.get_by_role("button", name="Connect YouTube")).to_be_visible()
+                    member.route(origin + "/oauth/authorize?**",
+                                 lambda route: route.continue_(url=route.request.url + "&fixture_account=" + account),
+                                 times=1)
+                    member.get_by_role("button", name="Connect YouTube").click()
+                    expect(member.locator("#integrationStatus")).to_have_text("YouTube is connected.")
+                    expect(member.get_by_role("button", name="Disconnect YouTube", exact=True)).to_be_visible()
+                    member.goto(detail)
+                    member.get_by_role("link", name="Publish to YouTube").click()
+                    expect(member.locator("#socialConnectionScope")).to_contain_text("Your connected account")
+                for member in (contributor, plus):
+                    member.get_by_role("button", name="Upload to YouTube").click()
+                    expect(member.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                alice_job = contributor.request.get(endpoint, headers=team_request).json()["jobs"][0]["id"]
+                bob_job = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]["id"]
+                alice_page = contributor.context.new_page()
+                alice_page.goto(base + "/team/integrations")
+                alice_page.get_by_role("button", name="Disconnect YouTube", exact=True).click()
+                expect(alice_page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
+                assert observed["personal_revoked"] == ["alice-refresh"]
+                assert observed["revoked"] is False
+
+                contributor.get_by_role("button", name="Upload to YouTube", exact=True).click()
+                expect(contributor.locator("#socialState")).to_contain_text("publishing account changed")
+
+                alice_result = contributor.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                bob_result = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                self.assertEqual((alice_result["id"], alice_result["state"]), (alice_job, "canceled"))
+                self.assertEqual((bob_result["id"], bob_result["state"]), (bob_job, "waiting for publication approval"))
+                assert api.get(endpoint, headers=auth).json()["connected"] is True
+                suffix = "&fixture_account=alice"
+                alice_page.route(origin + "/oauth/authorize?**", lambda route: route.continue_(url=route.request.url + suffix), times=1)
+                alice_page.get_by_role("button", name="Connect YouTube", exact=True).click()
+                expect(alice_page.get_by_text("YouTube is connected.", exact=True)).to_be_visible()
+                receipt = contributor.request.get(endpoint, headers=team_request)
+                self.assertEqual(receipt.status, 200)
+                self.assertEqual(receipt.json()["connection_scope"], "personal")
+                with contributor.expect_response(lambda response: response.request.method == "POST" and response.url == endpoint) as response_info:
+                    contributor.get_by_role("button", name="Upload to YouTube", exact=True).click()
+                response = response_info.value
+                self.assertEqual(response.status, 409)
+                expect(contributor.locator("#socialState")).to_contain_text("publishing account changed")
+                r = api.put(base + "/api/policy/publication", headers=auth, data={"required": False})
+                assert r.ok
+                expect(plus.locator("#socialJobs a", has_text="Open on YouTube")).to_have_count(2, timeout=20000)
+                job = plus.request.get(endpoint, headers=team_request).json()["jobs"][0]
+                assert (job["id"], job["state"]) == (bob_job, "delivered")
+                assert uploads["5"]["authorization"] == "Bearer bob-access"
+                assert hashlib.sha256(uploads["5"]["received"]).hexdigest() == digest
+                r = api.put(base + "/api/policy/publication", headers=auth, data={"required": True})
+                assert r.ok
+                form.get_by_role("button", name="Upload to YouTube").click()
+                expect(page.locator("#socialJobs")).to_contain_text("waiting for publication approval")
+                page.goto(base + "/operator/integrations")
+                page.get_by_role("button", name="Disconnect YouTube", exact=True).click()
+                expect(page.locator("#integrationStatus")).to_have_text("YouTube disconnected.")
+                self.assertTrue(observed["revoked"])
+                self.assertEqual("canceled", api.get(endpoint, headers=auth).json()["jobs"][0]["state"])
+                self.assertEqual(5, len(uploads))
+        print("YouTube OAuth refresh, default private upload, interrupted-session restart and byte-range recovery,"
+              " verified bytes and playback, opt-in approval, per-upload cancellation, scoped contributors and disconnect passed.")
+
+
+if __name__ == "__main__":
+    unittest.main()

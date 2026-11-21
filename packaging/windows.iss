@@ -1,13 +1,13 @@
 [Setup]
 AppId={{0E4C2DB9-0C6C-45F3-8EC0-FE10E89A784E}
 AppName=CuePorch
-AppVersion=0.2.0
+AppVersion=0.3.0
 AppPublisher=ForkCommons
 DefaultDirName={localappdata}\Programs\ForkCommons\CuePorch
 DefaultGroupName=ForkCommons
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=CuePorch-0.2.0-Windows-x64-Setup
+OutputBaseFilename=CuePorch-0.3.0-Windows-x64-Setup
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
@@ -32,7 +32,7 @@ Filename: "{app}\CuePorch.exe"; Parameters: "--data ""{code:DataDirectory}"""; D
 var LibraryPage: TInputDirWizardPage;
 procedure InitializeWizard;
 begin
-  LibraryPage := CreateInputDirPage(wpSelectDir, 'Your video library', 'Where should CuePorch keep your programs and settings?', 'For a new library, keep the suggested folder. To upgrade from 0.1.0, close the old program and browse to the folder containing operator.json and institution.sqlite. Uninstalling CuePorch keeps this folder.', False, '');
+  LibraryPage := CreateInputDirPage(wpSelectDir, 'Your video library', 'Where should CuePorch keep your programs and settings?', 'For a new library, keep the suggested folder. To restore a library, close CuePorch and choose the restored folder containing operator.json and institution.sqlite. Uninstalling CuePorch keeps this folder.', False, '');
   LibraryPage.Add('');
   LibraryPage.Values[0] := ExpandConstant('{param:LIBRARY|' + GetPreviousData('LibraryDirectory',ExpandConstant('{localappdata}\ForkCommons\CuePorch\Data')) + '}');
 end;

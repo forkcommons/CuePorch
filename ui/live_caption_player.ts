@@ -1,6 +1,6 @@
 interface CaptionCue {starts: number; ends: number; text: string;}
 
-export function setupLiveCaptions(grant: string, embed: boolean) {
+export function setupLiveCaptions(grant: string, embed: boolean, access: string) {
   const region = document.querySelector<HTMLElement>("#eventCaptions")!;
   const list = region.querySelector<HTMLOListElement>("ol")!;
   const toggle = region.querySelector<HTMLButtonElement>("#toggleLiveCaptions")!;
@@ -77,6 +77,7 @@ export function setupLiveCaptions(grant: string, embed: boolean) {
       if (revision) address.searchParams.set("revision", revision);
       const response = await fetch(address, {cache: "no-store", headers: {
         "X-CuePorch-Event-Viewer": grant, "X-CuePorch-Chat-Embed": embed ? "yes" : "no",
+        "X-CuePorch-Event-Access": access,
       }});
       if (active !== endpoint) return;
       if (response.status === 404) { select(""); return; }

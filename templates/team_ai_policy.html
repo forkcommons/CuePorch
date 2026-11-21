@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>AI settings · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team/settings">Team settings</a></nav>
+  <h1>AI settings</h1>
+  <form id="aiAccess">
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open AI settings</button>
+  </form>
+  <p id="aiStatus" role="status"></p>
+  <form id="aiSettings" hidden>
+    {% for key, title in features.items() %}
+      <fieldset data-feature="{{ key }}">
+        <legend>{{ title }}</legend>
+        <label><input type="checkbox" name="enabled"> Enable for this workspace</label>
+        <label><input type="checkbox" name="administrators"> Allow Administrators to run this workflow</label>
+      </fieldset>
+    {% endfor %}
+    <label><input type="checkbox" id="enableViewerQuestions"> Allow authorized viewers to ask questions about videos</label>
+    <label for="aiDictionary">Subtitle dictionary</label>
+    <p id="dictionaryHelp">Enter up to {{ max_terms }} lines as language code, original phrase and preferred phrase,
+      separated by tabs. Use * for all languages. CuePorch applies replacements to newly generated tracks.</p>
+    <textarea id="aiDictionary" aria-describedby="dictionaryHelp" rows="6" spellcheck="false"></textarea>
+    <div>
+      <button type="submit">Save AI settings</button>
+      <button type="button" id="aiUsage">Download 90-day usage CSV</button>
+    </div>
+  </form>
+</main>
+<script type="module" src="/static/ui/team_ai_policy.js"></script>
+</html>

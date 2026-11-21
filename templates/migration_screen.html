@@ -1,10 +1,23 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><link rel="stylesheet" href="/static/cueporch.css"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Move from Vimeo · CuePorch</title>
+        <body>{% include "operator_navigation.html" %}
         <main><h1>Move from Vimeo</h1><form><label>Operator credential <input type="password" id="key"></label>
         <label>Vimeo account owner token <input type="password" id="source"></label>
         <button type="button" id="inventory">Preview transfer</button><button type="button" id="transfer">Transfer privately</button>
-        </form><p role="status" id="status"></p><table><thead><tr><th>Work</th><th>Source ID</th><th>Recovery</th><th>Viewing permission</th>
+        </form><p role="status" id="status"></p><p id="migrationSummary" aria-live="polite"></p>
+        <table><thead><tr><th>Work</th><th>Source ID</th><th>Recovery</th><th>Viewing permission</th><th>Source issues</th>
         </tr></thead><tbody id="rows"></tbody></table>
+        <nav id="migrationPages" aria-label="Inventory pages" hidden>
+          <button type="button" id="migrationPreviousPage">Previous page</button>
+          <span id="migrationPageNumber" aria-live="polite"></span>
+          <button type="button" id="migrationNextPage">Next page</button>
+        </nav>
         <section id="showcaseInventory" hidden aria-labelledby="showcaseInventoryTitle">
         <h2 id="showcaseInventoryTitle">Showcases</h2><p id="showcaseInventoryIssue"></p>
         <table><thead><tr><th scope="col">Showcase</th><th scope="col">Original visibility</th><th scope="col">Videos in inventory</th><th scope="col">Outside account inventory</th><th scope="col">CuePorch</th></tr></thead>
-        <tbody id="showcaseInventoryRows"></tbody></table></section></main><script type="module" src="/static/ui/migration_screen.js"></script></html>
+        <tbody id="showcaseInventoryRows"></tbody></table></section>
+        <section id="migrationCutover" hidden aria-labelledby="migrationCutoverTitle">
+          <h2 id="migrationCutoverTitle">Prepare to replace embeds</h2>
+          <p><a href="/operator/library">Review sharing in the Library</a> before downloading the map. Keep the CSV private because it can contain restricted links.</p>
+          <button type="button" id="migrationExportMap">Download embed map</button>
+          <p role="status" id="migrationCutoverStatus"></p>
+        </section></main><script type="module" src="/static/ui/migration_screen.js"></script></body></html>

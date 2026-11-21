@@ -15,6 +15,11 @@ export class StudioAudio {
     constructor(list, empty) {
         this.list = list;
         this.empty = empty;
+        // Supply audio frames while the stage has only a title card or other silent source.
+        const silence = this.context.createConstantSource();
+        silence.offset.value = 0;
+        silence.connect(this.output);
+        silence.start();
     }
     get hasProgramInput() {
         return Array.from(this.channels.values()).some(channel => channel.onAir);

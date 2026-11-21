@@ -5,33 +5,83 @@
 <title>Team members · CuePorch</title>
 <main>
   <nav aria-label="Operator"><a href="/operator">Operator console</a> · <a href="/team">Team workspace</a></nav>
-  <h1>{{ institution }} team members</h1>
+  {% set workspace_heading = brand.label ~ ' team members' %}{% include "workspace_mark.html" %}
   <form id="teamManagementAccess">
     <label>Operator credential <input id="teamManagementKey" type="password" required autocomplete="current-password"></label>
     <button>Open team members</button>
   </form>
   <p id="teamMembersStatus" role="status" aria-live="polite"></p>
   <section id="teamManagement" hidden>
+    <p><a href="/team/settings">Team settings</a> · <a href="/team/workspaces">Manage workspace links</a>
+      · <a href="/team/analytics">Team analytics</a> · <a href="/team/identity">Single sign-on</a></p>
     <form id="teamInvite">
       <label>Invite email <input name="email" type="email" required maxlength="254"></label>
       <label>Invite role <select name="role">
-        <option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="admin">Administrator</option>
+        <option value="viewer">Viewer</option><option value="contributor">Contributor</option>
+        <option value="contributor_plus">Contributor Plus</option><option value="admin">Administrator</option>
       </select></label>
+      {% if invitation_mail %}
+      <label><input name="send_email" type="checkbox" checked> Email the invitation</label>
+      <label>Invitation message (optional) <textarea name="message" maxlength="1000" rows="2"></textarea></label>
+      {% endif %}
       <button>Create invitation</button>
     </form>
     <div id="teamInvitationLink" hidden>
       <label>Private invitation link <input readonly></label><button type="button">Copy link</button>
-      <p>Send this link privately to the person you invited. It can be used once within seven days.</p>
+      <p>Use this link to share the invitation privately. It can be used once within seven days.</p>
     </div>
     <h2>Pending invitations</h2>
     <ul id="teamInvitations"></ul>
     <h2>Members</h2>
+    <button id="downloadTeamRoster" type="button">Download team roster</button>
+    <p id="teamOwnershipHelp" hidden>Assign one active member as Owner. The previous Owner becomes an Administrator.</p>
     <ul id="teamMemberList"></ul>
     <section id="teamShares" hidden>
       <h3 id="teamSharesTitle"></h3>
-      <label>Video <select id="teamShareWork"></select></label>
+      <p>Contributors can edit video metadata and editorial status with a Can edit share. Viewers can play shared videos.</p>
+      <label for="teamShareWork">Video</label>
+      <select id="teamShareWork"></select>
+      <label>Video permission <select id="teamWorkPermission">
+        <option value="view">Can view</option><option value="edit">Can edit</option>
+      </select></label>
       <button id="shareTeamVideo" type="button">Share video</button>
       <ul id="teamSharedVideos"></ul>
+      <h3 id="teamFoldersTitle"></h3>
+      <p>Folder access includes videos in its subfolders.</p>
+      <label for="teamShareFolder">Folder</label>
+      <select id="teamShareFolder"></select>
+      <label>Folder permission <select id="teamFolderPermission">
+        <option value="view">Can view</option><option value="edit">Can edit</option>
+      </select></label>
+      <button id="shareTeamFolder" type="button">Share folder</button>
+      <ul id="teamSharedFolders"></ul>
+    </section>
+    <section aria-labelledby="teamGroupsTitle">
+      <h2 id="teamGroupsTitle">Groups</h2>
+      <p>Share folders and their subfolders with a group. Can edit gives contributors permission to edit video metadata and editorial status.</p>
+      <label>Group <select id="teamGroup"></select></label>
+      <form id="teamGroupForm">
+        <label>Group name <input name="name" required maxlength="64"></label>
+        <p id="teamGroupManagement" hidden>The identity provider manages this group's name and members. You can set its folder permissions here.</p>
+        <label>Default group role
+          <select name="default_role">
+            <option value="">Use member roles</option><option value="viewer">Viewer</option>
+            <option value="contributor">Contributor</option><option value="contributor_plus">Contributor Plus</option>
+            <option value="admin">Administrator</option>
+          </select>
+        </label>
+        <fieldset>
+          <legend>Group members</legend>
+          <div id="teamGroupMembers"></div>
+        </fieldset>
+        <fieldset>
+          <legend>Group folders</legend>
+          <div id="teamGroupFolders"></div>
+        </fieldset>
+        <button>Save group</button>
+        <button id="removeTeamGroup" type="button" disabled>Delete group</button>
+        <button id="reloadTeamGroups" type="button">Reload groups</button>
+      </form>
     </section>
     <details id="teamMembershipActivity">
       <summary>Membership activity</summary>

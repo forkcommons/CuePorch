@@ -15,14 +15,28 @@ const frame = document.querySelector("#showcaseFrame");
 const sharing = document.querySelector("#showcaseSharing");
 const link = document.querySelector("#showcaseLink");
 const code = document.querySelector("#showcaseCode");
-const logoInput = field("logo_file");
-const clear = document.querySelector("#showcaseClearLogo");
+const rokuFeed = document.querySelector("#showcaseRokuFeed");
+const searchStatus = document.querySelector("#showcaseSearchStatus");
+const searchTitle = document.querySelector("#showcaseSearchTitle");
+const searchAddress = document.querySelector("#showcaseSearchAddress");
+const searchDescription = document.querySelector("#showcaseSearchDescription");
+const reportPanel = document.querySelector("#showcaseReportPanel");
+const reportForm = document.querySelector("#showcaseReport");
+const reportFrom = reportForm.elements.namedItem("from");
+const reportTo = reportForm.elements.namedItem("to");
+const reportTotals = document.querySelector("#showcaseReportTotals");
 const base = document.body.dataset.publicUrl || location.origin;
+const assets = [
+    { key: "logo", input: field("logo_file"),
+        clear: document.querySelector("#showcaseClearLogo") },
+    { key: "feature_image", input: field("feature_file"),
+        clear: document.querySelector("#showcaseClearFeature") },
+];
+const images = { logo: null, feature_image: null };
 let current;
 let showcases = [];
 let library = [];
 let selected = [];
-let logo = null;
 let busy = false;
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function fetchResult(path, method = "GET", body) {
@@ -51,7 +65,31 @@ const openRegistration = setupRegistration((suffix, method, values) => request(e
     download.download = "cueporch-showcase-registrants.csv";
     download.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-});
+}, () => credential.value, () => {
+    const selectedId = current.id;
+    void request(endpoint()).then((updated) => {
+        showcases = showcases.map((value) => value.id === selectedId ? { ...value, roku: updated.roku } : value);
+        if (current.id === selectedId)
+            renderRokuLink(updated.roku);
+    }).catch(() => {
+        if (current.id === selectedId)
+            renderRokuLink(null);
+    });
+}, () => endpoint() + "/registration");
+function renderRokuLink(path) {
+    rokuFeed.value = path || "";
+    rokuFeed.parentElement.hidden = !path;
+}
+function renderSearchPreview() {
+    const visible = field("visibility").value === "public";
+    const indexable = field("indexable").checked;
+    searchStatus.textContent = !visible ? "Indexing requires a public showcase."
+        : indexable ? "Preview of the metadata saved for search engines." : "Search indexing is off.";
+    const title = field("seo_title").value.trim() || field("title").value.trim();
+    searchTitle.textContent = title ? title + " · CuePorch" : "";
+    searchAddress.textContent = new URL("/showcases/" + encodeURIComponent(field("slug").value), base).href;
+    searchDescription.textContent = field("seo_description").value.trim() || field("description").value.trim();
+}
 function membership() {
     const included = new Set(selected);
     const titles = new Map(library.map((work) => [work.id, work.title]));
@@ -82,8 +120,10 @@ function visibility() {
     document.querySelector("#showcaseDomains").hidden = mode === "private";
 }
 function select(value) {
-    if (current?.id !== value.id)
+    if (current?.id !== value.id) {
         registration.hidden = true;
+        reportPanel.hidden = true;
+    }
     current = value;
     picker.value = value.id;
     for (const [name, setting] of Object.entries(value.settings)) {
@@ -98,9 +138,11 @@ function select(value) {
     field("slug").value = value.slug;
     field("password").value = "";
     field("password").placeholder = value.has_password ? "Keep current password" : "";
-    logoInput.value = "";
-    logo = value.settings.logo;
-    clear.hidden = !logo;
+    for (const { key, input, clear } of assets) {
+        input.value = "";
+        images[key] = value.settings[key];
+        clear.hidden = !images[key];
+    }
     selected = [...value.settings.videos];
     frame.hidden = true;
     frame.removeAttribute("src");
@@ -109,7 +151,9 @@ function select(value) {
     code.value = value.embed ? `<iframe src="${new URL(value.embed, base).href}" title="Video showcase" width="960" height="640" allowfullscreen></iframe>` : "";
     link.parentElement.hidden = !value.watch;
     code.parentElement.hidden = !value.embed;
+    renderRokuLink(value.roku);
     visibility();
+    renderSearchPreview();
     membership();
     editor.hidden = false;
 }
@@ -156,9 +200,12 @@ if (credential.value)
     void action(signIn);
 picker.onchange = () => updateList(picker.value);
 field("visibility").onchange = visibility;
+form.addEventListener("input", renderSearchPreview);
 add.onclick = () => { selected.push(video.value); membership(); };
-logoInput.onchange = () => { clear.hidden = !logo && !logoInput.files?.length; };
-clear.onclick = () => { logo = null; logoInput.value = ""; clear.hidden = true; };
+for (const { key, input, clear } of assets) {
+    input.onchange = () => { clear.hidden = !images[key] && !input.files?.length; };
+    clear.onclick = () => { images[key] = null; input.value = ""; clear.hidden = true; };
+}
 const on = (id, work, success = "") => {
     document.querySelector("#" + id).onclick = () => void action(work, success);
 };
@@ -175,6 +222,37 @@ on("showcaseDelete", async () => {
     updateList();
 }, "Showcase deleted. Its videos remain in the library.");
 on("showcaseRegistration", openRegistration);
+function reportPath(filters) {
+    return endpoint() + "/analytics" + (filters ? "?" + filters.toString() : "");
+}
+function reportDates() {
+    return new URLSearchParams({ from: reportFrom.value, to: reportTo.value });
+}
+async function showReport(filters) {
+    const stats = await request(reportPath(filters));
+    reportFrom.value = stats.date_from;
+    reportTo.value = stats.date_to;
+    const totals = stats.totals;
+    reportTotals.textContent = `${totals.impressions.toLocaleString()} impressions · ${totals.views.toLocaleString()} plays · `
+        + `${totals.finishes.toLocaleString()} finishes · ${totals.watched_seconds.toLocaleString()} seconds watched`;
+    reportPanel.hidden = false;
+}
+on("showcaseAnalytics", () => showReport());
+reportForm.onsubmit = (event) => {
+    event.preventDefault();
+    void action(() => showReport(reportDates()));
+};
+on("showcaseAnalyticsCsv", async () => {
+    const filters = reportDates();
+    filters.set("format", "csv");
+    const response = await fetchResult(reportPath(filters));
+    const url = URL.createObjectURL(await response.blob());
+    const download = document.createElement("a");
+    download.href = url;
+    download.download = "cueporch-showcase-analytics.csv";
+    download.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 on("showcasePreview", async () => {
     const value = await request(endpoint() + "/preview", "POST");
     frame.hidden = false;
@@ -185,14 +263,17 @@ viewport.onchange = () => { frame.dataset.width = viewport.value; };
 form.onsubmit = (event) => {
     event.preventDefault();
     void action(async () => {
-        if (logoInput.files?.length) {
+        for (const { key, input } of assets) {
+            if (!input.files?.length)
+                continue;
             const file = new FormData();
-            file.set("logo", logoInput.files[0]);
-            logo = (await request("/api/review-logos", "POST", file)).logo;
+            file.set("logo", input.files[0]);
+            images[key] = (await request("/api/review-logos", "POST", file)).logo;
         }
-        const settings = { ...current.settings, logo, videos: selected, domains: field("domains").value.split(/\s+/).filter(Boolean) };
+        const settings = { ...current.settings, ...images, videos: selected,
+            domains: field("domains").value.split(/\s+/).filter(Boolean) };
         for (const [name, old] of Object.entries(settings)) {
-            if (name === "domains" || name === "videos" || name === "logo")
+            if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image")
                 continue;
             const control = field(name);
             settings[name] = typeof old === "boolean" ? control.checked : control.value;

@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import abort, request, send_file
 
 from cueporch import checksum
+import folder_slack_queue
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_thumbnail(
@@ -156,11 +157,13 @@ def register(app, tx, staff, get_work, root):
                 target = root / "objects" / digest
                 if not target.exists():
                     os.replace(output, target)
-                con.execute(
+                changed = con.execute(
                     """INSERT INTO library_thumbnail(work,object,changed) VALUES(?,?,?)
                        ON CONFLICT(work) DO UPDATE SET object=excluded.object,
                          changed=excluded.changed,synced=0,attempted=0,error=NULL
                        WHERE library_thumbnail.object<>excluded.object""",
                     (uid, digest, time.time()),
                 )
+                if changed.rowcount:
+                    folder_slack_queue.enqueue(con, uid, "edit")
         return "", 204

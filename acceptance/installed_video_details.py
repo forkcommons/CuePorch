@@ -76,7 +76,7 @@ def check_imported_video_details(base, auth):
     data = response.json()
     assert data["license"] == "by" and data["rating"] == "mature" and data["advertisement"]
     assert data["tags"] == ["city council"] and data["categories"] == ["Documentary"]
-    assert data["content"] == ["language"] and data["projection"] == "equirectangular"
+    assert data["content"] == ["language"] and data["projection"] == "equirectangular" and data["panorama"] == "flat"
     assert data["media"]["width"] == 320 and data["media"]["audio"].startswith("aac")
     return dict(migrated_editorial_fields=True, source_projection_and_audio_format=True)
 

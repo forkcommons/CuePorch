@@ -2,6 +2,12 @@ const key = document.querySelector("input#key");
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 const load = document.querySelector("button#load");
 const settings = document.querySelector("div#settings");
+const policyLabels = {
+    public_comments: "public comments", ai_details: "AI video details", ai_chapters: "AI chapters", ai_script: "AI scripts",
+    ai_highlights: "AI highlights",
+    event_contact_sync: "Event registration delivery",
+    event_engagement_sync: "Event engagement delivery",
+};
 const queue = document.querySelector("div#queue");
 const result = document.querySelector("p#result");
 const moderation = document.querySelector("#public-comments");
@@ -109,7 +115,7 @@ load.onclick = async () => {
             else if (step === "public_comments" && !input.checked)
                 load.click();
         };
-        label.append(input, document.createTextNode("Require approval for " + (step === "public_comments" ? "public comments" : step)));
+        label.append(input, document.createTextNode("Require approval for " + (policyLabels[step] || step)));
         settings.append(label, document.createElement("br"));
     }
     queue.replaceChildren();

@@ -20,7 +20,7 @@ def export(collection, database, target):
         root = Path(tmp) / "export"
         root.mkdir(mode=0o700)
         shutil.copytree(
-            collection, root / "collection", ignore=shutil.ignore_patterns("*.lock")
+            collection, root / "collection", ignore=shutil.ignore_patterns("*.lock", ".render-*")
         )
         verify(root / "collection")
         with closing(
@@ -38,6 +38,8 @@ def export(collection, database, target):
                 "cases": "SELECT id,work FROM complaint",
                 "case_history": "SELECT case_id,kind,details,actor,at FROM case_event",
             }
+            if has_table(db, "team_member"):
+                tables["team_member"] = "SELECT id,email,name,role,joined,removed FROM team_member"
             manifest = json.loads(
                 (root / "collection" / "manifest.json").read_text(encoding="utf8")
             )
@@ -54,20 +56,60 @@ def export(collection, database, target):
                 "library_placement",
                 "library_star",
                 "library_title",
+                "library_video_details",
                 "library_thumbnail",
+                "library_embed_pages",
+                "library_publication_time",
                 "library_watch_later",
                 "library_deletion",
                 "library_deleted_item",
                 "video_presentation",
                 "video_rating_widget",
+                "video_file_link",
+                "team_work_grant",
+                "team_folder_grant",
+                "team_group",
+                "team_group_member",
+                "team_group_folder",
+                "team_owned_work",
+                "team_membership_event",
+                "team_workspace_link",
+                "team_workspace_link_group",
+                "team_branding",
+                "team_brand_kit",
+                "team_brand_kit_revision",
+                "creator_profile",
             ):
-                if db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                    (table,),
-                ).fetchone():
+                if has_table(db, table):
                     tables[table] = "SELECT * FROM " + table
             for name, statement in tables.items():
                 record[name] = [dict(row) for row in db.execute(statement)]
+            for row in record.get("library_embed_pages", []):
+                row["pages"] = json.loads(row["pages"])
+            for row in record.get("library_video_details", []):
+                row["metadata"] = json.loads(row["metadata"])
+            for row in record.get("creator_profile", []):
+                row["links"] = json.loads(row["links"])
+                row["featured"] = json.loads(row["featured"])
+            for row in record.get("video_file_link", []):
+                row["renditions"] = json.loads(row["renditions"]) if row["renditions"] else None
+            brands = list(record.get("team_branding", []))
+            for row in record.get("team_brand_kit_revision", []):
+                row["settings"] = json.loads(row["settings"])
+                brands.append(row["settings"]["style"])
+            for brand in brands:
+                if not (digest := brand["logo"]):
+                    continue
+                image = db.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
+                if image is None:
+                    raise ValueError("Missing workspace logo.")
+                folder = root / "workspace-branding"
+                folder.mkdir(exist_ok=True)
+                file = folder / digest
+                file.write_bytes(image["content"])
+                if checksum(file) != digest:
+                    raise ValueError("Workspace logo verification failed.")
+                brand["artwork"] = dict(path=file.relative_to(root).as_posix(), mime=image["mime"])
             if "video_rating_widget" in record:
                 record["video_rating_summary"] = [dict(row) for row in db.execute(
                     """SELECT work,version,mode,score,count(*) AS responses FROM video_rating

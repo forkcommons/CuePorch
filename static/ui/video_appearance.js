@@ -14,12 +14,15 @@ const catalog = document.querySelector("#previewCatalog");
 const image = document.querySelector("#previewLogo");
 const video = document.querySelector("#appearanceVideo");
 const clear = document.querySelector("#clearLogo");
+const kitPicker = document.querySelector("#appearanceBrandKit");
+const useKit = document.querySelector("#applyAppearanceKit");
 const input = (key) => form.elements.namedItem(key);
 const work = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 let stored;
 let logo = null;
 let temporaryLogo = null;
 let loading = 0;
+let kitShelf;
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 async function request(path, method = "GET", body) {
     const headers = { Authorization: "Bearer " + credential.value };
@@ -101,6 +104,9 @@ function error(value) {
 async function signIn() {
     try {
         await load();
+        kitShelf = await request("/api/library/brand-kits");
+        for (const kit of kitShelf.kits)
+            kitPicker.add(new Option(kit.name, kit.id));
         sessionStorage.setItem("cueporchOperator", credential.value);
         identify.hidden = true;
         editor.hidden = false;
@@ -148,6 +154,20 @@ input("logo_file").onchange = () => {
     if (temporaryLogo)
         URL.revokeObjectURL(temporaryLogo);
     temporaryLogo = file ? URL.createObjectURL(file) : null;
+    live();
+};
+kitPicker.onchange = () => { useKit.disabled = !kitPicker.value; };
+useKit.onclick = () => {
+    const kit = kitShelf.kits.find(option => option.id === kitPicker.value);
+    if (!kit)
+        return;
+    discardLocalLogo();
+    Object.assign(stored.logos, kitShelf.logos);
+    logo = kit.style.logo;
+    for (const [name, value] of Object.entries(kit.style)) {
+        if (name !== "logo" && value)
+            input(name).value = value;
+    }
     live();
 };
 clear.onclick = () => { discardLocalLogo(); logo = null; live(); };

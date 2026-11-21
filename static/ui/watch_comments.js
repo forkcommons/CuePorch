@@ -1,8 +1,10 @@
 import { viewerRequest, viewerVideo } from "./audience_api.js";
-for (const section of document.querySelectorAll("[data-watch-comments]")) {
+export function setupWatchComments(section) {
     const video = viewerVideo(section);
     const endpoint = "comments/" + video.path;
     const signIn = section.querySelector("[data-comment-signin]");
+    if (section.dataset.next)
+        signIn.querySelector("a").href = video.account;
     const form = section.querySelector("[data-comment-post]");
     const input = form.querySelector("textarea");
     const submit = form.querySelector("button");
@@ -43,7 +45,8 @@ for (const section of document.querySelectorAll("[data-watch-comments]")) {
                 try {
                     const response = await viewerRequest(`${endpoint}/${entry.id}`, "DELETE");
                     if (response.status === 401) {
-                        location.assign(video.account);
+                        if (section.isConnected)
+                            location.assign(video.account);
                         return;
                     }
                     if (!response.ok)
@@ -122,7 +125,8 @@ for (const section of document.querySelectorAll("[data-watch-comments]")) {
         try {
             const response = await viewerRequest(endpoint, "POST", { body });
             if (response.status === 401) {
-                location.assign(video.account);
+                if (section.isConnected)
+                    location.assign(video.account);
                 return;
             }
             if (response.status === 429) {
@@ -143,4 +147,7 @@ for (const section of document.querySelectorAll("[data-watch-comments]")) {
         }
     };
     void load();
+}
+for (const section of document.querySelectorAll("[data-watch-comments]")) {
+    setupWatchComments(section);
 }

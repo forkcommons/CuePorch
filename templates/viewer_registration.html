@@ -1,47 +1,167 @@
-<section aria-labelledby="registrationHeading">
-  <h2 id="registrationHeading">{{ registration.heading }}</h2>
-  {% if registration.description %}<p>{{ registration.description }}</p>{% endif %}
-  <form method="post" aria-labelledby="registrationHeading" {% if registration.layout == 'steps' %}data-registration-steps{% endif %}>
+{% set artwork = registration.appearance %}
+{% macro copy(key) %}<span data-registration-copy="{{ key }}">{{ registration.text[key] }}</span>{% endmacro %}
+<section class="registration-gate" aria-labelledby="registrationHeading" data-alignment="{{ artwork.alignment }}"
+         lang="{{ registration.language }}"
+         style="--registration-bg:{{ artwork.background }};--registration-overlay:{{ artwork.overlay }};--registration-opacity:{{ artwork.opacity }}%">
+  {% if registration.background_src %}
+  <img class="registration-background" src="{{ registration.background_src }}" alt="">
+  {% endif %}
+  <div class="registration-card">
+  {% if registration.logo_src %}<img class="registration-logo" src="{{ registration.logo_src }}" alt="Organizer logo">{% endif %}
+  <h2 id="registrationHeading">{{ copy('return_heading' if registration.sign_on else 'heading') }}</h2>
+  {% if not registration.sign_on %}<p data-registration-description {% if not registration.text.description %}hidden{% endif %}>{{ copy('description') }}</p>{% endif %}
+  <form method="post" aria-labelledby="registrationHeading" {% if registration.layout == 'steps' and not registration.sign_on %}data-registration-steps{% endif %}>
+    {% if registration.catalogue | length > 1 %}
+    <div data-registration-language-picker {% if not registration_preview %}hidden{% endif %}>
+      <label for="registrationLanguage">{{ copy('language') }}</label>
+      <select id="registrationLanguage" name="registration_language">
+        {% for code in registration.catalogue %}
+        <option value="{{ code }}" lang="{{ code }}" {% if code == registration.language %}selected{% endif %}>{{ registration_languages[code] }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
     {% if registration_error %}<p role="alert">{{ registration_error }}</p>{% endif %}
     <input type="hidden" name="enrollment" value="{{ enrollment }}">
     {% if event_context %}<input type="hidden" name="event_context" value="{{ event_context }}">{% endif %}
     {% if unlock_token %}<input type="hidden" name="frame" value="{{ unlock_token }}">{% endif %}
+    {% if event_access %}<input type="hidden" name="event_access" value="{{ event_access }}">{% endif %}
+    {% if registration.sign_on %}
+      {% if registration.sign_on.step == 'code' %}
+        <p>{{ copy('code_prompt') }}</p>
+        <input type="hidden" name="return_challenge" value="{{ registration.sign_on.challenge }}">
+        <label>{{ copy('code') }} <input name="return_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required></label>
+        <button type="submit" name="registration_action" value="verify">{{ copy('verify') }}</button>
+        <button type="submit" name="registration_action" value="open" formnovalidate>{{ copy('other_email') }}</button>
+      {% else %}
+        <p>{{ copy('email_prompt') }}</p>
+        <label>{{ copy('email') }} <input type="email" name="return_email" autocomplete="email" maxlength="254" required></label>
+        <button type="submit" name="registration_action" value="send">{{ copy('send') }}</button>
+      {% endif %}
+      <button type="submit" name="registration_action" value="back" formnovalidate>{{ copy('back_to_form') }}</button>
+    {% else %}
     <div data-identity>
-    <label>Email <input type="email" name="email" autocomplete="email" maxlength="254" value="{{ request.form.get('email', '') }}" required></label>
+    <label>{{ copy('email') }} <input type="email" name="email" autocomplete="email" maxlength="254" value="{{ request.form.get('email', '') }}" required></label>
     {% if registration.first_name != 'off' %}
-    <label>First name <input name="first_name" autocomplete="given-name" maxlength="80" value="{{ request.form.get('first_name', '') }}" {% if registration.first_name == 'required' %}required{% endif %}></label>
+    <label>{{ copy('first_name') }} <input name="first_name" autocomplete="given-name" maxlength="80" value="{{ request.form.get('first_name', '') }}" {% if registration.first_name == 'required' %}required{% endif %}></label>
     {% endif %}
     {% if registration.last_name != 'off' %}
-    <label>Last name <input name="last_name" autocomplete="family-name" maxlength="80" value="{{ request.form.get('last_name', '') }}" {% if registration.last_name == 'required' %}required{% endif %}></label>
+    <label>{{ copy('last_name') }} <input name="last_name" autocomplete="family-name" maxlength="80" value="{{ request.form.get('last_name', '') }}" {% if registration.last_name == 'required' %}required{% endif %}></label>
     {% endif %}
     </div>
     <div data-questions>
     {% for field in registration.fields %}
       {% if field.type == 'description' %}
-        <p>{{ field.label }}</p>
+        <p>{{ copy(field.id) }}</p>
       {% elif field.type == 'select' %}
-        <label>{{ field.label }}<select name="{{ field.id }}" {% if field.required %}required{% endif %}>
-          <option value="">Choose an option</option>
-          {% for option in field.options %}<option value="{{ option }}" {% if request.form.get(field.id) == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+        <label>{{ copy(field.id) }}<select name="{{ field.id }}" {% if field.required %}required{% endif %}>
+          <option value="" data-registration-copy="choose_option">{{ registration.text.choose_option }}</option>
+          {% for option in field.options %}
+            {% set key = field.id ~ '.option.' ~ loop.index0 %}
+            <option value="{{ option }}" data-registration-copy="{{ key }}" {% if request.form.get(field.id) == option %}selected{% endif %}>{{ registration.text[key] }}</option>
+          {% endfor %}
         </select></label>
       {% elif field.type == 'checkbox' %}
-        <label><input type="checkbox" name="{{ field.id }}" value="yes" {% if request.form.get(field.id) == 'yes' %}checked{% endif %} {% if field.required %}required{% endif %}>{{ field.label }}</label>
-      {% else %}
-        <label>{{ field.label }} <input name="{{ field.id }}" maxlength="50" value="{{ request.form.get(field.id, '') }}" {% if field.required %}required{% endif %}></label>
+        <label><input type="checkbox" name="{{ field.id }}" value="yes" {% if request.form.get(field.id) == 'yes' %}checked{% endif %} {% if field.required %}required{% endif %}>{{ copy(field.id) }}</label>
+        {% if field.link %}<p><a href="{{ field.link }}" target="_blank" rel="noopener noreferrer">{{ copy('field_details') }}</a></p>{% endif %}
+      {% elif field.type == 'text' %}
+        <label>{{ copy(field.id) }} <input name="{{ field.id }}" maxlength="50" value="{{ request.form.get(field.id, '') }}" {% if field.required %}required{% endif %}></label>
       {% endif %}
     {% endfor %}
+    {% if offer_attendee_sharing %}
+    <label><input type="checkbox" name="share_watch_time" value="yes" {% if request.form.get('share_watch_time') == 'yes' %}checked{% endif %}>
+      {{ copy('watch_time') }}</label>
+    {% endif %}
+    {% if hubspot_consent %}
+    <label><input type="checkbox" name="hubspot_consent" value="{{ hubspot_consent }}">
+      Share my email address and name with the organizer in HubSpot for this event.</label>
+    {% endif %}
+    {% set delivery_consent = registration.mailchimp_form_consent %}
+    {% if delivery_consent %}
+        <label><input type="checkbox" name="mailchimp_form_consent" value="{{ delivery_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
+    {% endif %}
+    {% if registration.constant_contact_form_consent %}
+    <label><input type="checkbox" name="constant_contact_form_consent" value="{{ registration.constant_contact_form_consent }}"> Share my email address and first and last names with the organizer through Constant Contact and receive marketing email from the organizer.</label>
+    {% endif %}
+    {% if registration.campaign_monitor_form_consent %}
+    <label><input type="checkbox" name="campaign_monitor_form_consent" value="{{ registration.campaign_monitor_form_consent }}"> Share my email address and first and last names with the organizer through Campaign Monitor and receive marketing email from the organizer.</label>
+    {% endif %}
+    {% if registration.salesforce_form_consent %}
+    <label><input type="checkbox" name="salesforce_form_consent" value="{{ registration.salesforce_form_consent }}"> Share my email address, name, and registration time with the organizer in Salesforce Sales Cloud.</label>
+    {% if registration.salesforce_related_fields %}
+    <p>Submitted registration answers and captured campaign source details are included.</p>
+    {% endif %}
+    {% endif %}
+    {% if registration.salesforce_video_engagement_consent %}
+        <label><input type="checkbox" name="salesforce_video_engagement_consent" value="{{ registration.salesforce_video_engagement_consent }}"> Share my video views and watch progress with the organizer in Salesforce Sales Cloud.</label>
+    {% endif %}
+    {% if registration.keap_form_consent %}
+    <label><input type="checkbox" name="keap_form_consent" value="{{ registration.keap_form_consent }}"> Share my email address and first and last names with the organizer through Keap for marketing.</label>
+    {% endif %}
+    {% if mailchimp_consent %}
+    <label><input type="checkbox" name="mailchimp_consent" value="{{ mailchimp_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
+    {% endif %}
+    {% if mailchimp_engagement_consent %}
+        <label>
+            <input type="checkbox" name="mailchimp_engagement_consent" value="{{ mailchimp_engagement_consent }}">
+            Also share my webinar attendance, live and replay watch time, named questions, upvoted questions and poll responses with the organizer in Mailchimp.
+        </label>
+    {% endif %}
+    {% if salesforce_consent %}
+    <label>
+      <input type="checkbox" name="salesforce_consent" value="{{ salesforce_consent }}">
+      Share my name, email address and registration time with the organizer in Salesforce Sales Cloud.
+    </label>
+    {% if salesforce_related_fields %}
+    <p>Submitted registration answers and captured campaign source details are included.</p>
+    {% endif %}
+    {% endif %}
+    {% if salesforce_engagement_consent %}
+    <label>
+      <input type="checkbox" name="salesforce_engagement_consent" value="{{ salesforce_engagement_consent }}">
+      Share my webinar attendance and watch time{% if salesforce_engagement_details %}, plus my poll answers, named questions and upvotes on named questions{% endif %} with the organizer in Salesforce Sales Cloud.
+    </label>
+    {% endif %}
+    {% if marketo_consent %}
+    <label>
+      <input type='checkbox' name='marketo_consent' value='{{ marketo_consent }}'>
+      Share my name, email address and selected form answers with the organizer in Marketo.
+    </label>
+    {% endif %}
+    {% if marketo_engagement_consent %}
+        <label>
+            <input type="checkbox" name="marketo_engagement_consent" value="{{ marketo_engagement_consent }}">
+            Also share my live watch time, attendance, named questions and poll responses with the organizer in Marketo.
+        </label>
+    {% endif %}
+    {% if hubspot_engagement_consent %}
+    <label><input type="checkbox" name="hubspot_engagement_consent" value="{{ hubspot_engagement_consent }}">
+      Share my registration time and watch time for this event with the organizer in HubSpot.</label>
+    {% endif %}
     {% if registration.privacy_url %}
-    <p><a href="{{ registration.privacy_url }}" target="_blank" rel="noopener noreferrer">Privacy policy</a></p>
+    <p><a href="{{ registration.privacy_url }}" target="_blank" rel="noopener noreferrer">{{ copy('privacy') }}</a></p>
     {% endif %}
     </div>
     {% if registration.layout == 'steps' %}
       <div data-step-controls hidden>
-        <p data-step-message aria-live="polite"></p>
-        <button type="button" data-previous>Back</button>
-        <button type="button" data-next>Continue</button>
+        <p data-step-message aria-live="polite">
+          <span data-step-one data-registration-copy="step_one">{{ registration.text.step_one }}</span>
+          <span data-step-two data-registration-copy="step_two" hidden>{{ registration.text.step_two }}</span>
+        </p>
+        <button type="button" data-previous>{{ copy('back') }}</button>
+        <button type="button" data-next>{{ copy('continue') }}</button>
       </div>
     {% endif %}
-    <button type="submit">Register and watch</button>
+    <button type="submit">{{ copy('register') }}</button>
+    {% if registration.can_sign_on %}
+      <button type="submit" name="registration_action" value="open" formnovalidate>{{ copy('return') }}</button>
+    {% endif %}
+    {% endif %}
   </form>
-  {% if registration.layout == 'steps' %}<script type="module" src="/static/ui/registration_steps.js"></script>{% endif %}
+  {% if registration.catalogue | length > 1 and not registration_preview %}
+    <script type="application/json" data-registration-catalogue>{{ registration.catalogue | tojson }}</script>
+    <script type="module" src="/static/ui/registration_locale.js"></script>
+  {% endif %}
+  {% if registration.layout == 'steps' and not registration.sign_on and not registration_preview %}<script type="module" src="/static/ui/registration_steps.js"></script>{% endif %}
+  </div>
 </section>

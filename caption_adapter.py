@@ -9,10 +9,80 @@ from pathlib import Path
 from time import monotonic
 
 from cueporch import checksum
+from local_model import ModelError, local_model_name, loopback_origin, require_local_model
 
 
 class CaptionError(ValueError):
     pass
+
+
+TRANSLATE = """
+import json
+import sys
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener, install_opener
+
+from textflowkit.core.translate import get_translator
+
+
+class RefuseRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+install_opener(build_opener(ProxyHandler({}), RefuseRedirect()))
+request = json.loads(sys.stdin.buffer.read())
+result = get_translator().translate(request["texts"], request["language"])
+sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+"""
+
+
+def translation_runtime():
+    env = dict(os.environ)
+    model = env.get("TEXTFLOWKIT_TRANSLATE_MODEL", "").strip()
+    if (not local_model_name(model)
+            or not loopback_origin(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))):
+        return None
+    python = env.get("CUEPORCH_TEXTFLOWKIT_PYTHON")
+    if not python:
+        args, installed_env = command()
+        if len(args) > 1 and args[1] == "-c":
+            python, env = args[0], installed_env
+        elif args:
+            directory = Path(args[0]).parent
+            python = directory / ("python.exe" if os.name == "nt" else "python")
+    if not python or not Path(python).is_file():
+        return None
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    return [str(python), "-c", TRANSLATE], env
+
+
+def translate_cues(cues, language, stopping=None):
+    runtime = translation_runtime()
+    if runtime is None:
+        raise CaptionError("Configure a TextFlowKit runtime and local translation model first.")
+    args, env = runtime
+    origin = loopback_origin(env.get("TEXTFLOWKIT_OLLAMA_HOST", "http://127.0.0.1:11434"))
+    try:
+        require_local_model(origin, env["TEXTFLOWKIT_TRANSLATE_MODEL"].strip())
+    except ModelError as error:
+        raise CaptionError(str(error)) from error
+    body = json.dumps(dict(texts=[cue["text"] for cue in cues], language=language)).encode("utf-8")
+    try:
+        with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as result:
+            source.write(body)
+            source.seek(0)
+            code = wait_for_transcription(args, env, int(env.get("CUEPORCH_CAPTION_TIMEOUT", "14400")),
+                                          stopping, stdin=source, stdout=result)
+            if code:
+                raise CaptionError("The translation runtime did not complete.")
+            result.seek(0)
+            texts = json.load(result)
+    except (subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        raise CaptionError("TextFlowKit could not translate this track using the configured local model.") from error
+    if not isinstance(texts, list) or len(texts) != len(cues):
+        raise CaptionError("The local model returned an incomplete subtitle translation.")
+    return [dict(cue, text=text) for cue, text in zip(cues, texts, strict=True)]
 
 
 def command():
@@ -37,8 +107,8 @@ def command():
     return [], env
 
 
-def wait_for_transcription(args, env, timeout, stopping):
-    options = dict(env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+def wait_for_transcription(args, env, timeout, stopping, *, stdin=None, stdout=subprocess.DEVNULL):
+    options = dict(env=env, stdin=stdin, stdout=stdout, stderr=subprocess.DEVNULL,
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if stopping is None:
         return subprocess.run(args, timeout=timeout, **options).returncode
@@ -80,7 +150,7 @@ def transcribe_path(source, output, language=None, stopping=None):
     return vtts[0].read_bytes(), transcripts[0].read_bytes()
 
 
-def transcribe_caption(collection, media, language=None):
+def transcribe_caption(collection, media, language=None, stopping=None):
     with tempfile.TemporaryDirectory(dir=collection.parent) as temp:
         folder = Path(temp)
         src = folder / ("source." + media["format"])
@@ -89,7 +159,7 @@ def transcribe_caption(collection, media, language=None):
             os.link(original, src)
         except OSError:
             shutil.copyfile(original, src)
-        return transcribe_path(src, folder / "tracks", language)
+        return transcribe_path(src, folder / "tracks", language, stopping)
 
 
 def caption_work(work, collection):

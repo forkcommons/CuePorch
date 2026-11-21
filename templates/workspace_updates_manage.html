@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Manage announcements · CuePorch</title>
+<body data-updates-team="{{ 'yes' if team else 'no' }}">
+<main>
+  <p><a href="{{ url_for('whats_new', team=1 if team else none) }}">What's New</a></p>
+  <h1>Manage announcements</h1>
+  {% if team %}<p><a href="/team">Team workspace</a></p>{% endif %}
+  <form id="updateAccess" method="post"{% if team %} hidden{% endif %}>
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open announcement editor</button>
+  </form>
+  <p id="updateSaveStatus" role="status"></p>
+  <section id="announcementEditor" hidden>
+    <button type="button" id="newAnnouncement">New announcement</button>
+    <ul id="editAnnouncements"></ul>
+    <form id="editAnnouncement" method="post" hidden>
+      <label>Link name <input name="slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label>
+      <label>Title <input name="title" maxlength="120" required></label>
+      <label>Announcement <textarea name="description" rows="6" maxlength="8000" required></textarea></label>
+      <label for="updateArea">Product area</label>
+      <select name="area" id="updateArea">
+        {% for area in areas %}<option>{{ area }}</option>{% endfor %}
+      </select>
+      <label for="updateCategory">Category</label>
+      <select name="category" id="updateCategory">
+        {% for category in categories %}<option>{{ category }}</option>{% endfor %}
+      </select>
+      <label for="updateState">Publication state</label>
+      <select name="state" id="updateState">
+        <option value="draft">Draft</option><option value="up-next">Up next</option><option value="released">Released</option>
+      </select>
+      <label>Announcement date <input name="date" type="date" required></label>
+      <p id="updateFeedbackCounts" hidden></p>
+      <button>Save announcement</button>
+    </form>
+  </section>
+</main>
+<script type="module" src="/static/ui/workspace_updates_manage.js"></script>
+</body>
+</html>

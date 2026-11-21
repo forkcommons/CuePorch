@@ -1,10 +1,13 @@
 """Version-independent editorial metadata for a retained video."""
 
 import json
+from urllib.parse import urlsplit
 
 from flask import abort, request
 
 import review_feedback
+import content_rating
+from browser_account_security import private
 from catalog import video_version_key
 from library_privacy import playback
 from media_tools import video_properties
@@ -12,10 +15,33 @@ from media_tools import video_properties
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS library_video_details(
  work TEXT PRIMARY KEY, metadata TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS library_embed_pages(work TEXT PRIMARY KEY, pages TEXT NOT NULL);
 """
 LICENSES = {"by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd", "cc0"}
-CONTENT = {"language", "drugs", "violence", "nudity"}
-RATINGS = {"unrated", "all", "mature"}
+CONTENT = content_rating.DESCRIPTORS.keys()
+PANORAMAS = {"flat", "source", "180-mono", "180-top-bottom", "180-side-by-side",
+             "360-mono", "360-top-bottom", "360-side-by-side"}
+
+
+def parse_embed_pages(pages):
+    if not isinstance(pages, list) or len(pages) > 100:
+        abort(400, "Enter up to 100 pages where this video is embedded.")
+    cleaned = []
+    for value in pages:
+        if not isinstance(value, str) or not 1 <= len(url := value.strip()) <= 2048 or any(
+            char.isspace() or ord(char) < 32 or char == "\\" for char in url
+        ):
+            abort(400, "Enter one complete website URL per line.")
+        try:
+            parts = urlsplit(url)
+            valid = (parts.scheme in ("http", "https") and parts.hostname and parts.username is None
+                     and (parts.port is None or parts.port > 0))
+        except ValueError:
+            valid = False
+        if not valid:
+            abort(400, "Use HTTP or HTTPS page URLs without credentials.")
+        cleaned.append(url)
+    return list(dict.fromkeys(cleaned))
 
 
 def names(values):
@@ -55,7 +81,8 @@ def source_details(work):
 
 def details_for(con, work):
     row = con.execute("SELECT metadata FROM library_video_details WHERE work=?", (work["id"],)).fetchone()
-    return json.loads(row["metadata"]) if row else source_details(work)
+    state = json.loads(row["metadata"]) if row else source_details(work)
+    return {"panorama": "flat"} | state
 
 
 def labels(values, name):
@@ -85,26 +112,20 @@ def parse_details(body):
     license_id = body.get("license")
     if license_id is not None and (not isinstance(license_id, str) or license_id not in LICENSES):
         abort(400, "Choose an available copyright license.")
-    rating = body.get("rating")
-    if not isinstance(rating, str) or rating not in RATINGS:
-        abort(400, "Choose a content rating.")
-    content = labels(body.get("content", []), "content descriptors")
-    if not set(content) <= CONTENT or (content and rating != "mature"):
-        abort(400, "Content descriptors are available for mature videos.")
-    if any(type(body.get(field)) is not bool for field in ("realistic_ai", "advertisement")):
-        abort(400, "Choose a value for each disclosure.")
+    classification = content_rating.validate({key: body.get(key, [] if key == "content" else None)
+                                              for key in content_rating.DEFAULT})
     return dict(
         description=description, tags=tags, categories=categories, license=license_id,
         credits=[dict(name=item["name"].strip(), role=item.get("role", "").strip()) for item in credits],
-        rating=rating, content=content, realistic_ai=body["realistic_ai"], advertisement=body["advertisement"],
+        **classification,
     )
 
 
-def register(app, tx, staff, root, get_work, title_for, save_title):
+def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
     @app.route("/api/library/work/<uid>/editorial-status", methods=["GET", "PUT"])
     def editorial_status(uid):
-        staff()
         with tx() as con:
+            authorize_editor(con, uid)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
@@ -115,18 +136,30 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
                     abort(409, "The current version changed. Reload it before setting a status.")
                 review_feedback.set_editorial_status(con, uid, version, body.get("status"))
             state = review_feedback.editorial_status(con, uid, version)
-        return dict(status=state or review_feedback.STATUSES[0], version=version)
+        return private(dict(status=state or review_feedback.STATUSES[0], version=version))
 
     @app.route("/api/library/work/<uid>/details", methods=["GET", "PUT"])
     def video_details(uid):
-        staff()
         with tx() as con:
+            authorize_editor(con, uid)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
+            saved_pages = con.execute("SELECT pages FROM library_embed_pages WHERE work=?", (uid,)).fetchone()
+            embed_pages = json.loads(saved_pages[0]) if saved_pages else work.get("known_embed_pages", [])
+            if not isinstance(embed_pages, list):
+                embed_pages = []
             if request.method == "PUT":
                 body = request.get_json()
                 state = parse_details(body)
+                panorama = body.get("panorama", details_for(con, work)["panorama"])
+                if not isinstance(panorama, str) or panorama not in PANORAMAS:
+                    abort(400, "Choose an available panoramic projection.")
+                state["panorama"] = panorama
+                if "embed_pages" in body:
+                    embed_pages = parse_embed_pages(body["embed_pages"])
+                    con.execute("""INSERT INTO library_embed_pages VALUES(?,?)
+                        ON CONFLICT(work) DO UPDATE SET pages=excluded.pages""", (uid, json.dumps(embed_pages)))
                 save_title(con, work, body.get("title"))
                 con.execute(
                     """INSERT INTO library_video_details VALUES(?,?) ON CONFLICT(work) DO UPDATE SET
@@ -137,10 +170,10 @@ def register(app, tx, staff, root, get_work, title_for, save_title):
             title = title_for(con, work)
         media = next((item for item in work["files"] if item["role"] == "original"), None) or playback(work)
         measured = video_properties(root / "objects" / media["sha256"]) if media else {}
-        return dict(
-            **state, title=title,
+        return private(dict(
+            **state, title=title, embed_pages=embed_pages,
             media=dict(**measured, format=media["format"], bytes=media["bytes"]) if media else None,
             duration_seconds=work.get("duration_seconds"),
             projection=work.get("source_projection"),
             added_at=work.get("source_created_time") or work.get("library_added_at"),
-        )
+        ))

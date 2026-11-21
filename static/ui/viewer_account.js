@@ -1,4 +1,5 @@
 import { viewerRequest } from "./audience_api.js";
+import { requestSignInCode, resetSignInCode, signInValues } from "./sign_in_factor.js";
 const top = document.querySelector("#viewerAccount");
 const status = document.querySelector("#viewerAccountStatus");
 const entrance = document.querySelector("#viewerEntrance");
@@ -9,11 +10,18 @@ const details = document.querySelector("#viewerDetails");
 const change = document.querySelector("#changeViewerPassword");
 const remove = document.querySelector("#deleteViewerAccount");
 const signOut = document.querySelector("#viewerSignOut");
+const preferenceSection = document.querySelector("#viewerPreferences");
+const preferenceForm = preferenceSection.querySelector("form");
+const preferenceMode = preferenceForm.querySelector("select");
+const preferenceChoices = preferenceForm.querySelector("fieldset");
 let busy = false;
 function show(account) {
     entrance.hidden = !!account;
     management.hidden = !account;
     if (!account) {
+        preferenceSection.hidden = true;
+        preferenceForm.reset();
+        resetSignInCode(signIn);
         for (const form of [signIn, signUp, details, change, remove])
             form.reset();
         return;
@@ -44,25 +52,63 @@ function failure(response, messages) {
 }
 const messages = { 400: "Check the fields and try again.", 429: "Too many attempts. Try again later." };
 const values = (form) => Object.fromEntries(new FormData(form));
+function showPreferences(preferences) {
+    preferenceMode.value = preferences.mode;
+    for (const choice of preferenceChoices.querySelectorAll("input")) {
+        choice.checked = preferences.excluded.includes(choice.value);
+    }
+    preferenceChoices.hidden = preferences.mode !== "custom";
+    preferenceSection.hidden = false;
+}
+async function showSignedIn(account) {
+    show(account);
+    const response = await viewerRequest("preferences");
+    if (response.ok)
+        showPreferences(await response.json());
+    else
+        status.textContent = "Could not load viewing preferences. Reload to try again.";
+}
+preferenceMode.onchange = () => {
+    preferenceChoices.hidden = preferenceMode.value !== "custom";
+};
+preferenceForm.onsubmit = event => {
+    event.preventDefault();
+    void perform(async () => {
+        const response = await viewerRequest("preferences", "PUT", {
+            mode: preferenceMode.value, excluded: new FormData(preferenceForm).getAll("excluded"),
+        });
+        if (!response.ok)
+            return failure(response, { ...messages, 401: "Sign in to save viewing preferences." });
+        showPreferences(await response.json());
+        status.textContent = "Viewing preferences saved.";
+    });
+};
 function connect(form, method) {
     form.onsubmit = event => {
         event.preventDefault();
         void perform(async () => {
-            const response = await viewerRequest(method === "sign in" ? "session" : "signup", "POST", values(form));
+            const body = method === "sign in" ? signInValues(form, event.submitter) : values(form);
+            const response = await viewerRequest(method === "sign in" ? "session" : "signup", "POST", body);
+            if (response.status === 428 && method === "sign in")
+                return requestSignInCode(form, status, await response.json());
             if (!response.ok)
                 return failure(response, {
                     ...messages, 401: "The email or password did not match.", 409: "That email address is already in use.",
+                    422: "That code did not match or has already been used.",
                 });
             form.reset();
+            if (method === "sign in")
+                resetSignInCode(form);
             if (top.dataset.destination)
                 location.assign(top.dataset.destination);
             else
-                show(await response.json());
+                await showSignedIn(await response.json());
         });
     };
 }
 connect(signIn, "sign in");
 connect(signUp, "sign up");
+signIn.querySelector("input[type=email]").oninput = () => resetSignInCode(signIn);
 details.onsubmit = event => {
     event.preventDefault();
     void perform(async () => {
@@ -110,7 +156,7 @@ signOut.onclick = () => {
 void perform(async () => {
     const response = await viewerRequest("account");
     if (response.ok)
-        show(await response.json());
+        await showSignedIn(await response.json());
     else if (response.status === 401)
         show();
     else

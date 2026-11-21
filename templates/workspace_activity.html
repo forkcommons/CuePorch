@@ -1,0 +1,10 @@
+<details class="workspace-activity" data-activity-mode="{{ 'team' if activity_team else 'operator' }}">
+  <summary><span aria-hidden="true">🔔</span> Activity</summary>
+  <section aria-label="Workspace activity">
+    <p>Last 30 days</p>
+    <p data-activity-status role="status"></p>
+    <ul data-activity-items></ul>
+    <button type="button" data-activity-more hidden>Show older activity</button>
+  </section>
+</details>
+<script type="module" src="{{ url_for('static', filename='ui/workspace_activity.js') }}"></script>

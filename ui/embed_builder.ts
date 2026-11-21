@@ -9,6 +9,7 @@ export function embedBuilder() {
   const code = document.querySelector<HTMLTextAreaElement>("#workspaceEmbed")!;
   const label = document.querySelector<HTMLElement>("#workspaceEmbedLabel")!;
   const copy = document.querySelector<HTMLButtonElement>("#copyEmbed")!;
+  const websites = document.querySelector<HTMLDetailsElement>("#embedWebsites")!;
   const scriptLabel = document.querySelector<HTMLElement>("#embedApiOption")!;
   const privacyLabel = document.querySelector<HTMLElement>("#embedPrivacyOption")!;
   const input = (name: string) => controls.querySelector<HTMLInputElement>(`[name=${name}]`)!;
@@ -48,7 +49,7 @@ export function embedBuilder() {
       path = url;
       title = playerTitle;
       native = ownPlayer;
-      controls.hidden = label.hidden = copy.hidden = !path;
+      controls.hidden = label.hidden = copy.hidden = websites.hidden = !path;
       scriptLabel.hidden = privacyLabel.hidden = !native;
       update();
     },

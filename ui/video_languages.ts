@@ -5,8 +5,11 @@ interface Languages { title: string; version: string; original_language: string;
 interface Cue { start: number; end: number; text: string; settings: string; }
 interface TrackData { version: string; revision: string; cues: Cue[]; }
 interface DraftCue { start: string; end: string; text: string; settings: string; }
-interface CaptionJob { id: string; state: string; language: string; error: string | null; }
-interface CaptionJobs { available: boolean; jobs: CaptionJob[]; }
+interface CaptionJob { id: string; state: string; language: string; source_language: string | null; error: string | null; }
+interface CaptionJobs {
+  available: boolean; translation_available: boolean;
+  restrictions: {caption: string | null; translation: string | null}; jobs: CaptionJob[];
+}
 interface AudioTrack { language: string; kind: string; digest: string; revision: string; format: string; }
 interface AudioTracks { version: string; tracks: AudioTrack[]; available?: boolean; }
 
@@ -29,6 +32,11 @@ const next = document.querySelector<HTMLButtonElement>("#nextCues")!;
 const save = document.querySelector<HTMLButtonElement>("#saveCues")!;
 const generate = document.querySelector<HTMLButtonElement>("#generateCaptions")!;
 const generationStatus = document.querySelector<HTMLElement>("#captionJobStatus")!;
+const translation = document.querySelector<HTMLFormElement>("#translateSubtitles")!;
+const translationSource = translation.querySelector<HTMLSelectElement>("select")!;
+const translationTarget = translation.querySelector<HTMLInputElement>("input")!;
+const translationButton = translation.querySelector<HTMLButtonElement>("button")!;
+const translationStatus = document.querySelector<HTMLElement>("#subtitleTranslationStatus")!;
 const endpoint = "/api/library/work/" + encodeURIComponent(document.body.dataset.work || "");
 const languages = endpoint + "/languages";
 const audio = endpoint + "/audio-tracks";
@@ -47,7 +55,7 @@ let draft: DraftCue[] = [];
 let track: TrackData;
 let page = 0;
 let captionPoll: number | undefined;
-let refreshedJob: string | null = null;
+let refreshedJobs = "";
 let audioState: AudioTracks;
 let replacing: AudioTrack | null = null;
 let audioBusy = false;
@@ -171,6 +179,10 @@ function present(updated: Languages) {
   state = updated;
   title.textContent = "Languages for " + state.title;
   (original.elements.namedItem("language") as HTMLInputElement).value = state.original_language;
+  const source = translationSource.value;
+  const candidates = state.tracks.filter(track => ["captions", "subtitles"].includes(track.kind));
+  translationSource.replaceChildren(...candidates.map(track => new Option(track.language, track.language)));
+  if (candidates.some(track => track.language === source)) translationSource.value = source;
   tracks.replaceChildren();
   if (!state.tracks.length) {
     const blank = document.createElement("li");
@@ -198,6 +210,7 @@ function present(updated: Languages) {
     remove.onclick = () => void action(async () => {
       const latest = await json<TrackData>(path);
       present(await json<Languages>(path, "DELETE", {version: latest.version, revision: latest.revision}));
+      await renderJobs();
       if (selected === entry.language) {
         selected = null;
         editor.hidden = true;
@@ -286,9 +299,11 @@ async function openTrack(language: string) {
 async function renderJobs(data?: CaptionJobs) {
   clearTimeout(captionPoll);
   if (!data) data = await json<CaptionJobs>(endpoint + "/caption-jobs");
-  const latest = data.jobs[0];
-  const running = latest && ["queued", "running", "waiting"].includes(latest.state);
+  const latest = data.jobs.find(job => !job.source_language);
+  const translated = data.jobs.find(job => job.source_language);
+  const running = data.jobs.some(job => ["queued", "running", "waiting"].includes(job.state));
   generate.disabled = !data.available || !state.original_language || Boolean(running);
+  translationButton.disabled = !data.translation_available || !translationSource.value || running;
   const messages: Record<string, string> = {
     queued: "Subtitle generation queued.",
     running: "TextFlowKit is generating subtitles.",
@@ -298,17 +313,32 @@ async function renderJobs(data?: CaptionJobs) {
     rejected: "Subtitle generation was rejected.",
     failed: "TextFlowKit could not generate subtitles.",
   };
-  generationStatus.textContent = latest ? (latest.error || messages[latest.state] || "")
+  generationStatus.textContent = data.restrictions.caption || (latest ? (latest.error || messages[latest.state] || "")
     : data.available ? (state.original_language ? "TextFlowKit is ready to caption this cut."
       : "Set the original language to prepare automatic subtitles.")
-    : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.";
+    : "Set up local TextFlowKit to generate subtitles. You can still upload subtitle files.");
+  const translationMessages: Record<string, string> = {
+    queued: "Subtitle translation queued.",
+    running: "TextFlowKit is translating subtitles.",
+    waiting: "Waiting for translation approval.",
+    complete: "Translated subtitles are ready.",
+    superseded: "A later subtitle edit or video version replaced this job.",
+    rejected: "Subtitle translation was rejected.",
+    failed: "TextFlowKit could not translate subtitles.",
+  };
+  translationStatus.textContent = data.restrictions.translation || (translated ? (translated.error || translationMessages[translated.state] || "")
+    : !data.translation_available ? "Configure a local TextFlowKit translation model."
+    : !translationSource.value ? "Add a subtitle track to translate." : "");
+  const completed = data.jobs.filter(job => job.state === "complete").map(job => job.id).join(",");
+  if (completed !== refreshedJobs) {
+    refreshedJobs = completed;
+    present(await json<Languages>(languages));
+    translationButton.disabled = !data.translation_available || !translationSource.value || running;
+  }
   if (running) {
     captionPoll = window.setTimeout(
       () => void renderJobs().catch((error) => { generationStatus.textContent = String(error); }), 1000,
     );
-  } else if (latest?.state === "complete" && refreshedJob !== latest.id) {
-    refreshedJob = latest.id;
-    present(await json<Languages>(languages));
   }
 }
 
@@ -345,6 +375,7 @@ upload.onsubmit = (event) => {
     present(await json<Languages>(languages, "POST", body));
     upload.reset();
     await openTrack(String(body.get("language")).toLowerCase());
+    await renderJobs();
   }, "Subtitles uploaded.");
 };
 search.oninput = () => { page = 0; renderDraft(); };
@@ -371,4 +402,19 @@ generate.onclick = () => void action(async () => {
   const outcome = await json<CaptionJobs>(endpoint + "/caption-jobs", "POST", {version: state.version});
   await renderJobs(outcome);
 }, "Subtitle generation requested.");
+translation.onsubmit = event => {
+  event.preventDefault();
+  translationButton.disabled = true;
+  void action(async () => {
+    try {
+      const outcome = await json<CaptionJobs>(endpoint + "/caption-jobs", "POST", {
+        version: state.version, source_language: translationSource.value, target_language: translationTarget.value,
+      });
+      await renderJobs(outcome);
+    } catch (error) {
+      translationButton.disabled = false;
+      throw error;
+    }
+  }, "Subtitle translation requested.");
+};
 if (credential.value) void action(load);

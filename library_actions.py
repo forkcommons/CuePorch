@@ -10,15 +10,19 @@ from pathlib import Path
 from flask import abort, request, send_file
 
 import library_details
+import folder_slack_queue
 import library_appearance
 import library_audio
 import library_languages
+import library_ai_drafts
 import library_caption_jobs
+import subtitle_translation_batches
 import library_interactivity
 import library_ratings
 import library_registration
 import library_analytics
 import library_editing
+import library_file_links
 import library_timeline
 import library_thumbnail
 import library_versions
@@ -27,6 +31,7 @@ import library_share
 import library_peer_handoff
 import media_bandwidth
 import review_links
+import team_brand_kits
 import timeline_jobs
 from catalog import copy_work
 from library_trash import hidden
@@ -78,9 +83,12 @@ def save_title(con, work, name):
            (SELECT 1 FROM publication_job j WHERE j.id=route.current_action AND j.work=route.slug)""",
         (name, uid),
     )
+    if work.get("asset_type", "video") == "video":
+        folder_slack_queue.enqueue(con, uid, "edit")
 
 
-def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key):
+def register(app, tx, staff, read_works, root, remember_work, permits, action, signing_key, authorize_editor,
+             operator_name, enforce_sharing, team_origin, ai_actor):
     def get_work(con, uid):
         work = next((item for item in read_works() if item["id"] == uid), None)
         if not work or hidden(con, "work", uid):
@@ -89,18 +97,24 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
 
     library_thumbnail.register(app, tx, staff, get_work, root)
     library_appearance.register(app, tx, staff, get_work, read_works, title_for)
-    library_details.register(app, tx, staff, root, get_work, title_for, save_title)
-    library_interactivity.register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits)
-    library_ratings.register(app, tx, staff, get_work)
+    library_details.register(app, tx, authorize_editor, root, get_work, title_for, save_title)
+    start_file_links = library_file_links.register(app, tx, root, get_work, permits, operator_name,
+                                                   authorize_editor, enforce_sharing)
+    library_interactivity.register(app, tx, authorize_editor, get_work, title_for, root, remember_work, read_works, permits)
+    library_ratings.register(app, tx, staff, get_work, read_works)
     library_registration.register(app, tx, staff, get_work, library_privacy.protected_route)
     library_analytics.register(app, tx, staff, get_work, title_for)
     library_editing.register(app, tx, staff, get_work, root, remember_work, title_for, VIDEO_MIME)
     library_timeline.register(app, tx, staff, get_work, root, signing_key)
+    team_brand_kits.register(app, tx, staff, team_origin, root, get_work, library_timeline.video_source)
     start_editor = timeline_jobs.register(app, tx, staff, get_work, root, remember_work)
-    library_caption_jobs.register(app, tx, staff, get_work, action)
+    library_caption_jobs.register(app, tx, get_work, action, ai_actor)
+    start_ai_drafts = library_ai_drafts.register(app, tx, root, get_work, title_for, save_title, remember_work,
+                                                 action, ai_actor)
+    subtitle_translation_batches.register(app, tx, read_works, action, ai_actor)
     library_languages.register(
         app, tx, staff, get_work, root, remember_work, title_for,
-        lambda con, work: library_caption_jobs.queue(con, action, work, require_missing=True),
+        lambda con, work: library_caption_jobs.queue(con, action, work, ai_actor(con), require_missing=True),
     )
     library_audio.register(app, tx, staff, get_work, root, remember_work, library_privacy.playback)
     library_share.register(
@@ -288,7 +302,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         response.cache_control.private = True
         return media_bandwidth.measure(response, tx, work["id"]) if asset_type == "video" else response
 
-    return start_editor
+    return start_editor, start_file_links, start_ai_drafts
 
 
 def sync_edits(tx, receipts, origin, root, connect):

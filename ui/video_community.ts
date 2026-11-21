@@ -3,20 +3,20 @@ import {viewerRequest, viewerVideo} from "./audience_api.js";
 interface Likes {liked: boolean; likes: number;}
 interface Collection {id: string; title: string; included: boolean;}
 
-for (const toolbar of document.querySelectorAll<HTMLElement>("[data-save-video]")) {
+export function setupVideoLikes(toolbar: HTMLElement, showCollection?: () => void) {
   const video = viewerVideo(toolbar);
   const endpoint = "likes/" + video.path;
   const button = toolbar.querySelector<HTMLButtonElement>("[data-like-toggle]")!;
   const count = toolbar.querySelector<HTMLElement>("[data-like-count]")!;
   const notice = toolbar.querySelector<HTMLElement>("[data-like-status]")!;
-  const open = toolbar.querySelector<HTMLButtonElement>("[data-collect-open]")!;
   let liked = false;
 
   function likes(state: Likes) {
     liked = state.liked;
     button.setAttribute("aria-pressed", String(liked));
     count.textContent = `${state.likes} ${state.likes === 1 ? "like" : "likes"}`;
-    count.hidden = button.hidden = open.hidden = false;
+    count.hidden = button.hidden = false;
+    showCollection?.();
   }
 
   void viewerRequest(endpoint).then(async response => {
@@ -28,7 +28,9 @@ for (const toolbar of document.querySelectorAll<HTMLElement>("[data-save-video]"
     notice.textContent = "";
     try {
       const response = await viewerRequest(endpoint, liked ? "DELETE" : "PUT");
-      if (response.status === 401) location.assign(video.account);
+      if (response.status === 401) {
+        if (toolbar.isConnected) location.assign(video.account);
+      }
       else if (response.ok) {
         likes(await response.json());
         notice.textContent = liked ? "Liked." : "Like removed.";
@@ -39,7 +41,13 @@ for (const toolbar of document.querySelectorAll<HTMLElement>("[data-save-video]"
       button.disabled = false;
     }
   };
+}
 
+for (const toolbar of document.querySelectorAll<HTMLElement>("[data-save-video]")) {
+  const video = viewerVideo(toolbar);
+  const notice = toolbar.querySelector<HTMLElement>("[data-like-status]")!;
+  const open = toolbar.querySelector<HTMLButtonElement>("[data-collect-open]")!;
+  setupVideoLikes(toolbar, () => { open.hidden = false; });
   const dialog = toolbar.querySelector<HTMLDialogElement>("[data-collect-dialog]")!;
   const choices = dialog.querySelector<HTMLSelectElement>("[data-collect-options]")!;
   const change = dialog.querySelector<HTMLButtonElement>("[data-collect-change]")!;

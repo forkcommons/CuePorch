@@ -1,0 +1,50 @@
+<details id="recordPrompterSettings"{% if guest_prompt %} hidden{% endif %}>
+  <summary>Teleprompter</summary>
+  <label>Script <textarea id="recordScript" rows="5" maxlength="30000"></textarea></label>
+  {% if not guest_prompt %}
+  <details id="scriptGenerator" data-endpoint="{{ script_endpoint or url_for('studio_record_scripts') }}" hidden>
+    <summary>Generate a script</summary>
+    <form>
+      <label>Script template
+        <select name="template"><option value="">Custom</option>
+          {% for name, brief in script_templates.items() %}
+          <option value="{{ name }}" data-brief="{{ brief }}">{{ name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Script brief <textarea name="brief" maxlength="4000" rows="4" required></textarea></label>
+      <label>Duration <select name="length">
+        {% for name in script_lengths %}<option{% if name == "Medium" %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select></label>
+      <label>Tone <select name="tone">
+        {% for name in script_tones %}<option{% if name == "Direct" %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select></label>
+      <div>
+        <button type="submit" value="fresh">Generate script</button>
+        <button type="submit" value="longer" formnovalidate disabled>Make longer</button>
+        <button type="submit" value="shorter" formnovalidate disabled>Make shorter</button>
+      </div>
+    </form>
+    <p role="status"></p>
+    <button type="button" id="insertGeneratedScript" hidden>Use generated script</button>
+  </details>
+  {% endif %}
+  <label>Scroll speed <select id="recordScroll">
+    <option value="auto">Auto (follow my voice)</option>
+    <option value="0">Off</option><option value=".5">0.5×</option><option value="1" selected>1×</option>
+    <option value="1.5">1.5×</option><option value="2">2×</option>
+  </select></label>
+  <label>Font size <input id="recordFont" type="range" min="16" max="56" value="24"></label>
+  <div class="video-work-actions">
+    <button type="button" id="recordPrompterPlay" disabled>Play script</button>
+    <button type="button" id="recordPrompterPause" disabled>Pause script</button>
+    <button type="button" id="recordPrompterReset" disabled>Reset script</button>
+  </div>
+  <p id="recordPrompterScreen" hidden>Script preview is off during screen sharing.</p>
+  <p id="recordPrompterVoice" role="status"></p>
+  <label><input type="checkbox" id="floatPrompter"> Float script window</label>
+  <div id="recordPrompterWindow" hidden>
+    <button type="button" id="movePrompter" title="Drag or use arrow keys to move the script" hidden>Move script</button>
+    <div id="recordPrompter" tabindex="0" role="region" aria-label="Teleprompter script"></div>
+  </div>
+</details>

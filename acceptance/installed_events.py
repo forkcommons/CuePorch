@@ -5,6 +5,7 @@ from array import array
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import re
 import socket
 import sqlite3
 import subprocess
@@ -17,6 +18,7 @@ import requests
 from playwright.sync_api import expect, sync_playwright
 
 from browser import chromium
+from installed_regions import regional_proxy
 
 
 def check_event_calendar(page, base, auth):
@@ -137,6 +139,385 @@ def check_event_calendar(page, base, auth):
                 revision_preserves_link=True, prevents_stale_edits=True,
                 cancels_only_selected_occurrence=True, updates_open_waiting_room=True,
                 event_registration_preset_editor=True, authorized_csv_and_utm=True)
+
+
+def check_event_setup(page, base, auth):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    editor = page.locator("#newEventForm")
+
+    def combo(name):
+        return editor.get_by_role("combobox", name=name, exact=True)
+
+    def schedule(title, slug, hour):
+        if title is not None:
+            editor.get_by_label("Title", exact=True).fill(title)
+        editor.get_by_label("Link name").fill(slug)
+        editor.get_by_label("Time zone").fill("America/Denver")
+        editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T{hour}:00")
+        editor.get_by_label("End", exact=True).fill(f"{tomorrow}T{hour}:30")
+
+    def save(slug):
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        response = requests.get(portal, headers=auth, timeout=10)
+        response.raise_for_status()
+        return next(item for item in response.json()["events"] if item["slug"] == slug)
+
+    def read(path):
+        response = requests.get(path, headers=auth, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    created = {}
+    defaults = {
+        "live": ("encoder", "standard", True, True, False, False),
+        "webinar": ("browser", "standard", True, True, True, True),
+        "team": ("browser", "low", True, True, False, False),
+        "learning": ("browser", "standard", False, True, True, True),
+        "custom": ("browser", "standard", False, False, False, False),
+    }
+    for kind, expected in defaults.items():
+        page.get_by_role("button", name="New event").click()
+        combo("Setup").select_option("type")
+        combo("Event type").select_option(kind)
+        slug = "setup-" + kind
+        schedule("Setup " + kind, slug, "09")
+        if kind == "webinar":
+            editor.get_by_label("Description").fill("Live demonstrations and audience questions")
+            combo("Visibility").select_option("public")
+            combo("Caption language").select_option("fr")
+            editor.get_by_label("Live DVR window in seconds").fill("180")
+            editor.get_by_text("Content and disclosures", exact=True).click()
+            combo("Content rating").select_option("mature")
+            editor.get_by_label("Profanity", exact=True).check()
+            editor.get_by_label("Contains advertising").check()
+        item = save(slug)
+        created[kind] = item
+        target = f"{portal}/{item['id']}"
+        config = read(target + "/setup")
+        assert (config["method"], item["event"]["latency"], config["chat"]["enabled"],
+                config["captions"]["enabled"], config["registration"], config["qa"]["enabled"]) == expected
+        assert not config["preview_encoder"] and not config["qa"]["review"]
+        assert item["publication"] == ("eligible" if kind == "webinar" else "private")
+
+    source = created["webinar"]
+    webinar = f"{portal}/{source['id']}"
+    opens = source["occurrences"][0]["id"]
+    production = f"{webinar}/{opens}"
+    form = page.context.browser.new_page()
+    try:
+        form.goto(base + source["watch"] + f"?occurrence={opens}")
+        expect(form.locator("#eventStatus")).to_have_text("Registration required")
+        expect(form.get_by_role("list", name="Content information")).to_contain_text("Mature audiences")
+        expect(form.get_by_role("list", name="Content information")).to_contain_text("Contains advertising")
+        form.get_by_label("Email").fill("prior-attendee@example.invalid")
+        form.get_by_role("button", name="Register and watch").click()
+        expect(form.locator("#eventStatus")).to_have_text("Scheduled")
+    finally:
+        form.context.close()
+    requests.put(webinar + "/player", json={"show_schedule": True, "customize": True, "accent": "#18a2ad"},
+                 headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/chat", json={"enabled": True, "interval": 12}, headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/captions", json={"enabled": True, "language": "es"}, headers=auth, timeout=10).raise_for_status()
+    requests.put(production + "/engagement", json={"feature": "qa", "enabled": True, "anonymous": True, "review": False},
+                 headers=auth, timeout=10).raise_for_status()
+    assert requests.get(webinar + "/setup", timeout=10).status_code == 403
+    assert "prior-attendee@example.invalid" in read(webinar + "/registration")["registrants"][0]["email"]
+
+    page.get_by_role("button", name="New event").click()
+    combo("Setup").select_option("reuse")
+    combo("Reuse event settings").select_option(source["id"])
+    expect(page.locator("#eventsStatus")).to_have_text("Event settings loaded.")
+    expect(editor.get_by_label("Title", exact=True)).to_have_value("Setup webinar")
+    expect(editor.get_by_label("Start", exact=True)).to_have_value("")
+    expect(editor.get_by_label("Link name")).to_have_value("")
+    expect(combo("Visibility")).to_have_value("private")
+    expect(editor.get_by_label("Live DVR window in seconds")).to_have_value("180")
+    expect(editor.get_by_label("Allow anonymous questions")).to_be_checked()
+    expect(combo("Caption language")).to_have_value("es")
+    expect(editor.get_by_label("Chat delay in seconds")).to_have_value("12")
+    schedule(None, "setup-reused", "10")
+    combo("Repeat").select_option("days")
+    editor.get_by_label("Number of occurrences").fill("2")
+    combo("Latency").select_option("fail-safe")
+    copied = save("setup-reused")
+    assert copied["id"] != source["id"] and copied["publication"] == "private"
+    assert copied["event"]["latency"] == "fail-safe"
+    assert copied["event"]["description"] == source["event"]["description"]
+    assert copied["event"]["content_rating"] == source["event"]["content_rating"]
+    assert all(item["id"] != opens and item["delivery"] == "scheduled" for item in copied["occurrences"])
+    assert len(copied["occurrences"]) == 2
+    copy = f"{portal}/{copied['id']}"
+    assert read(copy + "/player")["accent"] == "#18a2ad"
+    for item in copied["occurrences"]:
+        occurrence = f"{copy}/{item['id']}"
+        assert read(occurrence + "/chat")["interval"] == 12
+        assert read(occurrence + "/captions")["language"] == "es"
+        assert read(occurrence + "/engagement")["qa"]["policy"]["anonymous"]
+    first = f"{copy}/{copied['occurrences'][0]['id']}"
+    second = f"{copy}/{copied['occurrences'][1]['id']}"
+    requests.put(first + "/captions", json={"enabled": False, "language": "en"}, headers=auth, timeout=10).raise_for_status()
+    assert not read(first + "/captions")["enabled"] and read(second + "/captions")["enabled"]
+    exports = requests.get(copy + "/registration/export", headers=auth, timeout=10)
+    exports.raise_for_status()
+    assert "prior-attendee@example.invalid" not in exports.text
+    assert read(copy + "/registration")["settings"]["enabled"]
+
+    page.get_by_role("button", name="New event").click()
+    combo("Event type").select_option("webinar")
+    schedule("A scratch webinar", "setup-scratch", "11")
+    scratch = save("setup-scratch")
+    draft = read(f"{portal}/{scratch['id']}/setup")
+    assert not draft["registration"] and not draft["chat"]["enabled"] and not draft["captions"]["enabled"]
+    return dict(types=list(defaults), scratch_without_preset=True, editable_latency=True,
+                preferred_method=True, viewer_registration_enforced=True, private_copy_new_schedule=True,
+                reused_player_and_audience_settings=True, occurrence_override_isolated=True,
+                new_event_has_no_transferred_attendees=True, setup_staff_only=True,
+                viewer_content_disclosures_and_reuse=True)
+
+
+def check_event_embed_policy(page, browser, base, auth, exhibition, venue):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="New event").click()
+    editor = page.locator("#newEventForm")
+    editor.get_by_label("Title", exact=True).fill("Ticketed community screening")
+    editor.get_by_label("Link name").fill("domain-screening")
+    editor.get_by_label("Time zone").fill("America/Denver")
+    editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T12:00")
+    editor.get_by_label("End", exact=True).fill(f"{tomorrow}T13:00")
+    editor.get_by_role("combobox", name="Visibility", exact=True).select_option("public")
+    scope = editor.get_by_role("combobox", name="Where may this event be embedded?")
+    scope.select_option("domains")
+    editor.get_by_label("Allowed domains, one per line").fill(urlsplit(venue).netloc)
+    editor.get_by_label("Require event registration").check()
+    editor.get_by_role("button", name="Save event").click()
+    expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+    listing = requests.get(portal, headers=auth, timeout=10)
+    listing.raise_for_status()
+    event = next(item for item in listing.json()["events"] if item["slug"] == "domain-screening")
+    watch, embed = base + event["watch"], base + event["embed"]
+    assert requests.get(watch, timeout=10).status_code == 200
+    assert requests.get(embed, timeout=10).status_code == 404
+    denied = dict(Referer=base + "/", **{"Sec-Fetch-Dest": "iframe"})
+    assert requests.get(embed, headers=denied, timeout=10).status_code == 404
+    allowed = dict(Referer=venue + "/", **{"Sec-Fetch-Dest": "iframe"})
+    response = requests.get(embed, headers=allowed, timeout=10)
+    assert response.ok and urlsplit(venue).netloc in response.headers["Content-Security-Policy"]
+    assert requests.get(embed, headers=allowed | {"Accept": "application/json"}, timeout=10).status_code == 404
+    assert requests.post(embed, headers=allowed, data={"email": "outsider@example.invalid"}, timeout=10).status_code == 404
+
+    previous = exhibition.embed
+    exhibition.embed = embed
+    guest = browser.new_page()
+    try:
+        guest.goto(venue)
+        frame = guest.frame_locator("iframe")
+        expect(frame.locator("#eventStatus")).to_have_text("Registration required")
+        grant = frame.locator("#eventLobby").get_attribute("data-frame-grant")
+        assert grant
+        frame.get_by_label("Email").fill("venue-attendee@example.invalid")
+        frame.get_by_role("button", name="Register and watch").click()
+        expect(frame.locator("#eventStatus")).to_have_text("Scheduled")
+        with guest.expect_response(lambda value: value.url == embed and value.request.headers.get("accept") == "application/json") as refresh:
+            frame.get_by_role("button", name="Check stream status").click()
+        assert refresh.value.status == 200
+        assert refresh.value.json()["status"] == "Scheduled"
+
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        expect(scope).to_have_value("domains")
+        scope.select_option("disabled")
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        expect(page.locator("#eventEmbedField")).to_be_hidden()
+        assert requests.get(watch, timeout=10).status_code == 200
+        assert requests.get(embed, headers=allowed | {"X-CuePorch-Event-Frame": grant, "Accept": "application/json"},
+                            timeout=10).status_code == 404
+        expect(frame.locator("#eventStatus")).to_have_text("This event is unavailable", timeout=13000)
+    finally:
+        guest.close()
+        exhibition.embed = previous
+    return dict(allowed_venue_registration_and_status=True, unrelated_site_denied=True, watch_link_stable=True,
+                frame_ancestors=True, unsigned_status_and_form_denied=True, embed_off_revokes_old_frame=True)
+
+
+def check_restricted_events(page, browser, base, auth, exhibition, venue):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    editor = page.locator("#newEventForm")
+    visibility = editor.get_by_role("combobox", name="Visibility", exact=True)
+
+    def new_event(title, slug, mode):
+        page.get_by_role("button", name="New event").click()
+        editor.get_by_label("Title", exact=True).fill(title)
+        editor.get_by_label("Link name").fill(slug)
+        editor.get_by_label("Time zone").fill("America/Denver")
+        editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T17:00")
+        editor.get_by_label("End", exact=True).fill(f"{tomorrow}T18:00")
+        visibility.select_option(mode)
+        editor.get_by_label("Enable automatic captions").check()
+        editor.get_by_label("Enable audience chat").check()
+
+    def save(slug):
+        editor.get_by_role("button", name="Save event").click()
+        expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+        current = requests.get(portal, headers=auth, timeout=10)
+        current.raise_for_status()
+        return next(item for item in current.json()["events"] if item["slug"] == slug)
+
+    def credentials(lobby):
+        access = lobby.get_attribute("data-audience-access")
+        viewer = lobby.get_attribute("data-viewer-grant")
+        assert access
+        return {"X-CuePorch-Event-Access": access, "X-CuePorch-Event-Viewer": viewer or ""}
+
+    new_event("Member preview screening", "member-preview", "password")
+    first_password = "only-used-by-synthetic-audience"
+    editor.get_by_label("Viewing password").fill(first_password)
+    editor.get_by_label("Require event registration").check()
+    protected = save("member-preview")
+    assert "view_password" not in protected["event"] and first_password not in str(protected)
+    watch = base + protected["watch"]
+    opens = protected["occurrences"][0]["id"]
+    caption_route = f"{watch}/{opens}/captions"
+    locked = requests.get(watch, timeout=10)
+    assert locked.ok and "Member preview screening" not in locked.text and "noindex" in locked.headers["X-Robots-Tag"]
+    assert requests.get(caption_route, timeout=10).status_code == 404
+
+    guest = browser.new_page()
+    previous = exhibition.embed
+    try:
+        guest.goto(watch)
+        guest.get_by_label("Event password").fill("wrong-synthetic-value")
+        with guest.expect_response(lambda response: response.url == watch and response.request.method == "POST") as rejected:
+            guest.get_by_role("button", name="Unlock event").click()
+        assert rejected.value.status == 403
+        expect(guest.get_by_role("alert")).to_have_text("That event password is incorrect.")
+        guest.get_by_label("Event password").fill(first_password)
+        guest.get_by_role("button", name="Unlock event").click()
+        expect(guest.locator("#eventStatus")).to_have_text("Registration required")
+        only_password = credentials(guest.locator("#eventLobby"))
+        assert requests.get(caption_route, headers=only_password, timeout=10).status_code == 404
+        guest.get_by_label("Email").fill("screening-guest@example.invalid")
+        guest.get_by_role("button", name="Register and watch").click()
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        session = credentials(guest.locator("#eventLobby"))
+        assert requests.get(caption_route, headers=session, timeout=10).json()["enabled"]
+        expect(guest.locator("#audienceChat")).to_be_visible()
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        expect(editor.get_by_label("Viewing password")).to_have_value("")
+        editor.get_by_label("Viewing password").fill("new-synthetic-viewing-pass")
+        rotated = save("member-preview")
+        assert rotated["revision"] != protected["revision"] and rotated["watch"] == protected["watch"]
+        assert requests.get(caption_route, headers=session, timeout=10).status_code == 404
+        assert requests.post(watch, data={"password": first_password}, timeout=10).status_code == 403
+
+        new_event("Link holder screening", "link-holder-screening", "unlisted")
+        unlisted = save("link-holder-screening")
+        undisclosed = base + "/events/link-holder-screening"
+        linked = base + unlisted["watch"]
+        assert (urlsplit(linked).query).startswith("key=")
+        assert requests.get(undisclosed, timeout=10).status_code == 404
+        assert requests.get(undisclosed + "?key=wrong", timeout=10).status_code == 404
+        address = page.get_by_role("link", name="Open event page").get_attribute("href")
+        assert address and "key=" in address and "&occurrence=" in address and address.startswith(linked)
+        guest.goto(address)
+        expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+        unlisted_session = credentials(guest.locator("#eventLobby"))
+        audience_path = f"{undisclosed}/{unlisted['occurrences'][0]['id']}/chat"
+        assert requests.get(audience_path, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=unlisted_session, timeout=10).json()["enabled"]
+
+        page.get_by_role("button", name="Edit event", exact=True).click()
+        visibility.select_option("embed_only")
+        embedded = save("link-holder-screening")
+        assert embedded["watch"] is None and embedded["embed"]
+        assert requests.get(linked, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=unlisted_session, timeout=10).status_code == 404
+        target = base + embedded["embed"]
+        assert requests.get(target, timeout=10).status_code == 404
+        exhibition.embed = target
+        guest.goto(venue)
+        frame = guest.frame_locator("iframe")
+        expect(frame.locator("#eventStatus")).to_have_text("Scheduled")
+        expect(frame.locator("#audienceChat")).to_be_visible()
+        embed_grant = credentials(frame.locator("#eventLobby"))
+        assert requests.get(audience_path, headers=embed_grant, timeout=10).status_code == 404
+        assert requests.get(audience_path, headers=embed_grant | {"X-CuePorch-Chat-Embed": "yes"}, timeout=10).ok
+    finally:
+        exhibition.embed = previous
+        guest.close()
+    return dict(watch_and_embed_visibility_modes=True, wrong_password_rejected=True,
+                password_and_registration_both_enforced=True, prior_access_revoked=True,
+                unlisted_operator_link_and_private_auxiliary_routes=True, embed_only_frame_scope=True)
+
+
+def check_event_regions(page, browser, base, auth):
+    portal = base + "/api/live-events"
+    tomorrow = datetime.now(ZoneInfo("America/Denver")).date() + timedelta(days=1)
+    page.goto(base + "/operator/live-events")
+    page.get_by_role("button", name="New event").click()
+    editor = page.locator("#newEventForm")
+    editor.get_by_label("Title", exact=True).fill("Territorial arts rights")
+    editor.get_by_label("Link name").fill("territorial-arts-rights")
+    editor.get_by_label("Time zone").fill("America/Denver")
+    editor.get_by_label("Start", exact=True).fill(f"{tomorrow}T11:00")
+    editor.get_by_label("End", exact=True).fill(f"{tomorrow}T12:00")
+    editor.get_by_role("combobox", name="Visibility", exact=True).select_option("public")
+    editor.get_by_label("Enable audience chat").check()
+    region = editor.get_by_role("combobox", name="Regional availability", exact=True)
+    locations = editor.get_by_label("Locations, one per line")
+    region.select_option("allow")
+    csv_doc = b"MODE,COUNTRY,REGION,CITY,ZIP CODE\r\nallowed,US,US-CO,Longmont,\r\nallowed,CA,,,\r\n"
+    editor.get_by_label("Import regional availability CSV").set_input_files(
+        {"name": "regions.csv", "mimeType": "text/csv", "buffer": csv_doc})
+    expect(page.locator("#eventsStatus")).to_have_text("Locations loaded into event settings.")
+    expect(locations).to_have_value("US-CO | Longmont\nCA")
+    path = "/events/territorial-arts-rights"
+    assert requests.get(base + path, timeout=10).status_code == 404
+    editor.get_by_role("button", name="Save event").click()
+    expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+    response = requests.get(portal, headers=auth, timeout=10)
+    response.raise_for_status()
+    listing = next(item for item in response.json()["events"] if item["slug"] == "territorial-arts-rights")
+    opens = listing["occurrences"][0]["id"]
+    chat_path = path + f"/{opens}/chat"
+    forged = {"X-CuePorch-Region": "US-CO", "X-CuePorch-City": "Longmont", "X-CuePorch-Postal-Code": "80501"}
+    assert requests.get(base + path, headers=forged, timeout=10).status_code == 403
+    assert requests.get(base + chat_path, headers=forged, timeout=10).status_code == 403
+
+    with regional_proxy(base, "US-CO", "Longmont", "80501") as allowed, regional_proxy(base, "US-CO", "Boulder", "80301") as denied:
+        guest = browser.new_page()
+        try:
+            guest.goto(allowed + path)
+            expect(guest.locator("#eventStatus")).to_have_text("Scheduled")
+            assert requests.get(allowed + chat_path, headers={"Sec-GPC": "1"}, timeout=10).json()["enabled"]
+            blocked = requests.get(denied + path, headers=forged, timeout=10)
+            assert blocked.status_code == 403 and "unavailable in your region" in blocked.text
+            assert requests.get(denied + chat_path, timeout=10).status_code == 403
+            with regional_proxy(base, "CA-ON") as canada:
+                assert requests.get(canada + path, timeout=10).ok
+            page.get_by_role("button", name="Edit event", exact=True).click()
+            with page.expect_download() as download:
+                editor.get_by_role("button", name="Download saved regions CSV").click()
+            assert download.value.path().read_bytes() == csv_doc
+            region.select_option("deny")
+            locations.fill("80501\nUS-CA")
+            editor.get_by_role("button", name="Save event").click()
+            expect(page.locator("#eventsStatus")).to_have_text("Event saved.")
+            expect(guest.locator("#eventStatus")).to_have_text("This event is unavailable in your region", timeout=15000)
+            assert requests.get(denied + path, timeout=10).ok
+            with regional_proxy(base, "US", None) as unknown_subdivision:
+                assert requests.get(unknown_subdivision + path, timeout=10).status_code == 403
+        finally:
+            guest.close()
+    return dict(vimeo_csv_preview_and_roundtrip=True, trusted_city_country_and_zip_rules=True,
+                revision_rechecks_open_viewer=True, denied_missing_detail=True,
+                forged_headers_denied=True, audience_chat_obeys_territory_even_with_opt_out=True)
 
 
 def check_live_delivery(base, origin, keys, home, ffmpeg, port):
@@ -317,7 +698,7 @@ def wait_for_delivery(url, auth, expected, seconds, encoder):
         observed = response.json()["state"]
         if observed == expected:
             return
-        if encoder.poll() is not None:
+        if encoder is not None and encoder.poll() is not None:
             raise AssertionError(f"The installed RTMP encoder ended early (exit {encoder.returncode})")
         time.sleep(1)
     raise AssertionError(f"Did not observe {expected}; last state was {observed}")
@@ -580,13 +961,15 @@ def archive_has_scene_audio(operator, ffmpeg):
     return False
 
 
-def check_browser_delivery(base, keys, graphics=None, diagnostics=False):
+def check_browser_delivery(base, keys, graphics=None, diagnostics=False, direct_low=False):
     now = datetime.now(timezone.utc)
     start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
     end = (now + timedelta(minutes=12)).strftime("%Y-%m-%dT%H:%M")
     event = dict(title="Installed browser broadcast", slug="installed-browser-broadcast", visibility="public",
-                 type="live", latency="standard", save_replay=False,
+                 type="live", latency="low" if direct_low else "standard", save_replay=False,
                  schedule=dict(timezone="UTC", start=start, end=end, repeat="none"))
+    if direct_low:
+        event["dvr_seconds"] = 120
     auth = {"Authorization": "Bearer " + keys["operator"]}
     response = requests.post(base + "/api/live-events", json=event, headers=auth, timeout=10)
     response.raise_for_status()
@@ -631,6 +1014,24 @@ def check_browser_delivery(base, keys, graphics=None, diagnostics=False):
             _, width, _ = play_event(guest, watch, "Live", navigate=False)
             assert width >= 320
             scene_result = check_broadcast_graphics(guest, panel) if panel else {}
+            if direct_low:
+                player = guest.locator("#eventPlayer")
+                expect(player).to_have_attribute("data-transport", re.compile(r"^local:"))
+                manifest = urljoin(base, player.get_attribute("data-address"))
+                saved = requests.get(manifest, timeout=10)
+                saved.raise_for_status()
+                fragment = next(line for line in saved.text.splitlines() if line.endswith(".ts"))
+                assert requests.get(urljoin(manifest, fragment), timeout=10).ok
+                wait_for_delivery(studio.removesuffix("/browser"), auth, "live", 80, None)
+                captions = studio.removesuffix("/browser") + "/captions"
+                requests.put(captions, headers=auth, json=dict(enabled=True, language="en"), timeout=10).raise_for_status()
+                assert requests.get(manifest, timeout=10).status_code == 404
+                assert requests.get(urljoin(manifest, fragment), timeout=10).status_code == 404
+                expect(player).to_have_attribute("data-transport", "hosted", timeout=25000)
+                _, hosted_width, _ = play_event(guest, watch, "Live", navigate=False)
+                assert hosted_width >= 320
+                scene_result.update(direct_low_decoded_width=width, hosted_relay_decoded_width=hosted_width,
+                                    caption_switch_revoked_direct_media=True)
             if diagnostics:
                 scene_result.update(check_live_diagnostics(operator, guest, health, auth))
             operator.get_by_role("button", name="Stop", exact=True).click()
@@ -686,8 +1087,17 @@ def check_live_diagnostics(operator, guest, health, auth):
         return from - v.currentTime;
     }""")
     assert rewind >= 9.5
+    before = video.evaluate("video => video.currentTime")
+    guest.get_by_role("button", name="Return to live", exact=True).click()
+    guest.wait_for_function("""before => {
+      const video = document.querySelector('#eventPlayer video');
+      return video && !video.paused && !video.seeking && video.videoWidth > 0 &&
+             video.currentTime > before + 3;
+    }""", arg=before, timeout=20000)
+    advance = video.evaluate("video => video.currentTime") - before
     return dict(measured_encoder_fps=values["fps"], measured_encoder_kbps=values["bitrate"],
                 peer_dvr_window_seconds=120, live_rewind_decoded_seconds=round(rewind, 2),
+                return_to_live_seconds=round(advance, 2),
                 diagnostics_require_operator=True)
 
 

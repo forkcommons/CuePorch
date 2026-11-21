@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="showcase-operator" data-public-url="{{ public_url }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a> · <a href="/operator/analytics">Analytics</a></nav>
+  {% include "operator_navigation.html" %}
   <h1>Showcases</h1>
   <form id="showcaseIdentify">
     <label>Operator credential <input type="password" name="credential" autocomplete="current-password" required></label>
@@ -24,13 +24,25 @@
         <button type="button" id="showcaseDuplicate" data-showcase-action>Make a copy</button>
         <button type="button" id="showcaseDelete" data-showcase-action>Delete showcase</button>
         <button type="button" id="showcaseRegistration" data-showcase-action>Registration</button>
+        <button type="button" id="showcaseAnalytics" data-showcase-action>Analytics</button>
         <button type="button" id="showcasePreview" data-showcase-action>Preview saved showcase</button>
       </div>
       <div id="showcaseSharing" class="library-tools" hidden>
         <label>Share link <input id="showcaseLink" readonly></label>
         <label>Embed code <input id="showcaseCode" readonly></label>
+        <label>Roku catalog feed <input id="showcaseRokuFeed" readonly></label>
       </div>
       {% include 'registration_editor.html' %}
+      <section id="showcaseReportPanel" aria-labelledby="showcaseReportTitle" hidden>
+        <h2 id="showcaseReportTitle">Showcase analytics</h2>
+        <form id="showcaseReport" class="library-tools">
+          <label>From <input type="date" name="from" required></label>
+          <label>Through <input type="date" name="to" required></label>
+          <button type="submit" data-showcase-action>Apply dates</button>
+          <button type="button" id="showcaseAnalyticsCsv" data-showcase-action>Download analytics CSV</button>
+        </form>
+        <p id="showcaseReportTotals" aria-live="polite"></p>
+      </section>
       <div class="video-workspace">
         <form id="showcaseEdit">
           <fieldset>
@@ -54,10 +66,15 @@
             <legend>Brand and layout</legend>
             <label>Logo image <input type="file" name="logo_file" accept="image/png,image/jpeg,image/webp"></label>
             <button type="button" id="showcaseClearLogo">Remove logo</button>
+            <label><input type="checkbox" name="product_brand"> Show CuePorch brand</label>
             <label>Accent color <input type="color" name="accent"></label>
             <label><input type="checkbox" name="dark"> Dark background</label>
             <label for="showcaseLayout">Layout</label><select id="showcaseLayout" name="layout"><option value="grid">Gallery grid</option><option value="featured">Player and playlist</option></select>
             <label>Playlist card size <select name="size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option><option value="extra-large">Extra large</option></select></label>
+            <label>Gallery grid contents <select name="grid_media"><option value="thumbnails">Thumbnails</option><option value="players">Video players</option></select></label>
+            <label>Featured background image <input type="file" name="feature_file" accept="image/png,image/jpeg,image/webp"></label>
+            <button type="button" id="showcaseClearFeature">Remove featured background</button>
+            <label>Featured text alignment <select name="feature_alignment"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option></select></label>
             <label>Featured title <input name="headline" maxlength="140"></label>
             <label>Featured description <textarea name="summary" maxlength="2000"></textarea></label>
             <label>Featured link text <input name="button_label" maxlength="100"></label>
@@ -65,14 +82,34 @@
           </fieldset>
           <fieldset>
             <legend>Playback and discovery</legend>
+            <label><input type="checkbox" name="navigation"> Show Watch navigation</label>
             <label><input type="checkbox" name="search"> Show search</label>
             <label><input type="checkbox" name="copy_link"> Show copy link</label>
+            <label><input type="checkbox" name="likes"> Show likes on public videos</label>
+            <label><input type="checkbox" name="comments"> Show comments on public videos</label>
+            <label><input type="checkbox" name="download"> Offer downloads where the video allows them</label>
+            <label><input type="checkbox" name="questions"> Offer Ask AI where the video allows it</label>
             <label><input type="checkbox" name="next_video"> Play the next video</label>
             <label><input type="checkbox" name="loop"> Loop the playlist</label>
             <label><input type="checkbox" name="indexable"> Allow search engines to index the public page</label>
             <label>Search title <input name="seo_title" maxlength="140"></label>
             <label>Search description <textarea name="seo_description" maxlength="200"></textarea></label>
             <label>Search keywords <input name="seo_keywords" maxlength="500"></label>
+            <section class="showcase-search-preview" aria-labelledby="showcaseSearchPreview">
+              <h3 id="showcaseSearchPreview">Search result preview</h3>
+              <p id="showcaseSearchStatus"></p>
+              <p id="showcaseSearchTitle"></p>
+              <p id="showcaseSearchAddress"></p>
+              <p id="showcaseSearchDescription"></p>
+            </section>
+          </fieldset>
+          <fieldset>
+            <legend>TV apps</legend>
+            <label><input type="checkbox" name="roku_enabled"> Offer a Roku catalog feed</label>
+            <label>Channel provider <input name="roku_provider" maxlength="100"></label>
+            <label>Channel language <input name="roku_language" maxlength="35" placeholder="en-US"></label>
+            <label>Channel genres <input name="roku_genres" maxlength="250" placeholder="documentary, educational"></label>
+            <p>Use the feed in your SceneGraph app with a public HTTPS address. It includes public videos with no registration form or embed restrictions.</p>
           </fieldset>
           <button type="submit">Save showcase</button>
         </form>

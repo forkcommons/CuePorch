@@ -17,7 +17,10 @@
         <form id="viewerSignIn" method="post">
           <label>Email <input type="email" name="email" autocomplete="username" maxlength="254" required></label>
           <label>Password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
+          {% include "sign_in_factor.html" %}
           <button type="submit">Sign in</button>
+          <button type="submit" formnovalidate hidden data-send-email-factor>Send another code</button>
+          {% if can_recover %}<a href="{{ url_for('viewer_password_reset') }}">Forgot your password?</a>{% endif %}
         </form>
       </section>
       <section aria-labelledby="viewerJoinHeading">
@@ -31,7 +34,8 @@
       </section>
     </div>
     <div id="viewerManagement" hidden>
-      {% if destination %}<p><a href="{{ destination }}">Return to video</a></p>{% endif %}
+      <p><a href="{{ url_for('viewer_security_page') }}">Account security</a></p>
+      {% if destination %}<p><a href="{{ destination }}">{% if destination.startswith('/creators/') %}Return to creator profile{% elif destination == '/watch/feed' %}Return to feed{% else %}Return to video{% endif %}</a></p>{% endif %}
       <section aria-labelledby="viewerDetailsHeading">
         <h2 id="viewerDetailsHeading">Account details</h2>
         <form id="viewerDetails" method="post">
@@ -40,6 +44,25 @@
           <label>Pronouns <input name="pronouns" maxlength="60"></label>
           <label>Current password to change email <input type="password" name="current_password" autocomplete="current-password" maxlength="256"></label>
           <button type="submit">Save account details</button>
+        </form>
+      </section>
+      <section id="viewerPreferences" aria-labelledby="viewerPreferencesHeading" hidden>
+        <h2 id="viewerPreferencesHeading">Viewing preferences</h2>
+        <form method="post">
+          <label>Mature content
+            <select name="mode">
+              <option value="all">Show everything</option>
+              <option value="hide_mature">Hide mature videos</option>
+              <option value="custom">Choose what to hide</option>
+            </select>
+          </label>
+          <fieldset hidden>
+            <legend>Hide videos with these ratings or descriptors</legend>
+            {% for value, text in content_choices.items() %}
+            <label><input type="checkbox" name="excluded" value="{{ value }}"> {{ text }}</label>
+            {% endfor %}
+          </fieldset>
+          <button type="submit">Save viewing preferences</button>
         </form>
       </section>
       <section aria-labelledby="changeViewerPasswordHeading">
@@ -53,7 +76,7 @@
       <button type="button" id="viewerSignOut">Sign out</button>
       <details>
         <summary>Delete account</summary>
-        <p>This removes your account and saved videos.</p>
+        <p>This removes your account, saved videos and follows.</p>
         <form id="deleteViewerAccount" method="post">
           <label>Current password <input type="password" name="password" autocomplete="current-password" maxlength="256" required></label>
           <button type="submit">Delete my account</button>

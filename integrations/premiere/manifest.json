@@ -1,0 +1,23 @@
+{
+  "manifestVersion": 5,
+  "id": "org.forkcommons.cueporch.review",
+  "name": "CuePorch Review",
+  "version": "0.3.0",
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.6.0"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "cueporch-review",
+      "label": {
+        "default": "CuePorch Review"
+      }
+    }
+  ],
+  "requiredPermissions": {
+    "localFileSystem": "request"
+  }
+}

@@ -1,12 +1,17 @@
 import { uploadLibraryFile } from "./library_upload.js";
 import { checked, roleLabels, sessionMarker, teamRequest } from "./team_api.js";
+import { requestSignInCode, resetSignInCode, signInValues } from "./sign_in_factor.js";
 const workspace = document.querySelector("#teamWorkspace");
 const status = document.querySelector("#teamStatus");
 const join = document.querySelector("#teamJoin");
 const signIn = document.querySelector("#teamSignIn");
 const library = document.querySelector("#teamLibrary");
 const upload = document.querySelector("#teamUpload");
+const search = document.querySelector("#teamSearch");
+const clearSearch = document.querySelector("#clearTeamSearch");
 let uploadId = "";
+let libraryQuery = "";
+let libraryRequest = 0;
 async function task(action, form) {
     const submit = form?.querySelector("button");
     if (submit)
@@ -26,13 +31,21 @@ async function task(action, form) {
 function reveal(member) {
     if (!library || !signIn || !upload)
         return;
+    if (!member) {
+        const activity = library.querySelector(".workspace-activity");
+        if (activity)
+            activity.open = false;
+    }
     signIn.hidden = Boolean(member);
     library.hidden = !member;
     const nav = library.querySelector("#teamAdminLinks");
-    nav.hidden = member?.role !== "admin";
+    const profile = library.querySelector("#editCreatorProfile");
+    const managesTeam = member?.role === "admin" || member?.role === "owner";
+    nav.hidden = !managesTeam;
     upload.hidden = !member || member.role === "viewer";
+    profile.hidden = upload.hidden;
     if (member) {
-        if (member.role === "admin")
+        if (managesTeam)
             sessionStorage.setItem("cueporchOperator", sessionMarker);
         else
             clearOperatorMarker();
@@ -40,18 +53,43 @@ function reveal(member) {
     }
     else
         clearOperatorMarker();
+    resetSignInCode(signIn);
 }
 function clearOperatorMarker() {
     if (sessionStorage.getItem("cueporchOperator") === sessionMarker)
         sessionStorage.removeItem("cueporchOperator");
 }
 async function showVideos() {
-    const response = await checked(await teamRequest("library"));
-    const { works } = await response.json();
+    const requestId = ++libraryRequest;
+    const query = libraryQuery;
+    const response = await teamRequest(query ? "library?" + new URLSearchParams({ q: query }) : "library");
+    if (requestId !== libraryRequest)
+        return;
+    if (response.status === 401) {
+        document.querySelector("#teamVideos").replaceChildren();
+        reveal();
+    }
+    const { works, workspaces } = await (await checked(response)).json();
+    if (requestId !== libraryRequest)
+        return;
+    const linked = document.querySelector("#linkedWorkspaces");
+    linked.querySelector("ul").replaceChildren(...workspaces.map(workspace => {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = new URL("/team", workspace.origin).href;
+        link.rel = "noreferrer";
+        link.textContent = workspace.name;
+        item.append(link);
+        return item;
+    }));
+    linked.hidden = workspaces.length === 0;
     const list = document.querySelector("#teamVideos");
     const empty = document.querySelector("#teamLibraryEmpty");
     list.replaceChildren();
     empty.hidden = works.length > 0;
+    empty.textContent = query ? "No videos in your Team Library match your search." : "There are no videos available to you yet.";
+    if (clearSearch)
+        clearSearch.hidden = !query;
     for (const work of works) {
         const item = document.createElement("li");
         const link = document.createElement("a");
@@ -77,11 +115,31 @@ if (join) {
         }, join);
     };
 }
-else if (signIn && upload) {
+else if (signIn && upload && search && clearSearch) {
+    const searchInput = search.querySelector("[name=q]");
+    search.onsubmit = event => {
+        event.preventDefault();
+        const query = searchInput.value.trim();
+        if (new FormData(search).get("scope") === "watch") {
+            location.assign("/watch?" + new URLSearchParams({ q: query }));
+            return;
+        }
+        libraryQuery = query;
+        void task(showVideos, search);
+    };
+    clearSearch.onclick = () => {
+        searchInput.value = libraryQuery = "";
+        searchInput.focus();
+        void task(showVideos);
+    };
+    signIn.querySelector("input[type=email]").oninput = () => resetSignInCode(signIn);
     signIn.onsubmit = event => {
         event.preventDefault();
         void task(async () => {
-            const response = await checked(await teamRequest("session", "POST", Object.fromEntries(new FormData(signIn))));
+            const response = await teamRequest("session", "POST", signInValues(signIn, event.submitter));
+            if (response.status === 428)
+                return requestSignInCode(signIn, status, await response.json());
+            await checked(response);
             signIn.reset();
             reveal(await response.json());
             await showVideos();
@@ -89,6 +147,10 @@ else if (signIn && upload) {
     };
     document.querySelector("#teamSignOut").onclick = () => void task(async () => {
         await checked(await teamRequest("session", "DELETE"));
+        libraryRequest += 1;
+        libraryQuery = "";
+        search.reset();
+        clearSearch.hidden = true;
         document.querySelector("#teamVideos").replaceChildren();
         reveal();
     });

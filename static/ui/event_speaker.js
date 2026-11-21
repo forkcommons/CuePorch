@@ -1,6 +1,7 @@
 import { gather, speakerRequest, SpeakerRequestError } from "./speaker_connection.js";
 import { speakerChat } from "./speaker_chat.js";
 import { readStudioImage } from "./live_slides.js";
+import { StudioPrompter } from "./studio_prompter.js";
 const endpoint = document.body.dataset.speakerEndpoint;
 const button = (id) => document.getElementById(id);
 const join = button("joinSpeaker"), camera = button("toggleSpeakerCamera"), mic = button("toggleSpeakerMic"), leave = button("leaveSpeaker");
@@ -29,6 +30,14 @@ let currentImage = "";
 let imageRequest;
 let movingSlide = false;
 const chat = speakerChat(endpoint, () => token);
+const prompter = new StudioPrompter(() => stream?.getAudioTracks().find(track => track.enabled && track.readyState === "live"), () => token, endpoint + "/teleprompter/voice");
+let previousFrame = performance.now();
+function scrollPrompt(now) {
+    prompter.scroll(now - previousFrame);
+    previousFrame = now;
+    requestAnimationFrame(scrollPrompt);
+}
+requestAnimationFrame(scrollPrompt);
 function stop() {
     clearTimeout(timer);
     connection?.close();
@@ -40,6 +49,7 @@ function stop() {
     preview.hidden = camera.hidden = mic.hidden = leave.hidden = true;
     chat.show(false);
     presentation.hidden = true;
+    prompter.show(false);
     showSlides(null);
 }
 function message(error) { status.textContent = error instanceof Error ? error.message : String(error); }
@@ -166,6 +176,7 @@ async function update() {
         name.hidden = false;
         chat.show(state.admitted);
         presentation.hidden = !state.admitted;
+        prompter.show(state.admitted);
         showSlides(state.slides);
         if (!state.admitted) {
             status.textContent = "Waiting for the producer to admit you.";
@@ -237,7 +248,10 @@ function toggle(kind, control, on, off) {
     control.textContent = track.enabled ? on : off;
 }
 camera.onclick = () => toggle("video", camera, "Turn camera off", "Turn camera on");
-mic.onclick = () => toggle("audio", mic, "Mute microphone", "Unmute microphone");
+mic.onclick = () => {
+    toggle("audio", mic, "Mute microphone", "Unmute microphone");
+    prompter.setContext(false, false);
+};
 leave.onclick = async () => {
     stop();
     sessionStorage.removeItem(storageKey);

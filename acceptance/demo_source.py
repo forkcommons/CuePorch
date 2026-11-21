@@ -48,7 +48,12 @@ def build_server(directory, port=0):
 
         def do_GET(self):
             path = urlsplit(self.path).path
-            if path.startswith("/media/"):
+            content_type = "application/json"
+            if path == "/fixture/legacy-player":
+                content_type = "text/html; charset=utf-8"
+                data = b'<!doctype html><title>Legacy test player</title><video controls src="/media/72.mp4"></video>'
+            elif path.startswith("/media/"):
+                content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
             else:
                 if self.headers.get("Authorization") != "Bearer cueporch-fixture":
@@ -96,7 +101,7 @@ def build_server(directory, port=0):
                             privacy=dict(view="nobody", embed="whitelist"),
                             duration=4,
                             user=dict(name="Independent artist"),
-                            modified_time="2026-11-01",
+                            modified_time=getattr(self.server, "second_video_revision", "2026-11-01"),
                             download=[
                                 dict(
                                     quality="hd",
@@ -137,6 +142,17 @@ def build_server(directory, port=0):
                                                   categories=[{"name": "Documentary"}],
                                                   content_rating=["advertisement", "language"],
                                                   spatial={"projection": "equirectangular"})
+                    extra_inventory = getattr(self.server, "extra_inventory_count", 0)
+                    if extra_inventory:
+                        values.extend(dict(uri=f"/videos/{identifier}", name=f"Archive record {identifier}",
+                                           privacy=dict(view="nobody", embed="private"), download=[])
+                                      for identifier in range(1000, 1000 + extra_inventory))
+                        total = len(values)
+                        page = int(parse_qs(urlsplit(self.path).query).get("page", ["1"])[0])
+                        start = (page - 1) * 100
+                        values = values[start:start + 100]
+                        if start + 100 < total:
+                            following = f"{path}?per_page=100&page={page + 1}"
                 elif path == "/videos/72/privacy/domains":
                     values = [{"domain": "museum.example"}]
                 elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):
@@ -168,6 +184,7 @@ def build_server(directory, port=0):
                     dict(data=values, total=len(values) if total is None else total, paging=dict(next=following))
                 ).encode()
             self.send_response(200)
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

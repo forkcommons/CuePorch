@@ -1,4 +1,4 @@
-export function setupLiveCaptions(grant, embed) {
+export function setupLiveCaptions(grant, embed, access) {
     const region = document.querySelector("#eventCaptions");
     const list = region.querySelector("ol");
     const toggle = region.querySelector("#toggleLiveCaptions");
@@ -77,6 +77,7 @@ export function setupLiveCaptions(grant, embed) {
                 address.searchParams.set("revision", revision);
             const response = await fetch(address, { cache: "no-store", headers: {
                     "X-CuePorch-Event-Viewer": grant, "X-CuePorch-Chat-Embed": embed ? "yes" : "no",
+                    "X-CuePorch-Event-Access": access,
                 } });
             if (active !== endpoint)
                 return;

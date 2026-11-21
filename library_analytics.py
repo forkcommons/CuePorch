@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS video_analytics_track_pair(
  caption_language TEXT NOT NULL, caption_kind TEXT NOT NULL, watched INTEGER NOT NULL,
  PRIMARY KEY(session,audio_language,audio_kind,caption_language,caption_kind));
 """
-SURFACES = ("watch", "embed")
+SURFACES = ("watch", "embed", "showcase")
 CAPTION_KINDS = ("captions", "subtitles", "captions_ai", "subtitles_ai", "none", "unknown")
 AUDIO_KINDS = ("original", *KINDS, "unknown")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
@@ -302,28 +302,31 @@ def summarize(con, work, start, end, surface):
                 current=video_version_key(work))
 
 
+def report(con, work, title):
+    if work.get("asset_type", "video") != "video":
+        abort(404)
+    first, last, start, end = bounds()
+    surface = request.args.get("surface", "")
+    if surface not in ("", *SURFACES):
+        abort(400, "Choose a playback surface.")
+    result = summarize(con, work, start, end, surface)
+    if request.args.get("format") == "csv":
+        output = StringIO()
+        writer = csv.writer(output)
+        fields = ["day", "surface", "impressions", "views", "view_rate", "finishes", "watched_seconds"]
+        writer.writerow(fields)
+        writer.writerows([row[field] for field in fields] for row in result["daily"])
+        return Response(output.getvalue(), mimetype="text/csv", headers={
+            "Content-Disposition": "attachment; filename=cueporch-video-analytics.csv",
+            "Cache-Control": "no-store",
+        })
+    return dict(result, title=title, date_from=first.isoformat(), date_to=last.isoformat(), surface=surface)
+
+
 def register(app, tx, staff, get_work, title_for):
     @app.get("/api/library/work/<uid>/analytics")
     def video_analytics(uid):
         staff()
-        first, last, start, end = bounds()
-        surface = request.args.get("surface", "")
-        if surface not in ("", *SURFACES):
-            abort(400, "Choose a playback surface.")
         with tx() as con:
             work = get_work(con, uid)
-            if work.get("asset_type", "video") != "video":
-                abort(404)
-            result = summarize(con, work, start, end, surface)
-            title = title_for(con, work)
-        if request.args.get("format") == "csv":
-            output = StringIO()
-            writer = csv.writer(output)
-            fields = ["day", "surface", "impressions", "views", "view_rate", "finishes", "watched_seconds"]
-            writer.writerow(fields)
-            writer.writerows([row[field] for field in fields] for row in result["daily"])
-            return Response(output.getvalue(), mimetype="text/csv", headers={
-                "Content-Disposition": "attachment; filename=cueporch-video-analytics.csv",
-                "Cache-Control": "no-store",
-            })
-        return dict(result, title=title, date_from=first.isoformat(), date_to=last.isoformat(), surface=surface)
+            return report(con, work, title_for(con, work))

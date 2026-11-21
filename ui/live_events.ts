@@ -4,6 +4,10 @@ import {setupProducerEngagement} from "./event_engagement.js";
 import {relaySummary, type RelayHealth} from "./event_health.js";
 import {waitingPlayer} from "./event_waiting.js";
 import {playerColors, playerSwitches, type EventAppearance} from "./event_controls.js";
+import {setupLiveApi} from "./live_api.js";
+import {setupEventMail} from "./event_mail.js";
+import {setupAttendeeCsv} from "./attendee_csv.js";
+import {setupEventRoster} from "./event_roster.js";
 
 type Repeat = "none" | "days" | "weeks" | "months";
 interface Schedule {
@@ -13,6 +17,20 @@ interface Schedule {
 interface EventSettings {
   title: string; description: string; type: string; visibility: string;
   latency: string; save_replay: boolean; archive_replay?: boolean; dvr_seconds?: number; schedule: Schedule;
+  setup?: Partial<Pick<StartingOptions, "method" | "chat" | "captions" | "qa">>;
+  embed_policy?: {mode: string; domains: string[]};
+  regional_policy?: RegionalPolicy;
+  content_rating?: Classification;
+}
+interface RegionalPolicy {mode: "anywhere" | "allow" | "deny"; areas: string[];}
+interface Classification {rating: "unrated" | "all" | "mature"; content: string[]; advertisement: boolean; realistic_ai: boolean;}
+interface StartingOptions {
+  method: "browser" | "encoder";
+  registration: boolean;
+  preview_encoder: boolean;
+  chat: {enabled: boolean; interval: number};
+  captions: {enabled: boolean; language: string};
+  qa: {enabled: boolean; anonymous: boolean; review: boolean};
 }
 interface Occurrence {id: number; start: string; end: string; local: string; delivery: string; program: string | null;}
 interface LiveEvent {
@@ -20,8 +38,11 @@ interface LiveEvent {
   occurrences: Occurrence[]; watch: string | null; embed: string | null;
   preview_encoder: boolean;
 }
-interface Calendar {events: LiveEvent[]; overlaps: string[]; host_ready: boolean;}
-interface Encoder {server: string; secure_server?: string; key: string; public: boolean; preview: boolean;}
+interface Calendar {events: LiveEvent[]; overlaps: string[]; host_ready: boolean; direct_rtmp: boolean;}
+interface Encoder {
+  server: string; secure_server?: string; key: string; public: boolean; preview: boolean;
+  backup_key?: string; output_height?: number;
+}
 interface EncoderPreview {state: "inactive" | "waiting" | "signal" | "ended" | "released"; address: string | null;}
 interface PreviewHls {loadSource(address: string): void; attachMedia(video: HTMLVideoElement): void; destroy(): void;}
 type PreviewHlsFactory = {new (config: object): PreviewHls; isSupported(): boolean};
@@ -43,9 +64,12 @@ interface EventPlayerOptions extends Omit<EventAppearance, "live_seek"> {
   logo: string | null; logo_image: string | null; byline: string;
   show_live_badge: boolean; show_viewers: boolean;
 }
-interface Destination {id: string; name: string; server: string; enabled: boolean; state: string;}
+interface Destination {id: string; name: string; server: string; enabled: boolean; state: string; opens: number | null;}
 interface Destinations {available: boolean; destinations: Destination[];}
-interface SrtListener {server: string; passphrase: string; key_bytes: number; preview: boolean;}
+interface SrtListener {
+  server: string; passphrase: string; key_bytes: number; preview: boolean;
+  backup_server?: string; backup_passphrase?: string;
+}
 interface ProgramSource {work: string; cut: string;}
 interface ProgramChoice extends ProgramSource {title: string;}
 interface EventProgram {
@@ -62,7 +86,18 @@ const status = element("eventsStatus");
 const workspace = element("eventsWorkspace");
 const form = element<HTMLFormElement>("newEventForm");
 const field = (name: string) => form.elements.namedItem(name) as HTMLInputElement;
+const mode = element<HTMLSelectElement>("eventMode");
 const preset = element<HTMLSelectElement>("eventPreset");
+const startingOptions: StartingOptions = {method: "browser", registration: false, preview_encoder: false,
+  chat: {enabled: false, interval: 0}, captions: {enabled: false, language: "en"},
+  qa: {enabled: false, anonymous: false, review: false}};
+const typeDefaults: Record<string, {latency: string; chat?: boolean; captions?: boolean; registration?: boolean; qa?: boolean; method?: "encoder"}> = {
+  live: {latency: "standard", chat: true, captions: true, method: "encoder"},
+  webinar: {latency: "standard", chat: true, captions: true, registration: true, qa: true},
+  team: {latency: "low", chat: true, captions: true},
+  learning: {latency: "standard", captions: true, registration: true, qa: true},
+  custom: {latency: "standard"},
+};
 const output = element("eventProduction");
 const health = element("eventHealth");
 const measurements = element("eventHealthDetails");
@@ -108,6 +143,14 @@ const destinationForm = element<HTMLFormElement>("addDestination");
 const destinationStatus = element("destinationStatus");
 const encoder = element("encoderSettings");
 const key = input("encoderKey");
+const backupKey = input("backupEncoderKey");
+const backupEnabled = input("enableBackupEncoder");
+const outputHeight = element<HTMLSelectElement>("backupOutputHeight");
+backupEnabled.onchange = () => { element("backupOutput").hidden = !backupEnabled.checked; };
+const srtBackupEnabled = input("enableSrtBackup");
+const srtBackupSecret = input("srtBackupPassphrase");
+const srtBackupHeight = element<HTMLSelectElement>("srtBackupHeight");
+srtBackupEnabled.onchange = () => { element("srtBackupOptions").hidden = !srtBackupEnabled.checked; };
 const previewEncoder = input("privateEncoderPreview");
 const encoderPreviewPanel = element("encoderPreview");
 const encoderPreviewStatus = element("encoderPreviewStatus");
@@ -138,10 +181,11 @@ let program: EventProgram | undefined;
 let programSources: ProgramSource[] = [];
 credential.value = sessionStorage.getItem("cueporchOperator") || "";
 
-async function request<T>(path: string, method = "GET", body?: object): Promise<T> {
+async function request<T>(path: string, method = "GET", body?: object, integration = false): Promise<T> {
   const headers: Record<string, string> = {Authorization: "Bearer " + credential.value};
   const multipart = body instanceof FormData;
   if (body && !multipart) headers["Content-Type"] = "application/json";
+  if (integration) headers["X-CuePorch-Integration"] = "1";
   const result = await fetch(path, {method, headers, body: multipart ? body : body ? JSON.stringify(body) : undefined});
   if (!result.ok) {
     const detail = new DOMParser().parseFromString(await result.text(), "text/html").querySelector("p")?.textContent;
@@ -149,6 +193,11 @@ async function request<T>(path: string, method = "GET", body?: object): Promise<
   }
   return result.status === 204 ? undefined as T : result.json();
 }
+
+setupLiveApi(request);
+const chooseEmailEvent = setupEventMail(request);
+const chooseCsvOccurrence = setupAttendeeCsv(request);
+const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
 
 async function action(work: () => Promise<void>, message = "") {
   if (pending) return;
@@ -247,17 +296,8 @@ const {close: closeEngagement} = setupProducerEngagement(() => mediaPath("engage
 const registrationEditor = element<HTMLFormElement>("registrationEditor");
 const openRegistration = setupRegistration(
   (suffix, method, body) => request(root + "/" + registrationEvent + suffix, method, body),
-  async () => {
-    const response = await fetch(root + "/" + registrationEvent + "/registration/export", {
-      headers: {Authorization: "Bearer " + credential.value},
-    });
-    if (!response.ok) throw new Error("Could not download the registrants.");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(await response.blob());
-    link.download = "cueporch-event-registrants.csv";
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  },
+  () => downloadEventFile(root + "/" + registrationEvent + "/registration/export", "cueporch-event-registrants.csv"),
+  () => credential.value,
 );
 
 function choose(event: LiveEvent, instance: Occurrence) {
@@ -266,6 +306,9 @@ function choose(event: LiveEvent, instance: Occurrence) {
     registrationEvent = undefined;
   }
   active = {event, instance};
+  chooseEmailEvent(event.id);
+  chooseCsvOccurrence(event.id, instance.id);
+  chooseRosterOccurrence(event.id, instance.id);
   closeEngagement();
   chatPanel.open = false;
   chatMessages.replaceChildren();
@@ -277,8 +320,18 @@ function choose(event: LiveEvent, instance: Occurrence) {
   output.hidden = false;
   encoder.hidden = true;
   key.value = "";
+  backupKey.value = "";
+  element("backupEncoderSettings").hidden = true;
+  element("dashSettings").hidden = true;
+  input("dashUploadToken").value = "";
   element("srtSettings").hidden = true;
   input("srtPassphrase").value = "";
+  srtBackupSecret.value = "";
+  element("srtBackupCredentials").hidden = true;
+  element("srtBackupChoice").hidden = event.event.latency !== "low";
+  srtBackupEnabled.checked = false;
+  element("srtBackupOptions").hidden = true;
+  srtBackupHeight.value = "720";
   previewEncoder.checked = event.preview_encoder;
   showEncoderPreview(instance.delivery === "preview");
   health.textContent = instance.delivery === "ready" ? "Encoder is ready." : instance.delivery.replaceAll("_", " ");
@@ -309,18 +362,35 @@ function choose(event: LiveEvent, instance: Occurrence) {
   button("editEvent").disabled = !event.editable;
   button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
   button("prepareSrt").disabled = button("prepareEncoder").disabled;
+  const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
+  button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
+  element("backupEncoderOptions").hidden = !rtmpAvailable;
+  backupEnabled.checked = false;
+  element("backupOutput").hidden = true;
+  outputHeight.value = "720";
+  button("prepareLowRtmp").disabled = button("prepareEncoder").disabled;
+  button("prepareDash").hidden = button("stopDash").hidden = event.event.latency !== "fail-safe";
+  button("prepareDash").disabled = button("prepareEncoder").disabled;
   button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
   button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
     (instance.delivery !== "scheduled" && !calendar.host_ready);
   element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
+  const preference = event.event.setup?.method;
+  element("productionPreference").textContent = preference ?
+    `Preferred streaming method: ${preference === "encoder" ? "External encoder" : "Browser studio"}` : "";
   const watch = element<HTMLAnchorElement>("eventWatch");
   const studio = element<HTMLAnchorElement>("eventStudio");
   studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
   element("eventShare").hidden = !event.watch;
   element("eventEmbedField").hidden = !event.embed;
-  if (event.watch) watch.href = new URL(event.watch + "?occurrence=" + instance.id, publicBase).href;
-  const address = event.embed ? new URL(event.embed + "?occurrence=" + instance.id, publicBase).href : "";
-  input("eventEmbedCode").value = address ? `<iframe src="${address}" title="Live event" allowfullscreen></iframe>` : "";
+  function occurrenceLink(path: string) {
+    const address = new URL(path, publicBase);
+    address.searchParams.set("occurrence", String(instance.id));
+    return address.href;
+  }
+  if (event.watch) watch.href = occurrenceLink(event.watch);
+  const address = event.embed ? occurrenceLink(event.embed) : "";
+  input("eventEmbedCode").value = address ? `<iframe src="${address.replaceAll("&", "&amp;")}" title="Live event" allowfullscreen></iframe>` : "";
 }
 
 function releaseArtworkPreview(name: ArtworkField) {
@@ -434,7 +504,9 @@ eventPlayerForm.onsubmit = (event) => {
 function readCalendar(value: Calendar) {
   calendar = value;
   element("eventsHost").hidden = value.host_ready;
-  preset.replaceChildren(new Option("Start from scratch", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+  const priorPreset = preset.value;
+  preset.replaceChildren(new Option("Choose an earlier event", ""), ...value.events.map((entry) => new Option(entry.event.title, entry.id)));
+  preset.value = value.events.some((entry) => entry.id === priorPreset) ? priorPreset : "";
   const rows = element<HTMLTableSectionElement>("eventCalendarRows");
   rows.replaceChildren();
   const sorted = value.events.flatMap((event) => event.occurrences.map((instance) => ({event, instance})))
@@ -459,14 +531,28 @@ function readCalendar(value: Calendar) {
   }
 }
 
+const entry = new URL(location.href).searchParams;
+let startNew = entry.get("create") === "1";
+let activityEvent = entry.get("event");
+
 async function load() {
   const query = new URLSearchParams();
   if (starting.value) query.set("from", starting.value);
   if (ending.value) query.set("to", ending.value);
-  readCalendar(await request<Calendar>(root + "?" + query));
+  const calendar = await request<Calendar>(root + "?" + query);
+  readCalendar(calendar);
   sessionStorage.setItem("cueporchOperator", credential.value);
   identify.hidden = true;
   workspace.hidden = false;
+  if (startNew) {
+    startNew = false;
+    openEditor();
+  } else if (activityEvent) {
+    const match = calendar.events.find(event => event.id === activityEvent);
+    activityEvent = null;
+    if (match) openEditor(match);
+    else throw new Error("This event is unavailable.");
+  }
 }
 
 identify.onsubmit = (event) => { event.preventDefault(); void action(load); };
@@ -476,7 +562,11 @@ function openEditor(current?: LiveEvent) {
   editing = current;
   form.reset();
   element("eventEditorHeading").textContent = current ? "Edit event" : "New event";
-  element("eventReuse").hidden = Boolean(current);
+  element("eventSetupMode").hidden = Boolean(current);
+  element("eventReuse").hidden = true;
+  element("eventStartingOptions").hidden = Boolean(current);
+  preset.value = "";
+  preset.required = false;
   field("slug").readOnly = Boolean(current);
   const values = current?.event;
   if (values) {
@@ -493,9 +583,14 @@ function openEditor(current?: LiveEvent) {
       weekday.checked = schedule.weekdays.includes(Number(weekday.value));
     }
     field("slug").value = current!.slug;
+    field("method").value = values.setup?.method ?? "browser";
   } else {
     field("timezone").value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   }
+  showEmbedPolicy(values?.embed_policy);
+  showRegionalPolicy(values?.regional_policy);
+  showClassification(values?.content_rating);
+  syncViewingPassword();
   recurrence();
   syncArchiveOption();
   form.hidden = false;
@@ -511,6 +606,54 @@ function syncArchiveOption() {
   field("archive_replay").disabled = !field("save_replay").checked;
 }
 
+function syncEmbedPolicy() {
+  const domains = field("embed_mode").value === "domains";
+  element("eventEmbedDomains").hidden = !domains;
+  field("embed_domains").required = domains;
+}
+
+function showEmbedPolicy(policy?: EventSettings["embed_policy"]) {
+  field("embed_mode").value = policy?.mode ?? "anywhere";
+  field("embed_domains").value = policy?.domains.join("\n") ?? "";
+  syncEmbedPolicy();
+}
+
+function syncViewingPassword() {
+  const protectedEvent = field("visibility").value === "password";
+  element("eventViewingPassword").hidden = !protectedEvent;
+  field("view_password").required = protectedEvent && editing?.event.visibility !== "password";
+  if (!protectedEvent) field("view_password").value = "";
+}
+
+function syncRegionalPolicy() {
+  const active = field("region_mode").value !== "anywhere";
+  element("eventRegionFields").hidden = !active;
+  field("region_areas").required = active;
+}
+
+function showRegionalPolicy(policy?: RegionalPolicy) {
+  field("region_mode").value = policy?.mode ?? "anywhere";
+  field("region_areas").value = policy?.areas.join("\n") ?? "";
+  syncRegionalPolicy();
+  button("exportEventRegions").hidden = !editing || (editing.event.regional_policy?.mode ?? "anywhere") === "anywhere";
+}
+
+function syncContentDescriptors() {
+  const mature = field("rating").value === "mature";
+  const options = element<HTMLFieldSetElement>("eventContentDescriptors");
+  options.hidden = options.disabled = !mature;
+}
+
+function showClassification(values?: Classification) {
+  field("rating").value = values?.rating ?? "unrated";
+  field("advertisement").checked = !!values?.advertisement;
+  field("realistic_ai").checked = !!values?.realistic_ai;
+  for (const item of form.querySelectorAll<HTMLInputElement>('input[name="content_descriptor"]')) {
+    item.checked = values?.content.includes(item.value) ?? false;
+  }
+  syncContentDescriptors();
+}
+
 button("newEvent").onclick = () => openEditor();
 button("editEvent").onclick = () => openEditor(active?.event);
 button("configureEventRegistration").onclick = () => void action(async () => {
@@ -522,16 +665,83 @@ button("configureEventRegistration").onclick = () => void action(async () => {
 button("closeEventEditor").onclick = () => { form.hidden = true; };
 field("repeat").onchange = recurrence;
 field("save_replay").onchange = syncArchiveOption;
-preset.onchange = () => {
-  const value = calendar.events.find((entry) => entry.id === preset.value)?.event;
-  if (!value) return;
-  for (const name of ["type", "description", "latency"] as const) field(name).value = value[name];
+field("embed_mode").onchange = syncEmbedPolicy;
+field("visibility").onchange = syncViewingPassword;
+field("region_mode").onchange = syncRegionalPolicy;
+field("rating").onchange = syncContentDescriptors;
+const regionsFile = input("importEventRegions");
+regionsFile.onchange = () => void action(async () => {
+  const file = regionsFile.files?.[0];
+  if (!file) return;
+  if (file.size > 262144) throw new Error("Choose a UTF-8 territory CSV under 256 KiB.");
+  const imported = await request<RegionalPolicy>(root + "/regions/import", "POST", {csv: await file.text()});
+  showRegionalPolicy(imported);
+  regionsFile.value = "";
+}, "Locations loaded into event settings.");
+button("exportEventRegions").onclick = () => void action(async () => {
+  if (!editing) return;
+  const response = await fetch(`${root}/${editing.id}/regions/export`, {
+    headers: {Authorization: "Bearer " + credential.value},
+  });
+  if (!response.ok) throw new Error("Could not download the saved locations.");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(await response.blob());
+  link.download = "cueporch-event-regions.csv";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
+function showStartingOptions(options: StartingOptions) {
+  field("method").value = options.method;
+  field("registration").checked = options.registration;
+  field("preview_encoder").checked = options.preview_encoder;
+  field("chat").checked = options.chat.enabled;
+  field("chat_interval").value = String(options.chat.interval);
+  field("captions").checked = options.captions.enabled;
+  field("caption_language").value = options.captions.language;
+  field("qa").checked = options.qa.enabled;
+  field("qa_anonymous").checked = options.qa.anonymous;
+  field("qa_review").checked = options.qa.review;
+}
+
+function showTypeDefaults() {
+  const definition = typeDefaults[field("type").value];
+  field("latency").value = definition.latency;
+  showStartingOptions({...startingOptions, method: definition.method ?? "browser",
+    registration: !!definition.registration, chat: {...startingOptions.chat, enabled: !!definition.chat},
+    captions: {...startingOptions.captions, enabled: !!definition.captions},
+    qa: {...startingOptions.qa, enabled: !!definition.qa}});
+}
+
+mode.onchange = () => {
+  const reuse = mode.value === "reuse";
+  element("eventReuse").hidden = !reuse;
+  preset.required = reuse;
+  preset.value = "";
+  if (mode.value === "type") showTypeDefaults();
+  else {
+    field("latency").value = "standard";
+    showStartingOptions(startingOptions);
+  }
+};
+field("type").onchange = () => { if (!editing && mode.value === "type") showTypeDefaults(); };
+preset.onchange = () => void action(async () => {
+  const prior = calendar.events.find((entry) => entry.id === preset.value);
+  if (!prior || mode.value !== "reuse") return;
+  const options = await request<StartingOptions>(`${root}/${prior.id}/setup`);
+  const value = prior.event;
+  for (const name of ["title", "type", "description", "latency"] as const) field(name).value = value[name];
+  field("visibility").value = "private";
+  syncViewingPassword();
   field("save_replay").checked = value.save_replay;
   field("archive_replay").checked = value.archive_replay ?? true;
   syncArchiveOption();
   field("dvr_seconds").value = value.dvr_seconds?.toString() ?? "";
   field("timezone").value = value.schedule.timezone;
-};
+  showEmbedPolicy(value.embed_policy);
+  showRegionalPolicy(value.regional_policy);
+  showClassification(value.content_rating);
+  showStartingOptions(options);
+}, "Event settings loaded.");
 
 form.onsubmit = (event) => {
   event.preventDefault();
@@ -543,10 +753,26 @@ form.onsubmit = (event) => {
       until: repeat !== "none" && field("until").value || null, count: repeat !== "none" && Number(field("count").value) || null};
     const target = editing ? root + "/" + editing.id : root;
     const method = editing ? "PUT" : "POST";
+    const setup = editing ? undefined : {
+      method: field("method").value, registration: field("registration").checked,
+      preview_encoder: field("preview_encoder").checked,
+      chat: {enabled: field("chat").checked, interval: Number(field("chat_interval").value)},
+      captions: {enabled: field("captions").checked, language: field("caption_language").value},
+      qa: {enabled: field("qa").checked, anonymous: field("qa_anonymous").checked, review: field("qa_review").checked},
+    };
     const created = await request<LiveEvent>(target, method, {
       revision: editing?.revision,
+      preferred_method: editing && field("method").value !== (editing.event.setup?.method ?? "browser") ? field("method").value : undefined,
+      starting_options: setup, reuse_event: !editing && mode.value === "reuse" ? preset.value : undefined,
       slug: field("slug").value, title: field("title").value, description: field("description").value,
       type: field("type").value, visibility: field("visibility").value, latency: field("latency").value,
+      view_password: field("view_password").value || undefined,
+      embed_policy: {mode: field("embed_mode").value,
+        domains: field("embed_domains").value.split("\n").map((domain) => domain.trim()).filter(Boolean)},
+      regional_policy: {mode: field("region_mode").value,
+        areas: field("region_areas").value.split("\n").map((region) => region.trim()).filter(Boolean)},
+      content_rating: {rating: field("rating").value, content: read.getAll("content_descriptor"),
+        advertisement: field("advertisement").checked, realistic_ai: field("realistic_ai").checked},
       save_replay: field("save_replay").checked,
       archive_replay: field("archive_replay").checked,
       dvr_seconds: field("dvr_seconds").value === "" ? null : field("dvr_seconds").valueAsNumber, schedule,
@@ -566,18 +792,52 @@ previewEncoder.onchange = () => void action(async () => {
     previewEncoder.checked = event.preview_encoder;
   }
 }, "Encoder preview preference saved.");
-button("prepareEncoder").onclick = () => void action(async () => {
-  const connection = await request<Encoder>(mediaPath("encoder"), "POST");
+function showEncoder(connection: Encoder) {
   input("rtmpServer").value = connection.server;
   input("rtmpsServer").value = connection.secure_server || "";
   element("secureEncoder").hidden = !connection.secure_server;
   key.value = connection.key;
+  backupKey.value = connection.backup_key || "";
+  element("backupEncoderSettings").hidden = !connection.backup_key;
   encoder.hidden = false;
   button("withdrawEvent").textContent = "Withdraw this occurrence";
   button("withdrawEvent").disabled = false;
   showEncoderPreview(connection.preview);
   health.textContent = connection.preview ? "Encoder prepared for private preview." : "Waiting for the encoder.";
+}
+button("prepareEncoder").onclick = () => void action(async () => {
+  showEncoder(await request<Encoder>(mediaPath("encoder"), "POST"));
 });
+button("prepareLowRtmp").onclick = () => void action(async () => {
+  showEncoder(await request<Encoder>(mediaPath("rtmp"), "POST",
+    {backup: backupEnabled.checked, height: Number(outputHeight.value)}));
+}, "Low-latency RTMP is ready for the encoder.");
+button("stopLowRtmp").onclick = () => void action(async () => {
+  await request(mediaPath("rtmp"), "DELETE");
+  encoder.hidden = true;
+  key.value = "";
+  backupKey.value = "";
+}, "Low-latency RTMP stopped.");
+button("copyBackupEncoderKey").onclick = () => void action(async () => {
+  await navigator.clipboard.writeText(backupKey.value);
+}, "Backup encoder key copied.");
+button("prepareDash").onclick = () => void action(async () => {
+  const connection = await request<{manifest: string; token: string; buffer_seconds: number}>(mediaPath("dash"), "POST");
+  input("dashManifest").value = connection.manifest;
+  input("dashUploadToken").value = connection.token;
+  element("dashSettings").hidden = false;
+  button("withdrawEvent").textContent = "Withdraw this occurrence";
+  button("withdrawEvent").disabled = false;
+  health.textContent = `Waiting for a DASH contribution. Playback buffers ${connection.buffer_seconds} seconds.`;
+});
+button("stopDash").onclick = () => void action(async () => {
+  await request(mediaPath("dash"), "DELETE");
+  element("dashSettings").hidden = true;
+  input("dashUploadToken").value = "";
+}, "MPEG-DASH contribution stopped.");
+button("copyDashToken").onclick = () => void action(async () => {
+  await navigator.clipboard.writeText(input("dashUploadToken").value);
+}, "DASH upload token copied.");
 releasePreview.onclick = () => void action(async () => {
   await request<EncoderPreview>(mediaPath("preview"), "POST");
   showEncoderPreview(false);
@@ -590,9 +850,14 @@ button("copyEncoderKey").onclick = () => void action(async () => {
 button("prepareSrt").onclick = () => void action(async () => {
   const result = await request<SrtListener>(mediaPath("srt"), "POST", {
     interface: input("srtInterface").value, port: Number(input("srtPort").value),
+    backup_port: srtBackupEnabled.checked ? Number(input("srtBackupPort").value) : undefined,
+    height: srtBackupEnabled.checked ? Number(srtBackupHeight.value) : undefined,
   });
   input("srtServer").value = result.server;
   input("srtPassphrase").value = result.passphrase;
+  input("srtBackupServer").value = result.backup_server || "";
+  srtBackupSecret.value = result.backup_passphrase || "";
+  element("srtBackupCredentials").hidden = !result.backup_passphrase;
   element("srtSettings").hidden = false;
   button("withdrawEvent").textContent = "Withdraw this occurrence";
   button("withdrawEvent").disabled = false;
@@ -602,10 +867,14 @@ button("stopSrt").onclick = () => void action(async () => {
   await request(mediaPath("srt"), "DELETE");
   element("srtSettings").hidden = true;
   input("srtPassphrase").value = "";
+  srtBackupSecret.value = "";
 }, "SRT listener stopped.");
 button("copySrtPassphrase").onclick = () => void action(async () => {
   await navigator.clipboard.writeText(input("srtPassphrase").value);
 }, "SRT passphrase copied.");
+button("copySrtBackupPassphrase").onclick = () => void action(async () => {
+  await navigator.clipboard.writeText(srtBackupSecret.value);
+}, "Backup SRT passphrase copied.");
 
 async function refreshDestinations(result?: Destinations) {
   const selection = active;
@@ -619,7 +888,7 @@ async function refreshDestinations(result?: Destinations) {
   };
   destinationList.replaceChildren(...result.destinations.map(item => {
     const row = document.createElement("li");
-    row.textContent = `${item.name} · ${item.server} · ${labels[item.state] || item.state}`;
+    row.textContent = `${item.name}${item.opens !== null ? " · Patreon Live for this date" : ""} · ${item.server} · ${labels[item.state] || item.state}`;
     const control = document.createElement("button");
     control.type = "button";
     control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -649,12 +918,18 @@ destinationForm.onsubmit = event => {
   const values = new FormData(destinationForm);
   void action(async () => {
     const data = {name: values.get("name"), server: values.get("server"),
-      key: values.get("key"), enabled: values.has("enabled")};
+      key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset")};
     const result = await request<Destinations>(mediaPath("destinations"), "POST", data);
     destinationForm.reset();
     await refreshDestinations(result);
   });
 };
+const presetSelect = destinationForm.elements.namedItem("preset") as HTMLSelectElement;
+const patreonDestinationHelp = element<HTMLParagraphElement>("patreonDestinationHelp");
+function syncPresetHelp() { patreonDestinationHelp.hidden = presetSelect.value !== "patreon"; }
+presetSelect.addEventListener("change", syncPresetHelp);
+destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+syncPresetHelp();
 window.setInterval(() => {
   if (destinations.open && !document.hidden && !pending) {
     void refreshDestinations().catch(() => {});
@@ -814,6 +1089,7 @@ async function updateCaptionSettings(update = false) {
     waiting_for_stream: "Waiting for the event stream",
     engine_unavailable: "Connect a local TextFlowKit streaming runtime",
     listening: "Transcribing the program",
+    blocked: "Automatic caption generation is disabled in workspace AI settings",
     media_or_engine_unavailable: "Waiting for usable live audio and a local transcription runtime",
     stopped: "Captioning stopped",
   } as Record<string, string>;
@@ -834,6 +1110,7 @@ async function updateReplayCaptions(data?: FormData) {
   const states: Record<string, string> = {
     queued: "Caption generation is queued.",
     running: "Transcribing the finished recording.",
+    blocked: "Workspace AI settings blocked generation. You can upload a subtitle file.",
     failed: "Could not generate captions. You can upload a subtitle file.",
     no_speech: "The caption engine did not find speech.",
     unavailable: result.archived ? "No caption track has been saved." : "The recording is still being prepared.",
@@ -890,7 +1167,11 @@ eventPlaylistForm.onsubmit = (event) => { event.preventDefault(); void action(()
 
 button("withdrawEvent").onclick = () => void action(async () => {
   encoder.hidden = true;
+  element("dashSettings").hidden = true;
+  input("dashUploadToken").value = "";
   key.value = "";
+  backupKey.value = "";
+  srtBackupSecret.value = "";
   await request(mediaPath("delivery"), "DELETE");
   await load();
 }, "Occurrence withdrawn.");

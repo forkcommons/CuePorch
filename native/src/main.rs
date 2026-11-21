@@ -2,7 +2,7 @@
 use std::{
     env, fs,
     io::{self, BufRead, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -27,14 +27,40 @@ fn profile() -> io::Result<PathBuf> {
     };
     Ok(path)
 }
+
+fn backend(root: &Path) -> Command {
+    let path = root.join("service").join(if cfg!(windows) {
+        "cueporch-service.exe"
+    } else {
+        "cueporch-service"
+    });
+    let mut command = Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 fn run() -> io::Result<()> {
     let exe = env::current_exe()?;
     let root = exe
         .parent()
         .ok_or_else(|| io::Error::other("Installation folder unavailable"))?;
+    let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "--dash-transmitter") {
+        let status = backend(root).args(args).status()?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "The MPEG-DASH transmitter stopped with an error",
+            ))
+        };
+    }
     let mut home = profile()?;
     let mut browser = true;
-    let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--data" {
             home = PathBuf::from(
@@ -48,22 +74,11 @@ fn run() -> io::Result<()> {
         }
     }
     fs::create_dir_all(&home)?;
-    let backend = root.join("service").join(if cfg!(windows) {
-        "cueporch-service.exe"
-    } else {
-        "cueporch-service"
-    });
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(home.join("service.log"))?;
-    let mut command = Command::new(backend);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command
+    let mut child = backend(root)
         .arg("--data")
         .arg(&home)
         .stdout(Stdio::piped())
@@ -108,7 +123,7 @@ fn main() {
                 fn MessageBoxW(hwnd: usize, text: *const u16, title: *const u16, flags: u32)
                     -> i32;
             }
-            if !env::args_os().any(|a| a == "--headless") {
+            if !env::args_os().any(|a| a == "--headless" || a == "--dash-transmitter") {
                 let msg: Vec<u16> = error.to_string().encode_utf16().chain(Some(0)).collect();
                 let title: Vec<u16> = "CuePorch".encode_utf16().chain(Some(0)).collect();
                 unsafe {

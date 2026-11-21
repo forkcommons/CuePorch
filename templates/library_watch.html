@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="/static/cueporch.css">
+  {% if oembed_discovery %}
+  <link rel="alternate" type="application/json+oembed" href="{{ oembed_discovery }}">
+  {% endif %}
   <title>{{ title }} · CuePorch</title>
 </head>
 <body{% if appearance %}
@@ -16,6 +19,7 @@
     <h1{% if appearance and not appearance.show_title %} class="visually-hidden"{% endif %}>{{ title }}</h1>
   {% endif %}
   {% if token %}
+    {% if embed %}{% include 'content_warnings.html' %}{% endif %}
     {% if appearance %}
       <div class="archive-player" data-play-position="{{ appearance.play_position }}"
            data-start="{{ start }}"
@@ -30,8 +34,10 @@
     {% endif %}
     {% set interactive = rating or (presentation and (presentation.cards or presentation.ending.mode not in ('default', 'loop'))) %}
     {% if interactive %}<div class="interactive-player">{% endif %}
+    {% if panorama %}<div class="panorama-stage" data-panorama="{{ panorama }}">{% endif %}
     <video controls playsinline preload="metadata" aria-label="{{ title }}"
            {% if analytics %}data-analytics="{{ url_for('viewer_analytics', session=analytics) }}"{% endif %}
+{% if hubspot_origin %}data-hubspot-origin="{{ hubspot_origin }}"{% endif %}
            {% if options.autoplay %}autoplay{% endif %}{% if options.muted %} muted{% endif %}{% if options.loop %} loop{% endif %}
            {% if poster %}poster="{{ url_for('shared_poster', token=token) }}"{% endif %}
            {% if not download %}controlslist="nodownload"{% endif %}
@@ -43,7 +49,14 @@
              src="{{ url_for('shared_video', token=token, track=track.index, track_key=track.key) }}">
       {% endfor %}
     </video>
+    {% if panorama %}
+      <canvas tabindex="0" aria-label="Panoramic view" aria-describedby="panoramaHint" hidden></canvas>
+      <p class="panorama-captions" data-panorama-captions hidden></p>
+    </div>
+    {% endif %}
     {% if analytics %}<script type="module" src="/static/ui/playback_analytics.js"></script>{% endif %}
+    {% if analytics and salesforce_report %}<button type="button" data-salesforce-withdraw="{{ url_for('viewer_salesforce_withdraw', session=analytics) }}">Stop sharing video activity with Salesforce</button> <span role="status" data-salesforce-withdraw-status></span>{% endif %}
+    {% if hubspot_origin %}<script type="module" src="/static/ui/hubspot_media_view.js"></script>{% endif %}
     {% if interactive %}
       {% include "playback_interactivity.html" %}
       {% if rating %}{% include "playback_rating.html" %}{% endif %}
@@ -54,6 +67,15 @@
       {% include "archive_player_controls.html" %}
     {% else %}
       {% include "archive_audio_controls.html" %}
+    {% endif %}
+    {% if panorama %}
+    <div class="panorama-controls" data-panorama-controls hidden>
+      <span id="panoramaHint">Drag or use arrow keys to look around.</span>
+      <button type="button" data-panorama-reset>Reset view</button>
+      <button type="button" data-panorama-toggle>Watch flat</button>
+      <span role="status"></span>
+    </div>
+    <script type="module" src="/static/ui/panorama_playback.js"></script>
     {% endif %}
     {% if chapters %}
       <label data-chapter-menu hidden>Chapters <select aria-label="Chapters">
@@ -74,8 +96,7 @@
     {% if details %}
       {% if details.description and (not appearance or appearance.description) %}<p>{{ details.description }}</p>{% endif %}
       {% if details.rating == 'mature' %}
-        {% set content_labels = {'language': 'Profanity', 'drugs': 'Drug or alcohol use', 'violence': 'Violence', 'nudity': 'Nudity'} %}
-        <p>Mature audiences{% for descriptor in details.content %} · {{ content_labels[descriptor] }}{% endfor %}</p>
+        <p>Mature audiences{% for descriptor in details.content %} · {{ descriptor_labels[descriptor] }}{% endfor %}</p>
       {% endif %}
       {% if details.advertisement %}<p>Contains advertisement</p>{% endif %}
       {% if details.realistic_ai %}<p>Includes realistic AI-generated content</p>{% endif %}
@@ -85,6 +106,12 @@
       {% if details.tags and (not appearance or appearance.tags) %}<p>{{ details.tags | join(' · ') }}</p>{% endif %}
       {% if details.categories and (not appearance or appearance.categories) %}<p>{{ details.categories | join(' · ') }}</p>{% endif %}
       {% if details.license and (not appearance or appearance.license) %}<p>{{ 'CC0 Public Domain Dedication' if details.license == 'cc0' else 'Creative Commons ' ~ details.license | upper }}</p>{% endif %}
+    {% endif %}
+    {% if questions %}
+      {% with question_id="videoQuestions", question_path=url_for("viewer_video_questions"), question_label="Ask about this video" %}
+        {% include "video_questions.html" %}
+      {% endwith %}
+      <script type="module" src="/static/ui/video_questions.js"></script>
     {% endif %}
   {% elif registration %}
     {% include "viewer_registration.html" %}

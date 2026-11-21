@@ -7,6 +7,7 @@
   <title>Timeline editor · CuePorch</title>
 </head>
 <body data-work="{{ work }}">
+  {% include "operator_navigation.html" %}
   <nav aria-label="Operator">
     <a href="/operator/videos/{{ work }}">Video details</a>
     <a href="/operator/videos/{{ work }}/editing">Trim and GIF</a>
@@ -46,11 +47,25 @@
           <label>Background color <input type="color" id="timelineColor"></label>
         </fieldset>
         <fieldset>
+          <legend>Brand kit</legend>
+          <label for="timelineBrandKit">Reusable brand kit</label>
+          <select id="timelineBrandKit"><option value="">Choose a brand kit</option></select>
+          <button id="applyTimelineKit" type="button" disabled>Use brand kit</button>
+          <button id="clearTimelineKit" type="button" hidden>Remove from timeline</button>
+          <a href="{{ url_for('brand_kits_page') }}">Manage brand kits</a>
+          <p id="timelineBrandSources" hidden></p>
+        </fieldset>
+        <fieldset>
           <legend>Library media</legend>
           <label>Find video <input id="timelineSearch" type="search"></label>
           <label for="timelineVideo">Add video</label>
           <select id="timelineVideo"></select>
           <button id="appendTimeline" type="button">Add to timeline</button>
+          <form id="timelineUpload">
+            <label>Upload a clip <input id="timelineFile" type="file" accept=".mp4,.mov,.webm,.mkv" required></label>
+            <button id="uploadTimeline" type="submit">Upload and add clip</button>
+          </form>
+          <button id="recordTimeline" type="button">Record a clip</button>
         </fieldset>
         <fieldset>
           <legend>Background audio</legend>
@@ -74,6 +89,11 @@
       <ul id="timelineCues" class="trim-cues"></ul>
     </section>
   </main>
+  <dialog id="timelineRecordDialog" aria-labelledby="timelineRecordHeading">
+    <h2 id="timelineRecordHeading">Record a clip</h2>
+    <button id="closeTimelineRecorder" type="button">Close recorder</button>
+    <iframe id="timelineRecorder" title="Record Studio" allow="camera 'self'; microphone 'self'; display-capture 'self'"></iframe>
+  </dialog>
   <script type="module" src="/static/ui/timeline_studio.js"></script>
 </body>
 </html>

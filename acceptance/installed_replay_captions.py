@@ -10,10 +10,10 @@ import requests
 
 from browser import chromium
 from installed_events import play_event, wait_for_delivery
-from installed_live_captions import spoken_signal
+from installed_live_captions import set_caption_policy, spoken_signal
 
 
-def check_replay_captions(base, keys, ffmpeg, speech):
+def check_replay_captions(base, keys, ffmpeg, speech, governed=False):
     now = datetime.now(timezone.utc)
     auth = {"Authorization": "Bearer " + keys["operator"]}
     title = "Captioned replay commissioning"
@@ -21,6 +21,8 @@ def check_replay_captions(base, keys, ffmpeg, speech):
     response = requests.get(policy, headers=auth, timeout=10)
     response.raise_for_status()
     assert not any(response.json()[step] for step in ("replay", "caption"))
+    if governed:
+        set_caption_policy(base, auth, True)
     for step in ("replay", "caption"):
         requests.put(f"{policy}/{step}", headers=auth, json={"required": True}, timeout=10).raise_for_status()
     event = dict(title=title, slug="captioned-replay", visibility="public", type="live",
@@ -86,6 +88,8 @@ def check_replay_captions(base, keys, ffmpeg, speech):
                 operator.get_by_role("button", name="Download WebVTT").click()
             exported = download.value.path().read_text(encoding="utf-8")
             assert exported.startswith("WEBVTT") and re.search(r"city\s+council", exported, re.I), exported
+            if governed:
+                assert "Fixture City Council" in exported, exported
             print("Downloaded TextFlowKit WebVTT while both approval switches held the result.", flush=True)
 
             requests.put(policy + "/replay", headers=auth, json={"required": False}, timeout=10).raise_for_status()
@@ -116,6 +120,9 @@ def check_replay_captions(base, keys, ffmpeg, speech):
             assert any(0 <= cue["starts"] < cue["ends"] < duration * 1000 + 750 for cue in transcript)
 
             corrected = "Corrected city council replay caption"
+            if governed:
+                set_caption_policy(base, auth, False)
+                assert requests.get(track, headers=viewer, timeout=10).json()["cues"] == transcript
             operator.get_by_label("Subtitle file").set_input_files({
                 "name": "correction.vtt", "mimeType": "text/vtt",
                 "buffer": f"WEBVTT\n\n00:00:02.000 --> 00:00:04.000\n{corrected}\n".encode("utf-8"),
@@ -139,6 +146,7 @@ def check_replay_captions(base, keys, ffmpeg, speech):
                         independent_optional_caption_and_replay_approvals=True,
                         operator_can_download_while_held=True, registration_required=True,
                         correction_loaded_in_open_browser=True, transcript_seek_decodes_cue=True,
-                        track_and_media_revoked_together=True)
+                        track_and_media_revoked_together=True,
+                        workspace_dictionary_and_manual_replacement=governed)
         finally:
             browser.close()

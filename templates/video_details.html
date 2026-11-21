@@ -6,30 +6,41 @@
   <link rel="stylesheet" href="/static/cueporch.css">
   <title>Video details · CuePorch</title>
 </head>
-<body data-work="{{ work }}" data-public-url="{{ public_url }}">
-  <nav aria-label="Operator"><a href="/operator/library">Library</a></nav>
+<body data-work="{{ work }}" data-public-url="{{ public_url }}" data-team-preview="{{ team_preview or '' }}">
+  {% if team_editor %}
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/video/{{ work }}">Play video</a></nav>
+  {% else %}
+  {% include "operator_navigation.html" %}
+  {% endif %}
   <h1 id="videoHeading">Video details</h1>
-  <form id="identify">
+  <form id="identify"{% if team_editor %} hidden{% endif %}>
     <label for="operatorKey">Operator credential</label>
     <input id="operatorKey" type="password" autocomplete="current-password" required>
     <button type="submit">Open video details</button>
   </form>
   <p id="detailsStatus" role="status"></p>
   <main id="videoDetails" hidden>
+    {% set tour_steps = [
+      ("#previewTitle", "Preview the video", "Check the copy people can play before making changes."),
+      ("#videoMetaTitle", "Describe the video", "Edit the title, description, tags and credits. Choose Save video details to apply your changes."),
+      ("#videoReviewLinks", "Share for review", "Open Review links and comments to create a recipient link or manage review feedback.")
+    ] %}
+    {% include "workspace_tour.html" %}
     <div class="video-work-actions">
       <label>Editorial status
         <select id="editorialState" disabled>
           <option>In progress</option><option>Needs review</option><option>Approved</option>
         </select>
       </label>
+      <div class="video-operator-actions"{% if team_editor %} hidden{% endif %}>
       <a href="/operator/library?work={{ work }}&amp;action=versions">Versions</a>
       <a href="/operator/videos/{{ work }}/appearance">Player and page appearance</a>
       <a href="/operator/videos/{{ work }}/languages">Languages and subtitles</a>
       <a href="/operator/videos/{{ work }}/interactivity">Interactivity</a>
-      <a href="/operator/videos/{{ work }}/analytics">Analytics</a>
+      <a href="/operator/videos/{{ work }}/analytics">Video analytics</a>
       <a href="/operator/videos/{{ work }}/editing">Edit video</a>
       <a href="/operator/videos/{{ work }}/timeline">Timeline editor</a>
-      <a href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>
+      <a id="videoReviewLinks" href="/operator/library?work={{ work }}&amp;action=reviews">Review links and comments</a>
       <a id="viewerPage" hidden>View video page</a>
       <details>
         <summary>File actions</summary>
@@ -37,19 +48,22 @@
         <a href="/operator/library?work={{ work }}&amp;action=move">Move</a>
         <a href="/operator/library?work={{ work }}&amp;action=copy">Create a copy</a>
         <a href="/operator/library?work={{ work }}&amp;action=thumbnail">Change thumbnail</a>
+        <a href="/operator/videos/{{ work }}/file-links">Video file links</a>
         <a href="/operator/library?work={{ work }}&amp;action=delete">Delete</a>
       </details>
+      </div>
     </div>
     <div class="video-workspace">
       <div>
       <section aria-labelledby="previewTitle">
-        <h2 id="previewTitle">Operator preview</h2>
-        <video id="workspacePreview" controls playsinline preload="metadata" hidden aria-label="Operator preview"></video>
+        <h2 id="previewTitle">{{ 'Team preview' if team_editor else 'Operator preview' }}</h2>
+        <video id="workspacePreview" controls playsinline preload="metadata" hidden aria-label="{{ 'Team preview' if team_editor else 'Operator preview' }}"></video>
         <p id="previewMessage" hidden>No browser-playable copy is stored for this video.</p>
       </section>
     <form id="videoMeta">
-      <label>Title <input name="title" maxlength="128" required></label>
+      <label id="videoMetaTitle">Title <input name="title" maxlength="128" required></label>
       <label>Description <textarea name="description" maxlength="5000" rows="5"></textarea></label>
+      <label>Pages that embed this video (one URL per line) <textarea name="embed_pages" rows="3"></textarea></label>
       <label>Tags (one per line) <textarea name="tags" rows="3"></textarea></label>
       <label>Categories (one per line) <textarea name="categories" rows="3"></textarea></label>
       <label>Credits (one name per line with an optional role after |) <textarea name="credits" rows="4"></textarea></label>
@@ -79,20 +93,86 @@
       </fieldset>
       <label><input type="checkbox" name="realistic_ai"> Includes realistic AI-generated content</label>
       <label><input type="checkbox" name="advertisement"> Contains advertisement</label>
+      <label>Playback projection
+        <select name="panorama">
+          <option value="flat">Flat</option>
+          <option value="source">Use imported projection</option>
+          <option value="180-mono">180° monoscopic</option>
+          <option value="180-top-bottom">180° stereoscopic, top and bottom</option>
+          <option value="180-side-by-side">180° stereoscopic, side by side</option>
+          <option value="360-mono">360° monoscopic</option>
+          <option value="360-top-bottom">360° stereoscopic, top and bottom</option>
+          <option value="360-side-by-side">360° stereoscopic, side by side</option>
+        </select>
+      </label>
       <button type="submit">Save video details</button>
     </form>
+    <section id="aiVideoTools" aria-labelledby="videoAIHeading" hidden>
+      <h2 id="videoAIHeading">Generate from subtitles</h2>
+      <p>Uses the configured local model. Check generated text for accuracy.</p>
+      <label>Source subtitle track <select id="aiVideoTrack"></select></label>
+      <label><input type="checkbox" id="aiVideoAuto" checked> Save generated results automatically</label>
+      <p id="aiVideoStatus" role="status"></p>
+      <form data-ai-step="ai_details">
+        <button type="button" data-generate>Generate video details</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Suggested details</legend>
+          <label>Suggested title <input name="title" maxlength="128"></label>
+          <label>Suggested description <textarea name="description" maxlength="5000" rows="4"></textarea></label>
+          <label>Suggested tags (one per line) <textarea name="tags" rows="3"></textarea></label>
+          <button type="submit">Save suggested details</button>
+        </fieldset>
+      </form>
+      <form data-ai-step="ai_chapters">
+        <button type="button" data-generate>Generate chapters</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Suggested chapters</legend>
+          <div data-chapters></div>
+          <button type="submit">Save suggested chapters</button>
+        </fieldset>
+      </form>
+      <form data-ai-step="ai_highlights">
+        <label for="highlightPrompt">Describe the highlight reel</label>
+        <textarea id="highlightPrompt" name="prompt" maxlength="1200" rows="3" required></textarea>
+        <button type="button" data-generate>Create private highlight reel</button>
+        <p data-state role="status"></p>
+        <fieldset data-result hidden>
+          <legend>Highlight reel</legend>
+          <a data-reel-preview>Preview private reel</a>
+          <a data-reel-editor>Open in Timeline editor</a>
+        </fieldset>
+      </form>
+    </section>
     <section aria-labelledby="factsTitle">
       <h2 id="factsTitle">Stored video</h2>
       <dl id="videoFacts"></dl>
     </section>
+    {% if team_privacy %}
+    <section aria-labelledby="teamShareHeading">
+      <h2 id="teamShareHeading">Video sharing</h2>
+      <div id="teamVideoPrivacy"></div>
+      <p id="teamVideoPrivacyStatus" role="status"></p>
+      <label hidden>Viewer link <input id="teamVideoWatch" readonly></label>
+      {% include "video_privacy_fields.html" %}
+    </section>
+    {% endif %}
+    {% if team_file_links %}
+      <p><a href="/operator/videos/{{ work }}/file-links?team=1">Video file links</a></p>
+    {% endif %}
+    {% if team_social %}
+      <nav aria-label="Publish this video">{% include "social_destinations.html" %}</nav>
+    {% endif %}
       </div>
-      <aside aria-labelledby="shareHeading">
+      <aside aria-labelledby="shareHeading"{% if team_editor %} hidden{% endif %}>
         <h2 id="shareHeading">Share</h2>
         <nav aria-label="Video sharing settings">
           <a id="editVideoPrivacy" href="/operator/library?work={{ work }}&amp;action=privacy" hidden>Video privacy and embed rules</a>
           <a id="restoreSourcePrivacy" href="/operator/library?work={{ work }}&amp;action=source-privacy" hidden>Restore Vimeo privacy</a>
           <a href="/operator/library?work={{ work }}&amp;action=defaults">Upload defaults</a>
           <a href="/operator/library?work={{ work }}&amp;action=reviews">Manage review links</a>
+          {% include "social_destinations.html" %}
         </nav>
         <label hidden>Active review link <input id="workspaceReview" readonly></label>
         <button type="button" id="copyReview" hidden>Copy review link</button>
@@ -115,6 +195,15 @@
           </fieldset>
           <label id="workspaceEmbedLabel" hidden>Embed code <textarea id="workspaceEmbed" rows="3" readonly></textarea></label>
           <button type="button" id="copyEmbed" hidden>Copy embed code</button>
+          <details id="embedWebsites" hidden>
+            <summary>Embed on a website</summary>
+            <ul>
+              <li><strong>WordPress</strong><br> For a public video that allows embedding anywhere, paste the viewer link into an Embed block on a site with oEmbed discovery. You can also paste the embed code into a Custom HTML block where allowed.</li>
+              <li><strong>WooCommerce</strong><br> Paste the embed code into the product description HTML.</li>
+              <li><strong>Wix</strong><br> Paste the embed code into an Embed HTML element on your HTTPS site. Resize the element in the editor.</li>
+              <li><strong>GoDaddy</strong><br> Add an HTML section in Websites + Marketing and paste the embed code there.</li>
+            </ul>
+          </details>
         </div>
         <form id="customLink" hidden>
           <label>Custom link name <input name="slug" minlength="3" maxlength="70" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required></label>

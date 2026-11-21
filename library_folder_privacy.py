@@ -27,24 +27,25 @@ def closest(con, folder):
     ).fetchone()
 
 
-def apply_to_works(con, action, works, rule):
+def apply_to_works(con, action, works, rule, enforce_sharing):
     if not rule:
         return 0
     settings = json.loads(rule["settings"])
     affected = 0
     for work in works:
         if sharing.editable(work) and not sharing.protected_route(con, work["id"]):
+            enforce_sharing(con, settings=settings, prior=sharing.current_settings(con, work["id"]))
             sharing.apply_settings(con, action, work, settings, rule["password_hash"])
             affected += 1
     return affected
 
 
-def place_under_rule(con, action, works, destination):
-    apply_to_works(con, action, works, closest(con, destination))
+def place_under_rule(con, action, works, destination, enforce_sharing):
+    apply_to_works(con, action, works, closest(con, destination), enforce_sharing)
     sharing.apply_pending(con)
 
 
-def sync_branch(con, action, folder, works, inherited=None):
+def sync_branch(con, action, folder, works, enforce_sharing, inherited=None):
     policy = closest(con, folder)
     if policy is None or (inherited is not None and policy["folder"] != inherited):
         return 0
@@ -53,14 +54,14 @@ def sync_branch(con, action, folder, works, inherited=None):
             "SELECT work FROM library_placement WHERE folder=?", (folder,)
         ) if not hidden(con, "work", row[0])
     }
-    count = apply_to_works(con, action, (works[uid] for uid in members if uid in works), policy)
+    count = apply_to_works(con, action, (works[uid] for uid in members if uid in works), policy, enforce_sharing)
     for (child,) in con.execute("SELECT id FROM library_folder WHERE parent=?", (folder,)).fetchall():
         if not hidden(con, "folder", child):
-            count += sync_branch(con, action, child, works, inherited)
+            count += sync_branch(con, action, child, works, enforce_sharing, inherited)
     return count
 
 
-def register(app, tx, staff, action, read_works):
+def register(app, tx, staff, action, read_works, sharing_access, enforce_sharing):
     @app.route("/api/library/folders/<folder>/privacy", methods=["GET", "PUT"])
     def folder_privacy(folder):
         staff()
@@ -78,20 +79,24 @@ def register(app, tx, staff, action, read_works):
                     abort(400, "Choose whether this folder overrides upload privacy.")
                 if enabled:
                     settings, password = sharing.requested_settings(body, direct["password_hash"] if direct else None)
+                    enforce_sharing(con, settings=settings, prior=json.loads(direct["settings"]) if direct else None)
                     con.execute(
                         """INSERT INTO library_folder_privacy VALUES(?,?,?) ON CONFLICT(folder) DO UPDATE SET
                            settings=excluded.settings,password_hash=excluded.password_hash""",
                         (folder, json.dumps(settings), password),
                     )
-                    affected = sync_branch(con, action, folder, {work["id"]: work for work in read_works()}, folder)
+                    affected = sync_branch(con, action, folder, {work["id"]: work for work in read_works()},
+                                           enforce_sharing, folder)
                     sharing.apply_pending(con)
                 else:
                     con.execute("DELETE FROM library_folder_privacy WHERE folder=?", (folder,))
             effective = closest(con, folder)
+            allowed = sharing_access(con)
         return dict(
             enabled=bool(effective and effective["folder"] == folder),
             inherited=bool(effective and effective["folder"] != folder),
             settings=json.loads(effective["settings"]) if effective else None,
             has_password=bool(effective and effective["password_hash"]),
             affected=affected,
+            allowed=allowed,
         )

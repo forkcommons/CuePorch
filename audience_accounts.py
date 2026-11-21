@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import time
@@ -10,13 +11,19 @@ import uuid
 from flask import abort, render_template, request
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import account_email
+import account_email_factor
+import account_recovery
+import account_totp
 import audience_comments
 import audience_library
-from browser_account_security import (cookie_session, email_key, json_mutation, password, private, secure_site,
-                                      set_session_cookie, token_hash)
+from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
+                                      workspace_session, workspace_session_cookie)
 import community_analytics
+import content_rating
+import creator_profiles
 from library_analytics import source_origin
-from library_discovery import entry_payload
+from library_discovery import PAGE_SIZE, entry_payload, ordered
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audience_account(
@@ -32,11 +39,11 @@ CREATE INDEX IF NOT EXISTS audience_attempt_expiry ON audience_auth_attempt(expi
 CREATE TABLE IF NOT EXISTS audience_watch_later(
  account TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL, saved REAL NOT NULL,
  PRIMARY KEY(account,kind,slug));
+CREATE TABLE IF NOT EXISTS audience_view_preferences(
+ account TEXT PRIMARY KEY, maturity TEXT NOT NULL);
 """ + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
-LOCAL_COOKIE = "cueporch-viewer"
-HTTPS_COOKIE = "__Host-cueporch-viewer"
-VIDEO_PATH = re.compile(r"/watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}")
+VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|watch/feed)")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
@@ -53,6 +60,11 @@ def account_view(row):
     return {key: row[key] for key in ("name", "email", "pronouns")}
 
 
+def account_preferences(con, account):
+    saved = con.execute("SELECT maturity FROM audience_view_preferences WHERE account=?", (account,)).fetchone()
+    return json.loads(saved["maturity"]) if saved else content_rating.PREFERENCE_DEFAULT
+
+
 def register(app, tx, origin_url, operator, listing, action, staff):
     public_origin = source_origin(origin_url)
     dummy = generate_password_hash(secrets.token_urlsafe(24))
@@ -61,11 +73,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     def scheme():
         return secure_site(public_origin)
 
-    def cookie_name(secure):
-        return HTTPS_COOKIE if secure else LOCAL_COOKIE
-
     def browser_session(secure):
-        return cookie_session(cookie_name(secure))
+        return workspace_session("viewer", secure)
 
     def mutation(secure):
         return json_mutation(secure, "X-CuePorch-Viewer")
@@ -78,6 +87,12 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         if row is None and required:
             abort(401, "Sign in to your viewer account.")
         return row
+
+    def viewing_preferences(con):
+        secure = secure_site(public_origin, required=False)
+        session = browser_session(secure) if secure is not None else None
+        account = current(con, session, required=False) if session else None
+        return account_preferences(con, account["id"]) if account else content_rating.PREFERENCE_DEFAULT
 
     def limit(con, action, subject=None):
         now = time.time()
@@ -104,7 +119,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         return token
 
     def cookie(response, secure, token=None):
-        return set_session_cookie(response, cookie_name(secure), secure, SESSION_SECONDS, token)
+        return workspace_session_cookie(response, "viewer", secure, SESSION_SECONDS, token)
 
     def reauthenticate(session, entered):
         with tx() as con:
@@ -118,11 +133,52 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         if previous_hash is not None and not hmac.compare_digest(row["password_hash"], previous_hash):
             abort(409, "Your account changed. Try again.")
 
+    def rotate_security_session(con, uid, secure):
+        con.execute("DELETE FROM audience_session WHERE account=?", (uid,))
+        return issue(con, uid, None)
+
+    def security_account(con, secure):
+        return current(con, browser_session(secure))
+
+    authenticator = account_totp.register(
+        app, tx, "viewer", operator, scheme, mutation, security_account,
+        limit, rotate_security_session, cookie,
+    )
+    email_security = account_email.register(app, tx, "viewer", operator, public_origin, scheme, mutation,
+                                            security_account, limit)
+    email_factor = account_email_factor.register(app, tx, email_security, authenticator, scheme, mutation,
+                                                security_account, limit, rotate_security_session, cookie)
+
+    def reset_password(con, uid, encoded):
+        con.execute("UPDATE audience_account SET password_hash=? WHERE id=?", (encoded, uid))
+        con.execute("DELETE FROM audience_session WHERE account=?", (uid,))
+
+    account_recovery.register(
+        app, tx, "viewer", public_origin, email_security, scheme, mutation,
+        lambda con, address: con.execute("SELECT * FROM audience_account WHERE email=?", (address,)).fetchone(),
+        limit, authenticator, reset_password,
+    )
+
     @app.get("/account")
     def viewer_account_page():
         scheme()
         destination = request.args.get("next", "")
-        return private(render_template("viewer_account.html", destination=destination if VIDEO_PATH.fullmatch(destination) else ""))
+        return private(render_template("viewer_account.html", content_choices=content_rating.PREFERENCE_CHOICES,
+                                       can_recover=bool(email_security.config),
+                                       destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else ""))
+
+    @app.route("/api/viewer/preferences", methods=("GET", "PUT"))
+    def viewer_preferences():
+        secure = scheme()
+        session = browser_session(secure)
+        settings = content_rating.validate_preference(mutation(secure)) if request.method == "PUT" else None
+        with tx() as con:
+            account = current(con, session)["id"]
+            if settings is None:
+                return private(account_preferences(con, account))
+            con.execute("""INSERT INTO audience_view_preferences VALUES(?,?) ON CONFLICT(account)
+                           DO UPDATE SET maturity=excluded.maturity""", (account, json.dumps(settings)))
+        return private(settings)
 
     @app.route("/api/viewer/account", methods=("GET", "PUT", "DELETE"))
     def viewer_account():
@@ -139,7 +195,12 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 same_password(row, previous_hash)
                 audience_comments.remove_account(con, row["id"])
                 audience_library.remove_account(con, row["id"])
+                con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
+                authenticator.forget(con, row["id"])
+                email_factor.forget(con, row["id"])
+                email_security.forget(con, row["id"])
                 con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_account WHERE id=?", (row["id"],))
             return cookie(private("", 204), secure)
@@ -154,6 +215,10 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 abort(409, "Your account changed. Try again.")
             if con.execute("SELECT 1 FROM audience_account WHERE email=? AND id<>?", (email, row["id"])).fetchone():
                 abort(409, "That email address is already in use.")
+            if email != row["email"]:
+                if email_factor.enabled(con, row["id"]):
+                    abort(409, "Turn off email sign-in before changing the address.")
+                email_security.forget(con, row["id"])
             con.execute("UPDATE audience_account SET name=?,email=?,pronouns=? WHERE id=?", (name, email, pronouns, row["id"]))
         return private(dict(name=name, email=email, pronouns=pronouns))
 
@@ -195,7 +260,11 @@ def register(app, tx, origin_url, operator, listing, action, staff):
             row = con.execute("SELECT * FROM audience_account WHERE id=? AND email=?", (row["id"], email)).fetchone()
             if row is None or row["password_hash"] != expected:
                 abort(401, "The email or password did not match.")
-            token = issue(con, row["id"], old)
+            needs_mail, prepared = email_factor.check(con, row, body)
+            if not needs_mail:
+                token = issue(con, row["id"], old)
+        if needs_mail:
+            return email_factor.deliver(tx, row, prepared)
         return cookie(private(account_view(row)), secure, token)
 
     @app.put("/api/viewer/password")
@@ -209,8 +278,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         with tx() as con:
             row = current(con, session)
             same_password(row, previous_hash)
-            con.execute("UPDATE audience_account SET password_hash=? WHERE id=?", (encoded, row["id"]))
-            con.execute("DELETE FROM audience_session WHERE account=?", (row["id"],))
+            reset_password(con, row["id"], encoded)
             token = issue(con, row["id"], None)
         return cookie(private("", 204), secure, token)
 
@@ -258,3 +326,6 @@ def register(app, tx, origin_url, operator, listing, action, staff):
 
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
+    creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
+                                       ordered, PAGE_SIZE, account_preferences)
+    return viewing_preferences

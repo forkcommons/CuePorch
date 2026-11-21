@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Session controls · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team/settings">Team settings</a> · <a href="/team">Team workspace</a></nav>
+  <h1>Session controls</h1>
+  <form id="sessionPolicyAccess" method="post" hidden>
+    <label>Installation credential <input type="password" autocomplete="current-password" required></label>
+    <button>Open session controls</button>
+  </form>
+  <p id="sessionPolicyStatus" role="status"></p>
+  <form id="sessionPolicy" method="post" hidden>
+    <label>Require sign-in again
+      <select name="mode">
+        <option value="fixed">After a fixed period</option><option value="idle">After inactivity</option>
+      </select>
+    </label>
+    <label>Duration <input type="number" name="duration" min="1" step="1" required></label>
+    <label>Unit
+      <select name="unit">
+        <option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option>
+      </select>
+    </label>
+    <button type="submit">Save and sign out team</button>
+    <button id="endTeamSessions" type="button">Sign out all team members now</button>
+  </form>
+</main>
+<script type="module" src="/static/ui/team_session_policy.js"></script>
+</html>

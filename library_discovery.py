@@ -6,6 +6,8 @@ import uuid
 from flask import abort, make_response, render_template, request, send_file, url_for
 
 import library_details
+import content_rating
+import team_branding
 from library_privacy import playback
 from library_thumbnail import selected_thumbnail, thumbnail_type
 
@@ -33,6 +35,7 @@ def listing(con, read_works, title_for, permits, item=None):
         entries[(kind, slug)] = dict(
             kind=kind, slug=slug, title=title, description=details.get("description", ""),
             categories=details.get("categories", []), tags=details.get("tags", []),
+            rating=details.get("rating", "unrated"), content=details.get("content", []),
             added=work.get("library_added_at", "") if work else "",
             image=selected_thumbnail(con, work) if work else None,
         )
@@ -87,7 +90,7 @@ def no_store(body):
     return response
 
 
-def register(app, tx, staff, public_listing, root, institution):
+def register(app, tx, staff, public_listing, root, institution, viewing_preferences):
     @app.get("/")
     @app.get("/watch")
     @app.get("/watch/<any(picks,categories,channels):section>")
@@ -95,8 +98,11 @@ def register(app, tx, staff, public_listing, root, institution):
         query = request.args.get("q", "").strip()[:120]
         category = request.args.get("category", "").strip()[:120]
         with tx() as con:
-            entries = public_listing(con)
+            preference = viewing_preferences(con)
+            entries = {key: entry for key, entry in public_listing(con).items()
+                       if not content_rating.filtered(preference, entry)}
             _, keys = picks(con)
+            brand = team_branding.read(con, institution)
         featured = [entries[key] for key in keys if key in entries]
         videos = ordered(entry for entry in entries.values() if entry["kind"] != "channel")
         labels = {}
@@ -124,7 +130,7 @@ def register(app, tx, staff, public_listing, root, institution):
                            page=number, q=query or None, category=category or None)
 
         return no_store(render_template(
-            "catalog.html", name=institution, section=section, q=query, category=category, categories=categories,
+            "catalog.html", brand=brand, section=section, q=query, category=category, categories=categories,
             rows=[entry_payload(entry) for entry in videos[start:start + PAGE_SIZE]],
             featured=[entry_payload(entry) for entry in featured[:6]] if show_spotlight else [],
             previous=page_link(page - 1) if page > 1 else None, next_page=page_link(page + 1) if page < count else None,

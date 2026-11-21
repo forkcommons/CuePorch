@@ -5,7 +5,7 @@ import json
 from urllib.parse import urlsplit
 
 from filelock import FileLock
-from flask import abort, request
+from flask import abort, make_response, request
 
 from catalog import cut_chapters, video_version_key
 from cueporch import dump
@@ -59,6 +59,12 @@ def text_field(value, label, limit, required=False):
     if not isinstance(value, str) or len(value.strip()) > limit or (required and not value.strip()):
         abort(422, f"Enter {label} of up to {limit} characters.")
     return value.strip()
+
+
+def selected_ids(items, label):
+    if not isinstance(items, list) or not 1 <= len(items) <= 50 or any(not isinstance(item, str) for item in items):
+        abort(422, f"Select between 1 and 50 {label}.")
+    return list(dict.fromkeys(items))
 
 
 def web_link(value):
@@ -179,19 +185,24 @@ def for_viewer(con, work, public_options):
 
 
 def artwork(con, work, digest):
-    values = presentation(con, work)
-    used = {card["image"] for card in values["cards"]}
-    used.add(values["ending"].get("image"))
-    if digest not in used:
+    if digest not in assigned_images(presentation(con, work)):
         return None
     return con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
 
 
-def register(app, tx, staff, get_work, title_for, root, remember_work, read_works, permits):
+def assigned_images(settings):
+    return {card["image"] for card in settings["cards"] if card["image"]} | (
+        {settings["ending"]["image"]} if settings["ending"].get("image") else set()
+    )
+
+
+def register(app, tx, authorize_editor, get_work, title_for, root, remember_work, read_works, permits):
     @app.route("/api/library/work/<uid>/presentation", methods=["GET", "PUT"])
     def video_presentation(uid):
-        staff()
+        if request.method == "PUT":
+            request.max_content_length = 3 * 1024**2
         with tx() as con:
+            scoped = authorize_editor(con, uid, advanced=True)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
@@ -199,27 +210,31 @@ def register(app, tx, staff, get_work, title_for, root, remember_work, read_work
             current = presentation(con, work)
             version = video_version_key(work)
             if request.method == "PUT":
-                request.max_content_length = 3 * 1024**2
                 body = request.get_json()
                 if not isinstance(body, dict):
                     abort(400, "Enter the interactivity settings.")
                 if body.get("version") != version or body.get("previous") != current:
                     abort(409, "This video or its interactivity changed. Reopen the editor.")
-                current = presentation_settings(con, work, body, videos)
+                settings = presentation_settings(con, work, body, videos)
+                if scoped and not assigned_images(settings) <= assigned_images(current):
+                    abort(403, "Ask an Administrator to add new artwork to this video.")
+                current = settings
                 con.execute("""INSERT INTO video_presentation VALUES(?,?,?)
                             ON CONFLICT(work,version) DO UPDATE SET settings=excluded.settings""",
                             (uid, version, json.dumps(current)))
-            return dict(version=version, settings=current, public_videos=videos)
+            return make_response(dict(version=version, settings=current, public_videos=videos),
+                                 {"Cache-Control": "private, no-store"})
 
     @app.route("/api/library/work/<uid>/chapters", methods=["GET", "PUT"])
     def video_chapters(uid):
-        staff()
+        if request.method == "PUT":
+            request.max_content_length = 64 * 1024
         with tx() as con:
+            authorize_editor(con, uid, advanced=True)
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
             if request.method == "PUT":
-                request.max_content_length = 64 * 1024
                 body = request.get_json()
                 if not isinstance(body, dict):
                     abort(400, "Enter chapter details.")
@@ -236,5 +251,6 @@ def register(app, tx, staff, get_work, title_for, root, remember_work, read_work
                     work.setdefault("chapter_edits", {})[version] = chapters
                     dump(path, manifest)
                 remember_work(work)
-            return dict(title=title_for(con, work), version=video_version_key(work),
-                        revision=revision(work), chapters=readable_chapters(work))
+            return make_response(dict(title=title_for(con, work), version=video_version_key(work),
+                                      revision=revision(work), chapters=readable_chapters(work)),
+                                 {"Cache-Control": "private, no-store"})

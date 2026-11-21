@@ -32,8 +32,29 @@ let hls;
 let stopMeasuring;
 const Hls = window.Hls;
 const viewer = lobby.dataset.viewerGrant || "";
-const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes");
-const liveSyncSegments = new Map([["low", 2], ["standard", 5], ["fail-safe", 10]]);
+const sharing = document.querySelector("#stopAttendeeSharing");
+if (sharing) {
+    const status = document.querySelector("#attendeeSharingStatus");
+    sharing.onclick = async () => {
+        sharing.disabled = true;
+        try {
+            const reply = await fetch("/api/event-playback/withdraw-sharing", { method: "POST",
+                headers: { "X-CuePorch-Event-Viewer": viewer } });
+            if (!reply.ok)
+                throw new Error("CuePorch couldn't change sharing. Try again.");
+            sharing.hidden = true;
+            status.textContent = "Watch-time sharing stopped for this viewing session.";
+        }
+        catch {
+            sharing.disabled = false;
+            status.textContent = "CuePorch couldn't change sharing. Try again.";
+        }
+    };
+}
+const audienceAccess = lobby.dataset.audienceAccess || "";
+const captions = setupLiveCaptions(viewer, lobby.dataset.embed === "yes", audienceAccess);
+const latencyMode = lobby.dataset.latency || "standard";
+const liveSyncSegments = new Map([["low", 2], ["standard", 2], ["fail-safe", 10]]);
 function showBranding(value) {
     logo.hidden = !value.logo;
     if (value.logo && logo.getAttribute("src") !== value.logo)
@@ -89,10 +110,13 @@ function viewArchive(opens, autoplayMuted) {
     eventStatus.textContent = "Loading replay";
     void checkStatus();
 }
-function renderVideo(address, phase, analytics, video) {
+function renderVideo(address, phase, analytics, transport, video) {
+    const local = transport.startsWith("local:");
+    const liveSegments = local ? 2 : liveSyncSegments.get(latencyMode) ?? 2;
     stopMeasuring?.();
     player.dataset.address = address;
     player.dataset.phase = phase;
+    player.dataset.transport = transport;
     hls?.destroy();
     hls = undefined;
     if (!video) {
@@ -104,8 +128,19 @@ function renderVideo(address, phase, analytics, video) {
     }
     stopMeasuring = measureEventPlayback(video, analytics);
     const replay = phase === "Replay";
-    controls.attach(video, !replay);
     const currentVideo = video;
+    controls.attach(video, !replay, () => {
+        const ranges = currentVideo.seekable;
+        if (!ranges.length)
+            return null;
+        const last = ranges.length - 1;
+        const start = ranges.start(last);
+        const end = ranges.end(last);
+        const seconds = local ? (latencyMode === "fail-safe" ? 2 : 1) : latencyMode === "low" ? 2 : 4;
+        const position = hls ? hls.liveSyncPosition : end - liveSegments * seconds;
+        return position === null || !Number.isFinite(position) || end - start < 1
+            ? null : Math.min(end - .5, Math.max(start, position));
+    });
     currentVideo.onended = replay ? () => {
         const following = neighboringArchive(1);
         if (playlist?.autoplay_next && following)
@@ -121,7 +156,7 @@ function renderVideo(address, phase, analytics, video) {
         const session = new Hls({
             enableWorker: true,
             liveDurationInfinity: true,
-            liveSyncDurationCount: liveSyncSegments.get(lobby.dataset.latency || "") ?? 5,
+            liveSyncDurationCount: liveSegments,
         });
         session.loadSource(address);
         session.attachMedia(video);
@@ -148,6 +183,7 @@ function closePlayer() {
     hls = undefined;
     player.dataset.address = "";
     player.dataset.phase = "";
+    player.dataset.transport = "";
     player.replaceChildren();
 }
 async function checkStatus() {
@@ -159,13 +195,17 @@ async function checkStatus() {
         const headers = { Accept: "application/json" };
         if (viewer)
             headers["X-CuePorch-Event-Viewer"] = viewer;
+        if (audienceAccess)
+            headers["X-CuePorch-Event-Access"] = audienceAccess;
+        if (lobby.dataset.frameGrant)
+            headers["X-CuePorch-Event-Frame"] = lobby.dataset.frameGrant;
         if (lobby.dataset.analyticsContext)
             headers["X-CuePorch-Event-Context"] = lobby.dataset.analyticsContext;
         const response = await fetch(requested, { cache: "no-store", headers });
         if (requested !== location.href)
             return;
-        if (response.status === 404) {
-            eventStatus.textContent = "This event is unavailable";
+        if (response.status === 404 || response.status === 403) {
+            eventStatus.textContent = response.status === 403 ? "This event is unavailable in your region" : "This event is unavailable";
             closePlayer();
             waiting(null);
             showPlaylist(null);
@@ -174,7 +214,7 @@ async function checkStatus() {
         }
         if (!response.ok)
             return;
-        const { status: next, address: src, native_video: native, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance, branding: brand } = await response.json();
+        const { status: next, address: src, native_video: native, transport, captions: captionPath, analytics_token: analytics, occurrence, playlist: archives, lobby_preview: before, preview_replay: fallback, appearance, branding: brand } = await response.json();
         if (requested !== location.href)
             return;
         const changedOccurrence = currentOccurrence !== (occurrence?.id ?? null);
@@ -199,8 +239,15 @@ async function checkStatus() {
                 stopChecking();
         }
         else if (src && native) {
-            if (!player.querySelector("video") || player.dataset.phase !== next || changedOccurrence) {
-                renderVideo(src, next, analytics || "");
+            const video = player.querySelector("video");
+            if (!video || player.dataset.phase !== next || changedOccurrence) {
+                renderVideo(src, next, analytics || "", transport);
+            }
+            else if (player.dataset.transport !== transport) {
+                const playing = !video.paused;
+                renderVideo(src, next, analytics || "", transport, video);
+                if (playing)
+                    void video.play().catch(() => { });
             }
         }
         else if (src && (current?.getAttribute("src") !== src || eventStatus.textContent !== next)) {
@@ -258,7 +305,7 @@ if (!playlist && !previewReplay && (eventStatus.textContent === "This occurrence
     (!initial && eventStatus.textContent === "Replay")))
     stopChecking();
 if (initial && player.dataset.address)
-    renderVideo(player.dataset.address, eventStatus.textContent || "", player.dataset.analytics || "", initial);
+    renderVideo(player.dataset.address, eventStatus.textContent || "", player.dataset.analytics || "", player.dataset.transport || "hosted", initial);
 const initialFrame = player.querySelector("iframe");
 if (initialFrame)
     stopMeasuring = measurePeerEventPlayback(initialFrame, player.dataset.analytics || "");

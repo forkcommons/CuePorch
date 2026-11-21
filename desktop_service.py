@@ -16,6 +16,7 @@ from filelock import FileLock, Timeout
 from flask import Flask, abort, jsonify, render_template, request
 from waitress import create_server, wasyncore
 
+import dash_transmitter
 from institution import create_app
 from peertube_destination import PeerTube
 
@@ -35,6 +36,11 @@ def read(path):
 
 
 def main():
+    if getattr(sys, "frozen", False):
+        tools = Path(sys._MEIPASS) / "media-tools"
+        os.environ["PATH"] = str(tools) + os.pathsep + os.environ.get("PATH", "")
+    if len(sys.argv) > 1 and sys.argv[1] == "--dash-transmitter":
+        raise SystemExit(dash_transmitter.main(sys.argv[2:]))
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, type=Path)
     home = parser.parse_args().data.resolve()
@@ -58,9 +64,6 @@ def main():
     stopping = threading.Event()
     institution = None
     settings = read(config) if config.exists() else {}
-    if getattr(sys, "frozen", False):
-        tools = Path(sys._MEIPASS) / "media-tools"
-        os.environ["PATH"] = str(tools) + os.pathsep + os.environ.get("PATH", "")
 
     def activate():
         keys = read(owner)
@@ -204,7 +207,13 @@ def main():
             save(config, settings)
             if institution:
                 institution.extensions["stop_editor"]()
+                institution.extensions["stop_caption_jobs"]()
+                institution.extensions["stop_ai_drafts"]()
+                institution.extensions["stop_file_links"]()
                 institution.extensions["stop_event_capture"]()
+                institution.extensions["stop_integration_watches"]()
+                institution.extensions["stop_folder_slack"]()
+                institution.extensions["stop_social_publication"]()
             institution = activate()
             return jsonify(ok=True)
 
@@ -242,7 +251,13 @@ def main():
         wasyncore.close_all(server._map)
         if institution:
             institution.extensions["stop_editor"]()
+            institution.extensions["stop_caption_jobs"]()
+            institution.extensions["stop_ai_drafts"]()
+            institution.extensions["stop_file_links"]()
             institution.extensions["stop_event_capture"]()
+            institution.extensions["stop_integration_watches"]()
+            institution.extensions["stop_folder_slack"]()
+            institution.extensions["stop_social_publication"]()
         handle.unlink(missing_ok=True)
         lock.release()
 

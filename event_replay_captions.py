@@ -13,9 +13,11 @@ from flask import Response, abort, request
 import requests
 
 import caption_adapter
+import event_captions
 import event_peer
 from event_media import root_path
 import subtitles
+import team_ai_policy
 
 
 SCHEMA = """
@@ -37,8 +39,7 @@ def store_approval(con, action, uid, opens, revision):
 
 
 def queue(con, action, uid, opens):
-    setting = con.execute("SELECT enabled,language FROM live_caption_setting WHERE event=? AND opens=?",
-                          (uid, opens)).fetchone()
+    setting = event_captions.settings(con, uid, opens)
     if setting and setting["enabled"] and read(con, uid, opens) is None:
         revision = uuid.uuid4().hex
         approval = store_approval(con, action, uid, opens, revision)
@@ -89,6 +90,9 @@ class ReplayCaptionJobs:
                 WHERE j.state IN ('queued','running') AND o.delivery IN ('ready','replay') ORDER BY j.opens LIMIT 1""").fetchone()
             if not job:
                 return
+            if team_ai_policy.restriction(con, event_captions.FEATURE, None):
+                con.execute("UPDATE live_replay_captions SET state='blocked' WHERE revision=?", (job["revision"],))
+                return
             con.execute("UPDATE live_replay_captions SET state='running' WHERE revision=?", (job["revision"],))
         state, cues = "ready", None
         try:
@@ -107,6 +111,11 @@ class ReplayCaptionJobs:
                                         str(error) if isinstance(error, ValueError) else type(error).__name__)
         if not self.stopping.is_set():
             with self.tx() as con:
+                policy = team_ai_policy.load(con)[1]
+                if team_ai_policy.restriction(con, event_captions.FEATURE, None, policy):
+                    state, cues = "blocked", None
+                elif cues:
+                    cues = team_ai_policy.apply_dictionary(cues, job["language"], policy["dictionary"])
                 con.execute("UPDATE live_replay_captions SET state=?,cues=? WHERE revision=? AND state='running'",
                             (state, json.dumps(cues) if cues else None, job["revision"]))
 

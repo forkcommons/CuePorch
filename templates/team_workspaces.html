@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Workspace links · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/team/members">Team members</a></nav>
+  <h1>Workspace links</h1>
+  <p>Share links to CuePorch workspaces. Members sign into each workspace with their membership there.</p>
+  <form id="workspaceLinkAccess">
+    <label>Operator credential <input type="password" required autocomplete="current-password"></label>
+    <button>Open workspace links</button>
+  </form>
+  <p id="workspaceLinkStatus" role="status"></p>
+  <section id="workspaceLinkDirectory" hidden>
+    <label>Workspace <select id="workspaceLinkSelector"></select></label>
+    <form id="workspaceLinkForm">
+      <label>Workspace name <input name="name" maxlength="32" required></label>
+      <label>Workspace origin <input name="origin" type="url" required placeholder="https://video.example.org"></label>
+      <fieldset>
+        <legend>Groups that can see this link</legend>
+        <div id="workspaceLinkGroups"></div>
+      </fieldset>
+      <button>Save workspace link</button>
+      <button id="deleteWorkspaceLink" type="button" disabled>Remove workspace link</button>
+      <button id="reloadWorkspaceLinks" type="button">Reload workspace links</button>
+    </form>
+  </section>
+</main>
+<script type="module" src="/static/ui/team_workspaces.js"></script>
+</html>

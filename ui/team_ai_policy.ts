@@ -1,0 +1,102 @@
+import {checked, sessionMarker, teamRequest} from "./team_api.js";
+
+interface Rule { enabled: boolean; administrators: boolean }
+interface Term { language: string; source: string; preferred: string }
+interface Settings { features: Record<string, Rule>; dictionary: Term[]; viewer_questions: boolean }
+interface Policy { revision: string; settings: Settings }
+
+const access = document.querySelector<HTMLFormElement>("#aiAccess")!;
+const key = access.querySelector<HTMLInputElement>("input")!;
+const form = document.querySelector<HTMLFormElement>("#aiSettings")!;
+const status = document.querySelector<HTMLElement>("#aiStatus")!;
+const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+const usage = document.querySelector<HTMLButtonElement>("#aiUsage")!;
+const dictionary = document.querySelector<HTMLTextAreaElement>("#aiDictionary")!;
+const questions = document.querySelector<HTMLInputElement>("#enableViewerQuestions")!;
+const workflows = Array.from(form.querySelectorAll<HTMLFieldSetElement>("[data-feature]"), row => ({
+  feature: row.dataset.feature!,
+  enabled: row.querySelector<HTMLInputElement>("[name=enabled]")!,
+  administrators: row.querySelector<HTMLInputElement>("[name=administrators]")!,
+}));
+let revision = "";
+let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
+
+function show(policy: Policy) {
+  revision = policy.revision;
+  for (const row of workflows) {
+    const rule = policy.settings.features[row.feature];
+    row.enabled.checked = rule.enabled;
+    row.administrators.checked = rule.administrators;
+  }
+  dictionary.value = policy.settings.dictionary.map(({language, source, preferred}) =>
+    [language, source, preferred].join("\t")).join("\n");
+  questions.checked = policy.settings.viewer_questions;
+  access.hidden = true;
+  form.hidden = false;
+}
+
+function fail(error: unknown) {
+  status.textContent = error instanceof Error ? error.message : String(error);
+}
+
+async function open() {
+  try {
+    const response = await checked(await teamRequest("ai", "GET", {}, credential));
+    show(await response.json());
+    if (credential !== sessionMarker) sessionStorage.setItem("cueporchOperator", credential);
+    status.textContent = "";
+  } catch (error) {
+    fail(error);
+  }
+}
+
+access.onsubmit = event => {
+  event.preventDefault();
+  credential = key.value;
+  access.reset();
+  void open();
+};
+form.onsubmit = async event => {
+  event.preventDefault();
+  save.disabled = true;
+  try {
+    const entries = dictionary.value.split("\n").filter(line => line.trim()).map(line => {
+      const columns = line.split("\t").map(value => value.trim());
+      if (columns.length !== 3 || columns.some(value => !value)) {
+        throw new Error("Use three tab-separated fields on each dictionary line.");
+      }
+      const [language, source, preferred] = columns;
+      return {language, source, preferred};
+    });
+    const features = Object.fromEntries(workflows.map(row => [
+      row.feature, {enabled: row.enabled.checked, administrators: row.administrators.checked},
+    ]));
+    const response = await checked(await teamRequest("ai", "PUT", {
+      revision, settings: {features, dictionary: entries, viewer_questions: questions.checked},
+    }, credential));
+    show(await response.json());
+    status.textContent = "AI settings saved.";
+  } catch (error) {
+    fail(error);
+  } finally {
+    save.disabled = false;
+  }
+};
+
+usage.onclick = async () => {
+  usage.disabled = true;
+  try {
+    const response = await checked(await teamRequest("ai/usage", "GET", {}, credential));
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(await response.blob());
+    link.download = "cueporch-ai-usage.csv";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (error) {
+    fail(error);
+  } finally {
+    usage.disabled = false;
+  }
+};
+
+void open();
