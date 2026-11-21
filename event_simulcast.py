@@ -29,6 +29,7 @@ import event_peer
 import facebook_live_job
 import linkedin_live
 import linkedin_live_job
+import live_destination_series
 import facebook_upload
 import youtube_live
 
@@ -51,7 +52,7 @@ CREATE TABLE IF NOT EXISTS youtube_live_creation(
  revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
  phase TEXT NOT NULL, broadcast TEXT, stream TEXT, destination TEXT,
  PRIMARY KEY(event,opens));
-""" + facebook_live_job.SCHEMA + linkedin_live_job.SCHEMA
+""" + facebook_live_job.SCHEMA + linkedin_live_job.SCHEMA + live_destination_series.SCHEMA
 
 
 def migrate(con):
@@ -605,18 +606,33 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         if not isinstance(privacy, str) or privacy not in youtube_live.PRIVACY:
             abort(422, "Choose YouTube broadcast privacy.")
 
+        remember_series = payload.get("series", False) if isinstance(payload, dict) else False
+        if not isinstance(remember_series, bool):
+            abort(422, "Choose whether to remember this YouTube destination.")
+
+        return prepare_youtube(uid, opens, privacy, remember_series=remember_series)
+
+    def prepare_youtube(uid, opens, privacy, *, series=None, remember_series=False):
         connection = youtube_live_connection
 
         def access(con):
-            enforce_sharing(con, feature="outbound")
+            if series is None:
+                enforce_sharing(con, feature="outbound")
+            elif not live_destination_series.enabled(con, series, opens):
+                abort(409)
             event_revision, title, slot = creation_access(con, uid, opens)
             saved = connection.connection(con)
             if not saved:
                 abort(409, "Connect YouTube Live before creating a broadcast.")
+            if series is not None:
+                if (event_revision, saved["revision"]) != (series["event_revision"], series["revision"]):
+                    abort(409)
             return event_revision, title[:100].strip(), slot, saved["revision"]
 
         with tx() as con:
             event_revision, title, slot, revision = access(con)
+            if remember_series:
+                live_destination_series.ensure_recurring(con, uid)
         lease_dir = outputs.directory / "youtube-creation"
         lease_dir.mkdir(parents=True, exist_ok=True)
         lease_name = digest(b"CuePorch YouTube creation", f"{uid}:{opens}".encode(), "sha256").hex()
@@ -627,7 +643,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 abort(409, "The event or YouTube connection changed. Reload destinations.")
 
         def before_send():
-            staff()
+            if series is None:
+                staff()
             with tx() as con:
                 check(con)
 
@@ -645,6 +662,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 channels = youtube_live.channels(connection, revision)
                 if len(channels["items"]) != 1 or channels["next"]:
                     abort(409, "Connect a single YouTube channel before creating a broadcast.")
+                if series is not None and channels["items"][0]["id"] != series["owner"]:
+                    abort(409, "The authorized YouTube channel changed.")
                 marker = f"Created by CuePorch ({uuid.uuid4().hex})"
                 with tx() as con:
                     check(con)
@@ -653,6 +672,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                                 (uid, opens, event_revision, revision, channels["items"][0]["id"], privacy, marker))
                     job = con.execute("SELECT * FROM youtube_live_creation WHERE event=? AND opens=?",
                                       (uid, opens)).fetchone()
+            if series is not None and (job["channel"], job["revision"], job["event_revision"]) != (series["owner"], series["revision"], series["event_revision"]):
+                abort(409)
             if (job["revision"], job["event_revision"], job["privacy"]) != (revision, event_revision, privacy):
                 abort(409, "Use the original settings to check this broadcast, or select an existing broadcast.")
             if job["destination"]:
@@ -660,6 +681,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     check(con)
                     if not con.execute("SELECT 1 FROM live_simulcast_destination WHERE id=?", (job["destination"],)).fetchone():
                         abort(409, "This broadcast was removed. Use the existing broadcasts list to add it again.")
+                    if remember_series:
+                        live_destination_series.save(con, uid, 'youtube-live', job['channel'], revision, event_revision, opens, {'privacy': privacy})
                 return private(dict(state="complete", id=job["destination"]))
 
             phase, channel, marker = job["phase"], job["channel"], job["marker"]
@@ -719,6 +742,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             with tx() as con:
                 check(con)
                 destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
+                if remember_series:
+                    live_destination_series.save(con, uid, 'youtube-live', job['channel'], revision, event_revision, opens, {'privacy': privacy})
                 advance(con, "complete", destination=destination)
             return private(dict(state="complete", id=destination), 201)
 
@@ -727,6 +752,49 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 return provision()
         except Timeout:
             return private(dict(state="pending"), 202)
+
+    def prepare_destination_series(row, opens):
+        if row["provider"] != 'youtube-live':
+            return
+        with tx() as con:
+            exists = con.execute(
+                "SELECT 1 FROM live_simulcast_destination WHERE event=? AND opens=? AND provider='youtube-live'",
+                (row["event"], opens),
+            ).fetchone()
+            if exists:
+                return
+        prepare_youtube(row["event"], opens, json.loads(row["options"])["privacy"], series=row)
+
+    app.extensions["stop_recurring_simulcast"] = live_destination_series.start(app, tx, prepare_destination_series)
+
+    @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube/series", methods=["GET", "DELETE"])
+    def youtube_series(uid, opens):
+        staff()
+        with tx() as con:
+            enforce_sharing(con, feature="outbound")
+            event_revision, _, _ = creation_access(con, uid, opens)
+            grant = youtube_live_connection.connection(con)
+            series = con.execute("""SELECT * FROM live_destination_series
+                WHERE event=? AND provider='youtube-live' AND revision=? AND event_revision=?""",
+                (uid, grant["revision"] if grant else None, event_revision)).fetchone()
+            inherited = bool(series and opens > series["after_opens"])
+            if request.method == "GET":
+                return private(dict(active=series is not None, inherited=inherited,
+                                    skipped=inherited and not live_destination_series.enabled(con, series, opens)))
+            payload = request.get_json()
+            if not isinstance(payload, dict) or type(payload.get("date")) is not bool:
+                abort(422, "Choose whether to skip this date or stop future scheduling.")
+            if not series:
+                return private(dict(ok=True))
+            series_key = (uid, series["provider"], series["owner"])
+            if not payload["date"]:
+                con.execute("DELETE FROM live_destination_series WHERE event=? AND provider=? AND owner=?", series_key)
+            elif inherited:
+                con.execute("INSERT OR IGNORE INTO live_destination_series_skip VALUES(?,?,?,?)", (*series_key, opens))
+                con.execute("""UPDATE live_simulcast_destination SET enabled=0
+                    WHERE event=? AND opens=? AND provider=? AND revision=?""",
+                    (uid, opens, series["provider"], series["revision"]))
+        return private(dict(ok=True))
 
     @app.route("/api/live-events/<uid>/<int:opens>/destinations/youtube", methods=["GET", "POST"])
     def youtube_destination(uid, opens):
