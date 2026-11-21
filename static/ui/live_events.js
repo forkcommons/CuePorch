@@ -8,6 +8,7 @@ import { setupLiveApi } from "./live_api.js";
 import { setupEventMail } from "./event_mail.js";
 import { setupAttendeeCsv } from "./attendee_csv.js";
 import { setupEventRoster } from "./event_roster.js";
+import { interpreterControls } from "./event_interpreters.js";
 const element = (id) => document.getElementById(id);
 const input = (id) => element(id);
 const button = (id) => element(id);
@@ -206,6 +207,7 @@ setupLiveApi(request);
 const chooseEmailEvent = setupEventMail(request);
 const chooseCsvOccurrence = setupAttendeeCsv(request);
 const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
+const chooseInterpreterOccurrence = interpreterControls(request);
 async function action(work, message = "") {
     if (pending)
         return;
@@ -402,6 +404,8 @@ function choose(event, instance) {
     button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
     const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
+    chooseInterpreterOccurrence(rtmpAvailable && !["withdrawn", "withdrawing", "replay"].includes(instance.delivery)
+        ? mediaPath("interpreters") : null);
     button("prepareLowRtmp").hidden = button("stopLowRtmp").hidden = !rtmpAvailable;
     element("backupEncoderOptions").hidden = !rtmpAvailable;
     backupEnabled.checked = false;
@@ -862,9 +866,11 @@ button("prepareEncoder").onclick = () => void action(async () => {
 });
 button("prepareLowRtmp").onclick = () => void action(async () => {
     showEncoder(await request(mediaPath("rtmp"), "POST", { backup: backupEnabled.checked, height: Number(outputHeight.value) }));
+    chooseInterpreterOccurrence(mediaPath("interpreters"));
 }, "Low-latency RTMP is ready for the encoder.");
 button("stopLowRtmp").onclick = () => void action(async () => {
     await request(mediaPath("rtmp"), "DELETE");
+    chooseInterpreterOccurrence(null);
     encoder.hidden = true;
     key.value = "";
     backupKey.value = "";
@@ -1780,5 +1786,6 @@ button("withdrawEvent").onclick = () => void action(async () => {
     backupKey.value = "";
     srtBackupSecret.value = "";
     await request(mediaPath("delivery"), "DELETE");
+    chooseInterpreterOccurrence(null);
     await load();
 }, "Occurrence withdrawn.");

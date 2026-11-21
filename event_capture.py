@@ -666,12 +666,16 @@ class Studio:
             return RtmpRelay(encoder, config, lease, playback)
         return self.prepare(uid, opens, receive, playback_window=window).credentials()
 
-    def rtmp_credentials(self, uid, opens):
+    def rtmp_room(self, uid, opens):
         with self.lock:
             room = self.active.get((uid, opens))
             if isinstance(room, RTMP_ROOMS) and not room.stop.is_set() and not room.done.is_set():
-                return room.credentials()
+                return room
         return None
+
+    def rtmp_credentials(self, uid, opens):
+        room = self.rtmp_room(uid, opens)
+        return room.credentials() if room else None
 
     def authorize_rtmp(self, item):
         with self.lock:

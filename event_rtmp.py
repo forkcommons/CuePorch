@@ -44,7 +44,7 @@ def configured():
         return None
 
 
-def register(app, config, studio):
+def register(app, config, studio, interpreters=None):
     @app.post("/api/internal/rtmp/authorize")
     def authorize_rtmp():
         auth = request.authorization
@@ -57,6 +57,8 @@ def register(app, config, studio):
         if not compare_digest((auth.password or "").encode("utf8"), config.secret.encode("ascii")):
             abort(403)
         body = request.get_json()
-        if not isinstance(body, dict) or body.get("protocol") != "rtmp" or not studio.authorize_rtmp(body):
+        if not isinstance(body, dict) or body.get("protocol") != "rtmp":
             abort(403)
-        return "", 204
+        if studio.authorize_rtmp(body) or (interpreters is not None and interpreters.authorize(body)):
+            return "", 204
+        abort(403)
