@@ -134,7 +134,7 @@ def presentation(con, form, sign_on=None, language=None, *, mailchimp_target=Non
     offers = {}
     if mailchimp_target:
         kind, uid, scope = mailchimp_target
-        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent"):
+        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent", "keap_form_consent"):
             provider = current_app.extensions.get(name)
             if provider:
                 offers[name] = provider.offer(con, kind, uid, form, scope)
@@ -150,7 +150,7 @@ def admit(con, kind, uid, form, scope, occurrence=None, on_record=None):
         return current_app.extensions["registration_sign_on"].attempt(con, kind, uid, form, scope, occurrence)
     if on_record is None and kind in ("video", "showcase"):
         captures = []
-        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent"):
+        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent", "keap_form_consent"):
             provider = current_app.extensions.get(name)
             if provider:
                 capture = provider.capture(con, kind, uid, form, scope, request.form.get(name, ""))

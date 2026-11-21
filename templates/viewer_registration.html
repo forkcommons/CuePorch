@@ -86,6 +86,9 @@
     {% if registration.campaign_monitor_form_consent %}
     <label><input type="checkbox" name="campaign_monitor_form_consent" value="{{ registration.campaign_monitor_form_consent }}"> Share my email address and first and last names with the organizer through Campaign Monitor and receive marketing email from the organizer.</label>
     {% endif %}
+    {% if registration.keap_form_consent %}
+    <label><input type="checkbox" name="keap_form_consent" value="{{ registration.keap_form_consent }}"> Share my email address and first and last names with the organizer through Keap for marketing.</label>
+    {% endif %}
     {% if mailchimp_consent %}
     <label><input type="checkbox" name="mailchimp_consent" value="{{ mailchimp_consent }}"> Share my email address and selected registration answers with the organizer through Mailchimp and receive marketing email from the organizer.</label>
     {% endif %}

@@ -535,6 +535,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             cleanup = library_list_registration.disconnect
         elif provider == "campaign-monitor":
             cleanup = lambda con: library_list_registration.disconnect(con,provider=library_list_registration.CAMPAIGN_MONITOR)
+        elif provider == "keap":
+            cleanup = lambda con: library_list_registration.disconnect(con, provider=library_list_registration.KEAP)
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)

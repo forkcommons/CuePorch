@@ -11,6 +11,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 import campaign_monitor_crm
 import constant_contact_crm
 import event_contact_delivery
+import keap_crm
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,8 @@ CAMPAIGN_MONITOR = Provider(
     254,
     80,
 )
-PROVIDERS = (CONSTANT_CONTACT, CAMPAIGN_MONITOR)
+KEAP = Provider("keap", "Keap", "library_keap_form", keap_crm, keap_crm._valid_id, 75, 40)
+PROVIDERS = (CONSTANT_CONTACT, CAMPAIGN_MONITOR, KEAP)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS {plan} (
@@ -537,6 +539,9 @@ def deliver(tx, job, connection, validate, stop_event, clock, provider=CONSTANT_
     with tx() as con:
         row, plan = scope(con, job, connection, validate, stop_event, provider=provider)
 
+    if provider is KEAP:
+        return _deliver_keap(tx, job, row, plan, connection, validate, stop_event, clock, provider)
+
     if row["activity_id"] or row["write_started"]:
         return _follow_delivery(row, plan, connection, int(clock()), provider)
 
@@ -639,3 +644,130 @@ def start(app, tx, database, connection, validate, provider=CONSTANT_CONTACT):
             tx, connection, validate, stop_event, provider=provider
         ),
     )
+
+def _keap_write(tx, job, row, connection, validate, stop_event, clock, provider, stage, contact_id, send):
+    from werkzeug.exceptions import HTTPException
+
+    marker_set = False
+
+    def before_send():
+        nonlocal marker_set
+        with tx() as con:
+            current, _ = scope(con, job, connection, validate, stop_event, provider=provider)
+            expected_stage = stage if marker_set else row["write_started"]
+            if current["write_started"] != expected_stage:
+                abort(423)
+            if not marker_set:
+                con.execute(
+                    f"UPDATE {provider.delivery} "
+                    "SET write_started=?, activity_id=?, poll_deadline=? "
+                    "WHERE id=?",
+                    (stage, contact_id, int(clock()) + 1800, row["id"]),
+                )
+        marker_set = True
+
+    try:
+        return send(before_send)
+    except HTTPException as exc:
+        if exc.code == 429:
+            if marker_set:
+                with tx() as con:
+                    con.execute(
+                        f"UPDATE {provider.delivery} "
+                        "SET write_started=?, activity_id=?, poll_deadline=? "
+                        "WHERE id=? AND write_started=? "
+                        "AND state IN ('queued','submitted')",
+                        (
+                            row["write_started"],
+                            row["activity_id"],
+                            row["poll_deadline"],
+                            row["id"],
+                            stage,
+                        ),
+                    )
+            raise
+        if marker_set and exc.code in (409, 502, 503, 504):
+            return None
+        raise
+
+def _deliver_keap(tx, job, row, plan, connection, validate, stop_event, clock, provider):
+    from werkzeug.exceptions import HTTPException
+
+    revision = plan['provider_revision']
+    tag_id = plan['list_id']
+    email = row['email']
+    stage = row['write_started'] or 0
+    cid = row['activity_id']
+    deadline = row['poll_deadline']
+
+    if deadline is not None and clock() >= deadline:
+        return 'unconfirmed'
+
+    try:
+        if cid:
+            contact = keap_crm.read_contact(connection, revision, cid, email)
+        else:
+            contact = keap_crm.find_contact(connection, revision, email)
+    except HTTPException as exc:
+        if exc.code in (404, 502, 503, 504) and stage != 0:
+            return 'submitted'
+        raise
+
+    if contact is not None and not contact.get('primary'):
+        return 'skipped'
+
+    if stage == 2:
+        if (contact is not None
+                and cid is not None
+                and contact.get('id') == cid
+                and tag_id in (contact.get('tag_ids') or [])):
+            return 'sent'
+        return 'submitted'
+
+    opt_in = None
+    if stage in (0, 1):
+        opt_in = keap_crm.marketing_opt_in(connection, revision, email)
+        if opt_in is False:
+            return 'skipped'
+
+    if contact is not None and tag_id in (contact.get('tag_ids') or []):
+        return 'sent'
+
+    if contact is not None:
+        contact_id = contact['id']
+
+        def send(before_send):
+            return keap_crm.apply_tag(
+                connection, revision, tag_id, contact_id,
+                before_send=before_send,
+            )
+
+        _keap_write(tx, job, row, connection, validate, stop_event, clock,
+                    provider, 2, contact_id, send)
+        return 'submitted'
+
+    if stage == 1:
+        return 'submitted'
+
+    if opt_in is True:
+        return 'unconfirmed'
+
+    def send_create(before_send):
+        return keap_crm.create_contact(
+            connection, revision, email, row['first_name'], row['last_name'],
+            before_send=before_send,
+        )
+
+    result_id = _keap_write(tx, job, row, connection, validate, stop_event,
+                            clock, provider, 1, None, send_create)
+
+    if result_id:
+        with tx() as con:
+            scope(con, job, connection, validate, stop_event, provider=provider)
+            con.execute(
+                f"UPDATE {provider.delivery} SET activity_id=? "
+                "WHERE id = ? AND write_started = 1",
+                (result_id, row['id']),
+            )
+
+    return 'submitted'

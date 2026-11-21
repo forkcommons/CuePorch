@@ -848,6 +848,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             UNION SELECT id FROM library_mailchimp_form_delivery WHERE state='queued'
                             UNION SELECT id FROM library_constant_contact_form_delivery WHERE state='queued' AND write_started=0
                             UNION SELECT id FROM library_campaign_monitor_form_delivery WHERE state='queued' AND write_started=0
+                            UNION SELECT id FROM library_keap_form_delivery WHERE state='queued' AND write_started=0
                             UNION SELECT id FROM live_event_contact_delivery WHERE state='queued')""", (step,))
                 if step == event_hubspot_engagement.STEP:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
@@ -1430,6 +1431,9 @@ def create_app(root, database, operator, institution, simulation=None):
     app.extensions["campaign_monitor_form_consent"] = library_list_registration.Consent(campaign_monitor, action, operator, provider=library_list_registration.CAMPAIGN_MONITOR)
     library_list_registration.register_routes(app, tx, staff, team_origin, campaign_monitor, active_mailchimp_form, provider=library_list_registration.CAMPAIGN_MONITOR)
     app.extensions["stop_campaign_monitor_forms"] = library_list_registration.start(app, tx, database, campaign_monitor, active_mailchimp_form, provider=library_list_registration.CAMPAIGN_MONITOR)
+    app.extensions["keap_form_consent"] = library_list_registration.Consent(keap, action, operator, provider=library_list_registration.KEAP)
+    library_list_registration.register_routes(app, tx, staff, team_origin, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
+    app.extensions["stop_keap_forms"] = library_list_registration.start(app, tx, database, keap, active_mailchimp_form, provider=library_list_registration.KEAP)
     marketo = marketo_crm.configured_connection()
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
