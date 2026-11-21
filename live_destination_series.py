@@ -91,7 +91,11 @@ def save(con, event, provider, owner, revision, event_revision, opens, options):
            on conflict(event, provider, owner) do update set
              revision = excluded.revision,
              event_revision = excluded.event_revision,
-             after_opens = excluded.after_opens,
+             after_opens = case
+               when revision = excluded.revision and event_revision = excluded.event_revision and options = excluded.options
+               then min(after_opens, excluded.after_opens)
+               else excluded.after_opens
+             end,
              options = excluded.options""",
         (event, provider, owner, revision, event_revision, opens, json.dumps(options)),
     )

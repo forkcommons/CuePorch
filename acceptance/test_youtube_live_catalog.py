@@ -492,6 +492,21 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 series_suffix = "/youtube/series"
                 active_series = dict(active=True, inherited=True, skipped=False)
                 self.assertEqual(active_series, api.get(later_targets + series_suffix, headers=operator_headers).json())
+                with closing(sqlite3.connect(database)) as connection:
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("BEGIN")
+                    row = connection.execute(
+                        "SELECT * FROM live_destination_series WHERE event=? AND provider='youtube-live'",
+                        (series_event["id"],),
+                    ).fetchone()
+                    live_destination_series.save(
+                        connection, row["event"], row["provider"], row["owner"],
+                        row["revision"], row["event_revision"], fourth, json.loads(row["options"]),
+                    )
+                    just_before_second = datetime.fromtimestamp(second, tz=timezone.utc) - timedelta(minutes=10)
+                    due = live_destination_series.due(connection, just_before_second)
+                    self.assertIn(second, {opens for row, opens in due if row["event"] == series_event["id"]})
+                    connection.rollback()
                 skipped = api.delete(skip_targets + series_suffix, headers=operator_headers, data={"date": True})
                 self.assertTrue(skipped.ok, skipped.text())
                 self.assertEqual(active_series | {"skipped": True, "restorable": True},
