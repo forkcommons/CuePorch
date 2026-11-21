@@ -222,6 +222,10 @@ class LinkedInPublication(unittest.TestCase):
                 if request.headers.get("Authorization") == "Bearer fixture-linkedin-member-live":
                     assert request.json["author"] == {"member": member_owner}
                     assert request.json["scheduledAt"] > int(time() * 1000)
+                    if len(member_scheduled_starts) == 2:
+                        assert "end" in member_writes
+                        restart_at = first["id"] * 1000 + 60_000
+                        assert restart_at <= request.json["scheduledAt"] < restart_at + 5000
                     member_writes.append("schedule")
                     member_scheduled_starts.append(request.json["scheduledAt"])
                     return "", 201, {"x-restli-id": str(5499 + len(member_scheduled_starts))}
@@ -276,8 +280,10 @@ class LinkedInPublication(unittest.TestCase):
                         "owner": member_owner, "recipes": [linkedin_live.LIVE_RECIPE], "region": "WEST_US",
                     }}
                     member_writes.append("register")
-                    return dict(value=dict(asset=member_asset, ingestUrls=[
-                        dict(ingestProtocol="RTMPS", url="rtmps://live-ingest.linkedin.com:443/live/fixture-member-live-key"),
+                    asset_urn, key = (member_asset, "fixture-member-live-key") if len(member_scheduled_starts) == 1 else (
+                        "urn:li:digitalmediaAsset:Member5502", "fixture-member-restart-key")
+                    return dict(value=dict(asset=asset_urn, ingestUrls=[
+                        dict(ingestProtocol="RTMPS", url="rtmps://live-ingest.linkedin.com:443/live/" + key),
                     ]))
                 assert request.headers["Authorization"] == "Bearer fixture-linkedin-live"
                 if action == "register":
@@ -326,6 +332,20 @@ class LinkedInPublication(unittest.TestCase):
                     return dict(id=5500, liveVideoAsset={"media": member_asset} if "bind" in member_writes else None)
                 assert request.json == {"patch": {"$set": {"liveVideoAsset": {"media": member_asset}}}}
                 member_writes.append("bind")
+                return "", 204
+
+            @remote.get("/v2/assets/Member5502")
+            def restarted_profile_ingest_status():
+                return profile_ingest_status()
+
+            @remote.route("/v2/liveVideos/5502", methods=["GET", "POST"])
+            def restarted_profile_broadcast_asset():
+                assert request.headers["Authorization"] == "Bearer fixture-linkedin-member-live"
+                asset = "urn:li:digitalmediaAsset:Member5502"
+                if request.method == "GET":
+                    return dict(id=5502, liveVideoAsset={"media": asset} if "restart_bind" in member_writes else None)
+                assert request.json == {"patch": {"$set": {"liveVideoAsset": {"media": asset}}}}
+                member_writes.append("restart_bind")
                 return "", 204
 
             @remote.post("/rest/videos")
@@ -789,6 +809,31 @@ class LinkedInPublication(unittest.TestCase):
                     future_window = datetime.fromisoformat(skipped_date["start"]) - timedelta(minutes=10)
                     self.assertEqual([], list(real_due(db, future_window)))
                 self.assertEqual(before, live_rows(skipped_date["id"]))
+                with closing(sqlite3.connect(database)) as db:
+                    db.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                               (data["id"], first["id"]))
+                    db.commit()
+                clock = datetime.fromtimestamp(first["id"] + 1, timezone.utc)
+                with patch.object(event_simulcast, "datetime", OccurrenceClock):
+                    with page.expect_response(lambda response: response.request.method == "PUT"
+                                              and response.url == targets + "/" + member_destination_id) as result:
+                        page.get_by_role("button", name="Turn on LinkedIn Profile Live", exact=True).click()
+                    restarted = result.value
+                self.assertEqual(201, restarted.status, restarted.text())
+                new_destination = restarted.json()["id"]
+                self.assertNotEqual(member_destination_id, new_destination)
+                check_destination_rtmps(root, database, new_destination, operator,
+                                        "rtmps://live-ingest.linkedin.com:443/live", "fixture-member-restart-key",
+                                        "linkedin-live")
+                with patch.object(event_simulcast.Simulcast, "state",
+                                  lambda _self, uid, opens, dest: "sending" if dest == new_destination else "waiting"):
+                    deadline = monotonic() + 8
+                    while "restart_bind" not in member_writes and monotonic() < deadline:
+                        sleep(.05)
+                self.assertEqual(["schedule", "announce", "register", "restart_bind"], member_writes[-4:])
+                roster = api.get(targets, headers=auth).json()["destinations"]
+                self.assertNotIn(member_destination_id, [entry["id"] for entry in roster])
+                self.assertEqual(["1113", "5501"], [row[1] for row in live_rows(later["id"])])
                 page.goto(base + "/operator/integrations")
                 member_id[0] = {"invalid": 1}
                 self.assertEqual(502, api.get(profile_path, headers=auth).status)

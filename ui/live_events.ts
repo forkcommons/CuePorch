@@ -1031,10 +1031,16 @@ async function refreshDestinations(result?: Destinations) {
     control.textContent = enabled ? "Turn off" : "Turn on";
     control.setAttribute("aria-label", `Turn ${enabled ? "off" : "on"} ${item.name}`);
     control.disabled = item.state === "disconnected"
-      || (!enabled && (!result!.available || linkedin));
+      || (!enabled && !result!.available);
     control.onclick = () => void action(async () => {
-      await request(mediaPath(`destinations/${item.id}`), "PUT", {enabled: !enabled});
+      const update = await request<{state: string} | undefined>(
+        mediaPath(`destinations/${item.id}`), "PUT", {enabled: !enabled});
       await refreshDestinations();
+      if (linkedin && update?.state === "pending") {
+        destinationStatus.textContent = "LinkedIn is still confirming delivery. Select Turn on again to check.";
+      } else if (linkedin && update?.state === "unconfirmed") {
+        destinationStatus.textContent = "LinkedIn did not confirm setup. Check the broadcast on LinkedIn.";
+      }
     });
     const remove = document.createElement("button");
     remove.type = "button";

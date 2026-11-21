@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS linkedin_live_ingest(
 CREATE TABLE IF NOT EXISTS linkedin_live_auto(
  event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL, state TEXT NOT NULL,
  PRIMARY KEY(event,opens,company));
+CREATE TABLE IF NOT EXISTS linkedin_live_restart(
+ replaces TEXT PRIMARY KEY, event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL,
+ old_video TEXT NOT NULL, old_asset TEXT NOT NULL, UNIQUE(event,opens,company));
 """
 READ = "SELECT * FROM linkedin_live_creation WHERE event=? AND opens=? AND company=?"
 UPDATE = """UPDATE linkedin_live_creation SET state=?,video=?,post=?
@@ -31,6 +34,7 @@ UPDATE = """UPDATE linkedin_live_creation SET state=?,video=?,post=?
 
 AUTO = "SELECT state FROM linkedin_live_auto WHERE event=? AND opens=? AND company=?"
 SCOPE = " WHERE event=? AND opens=? AND company=?"
+RESTART = "SELECT * FROM linkedin_live_restart" + SCOPE
 
 
 def provider_for(owner_key):
@@ -123,6 +127,30 @@ def provision(tx, check, create, announce, event, opens, company, event_revision
 
 
 INGEST = "SELECT * FROM linkedin_live_ingest WHERE event=? AND opens=? AND company=?"
+
+
+def start_replacement(con, key, destination):
+    receipt = con.execute(RESTART, key).fetchone()
+    if receipt:
+        if receipt["replaces"] != destination:
+            abort(409, "Another destination is already replacing this LinkedIn broadcast.")
+        return receipt
+    ingest = con.execute(INGEST, key).fetchone()
+    if not ingest or ingest["destination"] != destination or not ingest["asset"]:
+        abort(409, "The previous LinkedIn stream is unavailable.")
+    if ingest["phase"] in ("registered", "bound", "closing"):
+        return None
+    if ingest["phase"] != "ended":
+        abort(409, "Confirm the previous broadcast has ended on LinkedIn before starting another.")
+    creation = con.execute(READ, key).fetchone()
+    if not creation or creation["state"] != "scheduled" or not creation["video"]:
+        abort(409, "The previous LinkedIn broadcast is unavailable.")
+    con.execute("INSERT INTO linkedin_live_restart VALUES(?,?,?,?,?,?)",
+                (destination, *key, creation["video"], ingest["asset"]))
+    con.execute("DELETE FROM linkedin_live_ingest" + SCOPE, key)
+    con.execute("DELETE FROM linkedin_live_creation" + SCOPE, key)
+    set_auto(con, key, False)
+    return con.execute(RESTART, key).fetchone()
 
 
 def prepare_ingest(tx, check, send, save, key, revision):
