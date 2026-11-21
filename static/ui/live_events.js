@@ -929,7 +929,8 @@ async function refreshDestinations(result) {
                         : item.opens !== null ? ` · ${presetLabels[item.preset || ""] || "Patreon Live"} for this date` : "";
         const state = item.provider_phase && item.provider_phase !== "registered" && item.state !== "disconnected"
             ? item.provider_phase : item.state;
-        row.textContent = `${item.name}${scope} · ${item.server} · ${labels[state] || state}`;
+        const reusable = item.reusable;
+        row.textContent = `${item.name}${reusable ? " · Reusable" : ""}${reusable ? ` · This date ${item.enabled ? "on" : "off"}` : ""}${scope} · ${item.server} · ${labels[state] || state}`;
         const control = document.createElement("button");
         control.type = "button";
         control.textContent = item.enabled ? "Turn off" : "Turn on";
@@ -942,8 +943,8 @@ async function refreshDestinations(result) {
         });
         const remove = document.createElement("button");
         remove.type = "button";
-        remove.textContent = "Remove";
-        remove.setAttribute("aria-label", `Remove ${item.name}`);
+        remove.textContent = reusable ? "Stop reusing key" : "Remove";
+        remove.setAttribute("aria-label", reusable ? `Stop reusing key for ${item.name}` : `Remove ${item.name}`);
         remove.onclick = () => void action(async () => {
             await request(mediaPath(`destinations/${item.id}`), "DELETE");
             await refreshDestinations();
@@ -1306,7 +1307,8 @@ destinationForm.onsubmit = event => {
     const values = new FormData(destinationForm);
     void action(async () => {
         const data = { name: values.get("name"), server: values.get("server"),
-            key: values.get("key"), enabled: values.has("enabled"), preset: values.get("preset") };
+            key: values.get("key"), enabled: values.has("enabled"), reusable: values.has("reusable"),
+            preset: values.get("preset") };
         const result = await request(mediaPath("destinations"), "POST", data);
         destinationForm.reset();
         await refreshDestinations(result);
@@ -1316,15 +1318,26 @@ const presetSelect = destinationForm.elements.namedItem("preset");
 const patreonDestinationHelp = element("patreonDestinationHelp");
 const socialDestinationHelp = element("socialDestinationHelp");
 const ottDestinationHelp = element("ottDestinationHelp");
+const reusableInput = destinationForm.elements.namedItem("reusable");
+const reusableLabel = element("destinationReusableLabel");
+const reusableHelp = element("destinationReusableHelp");
 function syncPresetHelp() {
     const preset = presetSelect.value;
     patreonDestinationHelp.hidden = preset !== "patreon";
     socialDestinationHelp.hidden = !["instagram", "tiktok", "x", "linkedin"].includes(preset);
     ottDestinationHelp.hidden = preset !== "vimeo-ott";
 }
-presetSelect.addEventListener("change", syncPresetHelp);
-destinationForm.addEventListener("reset", () => queueMicrotask(syncPresetHelp));
+function syncReusable() {
+    const hide = presetSelect.value === "custom" || !active || active.event.event.schedule.repeat === "none";
+    reusableLabel.hidden = reusableHelp.hidden = hide;
+    reusableInput.disabled = hide;
+    if (hide)
+        reusableInput.checked = false;
+}
+presetSelect.addEventListener("change", () => { syncPresetHelp(); syncReusable(); });
+destinationForm.addEventListener("reset", () => queueMicrotask(() => { syncPresetHelp(); syncReusable(); }));
 syncPresetHelp();
+syncReusable();
 window.setInterval(() => {
     if (destinations.open && !document.hidden && !pending) {
         void refreshDestinations().catch(() => { });

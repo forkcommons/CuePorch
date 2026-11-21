@@ -222,6 +222,40 @@ class PatreonLive(unittest.TestCase):
         assert current_by_name["Vimeo OTT"]["server"] == "rtmps://127.0.0.1:41999/live"
         check_destination_rtmps(database.parent, database, current_by_name["Vimeo OTT"]["id"], operator,
                                 "rtmps://127.0.0.1:41999/live", "fixture-vimeo-ott-key")
+
+        form.get_by_label("Destination type").select_option("vimeo-ott")
+        form.get_by_label("Destination name").fill("Reusable event")
+        form.get_by_label("RTMP or RTMPS server").fill("rtmps://127.0.0.1:41999/live")
+        reusable_key = "fixture-reusable-key"
+        form.get_by_label("Destination stream key").fill(reusable_key)
+        checkbox = form.get_by_label("Reuse this stream key for future dates")
+        expect(checkbox).not_to_be_checked()
+        checkbox.check()
+        form.get_by_role("button", name="Add destination").click()
+        expect(page.get_by_role("button", name="Stop reusing key for Reusable event")).to_be_visible()
+
+        def reusable_rows(path):
+            response = request.get(path, headers=auth)
+            assert response.ok, response.text()
+            assert reusable_key not in response.text()
+            return [item for item in response.json()["destinations"] if item["reusable"]]
+
+        first_row, = reusable_rows(targets)
+        later_row, = reusable_rows(next_targets)
+        assert first_row["id"] == later_row["id"] and first_row["opens"] is None
+        assert first_row["enabled"] and later_row["enabled"]
+        later_path = f"{next_targets}/{later_row['id']}"
+        assert request.put(later_path, headers=auth, data={"enabled": False}).status == 204
+        assert not reusable_rows(next_targets)[0]["enabled"]
+        assert reusable_rows(targets)[0]["enabled"]
+        assert request.put(later_path, headers=auth, data={"enabled": True}).status == 204
+        assert reusable_rows(next_targets)[0]["enabled"]
+        check_destination_rtmps(database.parent, database, later_row["id"], operator,
+                                "rtmps://127.0.0.1:41999/live", reusable_key)
+        page.get_by_role("button", name="Stop reusing key for Reusable event").click()
+        expect(page.get_by_role("button", name="Stop reusing key for Reusable event")).not_to_be_visible()
+        assert not reusable_rows(targets) and not reusable_rows(next_targets)
+
         print("Browser verified Instagram, TikTok, X, LinkedIn and Vimeo OTT presets, scope and credential exclusion.",
               flush=True)
 

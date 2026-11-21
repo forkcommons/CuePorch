@@ -1589,9 +1589,11 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 targets = con.execute(
                     """SELECT d.* FROM live_simulcast_destination d
                        LEFT JOIN workspace_integration_connection p ON p.provider=d.provider AND p.revision=d.revision
+                       LEFT JOIN live_simulcast_key_series s ON s.destination=d.id
                        WHERE d.event=? AND d.enabled=1 AND (d.opens IS NULL OR d.opens=?)
-                       AND (d.provider IS NULL OR p.provider IS NOT NULL)""",
-                    (uid, opens),
+                       AND (d.provider IS NULL OR p.provider IS NOT NULL)
+                       AND (s.destination IS NULL OR (s.start_opens<=? AND NOT EXISTS(SELECT 1 FROM live_simulcast_key_skip k WHERE k.destination=d.id AND k.opens=?)))""",
+                    (uid, opens, opens, opens),
                 ).fetchall()
                 if targets:
                     candidates[uid, opens] = (row["origin"], row["remote"], targets, None)

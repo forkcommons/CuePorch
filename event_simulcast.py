@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS live_simulcast_destination(
  server TEXT NOT NULL, secret BLOB NOT NULL, enabled INTEGER NOT NULL, opens INTEGER,
  provider TEXT, revision TEXT, remote TEXT, stream TEXT, preset TEXT,
  UNIQUE(event,name));
+CREATE TABLE IF NOT EXISTS live_simulcast_key_series(
+ destination TEXT PRIMARY KEY REFERENCES live_simulcast_destination(id) ON DELETE CASCADE,
+ start_opens INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS live_simulcast_key_skip(
+ destination TEXT NOT NULL REFERENCES live_simulcast_destination(id) ON DELETE CASCADE,
+ opens INTEGER NOT NULL,
+ PRIMARY KEY(destination,opens));
 CREATE TABLE IF NOT EXISTS youtube_live_creation(
  event TEXT NOT NULL, opens INTEGER NOT NULL, event_revision TEXT NOT NULL,
  revision TEXT NOT NULL, channel TEXT NOT NULL, privacy TEXT NOT NULL, marker TEXT NOT NULL,
@@ -1139,6 +1146,18 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     abort(422, "Enter a destination.")
                 name, server, key, enabled = target(body)
                 scope = destination_scope(body, server, opens)
+                reusable = body.get("reusable", False)
+                if not isinstance(reusable, bool):
+                    abort(422, "reusable must be a boolean.")
+                if reusable:
+                    event_row = con.execute(
+                        "SELECT settings FROM live_event WHERE id=?",
+                        (uid,),
+                    ).fetchone()
+                    settings = json.loads(event_row["settings"] or "{}") if event_row else {}
+                    schedule = settings.get("schedule") or {}
+                    if scope is None or schedule.get("repeat", "none") == "none":
+                        abort(422, "Reusable keys require a named preset on a repeating event.")
                 custom_rows = con.execute(
                     "SELECT name FROM live_simulcast_destination WHERE event=? AND provider IS NULL",
                     (uid,),
@@ -1151,24 +1170,40 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 ).fetchall()
                 if any(row["name"].casefold() == name.casefold() for row in all_rows):
                     abort(409, "Choose a different destination name.")
+                destination_id = uuid.uuid4().hex
+                preset = body.get("preset") if scope is not None else None
                 con.execute(
                     "INSERT INTO live_simulcast_destination(id,event,name,server,secret,enabled,opens,preset)"
                     " VALUES(?,?,?,?,?,?,?,?)",
-                    (uuid.uuid4().hex, uid, name, server, outputs.cipher.encrypt(key.encode()),
-                     enabled, scope, body.get("preset") if scope is not None else None),
+                    (destination_id, uid, name, server, outputs.cipher.encrypt(key.encode()),
+                     True if reusable else enabled, None if reusable else scope, preset),
                 )
+                if reusable:
+                    con.execute(
+                        "INSERT INTO live_simulcast_key_series(destination,start_opens) VALUES(?,?)",
+                        (destination_id, opens),
+                    )
+                    if not enabled:
+                        con.execute(
+                            "INSERT INTO live_simulcast_key_skip(destination,opens) VALUES(?,?)",
+                            (destination_id, opens),
+                        )
             rows = con.execute(
-                """SELECT d.id,d.name,d.server,d.enabled,d.opens,d.provider,d.revision,d.preset,i.phase AS provider_phase
+                """SELECT d.id,d.name,d.server,(d.enabled AND k.destination IS NULL) AS enabled,
+                   s.destination IS NOT NULL AS reusable,d.opens,d.provider,d.revision,d.preset,i.phase AS provider_phase
                    FROM live_simulcast_destination d
                    LEFT JOIN linkedin_live_ingest i ON i.destination=d.id
-                   WHERE d.event=? AND (d.opens IS NULL OR d.opens=?) ORDER BY d.name""",
-                (uid, opens),
+                   LEFT JOIN live_simulcast_key_series s ON s.destination=d.id
+                   LEFT JOIN live_simulcast_key_skip k ON k.destination=d.id AND k.opens=?
+                   WHERE d.event=? AND (d.opens IS NULL OR d.opens=?) AND (s.destination IS NULL OR s.start_opens<=?) ORDER BY d.name""",
+                (opens, uid, opens, opens),
             ).fetchall()
             revisions = {key: row["revision"] for key, provider in live_connections.items()
                          if (row := provider.connection(con))}
         destinations = []
         for row in rows:
             item = dict(row)
+            item["reusable"] = bool(item["reusable"])
             revision = item.pop("revision")
             if item["provider"] is not None and revision != revisions.get(item["provider"]):
                 item["state"] = "disconnected"
@@ -1185,13 +1220,17 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         with tx() as con:
             available = event_access(con, uid, opens)
             saved = con.execute(
-                "SELECT id,provider,revision FROM live_simulcast_destination"
-                " WHERE id=? AND event=? AND (opens IS NULL OR opens=?)",
-                (destination, uid, opens),
+                "SELECT d.id,d.provider,d.revision,s.destination IS NOT NULL AS reusable"
+                " FROM live_simulcast_destination d LEFT JOIN live_simulcast_key_series s ON s.destination=d.id"
+                " WHERE d.id=? AND d.event=? AND (d.opens IS NULL OR d.opens=?)"
+                " AND (s.start_opens IS NULL OR s.start_opens<=?)",
+                (destination, uid, opens, opens),
             ).fetchone()
             if not saved:
                 abort(404)
             if request.method == "DELETE":
+                con.execute("DELETE FROM live_simulcast_key_skip WHERE destination=?", (destination,))
+                con.execute("DELETE FROM live_simulcast_key_series WHERE destination=?", (destination,))
                 con.execute("DELETE FROM live_simulcast_destination WHERE id=?", (destination,))
             else:
                 body = request.get_json()
@@ -1208,8 +1247,20 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         connection = provider.connection(con) if provider else None
                         if not connection or connection["revision"] != saved["revision"]:
                             abort(409, "Reconnect the provider to enable this destination.")
-                con.execute(
-                    "UPDATE live_simulcast_destination SET enabled=? WHERE id=?",
-                    (body["enabled"], destination),
-                )
+                if saved["reusable"]:
+                    if body["enabled"]:
+                        con.execute(
+                            "DELETE FROM live_simulcast_key_skip WHERE destination=? AND opens=?",
+                            (destination, opens),
+                        )
+                    else:
+                        con.execute(
+                            "INSERT OR IGNORE INTO live_simulcast_key_skip(destination,opens) VALUES(?,?)",
+                            (destination, opens),
+                        )
+                else:
+                    con.execute(
+                        "UPDATE live_simulcast_destination SET enabled=? WHERE id=?",
+                        (body["enabled"], destination),
+                    )
         return "", 204

@@ -527,6 +527,8 @@
           <label>Destination name <input name="name" maxlength="80" required></label>
           <label>RTMP or RTMPS server <input name="server" maxlength="500" required></label>
           <label>Destination stream key <input name="key" maxlength="512" type="password" autocomplete="off" required></label>
+          <label id="destinationReusableLabel" hidden><input name="reusable" type="checkbox"> Reuse this stream key for future dates</label>
+          <p id="destinationReusableHelp" hidden>Choose this only if the service gave you a reusable key.</p>
           <label><input name="enabled" type="checkbox" checked> Send when this event goes live</label>
           <button type="submit">Add destination</button>
         </form>
