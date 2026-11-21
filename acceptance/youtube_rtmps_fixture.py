@@ -31,7 +31,7 @@ def check_youtube_rtmps(root, database, destination_id, operator):
 
 def check_destination_rtmps(root, database, destination_id, operator, expected_server, stream_key,
                             expected_profile=None):
-    scratch = root / (expected_profile or "youtube-egress")
+    scratch = root / f"rtmps-{destination_id}"
     scratch.mkdir()
 
     ffmpeg = shutil.which("ffmpeg")

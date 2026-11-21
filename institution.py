@@ -1472,7 +1472,8 @@ def create_app(root, database, operator, institution, simulation=None):
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor, hubspot, marketo=marketo, mailchimp=mailchimp, salesforce=salesforce,
                             youtube_live_connection=youtube_live_connection, facebook_live_connection=facebook_live_connection,
-                            linkedin_live_connection=linkedin_live_connection)
+                            linkedin_live_connection=linkedin_live_connection,
+                            linkedin_member_live_connection=linkedin_member_live_connection)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 

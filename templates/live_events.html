@@ -483,9 +483,13 @@
           <p id="facebookLiveStatus" role="status"></p>
         </form>
         <form id="linkedinLiveSchedule" hidden>
+          <label>LinkedIn account <select id="linkedinAccount">
+            <option value="company">Company Page</option>
+            <option value="member">Personal profile</option>
+          </select></label>
           <label><input type="checkbox" id="linkedinAutomaticDelivery" checked> Prepare LinkedIn delivery automatically</label>
           <button type="button" id="loadLinkedinCompany">Load LinkedIn Company Page</button>
-          <label>LinkedIn Live Company Page <select id="linkedinLiveCompany"></select></label>
+          <label>Connected LinkedIn account <select id="linkedinLiveCompany"></select></label>
           <button type="submit" id="scheduleLinkedinLive" disabled>Schedule and announce on LinkedIn</button>
           <button type="button" id="loadExistingLinkedin">Load existing LinkedIn events</button>
           <label>Existing LinkedIn event <select id="existingLinkedinList"></select></label>
