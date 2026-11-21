@@ -41,8 +41,12 @@ def normalize_profile_privacy(value):
     return value
 
 
+INGEST_QUERY = re.compile(r"(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9A-Fa-f]{2})*")
+
+
 def parse_ingest(value):
-    if not isinstance(value, str) or len(value) > 512 or not value.isascii() or not value.isprintable():
+    if (not isinstance(value, str) or len(value) > 512 or not value.isascii() or not value.isprintable()
+            or any(c.isspace() for c in value) or "#" in value):
         raise FacebookLiveUnconfirmed
     try:
         address = urlsplit(value)
@@ -52,9 +56,10 @@ def parse_ingest(value):
     stream = STREAM_PATH.fullmatch(address.path)
     if (address.scheme != "rtmps" or address.hostname != "live-api-s.facebook.com"
             or port not in (None, 443) or address.username is not None or address.password is not None
-            or address.query or address.fragment or not stream):
+            or not INGEST_QUERY.fullmatch(address.query) or not stream
+            or ("?" in value and not address.query)):
         raise FacebookLiveUnconfirmed
-    return stream[1]
+    return stream[1] + ("?" + address.query if address.query else "")
 
 
 class PageLiveConnection(facebook_upload.PageConnection):
