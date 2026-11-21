@@ -8,7 +8,9 @@ from time import monotonic, time
 
 import requests
 
-from event_capture import BusyError, EncoderProgress, MAX_ROOMS, RedundantRtmpRelay, RTMP_ROOMS, RtmpPublisher
+from event_capture import (
+    BusyError, EncoderProgress, MAX_ROOMS, RedundantRtmpRelay, RedundantSrtRelay, RtmpPublisher,
+)
 from event_interpreter_timing import AlignedAudio
 
 
@@ -19,22 +21,20 @@ class Input:
         self.language = language
         self.deadline = deadline
         self.parent_stop = parent.stop
+        self.parent_done = parent.done
         self.stop = Event()
         self.done = Event()
         self.publisher = RtmpPublisher(config, self.stop)
         self.path = None
-        self.mixer = None
-        if isinstance(parent, RTMP_ROOMS):
-            self.mixer = AlignedAudio(parent.playback, getattr(parent, "recording", None),
-                                      allow_discontinuity=isinstance(parent, RedundantRtmpRelay))
-        self.mixing = None
-        if self.mixer is not None:
-            self.mixing = Thread(target=self.mixer.run, args=(self,), name="CuePorch interpreter mixer", daemon=True)
-            self.mixing.start()
+        self.mixer = AlignedAudio(parent.playback, getattr(parent, "recording", None),
+                                  allow_discontinuity=isinstance(parent, (RedundantSrtRelay, RedundantRtmpRelay)))
+        self.mixing = Thread(target=self.mixer.run, args=(self,), name="CuePorch interpreter mixer", daemon=True)
+        self.mixing.start()
         Thread(target=self.run, name="CuePorch interpreter receiver", daemon=True).start()
 
     def live(self):
-        return not self.stop.is_set() and not self.parent_stop.is_set() and time() < self.deadline
+        return (not self.stop.is_set() and not self.parent_stop.is_set() and not self.parent_done.is_set()
+                and time() < self.deadline)
 
     def authorize(self, body):
         return self.live() and self.publisher.authorize(body)
@@ -111,8 +111,7 @@ class Input:
             try:
                 self.publisher.disconnect()
             finally:
-                if self.mixing is not None:
-                    self.mixing.join()
+                self.mixing.join()
                 self.done.set()
 
 

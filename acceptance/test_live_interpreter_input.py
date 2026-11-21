@@ -1,6 +1,7 @@
 import json
 import os
 import secrets
+import socket
 import subprocess
 import unittest
 from array import array
@@ -109,6 +110,21 @@ def segment_pts(directory, name, payload, stream):
     return Fraction(info["start_pts"]) * Fraction(info["time_base"])
 
 
+def prepare_program(path, auth, redundant, srt):
+    if not srt:
+        return requests.post(path + "/rtmp", headers=auth, timeout=8, json={"backup": redundant})
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as primary,
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as backup,
+    ):
+        primary.bind(("127.0.0.1", 0))
+        backup.bind(("127.0.0.1", 0))
+        payload = {"interface": "127.0.0.1", "port": primary.getsockname()[1]}
+        if redundant:
+            payload["backup_port"] = backup.getsockname()[1]
+    return requests.post(path + "/srt", headers=auth, timeout=8, json=payload)
+
+
 def prepare_with_browser(base, auth, route):
     token = auth["Authorization"].removeprefix("Bearer ")
     with sync_playwright() as pw, chromium(pw) as browser:
@@ -121,7 +137,7 @@ def prepare_with_browser(base, auth, route):
         page.locator("#interpreterName").fill("Spanish")
         with page.expect_response(lambda r: r.url == route and r.request.method == "POST") as prepared:
             page.get_by_role("button", name="Prepare interpreter input").click()
-        assert prepared.value.status == 200
+        assert prepared.value.status == 200, prepared.value.text()
         assert "no-store" in prepared.value.headers["cache-control"]
         source = prepared.value.json()
         key = page.get_by_label("Interpreter stream key")
@@ -142,12 +158,18 @@ class LiveInterpreterInputTest(unittest.TestCase):
     def test_interpreted_replay_keeps_both_encoder_switches(self):
         self.exercise_interpreter(manual=True, redundant=True)
 
-    def exercise_interpreter(self, manual, redundant=False):
+    def test_interpreter_audio_on_encrypted_srt_program(self):
+        self.exercise_interpreter(manual=False, srt=True)
+
+    def test_interpreter_audio_on_encrypted_srt_failover(self):
+        self.exercise_interpreter(manual=False, redundant=True, srt=True)
+
+    def exercise_interpreter(self, manual, redundant=False, *, srt=False):
         with interpreter_fixture(os.environ["CUEPORCH_TEST_MEDIAMTX"]) as (app, base, auth, certificate, db):
             now = datetime.now(timezone.utc)
             event_response = requests.post(base + "/api/live-events", headers=auth, timeout=8, json={
                 "title": "Interpreter rehearsal", "slug": "interpretation", "visibility": "private",
-                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": True,
+                "type": "live", "latency": "low", "dvr_seconds": 30, "save_replay": not srt,
                 "archive_replay": False,
                 "schedule": {
                     "timezone": "UTC", "repeat": "none",
@@ -172,18 +194,19 @@ class LiveInterpreterInputTest(unittest.TestCase):
                     "server": "rtmp://127.0.0.1:1/live", "key": "synthetic-primary",
                 }),
             ):
-                primary = requests.post(path + "/rtmp", headers=auth, timeout=8, json={"backup": redundant})
+                primary = prepare_program(path, auth, redundant, srt)
             self.assertEqual(primary.status_code, 200, primary.text if not primary.ok else None)
             denied = requests.get(route, timeout=8)
             self.assertIn(denied.status_code, (401, 403, 404))
             source = prepare_with_browser(base, auth, route)
             self.assertEqual(source["state"], "waiting")
-            self.assertNotEqual(source["key"], primary.json()["key"])
+            encoder = primary.json()
+            program_key = encoder["passphrase"] if srt else encoder["key"]
+            self.assertNotEqual(source["key"], program_key)
             self.assertEqual(requests.post(route, headers=auth, json=selected, timeout=8).json(), source)
 
             manager = app.extensions["event_interpreter_inputs"]
             receiver = manager.get(uid, opens, "es")
-            encoder = primary.json()
             invited = requests.post(base + "/api/team/invitations", headers=auth | TEAM, timeout=8,
                                     json={"email": "listener@example.com", "role": "viewer"})
             self.assertEqual(invited.status_code, 201, invited.text)
@@ -198,7 +221,7 @@ class LiveInterpreterInputTest(unittest.TestCase):
                 chromium(pw, args=["--autoplay-policy=no-user-gesture-required"]) as browser,
             ):
                 primary_feed = feeds.enter_context(
-                    marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate, "red", "320x180", 30, 440)
+                    marked_feed(encoder["server"], program_key, "ffmpeg", certificate, "red", "320x180", 30, 440)
                 )
                 team = browser.new_context()
                 joined = team.request.post(base + "/api/team/join", headers=TEAM, data={
@@ -222,6 +245,10 @@ class LiveInterpreterInputTest(unittest.TestCase):
                     hear_frequency(page, 880)
                     if redundant:
                         self.assert_failover(feeds, page, track, primary_feed, encoder, certificate, path, auth, team)
+                    if srt:
+                        self.assert_srt_stopped(path, route, auth, receiver, team, page, source, certificate)
+                        return
+                    if redundant:
                         requests.put(base + "/api/policy/replay", headers=auth,
                                      json={"required": True}, timeout=8).raise_for_status()
                         offline = requests.ConnectionError("The fixture's connected host is offline.")
@@ -268,11 +295,24 @@ class LiveInterpreterInputTest(unittest.TestCase):
             with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
                 self.assertNotEqual(revoked.wait(timeout=8), 0)
 
+    def assert_srt_stopped(self, path, route, auth, receiver, team, page, source, certificate):
+        master = urljoin(page.url, page.locator("#eventPlayer").get_attribute("data-address"))
+        signed = urljoin(master, "1.m3u8")
+        self.assertEqual(team.request.get(signed).status, 200)
+        self.assertEqual(requests.delete(path + "/srt", headers=auth, timeout=8).status_code, 204)
+        self.assertTrue(receiver.done.wait(9))
+        self.assertEqual(requests.get(route, headers=auth, timeout=8).json(), {"inputs": []})
+        self.assertEqual(team.request.get(signed).status, 404)
+        with publish_tone(source["server"], source["key"], certificate, 440) as revoked:
+            self.assertNotEqual(revoked.wait(timeout=8), 0)
+
     def assert_failover(self, feeds, page, track, primary, encoder, certificate, path, auth, team):
         page.wait_for_function(CHECK_COLOUR, arg=0, timeout=25000)
         video = page.locator("#eventPlayer video")
         video.evaluate("el => { window.originalVideo = el; }")
-        backup = feeds.enter_context(marked_feed(encoder["server"], encoder["backup_key"], "ffmpeg", certificate,
+        backup_server = encoder.get("backup_server", encoder["server"])
+        backup_key = encoder.get("backup_passphrase") or encoder["backup_key"]
+        backup = feeds.enter_context(marked_feed(backup_server, backup_key, "ffmpeg", certificate,
                                                  "blue", "640x360", 25, 620))
         deadline = monotonic() + 15
         while monotonic() < deadline:
@@ -288,7 +328,8 @@ class LiveInterpreterInputTest(unittest.TestCase):
         hear_frequency(page, 880)
         self.assertTrue(video.evaluate("el => el === window.originalVideo"))
         self.assertEqual(track.locator("option:checked").text_content(), "Spanish")
-        feeds.enter_context(marked_feed(encoder["server"], encoder["key"], "ffmpeg", certificate,
+        program_key = encoder.get("passphrase") or encoder["key"]
+        feeds.enter_context(marked_feed(encoder["server"], program_key, "ffmpeg", certificate,
                                         "green", "480x270", 20, 520))
         deadline = monotonic() + 15
         while monotonic() < deadline:

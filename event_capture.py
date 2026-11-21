@@ -693,6 +693,14 @@ class Studio:
                 return room
         return None
 
+    def interpreter_room(self, uid, opens):
+        with self.lock:
+            room = self.active.get((uid, opens))
+            if (isinstance(room, RTMP_ROOMS + SRT_ROOMS) and room.playback is not None
+                    and not room.stop.is_set() and not room.done.is_set()):
+                return room
+        return None
+
     def rtmp_credentials(self, uid, opens):
         room = self.rtmp_room(uid, opens)
         return room.credentials() if room else None
