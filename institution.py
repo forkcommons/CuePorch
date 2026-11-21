@@ -83,6 +83,7 @@ import library_trash
 import library_upload
 import hubspot_crm
 import event_hubspot_outbound
+import event_hubspot_engagement
 import library_integrations
 import intake_watch
 import social_publication
@@ -116,6 +117,7 @@ STEPS = (
     *library_ai_drafts.FEATURES,
     studio_scripts.STEP,
     event_hubspot_outbound.STEP,
+    event_hubspot_engagement.STEP,
     "publication",
     "replay",
     "migration",
@@ -823,6 +825,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM live_event_hubspot_delivery WHERE state='queued')""", (step,))
+                if step == event_hubspot_engagement.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM live_event_hubspot_engagement_job WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",

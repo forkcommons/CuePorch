@@ -2,6 +2,8 @@
 
 from uuid import uuid4
 
+import event_hubspot_engagement
+
 STEP = "event_contact_sync"
 
 
@@ -82,6 +84,7 @@ def set_destination(
 
 
 def disable(con, event, opens):
+    event_hubspot_engagement.cancel(con, event, opens)
     cur = con.cursor()
     cur.execute(
         """UPDATE action
@@ -107,6 +110,7 @@ def disable(con, event, opens):
 
 
 def disconnect(con):
+    event_hubspot_engagement.cancel(con)
     cur = con.cursor()
     cur.execute(
         """UPDATE action
@@ -144,6 +148,8 @@ def receipt(con, event, opens):
         "segment": plan["segment"],
         "subscription": plan["subscription"],
         "states": states,
+        "engagement_event": event_hubspot_engagement.definition(con, plan["generation"]),
+        "engagement_states": event_hubspot_engagement.status(con, plan["generation"]),
     }
 
 
@@ -281,7 +287,7 @@ def run_one(tx, connection, validate, stop, clock):
     return True
 
 
-def start(app, tx, database, connection, validate, *, clock=None):
+def start(app, tx, database, connection, validate, *, engagement_validate=None, clock=None):
     from threading import Event, Thread
     from time import time
     from filelock import FileLock, Timeout
@@ -298,6 +304,13 @@ def start(app, tx, database, connection, validate, *, clock=None):
             try:
                 with FileLock(str(database) + ".hubspot-outbound.lock", timeout=0):
                     if run_one(tx, connection, validate, stop, clock):
+                        continue
+                    if (
+                        engagement_validate is not None
+                        and event_hubspot_engagement.run_one(
+                            tx, connection, engagement_validate, stop, clock
+                        )
+                    ):
                         continue
                 stop.wait(1)
             except Timeout:

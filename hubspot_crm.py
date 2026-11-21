@@ -15,6 +15,7 @@ OAUTH = Config(
     implicit_bearer=True,
 )
 LISTS = ORIGIN + "/crm/lists/2026-09"
+ENGAGEMENT_SCOPE = "analytics.behavioral_events.send"
 
 
 def oauth_config():
@@ -22,13 +23,21 @@ def oauth_config():
     from dataclasses import replace
 
     if os.environ.get("CUEPORCH_HUBSPOT_OUTBOUND") == "1":
+        optional_scope = "crm.lists.write crm.objects.contacts.write communication_preferences.read_write"
+        if os.environ.get("CUEPORCH_HUBSPOT_ENGAGEMENT") == "1":
+            optional_scope += " " + ENGAGEMENT_SCOPE
         return replace(
             OAUTH,
-            authorization_parameters={
-                "optional_scope": "crm.lists.write crm.objects.contacts.write communication_preferences.read_write"
-            },
+            authorization_parameters={"optional_scope": optional_scope},
         )
     return OAUTH
+
+
+def engagement_available(connection):
+    config = connection.config
+    return connection.configured and ENGAGEMENT_SCOPE in (
+        config.authorization_parameters.get("optional_scope", "").split()
+    )
 
 
 def crm(connection, revision, method, url, **kwargs):
@@ -507,3 +516,49 @@ def add_to_segment(connection, revision, list_id, contact_id, *, before_write):
         seen_cursors.add(after)
 
     abort(502, "Membership not confirmed")
+
+
+def send_engagement(
+    connection,
+    revision,
+    event_name,
+    contact_id,
+    occurred_at,
+    event_uuid,
+    properties,
+    *,
+    before_write,
+):
+    import re
+
+    if (
+        not isinstance(event_name, str)
+        or len(event_name) > 128
+        or re.fullmatch(r"pe[1-9][0-9]*_[a-z][a-z0-9_]*", event_name) is None
+        or not segment_id(contact_id)
+    ):
+        abort(400, "Invalid HubSpot event or contact.")
+
+    before_write()
+
+    with connection.api(
+        revision,
+        "POST",
+        ORIGIN + "/events/2026-09/send",
+        json={
+            "eventName": event_name,
+            "objectId": contact_id,
+            "occurredAt": occurred_at,
+            "uuid": event_uuid,
+            "properties": properties,
+        },
+    ) as response:
+        if response.status_code == 204:
+            return None
+        if response.status_code == 400:
+            abort(
+                400,
+                "HubSpot rejected the engagement event. Verify the selected event definition.",
+            )
+        check_provider(response)
+        abort(502)

@@ -6,6 +6,8 @@ function setupContactDelivery(request, segment) {
     const disable = document.getElementById('eventHubSpotDisableOutbound');
     const read = document.getElementById('eventHubSpotReadOutbound');
     const status = document.getElementById('eventHubSpotOutboundStatus');
+    const engagementSettings = document.getElementById('eventHubSpotEngagementSettings');
+    const engagementEvent = document.getElementById('eventHubSpotEngagementEvent');
     let base = '';
     let generation = 0;
     const inFlight = new Set();
@@ -38,10 +40,23 @@ function setupContactDelivery(request, segment) {
             return;
         if (receipt.available === false) {
             fieldset.hidden = true;
+            engagementSettings.hidden = true;
+            engagementEvent.disabled = true;
+            engagementEvent.value = '';
             setStatus('Outbound unavailable');
             return;
         }
         fieldset.hidden = false;
+        if (receipt.engagement_available === false) {
+            engagementSettings.hidden = true;
+            engagementEvent.disabled = true;
+            engagementEvent.value = '';
+        }
+        else {
+            engagementSettings.hidden = false;
+            engagementEvent.disabled = false;
+            engagementEvent.value = receipt.engagement_event ?? '';
+        }
         const keys = ['queued', 'waiting', 'sent', 'skipped', 'canceled', 'problem'];
         const counts = keys.map((key) => `${key}: ${receipt.states?.[key] ?? 0}`).join(', ');
         const enabledText = receipt.enabled
@@ -51,7 +66,15 @@ function setupContactDelivery(request, segment) {
             receipt.segment ? `segment ${receipt.segment}` : '',
             receipt.subscription ? `subscription ${receipt.subscription}` : ''
         ].filter(Boolean).join(', ');
-        setStatus([enabledText, counts, ids].filter(Boolean).join(' · '));
+        const registrationStatus = [enabledText, counts, ids].filter(Boolean).join(' · ');
+        const statusParts = [];
+        if (receipt.engagement_event) {
+            const eKeys = ['queued', 'waiting', 'accepted', 'skipped', 'canceled', 'problem'];
+            const eCounts = eKeys.map((key) => `${key}: ${receipt.engagement_states?.[key] ?? 0}`).join(', ');
+            statusParts.push(`Engagement event ${receipt.engagement_event} · ${eCounts}`);
+        }
+        statusParts.push(registrationStatus);
+        setStatus(statusParts.join(' · '));
     };
     load.addEventListener('click', async () => {
         if (!base)
@@ -76,7 +99,11 @@ function setupContactDelivery(request, segment) {
         }
         const b = base;
         const gen = generation;
-        const result = await call(b, gen, `${b}/registration/hubspot/outbound`, 'PUT', { segment: segment.value, subscription: subscription.value }, true);
+        const result = await call(b, gen, `${b}/registration/hubspot/outbound`, 'PUT', {
+            segment: segment.value,
+            subscription: subscription.value,
+            engagement_event: engagementEvent.disabled ? '' : engagementEvent.value.trim()
+        }, true);
         if (result)
             void refresh(b, gen);
     });
@@ -99,6 +126,9 @@ function setupContactDelivery(request, segment) {
         generation += 1;
         subscription.replaceChildren(new Option("Choose an email subscription", ""));
         subscription.value = '';
+        engagementSettings.hidden = true;
+        engagementEvent.disabled = true;
+        engagementEvent.value = '';
         setStatus('');
         fieldset.hidden = true;
         if (base)

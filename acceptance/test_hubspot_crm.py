@@ -191,6 +191,8 @@ class Provider:
         self.outbound_contacts = {}
         self.outbound_members = set()
         self.outbound_writes = []
+        self.engagement_posts = []
+        self.engagement_throttled = False
         self.corrupt = False
         self.rejected = False
         from threading import Event
@@ -213,6 +215,26 @@ class Provider:
         prefix = "https://api.hubapi.com/"
         assert url.startswith(prefix), url
         path = url[len(prefix) - 1 :]
+        if method == "POST" and path == "/events/2026-09/send":
+            assert kwargs["headers"]["Authorization"] in (
+                "Bearer fixture-access-one",
+                "Bearer fixture-access-two",
+            )
+            payload = kwargs["json"]
+            assert set(payload) == {
+                "eventName",
+                "objectId",
+                "occurredAt",
+                "uuid",
+                "properties",
+            }
+            self.engagement_posts.append(payload)
+            if not self.engagement_throttled:
+                self.engagement_throttled = True
+                response = self.response({}, status=429)
+                response.headers["Retry-After"] = "420"
+                return response
+            return self.response({}, status=204)
         if path.startswith(("/crm/", "/communication-preferences/")):
             return self.crm(method, path, **kwargs)
         assert method == "POST"
@@ -437,6 +459,7 @@ class HubSpotCRM(unittest.TestCase):
                         "CUEPORCH_HUBSPOT_CLIENT_ID": "fixture-client",
                         "CUEPORCH_HUBSPOT_CLIENT_SECRET": "fixture-secret",
                         "CUEPORCH_HUBSPOT_OUTBOUND": "1",
+                        "CUEPORCH_HUBSPOT_ENGAGEMENT": "1",
                     },
                 )
             )
@@ -456,11 +479,14 @@ class HubSpotCRM(unittest.TestCase):
                     ),
                 )
             )
+            import event_hubspot_outbound
             import event_hubspot_sync
             from time import time
 
             actual_start = event_hubspot_sync.start
             clock_offset = 0
+            actual_engagement_start = event_hubspot_outbound.start
+            engagement_clock_offset = 0
 
             cleanup.enter_context(patch("mail_relay.deliver"))
             cleanup.enter_context(
@@ -469,6 +495,15 @@ class HubSpotCRM(unittest.TestCase):
                     "start",
                     lambda *args: actual_start(
                         *args, clock=lambda: time() + clock_offset
+                    ),
+                )
+            )
+            cleanup.enter_context(
+                patch.object(
+                    event_hubspot_outbound,
+                    "start",
+                    lambda *args, **kwargs: actual_engagement_start(
+                        *args, clock=lambda: time() + engagement_clock_offset, **kwargs
                     ),
                 )
             )
@@ -499,6 +534,15 @@ class HubSpotCRM(unittest.TestCase):
 
             self.restart = restart
 
+            def set_engagement_clock(at, *, restart=False):
+                nonlocal engagement_clock_offset
+                if restart:
+                    stop_app()
+                engagement_clock_offset = at - time()
+                if restart:
+                    start_app()
+
+            self.set_engagement_clock = set_engagement_clock
             cleanup.callback(stop_app)
             start_app()
             cleanup.enter_context(service_worker(service))
@@ -516,6 +560,10 @@ class HubSpotCRM(unittest.TestCase):
             assert "state" in qs
             scope = qs.get("scope", [""])[0]
             assert "crm.lists.read" in scope and "crm.objects.contacts.read" in scope
+            assert (
+                "analytics.behavioral_events.send"
+                in qs.get("optional_scope", [""])[0].split()
+            )
             redirect_uri = base + "/integration/oauth/hubspot/callback"
             assert qs["redirect_uri"][0] == redirect_uri
             location = (
@@ -644,6 +692,7 @@ class HubSpotCRM(unittest.TestCase):
 
         self.verify_automatic(page, base, auth, created, database, fixture)
         self.verify_outbound(page, base, auth, created, fixture)
+        self.verify_engagement(page, base, auth, created, database, fixture)
 
         page.goto(f"{base}/operator/integrations")
         page.click("text=Disconnect HubSpot")
@@ -998,3 +1047,264 @@ class HubSpotCRM(unittest.TestCase):
 
         # Proves a pending provider response cannot mutate the canceled
         # occurrence.
+
+    def verify_engagement(self, page, base, auth, created, database, fixture):
+        eid = created["id"]
+        url = f"{base}/api/live-events/{eid}/registration"
+        form = page.request.get(url, headers=auth).json()
+        form.setdefault("settings", {})["attendance_analytics"] = True
+        response = page.request.put(url, headers=auth, data=form)
+        assert response.ok
+        page.goto(f"{base}/operator/live-events")
+        page.get_by_role("button", name="Open production for CRM rehearsal").nth(
+            1
+        ).click()
+        page.get_by_text("Attendees for this occurrence", exact=True).click()
+        page.get_by_role("button", name="Load contact segments").click()
+        page.locator("#eventHubSpotSegment").select_option(label="Warm list")
+        page.get_by_role("button", name="Load email subscriptions").click()
+        page.locator("#eventHubSpotSubscription").select_option(label="Event updates")
+        page.locator("#eventHubSpotEngagementEvent").fill("pe123_cueporch_webinar")
+        page.get_by_role("button", name="Enable registration delivery").click()
+        expect(page.locator("#eventHubSpotOutboundStatus")).to_contain_text(
+            "pe123_cueporch_webinar"
+        )
+        slot = created["occurrences"][1]
+        cases = (
+            ("Approved", "appr@example.invalid", True),
+            ("Withdrew", "withdrew@example.invalid", True),
+            ("Declined", "declined@example.invalid", False),
+            ("Blocked", "blocked@example.invalid", True),
+        )
+        withdrawn = None
+        browser = page.context.browser
+        for name, email, opt_in in cases:
+            p = browser.new_page()
+            try:
+                p.goto(f"{base}/events/crm-rehearsal?occurrence={slot['id']}")
+                p.fill("input[name=email]", email)
+                p.fill("input[name=first_name]", name)
+                p.fill("input[name=last_name]", "Viewer")
+                consent = p.locator("input[name=hubspot_engagement_consent]")
+                expect(consent).not_to_be_checked()
+                if opt_in:
+                    consent.check()
+                p.locator("form button[type=submit]").first.click()
+                expect(consent).to_have_count(0)
+                grant = p.locator("#eventLobby").get_attribute("data-viewer-grant")
+                if opt_in:
+                    assert grant
+                if email == "withdrew@example.invalid":
+                    withdrawn = grant
+            finally:
+                p.close()
+        return self.exercise_engagement_delivery(
+            page, base, auth, created, database, fixture, withdrawn
+        )
+
+    def exercise_engagement_delivery(
+        self, page, base, auth, created, database, fixture, withdrawn
+    ):
+        import sqlite3
+        import uuid
+        from contextlib import closing
+        import event_analytics
+        import event_registrants
+
+        event = created["id"]
+        opens = created["occurrences"][1]["id"]
+
+        fixture.outbound_contacts.update(
+            {
+                "appr@example.invalid": dict(
+                    id="71", email="appr@example.invalid", archived=False
+                ),
+                "blocked@example.invalid": dict(
+                    id="72", email="blocked@example.invalid", archived=False
+                ),
+            }
+        )
+
+        with closing(sqlite3.connect(database)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                """
+                SELECT j.sharing, r.email
+                FROM live_event_hubspot_engagement_job j
+                JOIN live_event_registrant r ON r.id = j.registrant
+                WHERE j.event = ? AND j.opens = ?
+                """,
+                (event, opens),
+            ).fetchall()
+
+            emails = {row["email"] for row in rows}
+            assert emails == {
+                "appr@example.invalid",
+                "blocked@example.invalid",
+                "withdrew@example.invalid",
+            }, emails
+
+            for row in rows:
+                sharing = row["sharing"]
+                for phase, watched in (("live", 3300), ("replay", 1200)):
+                    nonce = f"synthetic-{phase}-{sharing}-{uuid.uuid4().hex}"
+                    event_analytics.record(
+                        con,
+                        event,
+                        opens,
+                        phase,
+                        nonce,
+                        body={
+                            "sequence": 1,
+                            "watched": watched,
+                            "played": True,
+                            "playing": False,
+                        },
+                    )
+                    event_registrants.link_sample(con, nonce, sharing)
+            con.commit()
+
+        resp = page.request.post(
+            f"{base}/api/event-playback/withdraw-sharing",
+            headers={"X-CuePorch-Event-Viewer": withdrawn, "Origin": base},
+        )
+        assert resp.status == 204
+
+        self.verify_engagement_retry(page, base, auth, created, database, fixture)
+
+    def verify_engagement_retry(self, page, base, auth, created, database, fixture):
+        from time import monotonic, sleep
+        from contextlib import closing
+
+        slot = created["occurrences"][1]
+        end_dt = datetime.fromisoformat(slot["end"])
+        end = int(end_dt.timestamp())
+
+        policy_url = f"{base}/api/policy/event_engagement_sync"
+        outbound_url = (
+            f"{base}/api/live-events/{created['id']}/{slot['id']}"
+            "/registration/hubspot/outbound"
+        )
+
+        r = page.request.put(policy_url, headers=auth, data={"required": True})
+        assert r.ok, f"engagement PUT required=True failed: {r.status} {r.text()}"
+
+        self.set_engagement_clock(end + 3601)
+
+        initial_writes = list(fixture.outbound_writes)
+
+        deadline = monotonic() + 10.0
+        states = None
+        while monotonic() < deadline:
+            resp = page.request.get(outbound_url, headers=auth)
+            assert resp.ok, f"engagement GET failed: {resp.status}"
+            states = resp.json()["engagement_states"]
+            if (
+                states.get("waiting") == 2
+                and states.get("canceled") == 1
+                and states.get("engagement_posts", 0) == 0
+            ):
+                break
+            sleep(0.1)
+        else:
+            raise AssertionError(
+                "engagement_states did not reach waiting=2, canceled=1, "
+                f"engagement_posts=0 while on hold: {states}"
+            )
+        assert list(fixture.outbound_writes) == initial_writes, (
+            "fixture.outbound_writes changed during the engagement-only hold phase"
+        )
+        assert list(fixture.engagement_posts) == []
+
+        r = page.request.put(policy_url, headers=auth, data={"required": False})
+        assert r.ok, f"engagement PUT required=False failed: {r.status} {r.text()}"
+
+        deadline = monotonic() + 10.0
+        job_row = None
+        while monotonic() < deadline:
+            with closing(sqlite3.connect(database)) as conn:
+                job_row = conn.execute(
+                    "SELECT j.due, j.attempts FROM live_event_hubspot_engagement_job j "
+                    "JOIN live_event_registrant r ON r.id = j.registrant "
+                    "WHERE j.state = 'queued' AND r.email = ? "
+                    "AND j.attempts = 1",
+                    ("appr@example.invalid",),
+                ).fetchone()
+            has_429 = len(fixture.engagement_posts) == 1
+            if job_row is not None and has_429:
+                break
+            sleep(0.1)
+        else:
+            raise AssertionError(
+                "no queued live_event_hubspot_engagement_job (attempts=1) for "
+                "appr@example.invalid paired with a 429 engagement post"
+            )
+
+        job_due, job_attempts = job_row
+        assert job_attempts == 1, job_attempts
+        assert job_due >= end + 4021, (
+            f"retry due {job_due} must be >= end+4021 ({end + 4021})"
+        )
+
+        self.set_engagement_clock(job_due - 30, restart=True)
+        sleep(1.25)
+        assert len(fixture.engagement_posts) == 1, (
+            f"expected exactly 1 engagement post before retry due, got "
+            f"{len(fixture.engagement_posts)}"
+        )
+
+        self.set_engagement_clock(job_due + 1)
+
+        deadline = monotonic() + 10.0
+        states = None
+        while monotonic() < deadline:
+            resp = page.request.get(outbound_url, headers=auth)
+            assert resp.ok, f"engagement GET failed: {resp.status}"
+            states = resp.json()["engagement_states"]
+            if (
+                states.get("accepted") == 1
+                and states.get("skipped") == 1
+                and states.get("canceled") == 1
+            ):
+                break
+            sleep(0.1)
+        else:
+            raise AssertionError(
+                "engagement_states did not reach accepted=1, skipped=1, "
+                f"canceled=1 after retry: {states}"
+            )
+
+        assert len(fixture.engagement_posts) == 2, (
+            f"expected 2 engagement posts (429 + retry), got "
+            f"{len(fixture.engagement_posts)}"
+        )
+        original_json = fixture.engagement_posts[0]
+        retry_json = fixture.engagement_posts[1]
+        assert original_json == retry_json, (
+            "retry payload must exactly match the original request"
+        )
+
+        payload = retry_json
+        assert payload["objectId"] == "71", payload.get("objectId")
+        assert payload["eventName"] == "pe123_cueporch_webinar", payload.get(
+            "eventName"
+        )
+        expected_occurred_at = datetime.fromtimestamp(end, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        assert payload["occurredAt"] == expected_occurred_at, (
+            f"occurredAt {payload['occurredAt']!r} != {expected_occurred_at!r}"
+        )
+
+        props = payload["properties"]
+        assert set(props.keys()) == {
+            "cueporch_live_ms",
+            "cueporch_replay_ms",
+            "cueporch_registered_at",
+            "cueporch_event_title",
+        }, f"unexpected property keys: {sorted(props.keys())}"
+        assert props["cueporch_live_ms"] == "3300"
+        assert props["cueporch_replay_ms"] == "1200"
+        assert props["cueporch_event_title"] == "CRM rehearsal"
+        datetime.fromisoformat(props["cueporch_registered_at"].replace("Z", "+00:00"))
+        assert list(fixture.outbound_writes) == initial_writes
