@@ -81,6 +81,18 @@
         <select id="registrationConstantContactList"></select>
         <p id="registrationConstantContactStatus" role="status"></p>
       </fieldset>
+      <fieldset id="registrationCampaignMonitor" hidden>
+        <legend>Campaign Monitor delivery</legend>
+        <button type="button" id="registrationCampaignMonitorLoad">Load Campaign Monitor clients</button>
+        <label for="registrationCampaignMonitorClient">Campaign Monitor client</label>
+        <select id="registrationCampaignMonitorClient"></select>
+        <label for="registrationCampaignMonitorList">Campaign Monitor list</label>
+        <select id="registrationCampaignMonitorList"></select>
+        <button type="button" id="registrationCampaignMonitorSave">Save Campaign Monitor delivery</button>
+        <button type="button" id="registrationCampaignMonitorRefresh">Reload Campaign Monitor delivery</button>
+        <button type="button" id="registrationCampaignMonitorStop" hidden>Stop Campaign Monitor delivery</button>
+        <p id="registrationCampaignMonitorStatus" role="status"></p>
+      </fieldset>
       {% endif %}
       <section aria-labelledby="registrantHeading">
         <h3 id="registrantHeading">Recent registrants</h3>

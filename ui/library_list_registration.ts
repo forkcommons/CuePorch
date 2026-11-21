@@ -1,6 +1,6 @@
-
-
 import { checked } from "./team_api.js";
+
+type Provider = "constant-contact" | "campaign-monitor";
 
 type Receipt = {
   available: boolean;
@@ -59,18 +59,19 @@ async function request<T>(
   return response.json();
 }
 
-function receiptStatus(receipt: Receipt, ready: boolean): string {
+function receiptStatus(receipt: Receipt, ready: boolean, provider: Provider): string {
+  const name = provider === "constant-contact" ? "Constant Contact" : "Campaign Monitor";
   let status: string;
   if (receipt.state === "stale") {
-    status = "Reconnect Constant Contact and choose a list again.";
+    status = `Reconnect ${name} and choose a list again.`;
   } else if (!receipt.available) {
-    status = "Connect Constant Contact in Integrations.";
+    status = `Connect ${name} in Integrations.`;
   } else if (!ready) {
     status = "Save an enabled registration form with first and last name fields.";
   } else if (receipt.state === "connected") {
-    status = "Constant Contact delivery is enabled.";
+    status = `${name} delivery is enabled.`;
   } else {
-    status = "Constant Contact delivery is off.";
+    status = `${name} delivery is off.`;
   }
 
   const counts = Object.entries(labels).flatMap(([key, label]) =>
@@ -80,20 +81,25 @@ function receiptStatus(receipt: Receipt, ready: boolean): string {
   return counts.length ? `${status} ${counts.join(" ")}` : status;
 }
 
-export function setupLibraryConstantContact(
+export function setupLibraryListDelivery(
   panel: HTMLElement,
   credential: () => string,
   isCurrent: (endpoint: string) => boolean,
+  provider: Provider,
 ) {
+  const prefix = provider === "constant-contact"
+    ? "registrationConstantContact"
+    : "registrationCampaignMonitor";
   const control = <T extends HTMLElement>(suffix: string) =>
-    panel.querySelector<T>("#registrationConstantContact" + suffix)!;
-  const load = control<HTMLButtonElement>("Load");
-  const more = control<HTMLButtonElement>("More");
-  const picker = control<HTMLSelectElement>("List");
-  const save = control<HTMLButtonElement>("Save");
-  const reload = control<HTMLButtonElement>("Refresh");
-  const stop = control<HTMLButtonElement>("Stop");
-  const status = control<HTMLElement>("Status");
+    panel.querySelector<T>("#" + prefix + suffix);
+  const load = control<HTMLButtonElement>("Load")!;
+  const more = provider === "constant-contact" ? control<HTMLButtonElement>("More")! : null;
+  const client = provider === "campaign-monitor" ? control<HTMLSelectElement>("Client")! : null;
+  const picker = control<HTMLSelectElement>("List")!;
+  const save = control<HTMLButtonElement>("Save")!;
+  const reload = control<HTMLButtonElement>("Refresh")!;
+  const stop = control<HTMLButtonElement>("Stop")!;
+  const status = control<HTMLElement>("Status")!;
   let generation = 0;
 
   return async (endpoint: string, settings: Settings) => {
@@ -104,12 +110,21 @@ export function setupLibraryConstantContact(
     let receipt: Receipt | undefined;
     let nextCursor: string | null = null;
     let busy = false;
+    let savedListVisible = true;
+
+    if (client) {
+      client.replaceChildren(new Option("Choose a client", ""));
+      client.value = "";
+    }
 
     function drawControls() {
       const disabled = busy || !receipt?.available || !ready;
       load.disabled = disabled;
-      more.hidden = nextCursor === null;
-      more.disabled = disabled;
+      if (more) {
+        more.hidden = nextCursor === null;
+        more.disabled = disabled;
+      }
+      if (client) client.disabled = disabled;
       picker.disabled = disabled || picker.options.length <= 1;
       save.disabled = disabled || !picker.value;
       reload.disabled = busy;
@@ -119,7 +134,7 @@ export function setupLibraryConstantContact(
 
     function drawLists(selected: string) {
       const options = new Map(lists);
-      if (receipt?.list_id && receipt.list_name && !options.has(receipt.list_id)) {
+      if (savedListVisible && receipt?.list_id && receipt.list_name && !options.has(receipt.list_id)) {
         options.set(receipt.list_id, receipt.list_name);
       }
       picker.replaceChildren(
@@ -135,7 +150,7 @@ export function setupLibraryConstantContact(
       drawControls();
       try {
         await task();
-        if (active() && receipt) status.textContent = receiptStatus(receipt, ready);
+        if (active() && receipt) status.textContent = receiptStatus(receipt, ready, provider);
       } catch (error) {
         if (active()) {
           panel.hidden = false;
@@ -151,6 +166,7 @@ export function setupLibraryConstantContact(
       const updated = await request<Receipt>(credential, endpoint, method, body);
       if (!active()) return;
       receipt = updated;
+      savedListVisible = true;
       panel.hidden = !receipt.available && receipt.state === "off";
       drawLists(receipt.list_id ?? "");
     }
@@ -167,15 +183,70 @@ export function setupLibraryConstantContact(
       drawLists(picker.value);
     }
 
+    async function loadClients() {
+      const data = await request<{ clients: { id: string; name: string }[] }>(
+        credential,
+        "/api/integrations/campaign-monitor/clients",
+      );
+      if (!active() || !client) return;
+      const previous = client.value;
+      client.replaceChildren(
+        new Option("Choose a client", ""),
+        ...data.clients.map(({ id, name }) => new Option(name, id)),
+      );
+      const keep = data.clients.some(({ id }) => id === previous);
+      client.value = keep ? previous : "";
+      if (previous && !keep) {
+        lists.clear();
+        nextCursor = null;
+        savedListVisible = false;
+        drawLists("");
+      }
+    }
+
+    async function loadClientLists(clientId: string) {
+      const data = await request<{ lists: { id: string; name: string }[] }>(
+        credential,
+        "/api/integrations/campaign-monitor/clients/" + encodeURIComponent(clientId) + "/lists",
+      );
+      if (!active() || !client || client.value !== clientId) return;
+      lists.clear();
+      for (const list of data.lists) lists.set(list.id, list.name);
+      nextCursor = null;
+      drawLists(picker.value);
+    }
+
     panel.hidden = true;
     status.textContent = "";
+    lists.clear();
+    nextCursor = null;
+    savedListVisible = true;
     drawLists("");
     picker.onchange = drawControls;
-    load.onclick = () => void run(() => loadLists());
-    more.onclick = () => {
-      const cursor = nextCursor;
-      if (cursor) void run(() => loadLists(cursor));
+    load.onclick = () => {
+      if (provider === "constant-contact") {
+        void run(() => loadLists());
+      } else {
+        void run(() => loadClients());
+      }
     };
+    if (more) {
+      more.onclick = () => {
+        const cursor = nextCursor;
+        if (cursor) void run(() => loadLists(cursor));
+      };
+    }
+    if (client) {
+      client.onchange = () => {
+        const clientId = client.value;
+        lists.clear();
+        savedListVisible = false;
+        nextCursor = null;
+        drawLists("");
+        if (clientId) void run(() => loadClientLists(clientId));
+        else drawControls();
+      };
+    }
     save.onclick = () => {
       const listId = picker.value;
       if (listId) void run(() => readReceipt("PUT", {list_id: listId}));

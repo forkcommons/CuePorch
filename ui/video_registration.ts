@@ -1,5 +1,5 @@
 import { setupLibraryMailchimp } from "./library_mailchimp_registration.js";
-import { setupLibraryConstantContact } from "./library_constant_contact_registration.js";
+import { setupLibraryListDelivery } from "./library_list_registration.js";
 import {checked} from "./team_api.js";
 
 interface Field {
@@ -54,10 +54,16 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   const mailchimpPanel = form.querySelector<HTMLElement>("#registrationMailchimp");
   const mailchimp = mailchimpPanel && registrationEndpoint
     ? setupLibraryMailchimp(mailchimpPanel, credential) : undefined;
-  const constantContactPanel = form.querySelector<HTMLElement>("#registrationConstantContact");
-  const constantContact = constantContactPanel && registrationEndpoint
-    ? setupLibraryConstantContact(constantContactPanel, credential,
-      (endpoint) => endpoint === registrationEndpoint() + "/constant-contact/outbound") : undefined;
+  const listDeliveryHandlers = ([
+    ["constant-contact", "#registrationConstantContact"],
+    ["campaign-monitor", "#registrationCampaignMonitor"],
+  ] as const).flatMap(([provider, id]) => {
+    const panel = form.querySelector<HTMLElement>(id);
+    return panel && registrationEndpoint
+      ? [[provider, setupLibraryListDelivery(panel, credential,
+          (endpoint) => endpoint === registrationEndpoint() + "/" + provider + "/outbound", provider)] as const]
+      : [];
+  });
   const listing = form.querySelector<HTMLTableSectionElement>("#registrantRows")!;
   const protectedNotice = form.querySelector<HTMLElement>("#registrationProtected")!;
   const fields = form.querySelector<HTMLOListElement>("#registrationFields")!;
@@ -229,7 +235,7 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
       row.insertCell().textContent = new Date(person.registered * 1000).toLocaleString();
     }
     if (mailchimp && endpoint !== undefined) void mailchimp(endpoint + "/mailchimp/outbound", state.settings);
-    if (constantContact && endpoint !== undefined) void constantContact(endpoint + "/constant-contact/outbound", state.settings);
+    if (endpoint !== undefined) for (const [provider, handler] of listDeliveryHandlers) void handler(endpoint + "/" + provider + "/outbound", state.settings);
   }
 
   async function action(callback: () => Promise<void>) {

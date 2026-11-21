@@ -436,7 +436,7 @@ class ConstantContactFormsTest(unittest.TestCase):
         return sid
 
 
-    def play_in_browser(self, browser, base, path, email, consent, *, embed=False):
+    def play_in_browser(self, browser, base, path, email, consent, *, embed=False, consent_field="constant_contact_form_consent"):
         from playwright.sync_api import expect
 
         context = browser.new_context()
@@ -459,7 +459,7 @@ class ConstantContactFormsTest(unittest.TestCase):
             target.locator("input[name=last_name]").fill("Viewer")
 
             consent_input = target.locator(
-                "input[name=constant_contact_form_consent]"
+                f"input[name={consent_field}]"
             )
             if consent is None:
                 expect(consent_input).to_have_count(0)
