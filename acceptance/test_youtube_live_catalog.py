@@ -494,7 +494,29 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertEqual(active_series, api.get(later_targets + series_suffix, headers=operator_headers).json())
                 skipped = api.delete(skip_targets + series_suffix, headers=operator_headers, data={"date": True})
                 self.assertTrue(skipped.ok, skipped.text())
-                self.assertEqual(active_series | {"skipped": True},
+                self.assertEqual(active_series | {"skipped": True, "restorable": True},
+                                 api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                third_local = series_event["occurrences"][2]["local"].replace("T", " ")
+                skip_page = browser.new_page()
+                skip_page.add_init_script(
+                    f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator)});"
+                )
+                skip_page.goto(base + "/operator/live-events")
+                skip_page.get_by_role("button", name=f"Open production for Future channel broadcast at {third_local}",
+                                      exact=True).click()
+                skip_page.get_by_text("Simulcast destinations", exact=True).click()
+                restore_button = skip_page.locator("#youtubeSeriesSkip")
+                expect(restore_button).to_have_text("Restore YouTube on this date")
+                restore_button.click()
+                expect(restore_button).to_have_text("Skip YouTube on this date")
+                self.assertEqual(active_series, api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                restored_again = api.put(skip_targets + series_suffix, headers=operator_headers, data={"date": True})
+                self.assertTrue(restored_again.ok, restored_again.text())
+                self.assertEqual(active_series, api.get(skip_targets + series_suffix, headers=operator_headers).json())
+                expect(restore_button).to_have_text("Skip YouTube on this date")
+                restore_button.click()
+                expect(restore_button).to_have_text("Restore YouTube on this date")
+                self.assertEqual(active_series | {"skipped": True, "restorable": True},
                                  api.get(skip_targets + series_suffix, headers=operator_headers).json())
                 observed["recurring_id"] = True
                 real_due = live_destination_series.due
@@ -520,10 +542,15 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 kept = destination_rows(api.get(later_targets, headers=operator_headers))
                 check_destination_rtmps(root, database, kept[0]["id"], operator, kept[0]["server"], "fixture-series-key")
                 self.assertEqual([], destination_rows(api.get(skip_targets, headers=operator_headers)))
+                self.assertTrue(api.delete(later_targets + series_suffix, headers=operator_headers, data={"date": True}).ok)
+                self.assertFalse(api.get(later_targets + series_suffix, headers=operator_headers).json()["restorable"])
+                self.assertEqual(409, api.put(later_targets + series_suffix, headers=operator_headers).status)
                 self.assertTrue(api.delete(last_series, headers=operator_headers, data={"date": False}).ok)
                 self.assertEqual(dict(active=False, inherited=False, skipped=False),
                                  api.get(last_series, headers=operator_headers).json())
-                self.assertEqual(kept, destination_rows(api.get(later_targets, headers=operator_headers)))
+                retained = destination_rows(api.get(later_targets, headers=operator_headers))
+                self.assertEqual([row["id"] for row in kept], [row["id"] for row in retained])
+                self.assertTrue(all(not row["enabled"] for row in retained))
 
                 page.get_by_role("button", name="Disconnect YouTube Live", exact=True).click()
                 expect(page.locator("#integrationStatus")).to_contain_text("YouTube Live disconnected.", timeout=15000)

@@ -745,11 +745,23 @@ class LinkedInPublication(unittest.TestCase):
                 self.assertTrue(live_rows(first["id"]))
 
                 before = live_rows(skipped_date["id"])
-                skipped = api.delete(f"{path}/{skipped_date['id']}/destinations/linkedin/series",
-                                   headers=auth, data={"date": True})
+                company_url = f"{path}/{skipped_date['id']}/destinations/linkedin/series"
+                member_url = f"{path}/{skipped_date['id']}/destinations/linkedin-member/series"
+                skipped = api.delete(company_url, headers=auth, data={"date": True})
                 self.assertEqual(200, skipped.status, skipped.text())
-                stopped = api.delete(f"{path}/{skipped_date['id']}/destinations/linkedin-member/series",
-                                   headers=auth, data={"date": False})
+                skipped = api.delete(member_url, headers=auth, data={"date": True})
+                self.assertEqual(200, skipped.status, skipped.text())
+                for url in (company_url, member_url):
+                    state = api.get(url, headers=auth).json()
+                    self.assertTrue(state["skipped"])
+                    self.assertTrue(state["restorable"])
+                    restored = api.put(url, headers=auth, data={"date": True})
+                    self.assertEqual(200, restored.status, restored.text())
+                    state = api.get(url, headers=auth).json()
+                    self.assertFalse(state["skipped"])
+                skipped = api.delete(company_url, headers=auth, data={"date": True})
+                self.assertEqual(200, skipped.status, skipped.text())
+                stopped = api.delete(member_url, headers=auth, data={"date": False})
                 self.assertEqual(200, stopped.status, stopped.text())
                 with closing(sqlite3.connect(database)) as db:
                     db.row_factory = sqlite3.Row

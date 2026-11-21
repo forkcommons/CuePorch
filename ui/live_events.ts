@@ -1062,13 +1062,20 @@ async function refreshYouTubeSeries() {
   if (!active) return;
   const selection = active;
   try {
-    const result = await request<{ active: boolean; inherited: boolean; skipped: boolean }>(mediaPath("destinations/youtube/series"));
+    const result = await request<{ active: boolean; inherited: boolean; skipped: boolean; restorable?: boolean }>(mediaPath("destinations/youtube/series"));
     if (selection !== active) return;
-    youtubeSeriesSkip.hidden = !(result.inherited && !result.skipped);
+    const restore = result.skipped && !!result.restorable;
+    youtubeSeriesSkip.hidden = !(result.inherited && (!result.skipped || result.restorable));
+    youtubeSeriesSkip.dataset.mode = restore ? "restore" : "skip";
+    if (youtubeSeriesSkip.dataset.skipLabel === undefined) {
+      youtubeSeriesSkip.dataset.skipLabel = youtubeSeriesSkip.textContent ?? "";
+    }
+    youtubeSeriesSkip.textContent = restore ? "Restore YouTube on this date" : youtubeSeriesSkip.dataset.skipLabel;
     youtubeSeriesStop.hidden = !result.active;
   } catch {
     if (selection !== active) return;
     youtubeSeriesSkip.hidden = true;
+    youtubeSeriesSkip.dataset.mode = "";
     youtubeSeriesStop.hidden = true;
   }
 }
@@ -1077,26 +1084,33 @@ async function refreshLinkedinSeries() {
   const selection = active;
   const revision = linkedinAccountRevision;
   try {
-    const result = await request<{ active: boolean; inherited: boolean; skipped: boolean }>(mediaPath(`destinations/${linkedinProvider()}/series`));
+    const result = await request<{ active: boolean; inherited: boolean; skipped: boolean; restorable?: boolean }>(mediaPath(`destinations/${linkedinProvider()}/series`));
     if (selection !== active || revision !== linkedinAccountRevision) return;
-    linkedinSeriesSkip.hidden = !(result.inherited && !result.skipped);
+    const restore = result.skipped && !!result.restorable;
+    linkedinSeriesSkip.hidden = !(result.inherited && (!result.skipped || result.restorable));
+    linkedinSeriesSkip.dataset.mode = restore ? "restore" : "skip";
+    if (linkedinSeriesSkip.dataset.skipLabel === undefined) {
+      linkedinSeriesSkip.dataset.skipLabel = linkedinSeriesSkip.textContent ?? "";
+    }
+    linkedinSeriesSkip.textContent = restore ? "Restore LinkedIn on this date" : linkedinSeriesSkip.dataset.skipLabel;
     linkedinSeriesStop.hidden = !result.active;
   } catch {
     if (selection !== active || revision !== linkedinAccountRevision) return;
     linkedinSeriesSkip.hidden = true;
+    linkedinSeriesSkip.dataset.mode = "";
     linkedinSeriesStop.hidden = true;
   }
 }
-async function changeLinkedinSeries(date: boolean) {
+async function changeLinkedinSeries(date: boolean, restore = false) {
   const selection = active;
   if (!selection || selection.event.event.schedule.repeat === "none") return;
   const revision = linkedinAccountRevision;
-  await request(mediaPath(`destinations/${linkedinProvider()}/series`), "DELETE", {date});
+  await request(mediaPath(`destinations/${linkedinProvider()}/series`), restore ? "PUT" : "DELETE", {date});
   if (selection !== active || revision !== linkedinAccountRevision) return;
   await refreshLinkedinSeries();
   await refreshDestinations();
 }
-linkedinSeriesSkip.onclick = () => void action(() => changeLinkedinSeries(true));
+linkedinSeriesSkip.onclick = () => void action(() => changeLinkedinSeries(true, linkedinSeriesSkip.dataset.mode === "restore"));
 linkedinSeriesStop.onclick = () => void action(() => changeLinkedinSeries(false));
 destinations.ontoggle = () => {
   if (!destinations.open) return;
@@ -1133,8 +1147,9 @@ youtubeMore.onclick = () => void action(() => loadYouTubeBroadcasts(true));
 youtubeSeriesSkip.onclick = () => {
   if (!active) return;
   const selection = active;
+  const restore = youtubeSeriesSkip.dataset.mode === "restore";
   void action(async () => {
-    await request<void>(mediaPath("destinations/youtube/series"), "DELETE", { date: true });
+    await request<void>(mediaPath("destinations/youtube/series"), restore ? "PUT" : "DELETE", { date: true });
     if (selection !== active) return;
     await refreshYouTubeSeries();
     await refreshDestinations();
