@@ -120,6 +120,7 @@ class MarketoBrowser(unittest.TestCase):
         assert rr.ok
         form = rr.json()
         form["settings"]["enabled"] = True
+        form["settings"]["attendance_analytics"] = True
         form["settings"]["fields"] = [
             {
                 "id": "field_genre",
@@ -172,7 +173,9 @@ class MarketoBrowser(unittest.TestCase):
         )
         self.verify_delivery(page, base, auth, created, opens, outbound_url, provider)
 
-    def register_viewer(self, browser, base, opens, email, consent):
+    def register_viewer(
+        self, browser, base, opens, email, consent, *, engagement=False
+    ):
         visitor = browser.new_page()
         try:
             visitor.goto(f"{base}/events/marketo-rehearsal?occurrence={opens}")
@@ -184,10 +187,178 @@ class MarketoBrowser(unittest.TestCase):
             expect(box).not_to_be_checked()
             if consent:
                 box.check()
+            if engagement:
+                engagement_box = visitor.locator(
+                    "input[name=marketo_engagement_consent]"
+                )
+                assert not engagement_box.is_checked()
+                engagement_box.check()
             visitor.locator("form button[type=submit]").first.click()
             expect(box).to_have_count(0)
+            return visitor.locator("#eventLobby").get_attribute("data-viewer-grant")
         finally:
             visitor.close()
+
+    def record_activity(self, page, base, auth, event_id, opens, grant):
+        engagement_url = f"{base}/api/live-events/{event_id}/{opens}/engagement"
+        response = page.request.put(
+            engagement_url,
+            headers=auth,
+            data={
+                "feature": "qa",
+                "enabled": True,
+                "review": False,
+                "anonymous": True,
+            },
+        )
+        assert response.ok
+
+        response = page.request.post(
+            engagement_url,
+            headers=auth,
+            data={
+                "feature": "poll",
+                "type": "draft",
+                "question": "Format?",
+                "choices": ["Film", "Talk"],
+            },
+        )
+        assert response.ok
+        poll_id = response.json()["polls"][0]["id"]
+
+        response = page.request.post(
+            engagement_url,
+            headers=auth,
+            data={"feature": "poll", "type": "open", "id": poll_id},
+        )
+        assert response.ok
+
+        audience_url = f"{base}/events/marketo-rehearsal/{opens}/engagement"
+        response = page.request.get(
+            audience_url,
+            headers={"X-CuePorch-Event-Viewer": grant},
+        )
+        session = response.json()["session"]
+        session_headers = {
+            "X-CuePorch-Event-Viewer": grant,
+            "X-CuePorch-Engagement-Session": session,
+        }
+
+        response = page.request.post(
+            audience_url,
+            headers=session_headers,
+            data={
+                "feature": "qa",
+                "type": "question",
+                "question": "Can I screen this?",
+                "name": "Casey",
+            },
+        )
+        assert response.ok
+
+        response = page.request.post(
+            audience_url,
+            headers=session_headers,
+            data={"feature": "poll", "id": poll_id, "choice": 0},
+        )
+        assert response.ok
+
+        response = page.request.get(
+            audience_url,
+            headers={"X-CuePorch-Event-Viewer": grant},
+        )
+        fresh_session = response.json()["session"]
+        fresh_session_headers = {
+            "X-CuePorch-Event-Viewer": grant,
+            "X-CuePorch-Engagement-Session": fresh_session,
+        }
+
+        response = page.request.post(
+            audience_url,
+            headers=fresh_session_headers,
+            data={
+                "feature": "qa",
+                "type": "question",
+                "anonymous": True,
+                "question": "Private question",
+            },
+        )
+        assert response.ok
+
+    def complete_fixture(self, provider, event_id, opens, email):
+        from contextlib import closing
+        import event_marketo_engagement
+
+        with closing(sqlite3.connect(provider.database)) as con, con:
+            row = con.execute(
+                "SELECT j.generation, j.sharing FROM live_event_marketo_engagement j "
+                "JOIN live_event_registrant r ON r.id=j.registrant "
+                "WHERE j.event=? AND j.opens=? AND j.state='queued' AND r.email=?",
+                (event_id, opens, email),
+            ).fetchone()
+            assert row is not None
+            generation, sharing = row
+            now = time.time()
+            con.execute(
+                "INSERT INTO live_playback VALUES (?,?,?,?,?,?,?,?,?)",
+                ("marketo-browser-live", event_id, opens, "live", 1, 1, 0, 30000, now),
+            )
+            con.execute(
+                "INSERT INTO live_attendee_session VALUES ('marketo-browser-live', ?)",
+                (sharing,),
+            )
+            assert event_marketo_engagement.complete(con, generation, now, 120)
+            return generation
+
+    def verify_engagement_retry(self, page, provider, generation, email, get_receipt):
+        from contextlib import closing
+        import sqlite3
+        import time
+
+        deadline = time.monotonic() + 12
+        row = None
+        with closing(sqlite3.connect(provider.database)) as conn:
+            while time.monotonic() < deadline:
+                row = conn.execute(
+                    "SELECT fields_sent,attended_live,attempts,due "
+                    "FROM live_event_marketo_engagement "
+                    "WHERE generation=? AND state='queued' AND fields_sent=1",
+                    (generation,),
+                ).fetchone()
+                if row and row[0] == 1 and row[1] == 1 and row[2] == 1 and row[3] > 0:
+                    break
+                page.wait_for_timeout(100)
+            assert row, "expected a populated queued row"
+            fields_sent, attended_live, attempts, due = row
+            assert (fields_sent, attended_live, attempts) == (1, 1, 1)
+            assert due > time.time() + provider.clock_offset
+            lead_id = provider.leads[email]["id"]
+            expected_engagement = {
+                "leadId": lead_id,
+                "cuePorchWatchPercentage": 25,
+                "cuePorchQuestions": "Can I screen this?",
+                "cuePorchPolls": "Format?: Film",
+            }
+            expected_attendance = {
+                "statusName": "Attended Live",
+                "input": [{"leadId": lead_id}],
+            }
+            assert provider.engagement_posts == [expected_engagement]
+            assert provider.attendance_posts == [expected_attendance]
+            conn.execute(
+                "UPDATE live_playback SET seen = seen + 100000 "
+                "WHERE id = 'marketo-browser-live'"
+            )
+            conn.commit()
+        provider.clock_offset += 42
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if get_receipt().get("engagement_states") == {"sent": 1, "skipped": 1}:
+                break
+            page.wait_for_timeout(100)
+        assert get_receipt()["engagement_states"] == {"sent": 1, "skipped": 1}
+        assert provider.engagement_posts == [expected_engagement]
+        assert provider.attendance_posts == [expected_attendance, expected_attendance]
 
     def verify_delivery(self, page, base, auth, created, opens, outbound_url, provider):
         import time
@@ -285,6 +456,66 @@ class MarketoBrowser(unittest.TestCase):
         assert receipt["enabled"] is False
         assert provider.writes == writes_before
 
+        import uuid
+
+        page.locator("#eventMarketoEngagement").check()
+        page.get_by_role("button", name="Save Marketo delivery").click()
+        expect(page.locator("#eventMarketoStatus")).to_contain_text(
+            "Marketo delivery enabled."
+        )
+        assert get_receipt()["engagement"] is True
+        self.register_viewer(
+            page.context.browser,
+            base,
+            opens,
+            f"marketo-no-consent-{uuid.uuid4().hex}@example.com",
+            False,
+            engagement=True,
+        )
+        assert get_receipt()["engagement_states"] == {}
+        engagement_policy_url = base + "/api/policy/event_engagement_sync"
+        policy_response = page.request.put(
+            engagement_policy_url,
+            headers=auth,
+            data={"required": True},
+        )
+        assert policy_response.ok
+        email = f"marketo-consent-{uuid.uuid4().hex}@example.com"
+        grant = self.register_viewer(
+            page.context.browser,
+            base,
+            opens,
+            email,
+            True,
+            engagement=True,
+        )
+        assert get_receipt()["engagement_states"] == {"waiting": 1}
+        self.record_activity(page, base, auth, created["id"], opens, grant)
+        secondary = "later-optout@example.test"
+        self.register_viewer(
+            page.context.browser, base, opens, secondary, True, engagement=True
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if get_receipt()["states"].get("sent") == 2:
+                break
+            page.wait_for_timeout(100)
+        assert get_receipt()["states"].get("sent") == 2
+        provider.leads[secondary]["unsubscribed"] = True
+        generation = self.complete_fixture(provider, created["id"], opens, email)
+        assert provider.engagement_posts == []
+        policy_response = page.request.put(
+            engagement_policy_url,
+            headers=auth,
+            data={"required": False},
+        )
+        assert policy_response.ok
+        self.verify_engagement_retry(page, provider, generation, email, get_receipt)
+        stop.click()
+        expect(page.locator("#eventMarketoStatus")).to_contain_text(
+            "Marketo delivery is off."
+        )
+
 
 class MarketoProvider:
     def __init__(self):
@@ -302,6 +533,9 @@ class MarketoProvider:
         self.members = []
         self.clock_offset = 0
         self.membership_attempts = 0
+        self.field_schema = []
+        self.engagement_posts = []
+        self.attendance_posts = []
         self.reads = []
 
     def request(self, method, url, **kwargs):
@@ -338,7 +572,8 @@ class MarketoProvider:
                         {
                             "name": "Screenings",
                             "progressionStatuses": [
-                                {"name": "Registered", "hidden": False}
+                                {"name": "Registered", "hidden": False},
+                                {"name": "Attended Live", "hidden": False},
                             ],
                         }
                     ],
@@ -346,9 +581,75 @@ class MarketoProvider:
             )
         if path == "/rest/v1/leads.json":
             return self.lead(method, kwargs)
+        if path == "/rest/v1/programs/members/schema/fields.json":
+            return self.engagement(method, path, kwargs)
+        if method == "POST" and path == "/rest/v1/programs/52/members.json":
+            return self.engagement(method, path, kwargs)
+        if (
+            method == "POST"
+            and path == "/rest/v1/programs/52/members/status.json"
+            and kwargs.get("json", {}).get("statusName") == "Attended Live"
+        ):
+            return self.engagement(method, path, kwargs)
         if method == "POST" and path == "/rest/v1/programs/52/members/status.json":
             return self.member(kwargs)
         raise AssertionError(f"Unknown call: {method} {url}")
+
+    def engagement(self, method, path, kwargs):
+        if method == "GET" and path == "/rest/v1/programs/members/schema/fields.json":
+            return _resp({"success": True, "result": self.field_schema})
+        if method == "POST" and path == "/rest/v1/programs/members/schema/fields.json":
+            input_rows = kwargs["json"]["input"]
+            schema = []
+            statuses = []
+            for row in input_rows:
+                schema.append(
+                    {
+                        "name": row["name"],
+                        "displayName": row["displayName"],
+                        "dataType": row["dataType"],
+                        "isHidden": False,
+                        "isCustom": True,
+                        "length": 255,
+                    }
+                )
+                statuses.append({"status": "created"})
+            self.field_schema = schema
+            return _resp({"success": True, "result": statuses})
+        if method == "POST" and path == "/rest/v1/programs/52/members.json":
+            data = kwargs["json"]["input"]
+            rows = data if isinstance(data, list) else [data]
+            results = []
+            for row in rows:
+                self.engagement_posts.append(row)
+                results.append(
+                    {
+                        "status": "updated",
+                        "seq": 0,
+                        "leadId": row["leadId"],
+                    }
+                )
+            return _resp({"success": True, "result": results})
+        if method == "POST" and path == "/rest/v1/programs/52/members/status.json":
+            body = kwargs["json"]
+            assert body["statusName"] == "Attended Live"
+            self.attendance_posts.append(body)
+            attempt = getattr(self, "_status_attempt", 0)
+            if attempt == 0:
+                setattr(self, "_status_attempt", 1)
+                return _resp(
+                    {"success": False, "errors": [{"code": "606"}]},
+                    headers={"Retry-After": "41"},
+                )
+            setattr(self, "_status_attempt", 0)
+            lead_id = body["input"][0]["leadId"]
+            return _resp(
+                {
+                    "success": True,
+                    "result": [{"status": "updated", "seq": 0, "leadId": lead_id}],
+                }
+            )
+        raise AssertionError("unexpected endpoint: %s %s" % (method, path))
 
     def lead(self, method, kwargs):
         if method == "GET":
@@ -371,10 +672,13 @@ class MarketoProvider:
         assert set(row) == {"email", "firstName", "lastName", "favoriteGenre"}
         email = row["email"]
         assert email not in self.leads
-        saved = dict(row, id=17)
+        lead_id = 17 + len(self.writes)
+        saved = dict(row, id=lead_id)
         self.leads[email] = saved
         self.writes.append(row.copy())
-        return _resp({"success": True, "result": [{"status": "created", "id": 17}]})
+        return _resp(
+            {"success": True, "result": [{"status": "created", "id": lead_id}]}
+        )
 
     def member(self, kwargs):
         self.membership_attempts += 1
@@ -383,9 +687,14 @@ class MarketoProvider:
                 {"success": False, "errors": [{"code": "606"}]},
                 headers={"Retry-After": "42"},
             )
-        expected = {"statusName": "Registered", "input": [{"leadId": 17}]}
+        lead_id = kwargs["json"]["input"][0]["leadId"]
+        assert lead_id in {lead["id"] for lead in self.leads.values()}
+        expected = {"statusName": "Registered", "input": [{"leadId": lead_id}]}
         assert kwargs["json"] == expected
-        self.members.append({"statusName": "Registered", "input": [{"leadId": 17}]})
+        self.members.append(expected)
         return _resp(
-            {"success": True, "result": [{"seq": 0, "leadId": 17, "status": "created"}]}
+            {
+                "success": True,
+                "result": [{"seq": 0, "leadId": lead_id, "status": "created"}],
+            }
         )

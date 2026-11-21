@@ -7,6 +7,8 @@ type MarketoReceipt = {
   program?: number;
   mapping?: Record<string, string>;
   states: Record<string, number>;
+  engagement?: boolean;
+  engagement_states?: Record<string, number>;
 };
 
 type ProgramPage = { programs: { id: number; name: string }[]; next_offset: number | null };
@@ -19,6 +21,7 @@ export function setupMarketo(request: Request) {
   const eventMarketoMore = document.querySelector<HTMLButtonElement>('#eventMarketoMore')!;
   const eventMarketoProgram = document.querySelector<HTMLSelectElement>('#eventMarketoProgram')!;
   const eventMarketoMapping = document.querySelector<HTMLDivElement>('#eventMarketoMapping')!;
+  const eventMarketoEngagement = document.querySelector<HTMLInputElement>('#eventMarketoEngagement')!;
   const eventMarketoEnable = document.querySelector<HTMLButtonElement>('#eventMarketoEnable')!;
   const eventMarketoStop = document.querySelector<HTMLButtonElement>('#eventMarketoStop')!;
   const eventMarketoRefresh = document.querySelector<HTMLButtonElement>('#eventMarketoRefresh')!;
@@ -95,12 +98,17 @@ export function setupMarketo(request: Request) {
 
   function renderReceipt(result: MarketoReceipt) {
     receipt = result;
+    eventMarketoEngagement.checked = result.engagement === true;
     eventMarketo.hidden = !result.available;
     eventMarketoStop.hidden = !result.enabled;
     const parts: string[] = [];
     if (result.enabled) {
       parts.push('Marketo delivery enabled.');
       for (const [state, count] of Object.entries(result.states)) parts.push(`${state}: ${count}`);
+      if (result.engagement && result.engagement_states) {
+        const engagement = Object.entries(result.engagement_states).map(([state, count]) => `${state}: ${count}`);
+        if (engagement.length) parts.push(`Engagement: ${engagement.join(', ')}`);
+      }
     } else {
       parts.push(result.state === 'stale' ? 'Reconnect Marketo and select a program again.' : 'Marketo delivery is off.');
     }
@@ -141,7 +149,7 @@ export function setupMarketo(request: Request) {
       const value = select.value.trim(), field = select.dataset.formField;
       if (value && field) mapping[field] = value;
     });
-    const result = await request<MarketoReceipt>(endpoint(), 'PUT', { program, mapping }, true);
+    const result = await request<MarketoReceipt>(endpoint(), 'PUT', { program, mapping, engagement: eventMarketoEngagement.checked }, true);
     if (ticket === generation) renderReceipt(result);
   });
   eventMarketoStop.onclick = () => void run(async () => {
@@ -156,6 +164,7 @@ export function setupMarketo(request: Request) {
     inFlight = null;
     receipt = undefined;
     loaded = false;
+    eventMarketoEngagement.checked = false;
     offset = null;
     eventMarketoStatus.textContent = '';
     eventMarketoMapping.replaceChildren();

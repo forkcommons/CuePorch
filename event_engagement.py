@@ -10,7 +10,12 @@ import event_questions
 from library_registration import csv_cell
 
 
-SCHEMA = event_polls.SCHEMA + event_questions.SCHEMA
+SCHEMA = event_polls.SCHEMA + event_questions.SCHEMA + """
+CREATE TABLE IF NOT EXISTS live_event_shared_activity(
+ feature TEXT NOT NULL, activity TEXT NOT NULL, viewer TEXT NOT NULL, sharing TEXT NOT NULL,
+ PRIMARY KEY(feature,activity,viewer));
+CREATE INDEX IF NOT EXISTS live_event_shared_activity_sharing ON live_event_shared_activity(sharing);
+"""
 
 
 def report(rows, filename):
@@ -23,7 +28,7 @@ def report(rows, filename):
     })
 
 
-def register(app, tx, staff, session, operator_access, audience_access):
+def register(app, tx, staff, session, operator_access, audience_access, *, share_activity=None):
     def overview(con, uid, opens, viewer=None, operator=False):
         return dict(qa=event_questions.overview(con, uid, opens, viewer, operator),
                     polls=event_polls.overview(con, uid, opens, viewer, operator))
@@ -83,9 +88,16 @@ def register(app, tx, staff, session, operator_access, audience_access):
                 if not isinstance(body, dict):
                     abort(422, "Choose an engagement action.")
                 if body.get("feature") == "qa":
-                    event_questions.audience_action(con, uid, opens, viewer, body)
+                    activity = event_questions.audience_action(con, uid, opens, viewer, body)
                 elif body.get("feature") == "poll":
-                    event_polls.audience_action(con, uid, opens, viewer, body)
+                    activity = event_polls.audience_action(con, uid, opens, viewer, body)
                 else:
                     abort(422, "Choose Q&A or a poll.")
+                if activity is not None and share_activity is not None:
+                    sharing = share_activity(con, scope)
+                    if sharing:
+                        con.execute(
+                            "INSERT INTO live_event_shared_activity(feature, activity, viewer, sharing) VALUES (?, ?, ?, ?)",
+                            (body["feature"], activity, viewer, sharing),
+                        )
             return dict(overview(con, uid, opens, viewer), session=token, active=active)

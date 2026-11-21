@@ -269,6 +269,28 @@ class TestMarketoConnection(unittest.TestCase):
                 ],
             )
 
+    def test_engagement_provision(self):
+        from unittest.mock import Mock
+
+        guard = Mock()
+        rows = [
+            dict(name=name, dataType=dtype, isCustom=True, isHidden=False, length=255)
+            for name, (_label, dtype) in marketo_crm.ENGAGEMENT_FIELDS.items()
+        ]
+        connection = Mock()
+        connection.api.side_effect = [
+            {"result": []},
+            {"result": []},
+            {"result": rows},
+        ]
+        result = marketo_crm.ensure_engagement_fields(connection, before_write=guard)
+        self.assertEqual(set(result), set(marketo_crm.ENGAGEMENT_FIELDS))
+        self.assertEqual(
+            connection.api.call_args_list[1][0][1],
+            "/rest/v1/programs/members/schema/fields.json",
+        )
+        self.assertIs(connection.api.call_args_list[1][1]["before_write"], guard)
+
     def test_origin(self):
         self.assertEqual(
             marketo_crm._origin("https://ex.mktorest.com"), "https://ex.mktorest.com"

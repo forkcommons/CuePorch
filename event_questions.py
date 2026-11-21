@@ -92,8 +92,10 @@ def audience_action(con, uid, opens, viewer, body):
                            (uid, opens, viewer)).fetchone()[0]
         if last and now - last < 2:
             abort(429, "Wait before submitting another question.")
+        identifier = uuid.uuid4().hex
         con.execute("INSERT INTO live_question VALUES(?,?,?,?,?,?,NULL,?,?,0)",
-                    (uuid.uuid4().hex, uid, opens, viewer, name, question, "pending" if policy["review"] else "published", now))
+                    (identifier, uid, opens, viewer, name, question, "pending" if policy["review"] else "published", now))
+        return None if anonymous else identifier
     elif body.get("type") == "vote":
         question = read(con, uid, opens, body.get("id"))
         enabled = body.get("enabled")
@@ -103,6 +105,7 @@ def audience_action(con, uid, opens, viewer, body):
             con.execute("INSERT OR IGNORE INTO live_question_vote VALUES(?,?)", (question["id"], viewer))
         else:
             con.execute("DELETE FROM live_question_vote WHERE question=? AND viewer=?", (question["id"], viewer))
+        return None
     else:
         abort(422, "Choose an audience Q&A action.")
 

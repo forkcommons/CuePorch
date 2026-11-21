@@ -32,6 +32,7 @@ import event_engagement
 import event_hubspot_sync
 import event_hubspot_outbound
 import event_contact_delivery
+import event_marketo_engagement
 import marketo_crm
 import event_hubspot_engagement
 import hubspot_crm
@@ -82,7 +83,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
-       + event_hubspot_engagement.SCHEMA)
+       + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -122,12 +123,14 @@ def find_open(event, opens):
 def observe_delivery(tx, database, origin, connect):
     now = datetime.now(timezone.utc)
     with tx() as con:
-        if not event_webhooks.subscribed(con, ("live-event-started", "live-event-ended")):
-            return
-        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed FROM live_occurrence o
+        hooks = event_webhooks.subscribed(con, ("live-event-started", "live-event-ended"))
+        entries = con.execute("""SELECT o.event,o.opens,o.remote,e.settings,f.state AS observed,p.generation AS marketo_generation FROM live_occurrence o
                              JOIN live_event e ON e.id=o.event LEFT JOIN live_webhook_feed f
-                             ON f.event=o.event AND f.occurrence=o.opens WHERE o.origin=? AND o.delivery='ready'
-                             AND o.opens<=? AND (f.state IS NULL OR f.state='live')""", (origin, now.timestamp())).fetchall()
+                             ON f.event=o.event AND f.occurrence=o.opens
+                             LEFT JOIN live_event_contact_plan p ON p.provider='marketo' AND p.event=o.event AND p.opens=o.opens AND p.event_revision=e.revision AND json_extract(p.destination,'$.engagement')=1
+                             AND EXISTS (SELECT 1 FROM live_event_marketo_engagement m WHERE m.event=o.event AND m.opens=o.opens AND m.generation=p.generation AND m.state='queued')
+                             AND NOT EXISTS (SELECT 1 FROM live_event_marketo_completion c WHERE c.generation=p.generation)
+                             WHERE o.origin=? AND o.opens<=? AND ((? AND o.delivery='ready' AND (f.state IS NULL OR f.state='live')) OR (p.generation IS NOT NULL AND o.delivery IN ('ready','replay')))""", (origin, now.timestamp(), hooks)).fetchall()
     for item in entries:
         uid, opens = item["event"], item["opens"]
         slot = find_open(json.loads(item["settings"]), opens)
@@ -135,19 +138,52 @@ def observe_delivery(tx, database, origin, connect):
             continue
         try:
             with lock_event(database, uid, timeout=0):
+                marketo_generation = item["marketo_generation"]
                 with tx() as con:
                     current = occurrence(con, uid, opens)
-                    if not current or current["delivery"] != "ready" or current["remote"] != item["remote"]:
+                    if not current or current["remote"] != item["remote"]:
                         continue
-                state = event_peer.observe(connect(origin), item["remote"])["state"]
+                    if current["delivery"] != "ready" and not (
+                        marketo_generation is not None and current["delivery"] == "replay"
+                    ):
+                        continue
+                if marketo_generation is not None:
+                    observed = event_peer.observe(connect(origin), item["remote"], include_duration=True)
+                else:
+                    observed = event_peer.observe(connect(origin), item["remote"])
+                state = observed["state"]
+                duration = observed.get("duration")
                 with tx() as con:
-                    if state == "waiting_for_encoder" and datetime.fromisoformat(slot["end"]) <= now:
-                        if item["observed"] == "live":
-                            event_webhooks.observe(con, uid, opens, "ended")
+                    current = occurrence(con, uid, opens)
+                    if (hooks and current and current["delivery"] == "ready"
+                            and item["observed"] in (None, "live")):
+                        if state == "waiting_for_encoder" and datetime.fromisoformat(slot["end"]) <= now:
+                            if item["observed"] == "live":
+                                event_webhooks.observe(con, uid, opens, "ended")
+                            else:
+                                con.execute("INSERT OR IGNORE INTO live_webhook_feed VALUES(?,?,'closed')", (uid, opens))
                         else:
-                            con.execute("INSERT OR IGNORE INTO live_webhook_feed VALUES(?,?,'closed')", (uid, opens))
-                    else:
-                        event_webhooks.observe(con, uid, opens, state)
+                            event_webhooks.observe(con, uid, opens, state)
+                    if (marketo_generation is not None and state in ("ended", "replay")
+                            and current and current["remote"] == item["remote"]
+                            and current["delivery"] in ("ready", "replay")):
+                        plan = event_contact_delivery.get(con, "marketo", uid, opens)
+                        if plan and plan["generation"] == marketo_generation:
+                            if (type(duration) in (int, float)
+                                    and math.isfinite(duration)
+                                    and duration > 0):
+                                observed_duration = duration
+                            else:
+                                observed_duration = max(
+                                    1,
+                                    min(now.timestamp(), datetime.fromisoformat(slot["end"]).timestamp()) - opens,
+                                )
+                            event_marketo_engagement.complete(
+                                con,
+                                marketo_generation,
+                                now.timestamp(),
+                                observed_duration,
+                            )
         except (Timeout, ValueError, requests.RequestException, KeyError):
             continue
 
@@ -984,11 +1020,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         program_id = body.get('program')
         if type(program_id) is not int or program_id <= 0:
             abort(422)
+        engagement = body.get('engagement', False)
+        if type(engagement) is not bool:
+            abort(422)
         with tx() as con:
             row, slot, form = registration_intake(con, uid, opens)
+            if engagement and not form.get('attendance_analytics'):
+                abort(409, description='attendance_analytics is required when engagement is enabled')
             row_revision, form_revision = row['revision'], form['revision']
         try:
-            marketo_crm.program(marketo, program_id)
+            marketo_crm.program(marketo, program_id, engagement=engagement)
             mapping = body.get('mapping', {})
             mapping = marketo_crm.validate_mapping(form, mapping, marketo_crm.lead_fields(marketo))
         except ValueError:
@@ -1003,7 +1044,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 event_revision=row['revision'],
                 form_revision=form['revision'],
                 deadline=int(event_attendance.expires_at(slot)),
-                destination={'program': program_id, 'mapping': mapping},
+                destination={'program': program_id, 'mapping': mapping, 'engagement': engagement},
             )
 
     @app.route('/api/live-events/<uid>/<int:opens>/registration/marketo/outbound', methods=['GET', 'PUT', 'DELETE'])
@@ -1041,6 +1082,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     stop_marketo = event_contact_delivery.start_marketo(
         app, tx, database, marketo, marketo_revision, validate_hubspot_plan,
+        engagement_validate=validate_hubspot_engagement,
     )
     stop_hubspot = event_hubspot_sync.start(
         app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
@@ -1168,7 +1210,32 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return scope, active
 
     audience_session = event_chat.register(app, tx, staff, signing_key, operator_chat, audience_chat)
-    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat)
+    def marketo_activity_sharing(con, scope):
+        if not marketo_revision or not library_analytics.permitted():
+            return None
+
+        admitted, _, sharing = viewer_enrollment(
+            con,
+            request.headers.get("X-CuePorch-Event-Viewer", ""),
+            scope + [request.headers.get("X-CuePorch-Chat-Embed") == "yes"],
+            False,
+        )
+
+        if not admitted or not sharing:
+            return None
+
+        row = con.execute(
+            "SELECT 1 FROM live_event_marketo_engagement j "
+            "JOIN live_event_contact_plan p ON p.generation=j.generation "
+            "WHERE j.sharing=? AND j.state='queued' AND p.provider='marketo' "
+            "AND p.provider_revision=? AND p.event=? AND p.event_revision=? "
+            "AND p.opens=? AND p.form_revision=?",
+            (sharing, marketo_revision, *scope),
+        ).fetchone()
+
+        return sharing if row else None
+
+    event_engagement.register(app, tx, staff, audience_session, operator_chat, audience_chat, share_activity=marketo_activity_sharing)
     event_scenes.register(app, tx, staff, root, read_works, operator_chat)
     event_slide_decks.register(app, tx, staff, database, operator_chat)
     event_speakers.register(app, tx, staff, speaker_access, database, start_voice, voice_audio)
@@ -1854,6 +1921,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
             marketo_plan = None
             marketo_consent = ""
+            marketo_engagement_consent = ""
             if form and not withdrawn and (not delivery or delivery['delivery'] != 'replay') and event['visibility'] in event_mail.WATCHABLE and marketo_revision:
                 candidate = event_contact_delivery.get(con, 'marketo', row['id'], shown['id'])
                 if (
@@ -1866,6 +1934,9 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     marketo_plan = candidate
                     mark_scope = ['marketo-outbound', scope, candidate['generation']]
                     marketo_consent = forms.dumps(mark_scope)
+                    if offer_sharing and json.loads(candidate["destination"]).get("engagement") is True:
+                        marketo_engagement_scope = ["marketo-engagement", scope, candidate["generation"]]
+                        marketo_engagement_consent = forms.dumps(marketo_engagement_scope)
 
             if (form and not withdrawn and (not delivery or delivery["delivery"] != "replay")
                     and event["visibility"] in event_mail.WATCHABLE
@@ -1897,14 +1968,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         if (created and contact_plan
                                 and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
                             event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
-                        if created and marketo_plan and valid_ticket(forms,request.form.get('marketo_consent',''),mark_scope,1200):
+                        marketo_agreed = created and marketo_plan and valid_ticket(forms, request.form.get('marketo_consent', ''), mark_scope, 1200)
+                        if marketo_agreed:
                             event_contact_delivery.enqueue(con,action,marketo_plan,registrant,int(now.timestamp()))
                         engagement_agreed = bool(hubspot_engagement_consent) and valid_ticket(
                             forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
-                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed):
+                        marketo_engagement_agreed = bool(marketo_agreed and marketo_engagement_consent and valid_ticket(forms, request.form.get("marketo_engagement_consent", ""), marketo_engagement_scope, 1200))
+                        if offer_sharing and (request.form.get("share_watch_time") == "yes" or engagement_agreed or marketo_engagement_agreed):
                             sharing = event_registrants.share(con, registrant)
                             if engagement_agreed:
                                 event_hubspot_engagement.enqueue(con, action, contact_plan, registrant, sharing)
+                            if marketo_engagement_agreed:
+                                event_marketo_engagement.enqueue(con, action, marketo_plan, registrant, sharing)
 
                     admitted, sign_on, form_error = library_registration.admit(
                         con, "event", row["id"], form, scope, shown["id"],
@@ -2048,6 +2123,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
                                      marketo_consent=marketo_consent,
+                                     marketo_engagement_consent=marketo_engagement_consent,
                                      hubspot_engagement_consent=hubspot_engagement_consent,
                                      unlock_token=frame_grant, event_access=access,
                                      current_event_url=viewer_url(row, event, embed, link_key),
@@ -2145,6 +2221,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             if event_registrants.sharing_active(con, sharing, uid, opens):
                 event_registrants.stop_sharing(con, sharing)
                 event_hubspot_engagement.cancel(con, sharing=sharing)
+                event_marketo_engagement.cancel(con, sharing=sharing)
         return private("", 204)
 
     @app.get("/event-media/<token>/<filename>")

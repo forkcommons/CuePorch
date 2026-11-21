@@ -94,4 +94,5 @@ def audience_action(con, uid, opens, viewer, body):
     choice = body.get("choice")
     if type(choice) is not int or not 0 <= choice < len(json.loads(poll["choices"])):
         abort(422, "Select an available answer.")
-    con.execute("INSERT OR IGNORE INTO live_poll_vote VALUES(?,?,?,?)", (poll["id"], viewer, choice, time.time()))
+    inserted = con.execute("INSERT OR IGNORE INTO live_poll_vote VALUES(?,?,?,?)", (poll["id"], viewer, choice, time.time()))
+    return poll["id"] if inserted.rowcount == 1 else None

@@ -137,8 +137,12 @@ def status(video):
     return dict(state="live" if published else "waiting_for_encoder", public=public, viewers=viewers)
 
 
-def observe(host, target):
-    return status(host.call("GET", "/api/v1/videos/" + target).json())
+def observe(host, target, *, include_duration=False):
+    raw = host.call("GET", "/api/v1/videos/" + target).json()
+    result = status(raw)
+    if include_duration and result["state"] == "replay":
+        result["duration"] = raw.get("duration")
+    return result
 
 
 def public_status(origin, target):

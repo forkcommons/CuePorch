@@ -82,6 +82,12 @@
       Share my name, email address and selected form answers with the organizer in Marketo.
     </label>
     {% endif %}
+    {% if marketo_engagement_consent %}
+        <label>
+            <input type="checkbox" name="marketo_engagement_consent" value="{{ marketo_engagement_consent }}">
+            Also share my live watch time, attendance, named questions and poll responses with the organizer in Marketo.
+        </label>
+    {% endif %}
     {% if hubspot_engagement_consent %}
     <label><input type="checkbox" name="hubspot_engagement_consent" value="{{ hubspot_engagement_consent }}">
       Share my registration time and watch time for this event with the organizer in HubSpot.</label>

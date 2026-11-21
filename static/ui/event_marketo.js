@@ -4,6 +4,7 @@ export function setupMarketo(request) {
     const eventMarketoMore = document.querySelector('#eventMarketoMore');
     const eventMarketoProgram = document.querySelector('#eventMarketoProgram');
     const eventMarketoMapping = document.querySelector('#eventMarketoMapping');
+    const eventMarketoEngagement = document.querySelector('#eventMarketoEngagement');
     const eventMarketoEnable = document.querySelector('#eventMarketoEnable');
     const eventMarketoStop = document.querySelector('#eventMarketoStop');
     const eventMarketoRefresh = document.querySelector('#eventMarketoRefresh');
@@ -82,6 +83,7 @@ export function setupMarketo(request) {
     let inFlight = null;
     function renderReceipt(result) {
         receipt = result;
+        eventMarketoEngagement.checked = result.engagement === true;
         eventMarketo.hidden = !result.available;
         eventMarketoStop.hidden = !result.enabled;
         const parts = [];
@@ -89,6 +91,11 @@ export function setupMarketo(request) {
             parts.push('Marketo delivery enabled.');
             for (const [state, count] of Object.entries(result.states))
                 parts.push(`${state}: ${count}`);
+            if (result.engagement && result.engagement_states) {
+                const engagement = Object.entries(result.engagement_states).map(([state, count]) => `${state}: ${count}`);
+                if (engagement.length)
+                    parts.push(`Engagement: ${engagement.join(', ')}`);
+            }
         }
         else {
             parts.push(result.state === 'stale' ? 'Reconnect Marketo and select a program again.' : 'Marketo delivery is off.');
@@ -138,7 +145,7 @@ export function setupMarketo(request) {
             if (value && field)
                 mapping[field] = value;
         });
-        const result = await request(endpoint(), 'PUT', { program, mapping }, true);
+        const result = await request(endpoint(), 'PUT', { program, mapping, engagement: eventMarketoEngagement.checked }, true);
         if (ticket === generation)
             renderReceipt(result);
     });
@@ -155,6 +162,7 @@ export function setupMarketo(request) {
         inFlight = null;
         receipt = undefined;
         loaded = false;
+        eventMarketoEngagement.checked = false;
         offset = null;
         eventMarketoStatus.textContent = '';
         eventMarketoMapping.replaceChildren();

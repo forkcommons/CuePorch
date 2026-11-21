@@ -5,8 +5,8 @@ const settings = document.querySelector("div#settings");
 const policyLabels = {
     public_comments: "public comments", ai_details: "AI video details", ai_chapters: "AI chapters", ai_script: "AI scripts",
     ai_highlights: "AI highlights",
-    event_contact_sync: "HubSpot registration delivery",
-    event_engagement_sync: "HubSpot engagement delivery",
+    event_contact_sync: "Event registration delivery",
+    event_engagement_sync: "Event engagement delivery",
 };
 const queue = document.querySelector("div#queue");
 const result = document.querySelector("p#result");

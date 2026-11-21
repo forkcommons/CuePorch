@@ -81,6 +81,12 @@ def enqueue(con, action, plan, registrant, now):
 
 
 def disable(con, provider, event, opens):
+    if provider == "marketo":
+        plan = get(con, provider, event, opens)
+        if plan:
+            import event_marketo_engagement
+
+            event_marketo_engagement.cancel(con, generation=plan["generation"])
     params = (provider, event, opens)
     con.execute(
         """
@@ -298,8 +304,19 @@ def run_one_marketo(tx, connection, revision, validate, stop, clock):
     return True
 
 
-def start_marketo(app, tx, database, connection, revision, validate, clock=None):
+def start_marketo(
+    app,
+    tx,
+    database,
+    connection,
+    revision,
+    validate,
+    clock=None,
+    *,
+    engagement_validate=None,
+):
     from threading import Event, Thread
+    import event_marketo_engagement
     from time import time
     from filelock import FileLock, Timeout
 
@@ -316,7 +333,17 @@ def start_marketo(app, tx, database, connection, revision, validate, clock=None)
         while not stop.is_set():
             try:
                 with FileLock(lock_path, timeout=0):
-                    if run_one_marketo(tx, connection, revision, validate, stop, clock):
+                    registration_result = run_one_marketo(
+                        tx, connection, revision, validate, stop, clock
+                    )
+                    engagement_result = (
+                        event_marketo_engagement.run_one(
+                            tx, connection, revision, engagement_validate, stop, clock
+                        )
+                        if engagement_validate is not None
+                        else False
+                    )
+                    if registration_result or engagement_result:
                         continue
                 stop.wait(1)
             except Timeout:
@@ -359,4 +386,15 @@ def receipt(con, provider, event, opens, revision):
         destination = json.loads(plan["destination"])
         result["program"] = destination["program"]
         result["mapping"] = {k: v["name"] for k, v in destination["mapping"].items()}
+        result["engagement"] = destination.get("engagement") is True
+        if result["engagement"]:
+            rows = con.execute(
+                "SELECT CASE WHEN e.state='queued' AND a.status='waiting' "
+                "THEN 'waiting' ELSE e.state END AS s, COUNT(*) "
+                "FROM live_event_marketo_engagement e LEFT JOIN action a ON a.id=e.id "
+                "WHERE e.event=? AND e.opens=? "
+                "AND e.generation=? GROUP BY 1",
+                (event, opens, plan["generation"]),
+            ).fetchall()
+            result["engagement_states"] = {r[0]: r[1] for r in rows}
     return result

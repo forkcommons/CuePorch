@@ -221,7 +221,7 @@ def programs(connection, offset=0):
     }
 
 
-def program(connection, program_id):
+def program(connection, program_id, *, engagement=False):
     if (
         not isinstance(program_id, int)
         or isinstance(program_id, bool)
@@ -256,6 +256,13 @@ def program(connection, program_id):
     if not isinstance(statuses, list) or not any(
         isinstance(s, dict)
         and s.get("name") == "Registered"
+        and s.get("hidden") is False
+        for s in statuses
+    ):
+        raise BadGateway()
+    if engagement and not any(
+        isinstance(s, dict)
+        and s.get("name") == "Attended Live"
         and s.get("hidden") is False
         for s in statuses
     ):
@@ -396,14 +403,16 @@ def save_lead(connection, email, properties, existing_id, *, before_write):
     return lead_id
 
 
-def mark_registered(connection, program_id, lead_id, *, before_write):
+def _update_member_status(
+    connection, program_id, lead_id, status_name, *, before_write
+):
     if not all(
         isinstance(v, int) and not isinstance(v, bool) and v > 0
         for v in (program_id, lead_id)
     ):
         raise ValueError("program_id and lead_id must be positive ints")
     path = f"/rest/v1/programs/{program_id}/members/status.json"
-    payload = {"statusName": "Registered", "input": [{"leadId": lead_id}]}
+    payload = {"statusName": status_name, "input": [{"leadId": lead_id}]}
     resp = connection.api("POST", path, before_write=before_write, json=payload)
     result = resp.get("result") if isinstance(resp, dict) else None
     if not isinstance(result, list) or len(result) != 1:
@@ -428,6 +437,18 @@ def mark_registered(connection, program_id, lead_id, *, before_write):
         ):
             return True
     raise BadGateway()
+
+
+def mark_registered(connection, program_id, lead_id, *, before_write):
+    return _update_member_status(
+        connection, program_id, lead_id, "Registered", before_write=before_write
+    )
+
+
+def mark_attended_live(connection, program_id, lead_id, *, before_write):
+    return _update_member_status(
+        connection, program_id, lead_id, "Attended Live", before_write=before_write
+    )
 
 
 def validate_mapping(form, mapping, fields):
@@ -531,3 +552,114 @@ def mapped_properties(answers, mapping):
             value = answer
         result[name] = value
     return result
+
+
+ENGAGEMENT_FIELDS = {
+    "cuePorchWatchPercentage": ("CuePorch Watch Time Percentage", "percent"),
+    "cuePorchQuestions": ("CuePorch Event Questions", "string"),
+    "cuePorchPolls": ("CuePorch Event Polls", "string"),
+}
+
+
+def engagement_fields(connection):
+    path = "/rest/v1/programs/members/schema/fields.json"
+    params = {"batchSize": 300}
+    found = {}
+    seen_tokens = set()
+    page_count = 0
+    while True:
+        page_count += 1
+        if page_count > 25:
+            raise BadGateway()
+        payload = connection.api("GET", path, params=params)
+        if not isinstance(payload, dict):
+            raise BadGateway()
+        for item in payload["result"] or []:
+            if not isinstance(item, dict):
+                raise BadGateway()
+            name = item.get("name")
+            if name not in ENGAGEMENT_FIELDS:
+                continue
+            _, data_type = ENGAGEMENT_FIELDS[name]
+            if (
+                item.get("dataType") != data_type
+                or item.get("isHidden")
+                or item.get("isCustom") is not True
+            ):
+                raise BadGateway()
+            length = None
+            if data_type == "string":
+                length = item.get("length")
+                if not isinstance(length, int) or length <= 0:
+                    raise BadGateway()
+            definition = {"name": name, "type": data_type, "length": length}
+            if name in found and found[name] != definition:
+                raise BadGateway()
+            found[name] = definition
+        if payload.get("moreResult") is not True:
+            break
+        next_token = payload["nextPageToken"]
+        if (
+            not isinstance(next_token, str)
+            or not next_token
+            or next_token in seen_tokens
+        ):
+            raise BadGateway()
+        seen_tokens.add(next_token)
+        params["nextPageToken"] = next_token
+    return found
+
+
+def ensure_engagement_fields(connection, *, before_write):
+    fields = engagement_fields(connection)
+    missing = [name for name in ENGAGEMENT_FIELDS if name not in fields]
+    if not missing:
+        return fields
+    payload = []
+    for name in missing:
+        label, kind = ENGAGEMENT_FIELDS[name]
+        payload.append({"name": name, "displayName": label, "dataType": kind})
+    try:
+        connection.api(
+            "POST",
+            "/rest/v1/programs/members/schema/fields.json",
+            before_write=before_write,
+            json={"input": payload},
+        )
+    except BadGateway:
+        pass
+    fields = engagement_fields(connection)
+    if all(name in fields for name in ENGAGEMENT_FIELDS):
+        return fields
+    raise BadGateway
+
+
+def save_member_engagement(
+    connection, program_id, lead_id, properties, *, before_write
+):
+    for name, value in (("program_id", program_id), ("lead_id", lead_id)):
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{name} must be a positive int")
+    if not isinstance(properties, dict) or not properties:
+        raise ValueError("properties must be a nonempty dict")
+    if not set(properties) <= ENGAGEMENT_FIELDS.keys():
+        raise ValueError("properties contains unsupported fields")
+    row = {**properties, "leadId": lead_id}
+    response = connection.api(
+        "POST",
+        f"/rest/v1/programs/{program_id}/members.json",
+        before_write=before_write,
+        json={"input": [row]},
+    )
+    results = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(results, list) or len(results) != 1:
+        raise BadGateway("expected exactly one result")
+    result = results[0]
+    if (
+        not isinstance(result, dict)
+        or result.get("leadId") != lead_id
+        or result.get("status") != "updated"
+        or result.get("seq", 0) != 0
+    ):
+        raise BadGateway("unexpected result")
+    return True
