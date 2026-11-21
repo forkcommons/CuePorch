@@ -151,9 +151,15 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
     video.setAttribute("aria-label", "Event video");
     player.replaceChildren(video, branding);
   }
-  stopMeasuring = measureEventPlayback(video, analytics);
+  let audioKey = "original:und";
+  stopMeasuring = measureEventPlayback(video, analytics, () => [audioKey, captions.selection()]);
   const replay = phase === "Replay";
   const currentVideo = video;
+  const onAudioSelection = (key: string) => {
+    if (key === audioKey) return;
+    audioKey = key;
+    currentVideo.dispatchEvent(new Event("cueporch-event-track-change"));
+  };
   controls.attach(video, !replay, () => {
     const ranges = currentVideo.seekable;
     if (!ranges.length) return null;
@@ -181,13 +187,13 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
       liveDurationInfinity: true,
       liveSyncDurationCount: liveSegments,
     });
-    stopAudio = bindEventAudio(audioLabel, audioSelect, session);
+    stopAudio = bindEventAudio(audioLabel, audioSelect, session, onAudioSelection);
     session.loadSource(address);
     session.attachMedia(video);
     hls = session;
     captions.bind(video, replay ? replayDate : () => session.playingDate?.getTime() ?? null, replay);
   } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    stopAudio = bindEventAudio(audioLabel, audioSelect, video);
+    stopAudio = bindEventAudio(audioLabel, audioSelect, video, onAudioSelection);
     video.src = address;
     const native = video as HTMLVideoElement & {getStartDate?(): Date};
     captions.bind(video, replay ? replayDate :

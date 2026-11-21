@@ -16,6 +16,8 @@ export function setupLiveCaptions(grant, embed, access) {
     let replay = false;
     let revision = "";
     let since = -1;
+    let delivered = false;
+    let captionLanguage = null;
     function label() { return replay ? "Replay captions" : "Live captions"; }
     function updateLabel() {
         transcript.textContent = replay ? "Replay transcript" : "Live transcript";
@@ -47,6 +49,21 @@ export function setupLiveCaptions(grant, embed, access) {
         list.replaceChildren();
         since = -1;
         revision = "";
+        delivered = false;
+    }
+    function selection() {
+        if (!endpoint || !isEnabled)
+            return "none";
+        if (!shown || !track || track.mode !== "showing")
+            return "none";
+        if (!delivered)
+            return "none";
+        return captionLanguage ? `captions_ai:${captionLanguage}` : "unknown";
+    }
+    function emit() {
+        if (!source)
+            return;
+        source.dispatchEvent(new Event("cueporch-event-track-change"));
     }
     function bind(video, date, archived = false) {
         if (replay !== archived)
@@ -64,6 +81,7 @@ export function setupLiveCaptions(grant, embed, access) {
         added.clear();
         video?.addEventListener("timeupdate", install);
         install();
+        emit();
     }
     async function poll() {
         if (!endpoint || reading)
@@ -90,16 +108,23 @@ export function setupLiveCaptions(grant, embed, access) {
             const received = await response.json();
             if (active !== endpoint)
                 return;
+            const enabledChanged = isEnabled !== received.enabled;
             isEnabled = received.enabled;
             region.hidden = !isEnabled;
+            const nextLanguage = received.language ?? null;
+            const languageChanged = captionLanguage !== nextLanguage;
+            captionLanguage = nextLanguage;
             if (!isEnabled) {
                 clear();
+                if (enabledChanged || languageChanged)
+                    emit();
                 return;
             }
             if (received.revision && revision !== received.revision) {
                 clear();
                 revision = received.revision;
             }
+            const wasDelivered = delivered;
             for (const cue of received.cues) {
                 if (cues.has(cue.starts))
                     continue;
@@ -129,9 +154,13 @@ export function setupLiveCaptions(grant, embed, access) {
                 if (list.children.length > 200)
                     list.firstElementChild?.remove();
             }
+            if (!delivered && cues.size > 0)
+                delivered = true;
             toggle.disabled = cues.size === 0;
             status.textContent = cues.size ? "" : `Waiting for ${label().toLowerCase()}.`;
             install();
+            if (enabledChanged || languageChanged || (!wasDelivered && delivered))
+                emit();
         }
         catch {
             // Keep the last received cues while the connected service is briefly unavailable.
@@ -146,12 +175,14 @@ export function setupLiveCaptions(grant, embed, access) {
         endpoint = path;
         if (!path) {
             region.hidden = true;
+            emit();
             return;
         }
         if (!track && source) {
             track = source.addTextTrack("captions", label());
             track.mode = shown ? "showing" : "hidden";
         }
+        emit();
         void poll();
     }
     toggle.onclick = () => {
@@ -160,10 +191,11 @@ export function setupLiveCaptions(grant, embed, access) {
         if (track)
             track.mode = shown ? "showing" : "hidden";
         updateLabel();
+        emit();
     };
     const timer = window.setInterval(() => { if (!document.hidden)
         void poll(); }, 2500);
     window.addEventListener("pagehide", () => window.clearInterval(timer), { once: true });
     void poll();
-    return { bind, select };
+    return { bind, select, selection };
 }

@@ -225,5 +225,6 @@ def register(app, tx, staff, action, operator_access, audience_access):
             since = request.args.get("since", -1, type=int) if request.args.get("revision") == record["revision"] else -1
             cues = [dict(starts=cue["start"], ends=cue["end"], text=cue["text"])
                     for cue in json.loads(record["cues"]) if cue["start"] > since][:1000]
-            return Response(json.dumps(dict(enabled=True, cues=cues, revision=record["revision"])), content_type="application/json",
+            return Response(json.dumps(dict(enabled=True, cues=cues, revision=record["revision"],
+                                            language=record["language"])), content_type="application/json",
                             headers={"Cache-Control": "no-store"})

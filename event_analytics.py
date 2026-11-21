@@ -1,10 +1,12 @@
 """Per-occurrence audience metrics from CuePorch-controlled players."""
 
+from collections import defaultdict
 import time
 
 from flask import abort
 
-from library_analytics import record_identity
+from library_analytics import record_identity, track_observations
+from subtitles import LANGUAGE
 
 
 WINDOW = 30
@@ -29,6 +31,24 @@ def current(con, uid, opens, phase, now=None):
         "SELECT count(*) FROM live_playback WHERE event=? AND opens=? AND phase=? AND playing=1 AND seen>?",
         (uid, opens, phase, (time.time() if now is None else now) - WINDOW),
     ).fetchone()[0]
+
+
+def event_track_rows(samples, watched):
+    def label(key, kinds, unmeasured):
+        if key in unmeasured:
+            return key, key
+        kind, _, language = key.partition(":")
+        if kind not in kinds or len(language) > 53 or not LANGUAGE.fullmatch(language):
+            abort(422, "Invalid event playback track.")
+        return language.lower(), kind
+
+    totals = defaultdict(int)
+    for (audio, caption), milliseconds in track_observations(samples, watched, 2).items():
+        audio_label = label(audio, ("original", "alternate"), ("unknown",))
+        caption_label = label(caption, ("captions_ai",), ("none", "unknown"))
+        if milliseconds:
+            totals[(*audio_label, *caption_label)] += milliseconds
+    return [(*pair, milliseconds) for pair, milliseconds in totals.items()]
 
 
 def record(con, uid, opens, phase, nonce, body, *, report_scope=None, viewer_key=None):
@@ -59,6 +79,19 @@ def record(con, uid, opens, phase, nonce, body, *, report_scope=None, viewer_key
         elif completed and phase == "replay":
             con.execute("UPDATE live_playback_reporting SET completed=1 WHERE session=?", (nonce,))
         record_identity(con, nonce, body.get("viewer"), viewer_key)
+        if "tracks" in body:
+            pairs = event_track_rows(body["tracks"], watched)
+            if pairs and not played:
+                abort(422, "A play is required for viewing progress.")
+            captions = defaultdict(int)
+            for _, _, language, kind, milliseconds in pairs:
+                captions[language, kind] += milliseconds
+            con.execute("DELETE FROM video_analytics_track_pair WHERE session=?", (nonce,))
+            con.execute("DELETE FROM video_analytics_caption WHERE session=?", (nonce,))
+            con.executemany("INSERT INTO video_analytics_track_pair VALUES(?,?,?,?,?,?)",
+                            [(nonce, *pair) for pair in pairs])
+            con.executemany("INSERT INTO video_analytics_caption VALUES(?,?,?,?)",
+                            [(nonce, *label, ms) for label, ms in captions.items()])
     if playing and (not prior or not prior["playing"] or prior["seen"] <= now - WINDOW):
         count = current(con, uid, opens, phase, now)
         con.execute(

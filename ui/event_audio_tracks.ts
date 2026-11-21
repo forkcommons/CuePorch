@@ -1,5 +1,5 @@
 export interface HlsAudioSource {
-  audioTracks: { name: string; lang?: string }[];
+  audioTracks: { name: string; lang?: string; default?: boolean }[];
   audioTrack: number;
   on(event: string, listener: () => void): void;
   off(event: string, listener: () => void): void;
@@ -28,10 +28,16 @@ const setOptions = (select: HTMLSelectElement, labels: string[]): void => {
     select.appendChild(option);
   }
 };
+const LANG_RE = /^[a-z]{2,8}(?:-[a-z0-9]{1,8}){0,5}$/i;
+const canonLang = (lang?: string): string =>
+  typeof lang === "string" && LANG_RE.test(lang) ? lang.toLowerCase() : "und";
+const trackKey = (isOriginal: boolean, lang?: string): string =>
+  (isOriginal ? "original:" : "alternate:") + canonLang(lang);
 export function bindEventAudio(
   label: HTMLLabelElement,
   select: HTMLSelectElement,
   source: HlsAudioSource | HTMLVideoElement,
+  onSelection?: (key: string) => void,
 ): () => void {
   let disposed = false;
   const cleanups: (() => void)[] = [];
@@ -69,6 +75,10 @@ export function bindEventAudio(
             break;
           }
         syncSelect(selected);
+        if (onSelection) {
+          if (tracks.length === 0) onSelection("original:und");
+          else onSelection(trackKey(selected === 0, tracks[selected].language));
+        }
       };
       const onTracks = () => {
         if (!disposed) sync(true);
@@ -104,6 +114,21 @@ export function bindEventAudio(
     if (rebuild) setOptions(select, labels);
     visibility(labels.length);
     syncSelect(hls.audioTrack);
+    if (onSelection) {
+      const tracks = hls.audioTracks;
+      if (tracks.length === 0) {
+        onSelection("original:und");
+      } else {
+        let originalIndex = 0;
+        for (let i = 0; i < tracks.length; i++)
+          if (tracks[i].default === true) {
+            originalIndex = i;
+            break;
+          }
+        const active = hls.audioTrack >= 0 && hls.audioTrack < tracks.length ? hls.audioTrack : 0;
+        onSelection(trackKey(active === originalIndex, tracks[active].lang));
+      }
+    }
   };
   const onUpdated = () => {
     if (!disposed) sync(true);

@@ -18,6 +18,8 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
   let replay = false;
   let revision = "";
   let since = -1;
+  let delivered = false;
+  let captionLanguage: string | null = null;
 
   function label() { return replay ? "Replay captions" : "Live captions"; }
 
@@ -50,6 +52,19 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
     list.replaceChildren();
     since = -1;
     revision = "";
+    delivered = false;
+  }
+
+  function selection(): string {
+    if (!endpoint || !isEnabled) return "none";
+    if (!shown || !track || track.mode !== "showing") return "none";
+    if (!delivered) return "none";
+    return captionLanguage ? `captions_ai:${captionLanguage}` : "unknown";
+  }
+
+  function emit() {
+    if (!source) return;
+    source.dispatchEvent(new Event("cueporch-event-track-change"));
   }
 
   function bind(video?: HTMLVideoElement, date?: () => number | null, archived = false) {
@@ -65,6 +80,7 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
     added.clear();
     video?.addEventListener("timeupdate", install);
     install();
+    emit();
   }
 
   async function poll() {
@@ -82,15 +98,20 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
       if (active !== endpoint) return;
       if (response.status === 404) { select(""); return; }
       if (!response.ok) return;
-      const received: {enabled: boolean; cues: CaptionCue[]; revision?: string} = await response.json();
+      const received: {enabled: boolean; cues: CaptionCue[]; revision?: string; language?: string | null} = await response.json();
       if (active !== endpoint) return;
+      const enabledChanged = isEnabled !== received.enabled;
       isEnabled = received.enabled;
       region.hidden = !isEnabled;
-      if (!isEnabled) { clear(); return; }
+      const nextLanguage = received.language ?? null;
+      const languageChanged = captionLanguage !== nextLanguage;
+      captionLanguage = nextLanguage;
+      if (!isEnabled) { clear(); if (enabledChanged || languageChanged) emit(); return; }
       if (received.revision && revision !== received.revision) {
         clear();
         revision = received.revision;
       }
+      const wasDelivered = delivered;
       for (const cue of received.cues) {
         if (cues.has(cue.starts)) continue;
         cues.set(cue.starts, cue);
@@ -117,9 +138,11 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
         list.append(row);
         if (list.children.length > 200) list.firstElementChild?.remove();
       }
+      if (!delivered && cues.size > 0) delivered = true;
       toggle.disabled = cues.size === 0;
       status.textContent = cues.size ? "" : `Waiting for ${label().toLowerCase()}.`;
       install();
+      if (enabledChanged || languageChanged || (!wasDelivered && delivered)) emit();
     } catch {
       // Keep the last received cues while the connected service is briefly unavailable.
     } finally { reading = false; }
@@ -128,11 +151,12 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
   function select(path: string) {
     if (endpoint !== path) clear();
     endpoint = path;
-    if (!path) { region.hidden = true; return; }
+    if (!path) { region.hidden = true; emit(); return; }
     if (!track && source) {
       track = source.addTextTrack("captions", label());
       track.mode = shown ? "showing" : "hidden";
     }
+    emit();
     void poll();
   }
 
@@ -141,10 +165,11 @@ export function setupLiveCaptions(grant: string, embed: boolean, access: string)
     toggle.setAttribute("aria-pressed", String(shown));
     if (track) track.mode = shown ? "showing" : "hidden";
     updateLabel();
+    emit();
   };
 
   const timer = window.setInterval(() => { if (!document.hidden) void poll(); }, 2500);
   window.addEventListener("pagehide", () => window.clearInterval(timer), {once: true});
   void poll();
-  return {bind, select};
+  return {bind, select, selection};
 }
