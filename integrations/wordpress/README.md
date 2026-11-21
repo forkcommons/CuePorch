@@ -18,6 +18,8 @@ Existing product images are retained.
 
 The picker shows which WordPress site will receive the selected player URL. If CuePorch asks for an operator credential, enter it in the CuePorch popup. Private Library items are excluded, and CuePorch checks the current sharing settings for the selected video. The picker adds the URL to the form. Select **Update** to save it.
 
+Select **Upload** in the CuePorch popup to add files to your Library. It uses the same upload defaults, folder settings, and approval policy as the CuePorch Library. A private or pending upload stays in CuePorch until its settings allow sharing. Uploading a file does not add it to the product.
+
 ## Compatibility
 
 Use the classic WooCommerce product editor and a theme that uses the classic product gallery. Block gallery placement is pending. The product-description iframe path is also available.

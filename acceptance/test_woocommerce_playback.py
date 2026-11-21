@@ -109,7 +109,7 @@ class TestWooStorefront(unittest.TestCase):
                 )
                 assert pr.ok, pr.text
                 verify_storefront(
-                    browser, storefront, product_id, base, operator, uid
+                    browser, storefront, product_id, base, operator, uid, clip
                 )
 
 
@@ -150,7 +150,22 @@ def verify_woocommerce_player(iframe, expected_src):
     assert result["currentTime"] > 0
 
 
-def select_in_cueporch_picker(ap, base, operator, uid):
+def verify_private_picker_upload(popup, clip):
+    popup.click("#uploadLibrary")
+    popup.set_input_files("#libraryFiles", {
+        "name": "Private product clip.mp4",
+        "mimeType": "video/mp4",
+        "buffer": clip.read_bytes(),
+    })
+    popup.click("#startUpload")
+    popup.locator("#uploadStatus").filter(has_text="All files added.").wait_for()
+    popup.locator("#uploadFiles").filter(has_text="Added privately").wait_for()
+    popup.click("#closeUpload")
+    popup.get_by_role("searchbox").fill("Private product clip")
+    assert popup.get_by_role("button", name="Choose").count() == 0
+
+
+def select_in_cueporch_picker(ap, base, operator, uid, clip):
     with ap.expect_popup() as pi:
         ap.locator('#cueporchChooseVideo').click()
     popup = pi.value
@@ -165,6 +180,7 @@ def select_in_cueporch_picker(ap, base, operator, uid):
     auth.fill(operator)
     popup.locator('#pickerAuth button').click()
     expect(popup.locator('#pickerLibrary')).to_be_visible()
+    verify_private_picker_upload(popup, clip)
     popup.locator('#pickerSearch').fill('Embed clip')
     destination = urlparse(ap.url).scheme + '://' + urlparse(ap.url).netloc
     expect(popup.locator('#pickerDestination')).to_have_text(destination)
@@ -179,7 +195,7 @@ def select_in_cueporch_picker(ap, base, operator, uid):
     expect(ap.locator('#_cueporch_video_urls')).to_have_value(embed)
 
 
-def verify_storefront(browser, storefront, product_id, base, operator, uid):
+def verify_storefront(browser, storefront, product_id, base, operator, uid, clip):
     user = os.environ["CUEPORCH_WOO_USERNAME"]
     pwd = os.environ["CUEPORCH_WOO_PASSWORD"]
     admin = browser.new_context()
@@ -202,7 +218,7 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid):
             ap.goto(f"{storefront}/wp-admin/post.php?post={product_id}&action=edit")
             if mode == "tab":
                 ap.fill("#_cueporch_video_urls", "")
-                select_in_cueporch_picker(ap, base, operator, uid)
+                select_in_cueporch_picker(ap, base, operator, uid, clip)
             else:
                 ap.fill("#_cueporch_video_urls", watch)
             ap.locator("#_cueporch_video_placement").select_option(mode)

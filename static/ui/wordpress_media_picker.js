@@ -1,3 +1,4 @@
+import { libraryUploader, readUploadPrivacy, folderChoices, } from "./library_upload.js";
 const destinationLabel = document.getElementById("pickerDestination");
 const status = document.getElementById("pickerStatus");
 const authForm = document.getElementById("pickerAuth");
@@ -6,6 +7,7 @@ const library = document.getElementById("pickerLibrary");
 const search = document.getElementById("pickerSearch");
 const results = document.getElementById("pickerResults");
 let works = [];
+let folders = [];
 let token = "";
 try {
     if (typeof sessionStorage !== "undefined") {
@@ -25,6 +27,7 @@ function startPicker() {
         return;
     }
     destinationLabel.textContent = picker.destination;
+    mountLibraryUploader();
     void loadLibrary();
     search.addEventListener("input", () => renderWorks());
     authForm.addEventListener("submit", (ev) => {
@@ -64,6 +67,9 @@ function pickerTarget() {
     return { destination: d, request: r, opener: window.opener };
 }
 async function getJson(path) {
+    return (await loadLibraryResponse(path)).json();
+}
+async function loadLibraryResponse(path) {
     if (path !== "/api/library" && !path.startsWith("/api/library/"))
         throw Object.assign(new Error("Invalid path"), { status: 400 });
     const response = await fetch(path, {
@@ -77,7 +83,20 @@ async function getJson(path) {
         throw Object.assign(new Error("Request failed"), {
             status: response.status,
         });
-    return response.json();
+    return response;
+}
+function mountLibraryUploader() {
+    libraryUploader({
+        available: () => !library.hidden,
+        folder: () => null,
+        folderOptions: (select) => folderChoices(select, folders),
+        credential: () => token,
+        defaults: (folder) => readUploadPrivacy(folder, loadLibraryResponse),
+        reload: async () => {
+            works = await getJson("/api/library");
+            renderWorks();
+        },
+    });
 }
 async function loadLibrary() {
     authForm.hidden = true;
@@ -85,7 +104,10 @@ async function loadLibrary() {
     status.textContent = "Loading library…";
     status.setAttribute("aria-busy", "true");
     try {
-        works = await getJson("/api/library");
+        [works, folders] = await Promise.all([
+            getJson("/api/library"),
+            getJson("/api/library/folders").catch(() => []),
+        ]);
         renderWorks();
         library.hidden = false;
         keyInput.value = "";
@@ -171,4 +193,3 @@ async function chooseWork(work) {
     }
 }
 startPicker();
-export {};
