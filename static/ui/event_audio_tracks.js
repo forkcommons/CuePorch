@@ -17,7 +17,10 @@ const setOptions = (select, labels) => {
         select.appendChild(option);
     }
 };
-export function bindEventAudio(label, select, source) {
+const LANG_RE = /^[a-z]{2,8}(?:-[a-z0-9]{1,8}){0,5}$/i;
+const canonLang = (lang) => typeof lang === "string" && LANG_RE.test(lang) ? lang.toLowerCase() : "und";
+const trackKey = (isOriginal, lang) => (isOriginal ? "original:" : "alternate:") + canonLang(lang);
+export function bindEventAudio(label, select, source, onSelection) {
     let disposed = false;
     const cleanups = [];
     const cleanup = () => {
@@ -57,6 +60,12 @@ export function bindEventAudio(label, select, source) {
                         break;
                     }
                 syncSelect(selected);
+                if (onSelection) {
+                    if (tracks.length === 0)
+                        onSelection("original:und");
+                    else
+                        onSelection(trackKey(selected === 0, tracks[selected].language));
+                }
             };
             const onTracks = () => {
                 if (!disposed)
@@ -97,6 +106,22 @@ export function bindEventAudio(label, select, source) {
             setOptions(select, labels);
         visibility(labels.length);
         syncSelect(hls.audioTrack);
+        if (onSelection) {
+            const tracks = hls.audioTracks;
+            if (tracks.length === 0) {
+                onSelection("original:und");
+            }
+            else {
+                let originalIndex = 0;
+                for (let i = 0; i < tracks.length; i++)
+                    if (tracks[i].default === true) {
+                        originalIndex = i;
+                        break;
+                    }
+                const active = hls.audioTrack >= 0 && hls.audioTrack < tracks.length ? hls.audioTrack : 0;
+                onSelection(trackKey(active === originalIndex, tracks[active].lang));
+            }
+        }
     };
     const onUpdated = () => {
         if (!disposed)

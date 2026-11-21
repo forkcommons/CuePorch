@@ -1,3 +1,4 @@
+import json
 import secrets
 import sqlite3
 import subprocess
@@ -228,6 +229,66 @@ class PrivateLiveEventTest(unittest.TestCase):
                     self.assertEqual(team.request.get(address).status, 404)
 
 
+    def flush_event_playback(self, page, position, expected_caption):
+        page.wait_for_function(
+            "(position) => document.querySelector('#eventPlayer video').currentTime >= position + .5",
+            arg=position, timeout=8000,
+        )
+        def paused_with_track(response):
+            request = response.request
+            if request.method != "POST" or not request.url.endswith("/api/event-playback"):
+                return False
+            body = request.post_data_json
+            return body["playing"] is False and any(
+                audio == "alternate:es" and caption == expected_caption and ms > 0
+                for audio, caption, ms in body.get("tracks", [])
+            )
+
+        with page.expect_response(paused_with_track, timeout=8000) as paused:
+            page.locator("#eventPlayer video").evaluate("video => video.pause()")
+        self.assertEqual(paused.value.status, 204, paused.value.text())
+        return paused.value
+
+    def assert_track_report(self, event, streaming, caption):
+        today = datetime.now(timezone.utc).date().isoformat()
+        filters = {
+            "from": today, "to": today, "videos": [event], "group": "audio", "breakdown": "caption",
+            "streaming": streaming, "audio_kind": "alternate", "audio_language": "es",
+        }
+        resp = self.client.post('/api/analytics/video-report', headers=self.auth, json=filters)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertGreater(data["totals"]["watched_seconds"], 0)
+        self.assertTrue(any(r["category"] == "es · Alternate audio" and r["breakdown"] == caption for r in data["rows"]))
+        csv_resp = self.client.post('/api/analytics/video-report?format=csv', headers=self.auth, json=filters)
+        self.assertEqual(csv_resp.status_code, 200)
+        body = csv_resp.get_data(as_text=True)
+        self.assertIn("Alternate audio", body)
+        self.assertIn(caption, body)
+        forbidden = self.client.post('/api/analytics/video-report', json=filters)
+        self.assertEqual(forbidden.status_code, 403)
+        return data["totals"]["watched_seconds"]
+
+    def verify_track_ingest(self, page, response, event, watched_before):
+        sample = response.request.post_data_json
+        headers = {"X-CuePorch-Playback": response.request.headers["x-cueporch-playback"]}
+        alternate = next(ms for audio, caption, ms in sample["tracks"] if (audio, caption) == ("alternate:es", "none"))
+        fresh = sample["sequence"] + 100
+        malformed = dict(sample, sequence=fresh, tracks=[["alternate:es", "none", sample["watched"] + 200000]])
+        stale = dict(sample, tracks=[])
+        dnt = dict(sample, sequence=fresh + 1, watched=sample["watched"] + 1000,
+                   tracks=[["alternate:es", "none", alternate + 1000]])
+        cases = (
+            ({}, malformed, 422),
+            ({}, stale, 204),
+            ({"DNT": "1"}, dnt, 204),
+            ({"Sec-GPC": "1"}, dict(dnt, sequence=fresh + 2), 204),
+        )
+        for preference, body, status in cases:
+            result = page.request.post(response.url, headers=headers | preference, data=body)
+            self.assertEqual(result.status, status, result.text())
+            self.assertEqual(self.assert_track_report(event, "live", "Off"), watched_before)
+
     def test_private_live_audio_switching_and_replay_are_team_only(self):
         created = self.create_event("private-audio", "private")
         event, opens = created["id"], created["occurrences"][0]["id"]
@@ -284,18 +345,37 @@ class PrivateLiveEventTest(unittest.TestCase):
                 after = page.evaluate("() => document.querySelector('#eventPlayer video').currentTime")
                 self.assertGreater(after, before)
                 self.assertTrue(page.evaluate("() => window.__eventVideo === document.querySelector('#eventPlayer video')"))
+                response = self.flush_event_playback(page, after, "none")
+                watched = self.assert_track_report(event, "live", "Off")
+                self.verify_track_ingest(page, response, event, watched)
                 alt = playlist.replace("master.m3u8", "1.m3u8")
                 self.assertEqual(team.request.get(alt).status, 200)
                 self.assertEqual(anon.request.get(alt).status, 404)
                 self.release_replay(event, opens)
+                revision = secrets.token_hex(16)
+                with self.tx() as con:
+                    con.execute(
+                        "INSERT INTO action(id,step,payload,status,decision,created) "
+                        "VALUES (?, 'caption','{}','eligible','automatic',?)",
+                        (revision, datetime.now(timezone.utc).timestamp()),
+                    )
+                    con.execute(
+                        "INSERT INTO live_replay_captions VALUES (?,?,'en','ready',?,?,?)",
+                        (event, opens, revision, revision,
+                         json.dumps([{"start": 0, "end": 14000, "text": "Fixture caption"}])),
+                    )
                 metadata["isLive"] = False
                 replay, width, _ = play_event(page, stable, "Replay")
                 self.assertEqual(width, 320)
                 track = page.get_by_role("combobox", name="Audio track")
                 expect(track).to_be_visible(timeout=2500)
                 self.assertEqual(track.locator("option").all_text_contents(), ["English", "Spanish"])
+                page.get_by_role("button", name="Show replay captions").click()
                 track.select_option(label="Spanish")
                 hear_frequency(page, 880)
+                replay_position = page.locator("#eventPlayer video").evaluate("video => video.currentTime")
+                self.flush_event_playback(page, replay_position, "captions_ai:en")
+                self.assert_track_report(event, "replay", "en · Automated captions")
                 self.assertEqual(anon.request.get(replay).status, 404)
 
 

@@ -30,7 +30,8 @@ DIMENSIONS = {
     "audio": "CASE tracks.audio_kind WHEN 'original' THEN tracks.audio_language || ' · Original audio'"
              " WHEN 'dubbed' THEN tracks.audio_language || ' · Dubbed audio'"
              " WHEN 'description' THEN tracks.audio_language || ' · Audio description'"
-             " WHEN 'commentary' THEN tracks.audio_language || ' · Commentary' ELSE 'Unknown' END",
+             " WHEN 'commentary' THEN tracks.audio_language || ' · Commentary'"
+             " WHEN 'alternate' THEN tracks.audio_language || ' · Alternate audio' ELSE 'Unknown' END",
 }
 GROUP_REPORTS = ("date", "device", "source", "region")
 TOP_DIMENSIONS = ("video", "region", "device", "source")

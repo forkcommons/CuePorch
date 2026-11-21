@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS video_analytics_track_pair(
 """
 SURFACES = ("watch", "embed", "showcase")
 CAPTION_KINDS = ("captions", "subtitles", "captions_ai", "subtitles_ai", "none", "unknown")
-AUDIO_KINDS = ("original", *KINDS, "unknown")
+AUDIO_KINDS = ("original", *KINDS, "alternate", "unknown")
 DEVICES = ("Desktop", "Phone", "Tablet", "TV", "Unknown")
 REGION_CODE = re.compile(r"[A-Z]{2}(?:-[A-Z0-9]{1,3})?")
 PLAY_COUNTS = """coalesce(sum(played),0) AS views, coalesce(sum(completed),0) AS finishes,

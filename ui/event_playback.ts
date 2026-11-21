@@ -1,20 +1,32 @@
 import {browserIdentity} from "./browser_analytics.js";
 
-export function eventObservation(token: string) {
+export function eventObservation(token: string, tracks?: () => [string, string, number][] | undefined) {
   const viewer = browserIdentity();
   let sequence = 0;
   return (played: boolean, playing: boolean, completed: boolean, watched: number) => {
+    const extra = tracks?.();
+    const body: Record<string, unknown> = {sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer};
+    if (extra && extra.length) body.tracks = extra;
     void fetch("/api/event-playback", {
       method: "POST", keepalive: true,
       headers: {"Content-Type": "application/json", "X-CuePorch-Playback": token},
-      body: JSON.stringify({sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer}),
+      body: JSON.stringify(body),
     }).catch(() => {});
   };
 }
 
-export function measureEventPlayback(video: HTMLVideoElement, token: string) {
+export function measureEventPlayback(video: HTMLVideoElement, token: string, trackSelection?: () => [string, string]) {
   if (!token) return undefined;
-  const report = eventObservation(token);
+  let current: [string, string] = trackSelection?.() ?? ["", ""];
+  const trackTotals = new Map<string, {audio: string; caption: string; ms: number}>();
+  const report = eventObservation(token, () => {
+    const out: [string, string, number][] = [];
+    for (const t of trackTotals.values()) {
+      if (t.ms > 0) out.push([t.audio, t.caption, Math.round(t.ms)]);
+      if (out.length >= 256) break;
+    }
+    return out.length ? out : undefined;
+  });
   const listeners = new AbortController();
   const {signal} = listeners;
   let played = false;
@@ -32,9 +44,19 @@ export function measureEventPlayback(video: HTMLVideoElement, token: string) {
     const elapsed = (now - sampleTime) / 1000;
     const plausible = elapsed * Math.abs(video.playbackRate) + .25;
     const advanced = playing && !interrupted && !video.seeking && delta > 0 && delta <= plausible;
-    if (advanced) watched += delta;
+    if (advanced) {
+      watched += delta;
+      if (trackSelection) {
+        const [audio, caption] = current;
+        const key = audio + "|" + caption;
+        const entry = trackTotals.get(key);
+        if (entry) entry.ms += delta * 1000;
+        else if (trackTotals.size < 256) trackTotals.set(key, {audio, caption, ms: delta * 1000});
+      }
+    }
     position = video.currentTime;
     sampleTime = now;
+    if (trackSelection) current = trackSelection();
     return advanced;
   }
 
@@ -61,6 +83,7 @@ export function measureEventPlayback(video: HTMLVideoElement, token: string) {
   }
 
   video.addEventListener("playing", start, {signal});
+  video.addEventListener("cueporch-event-track-change", () => { sample(); }, {signal});
   video.addEventListener("timeupdate", () => {
     if (sample() && performance.now() - sent >= 10000) send();
   }, {signal});

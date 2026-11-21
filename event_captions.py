@@ -269,6 +269,7 @@ def register(app, tx, staff, operator_access, audience_access, ai_actor):
                 query = con.execute("""SELECT starts,ends,text FROM live_caption_cue WHERE event=? AND opens=?
                                       AND starts>? ORDER BY starts LIMIT 1000""", (uid, opens, request.args.get("since", 0, type=int)))
                 rows = [dict(cue) for cue in query]
-        response = make_response(dict(cues=rows, enabled=bool(row and row["enabled"])))
+        response = make_response(dict(cues=rows, enabled=bool(row and row["enabled"]),
+                                      language=row["language"] if row else None))
         response.cache_control.no_store = True
         return response
