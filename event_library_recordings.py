@@ -166,7 +166,8 @@ class Recordings:
             inputs.extend(("-i", str(local)))
         result = run_media([
             *LOCAL_FFMPEG, "-v", "error", *inputs, "-map", "0:V:0",
-            "-map", "1:a:0" if len(files) > 1 else "0:a:0?", "-c", "copy", "-map_metadata", "-1",
+            "-map", "0:a?", *(["-map", "1:a?"] if len(files) > 1 else []),
+            "-c", "copy", "-map_metadata", "-1",
             "-movflags", "+faststart", "-progress", "pipe:1", str(folder / "recording.mp4"),
         ], stopping=self.stopping)
         if result.returncode or not (folder / "recording.mp4").is_file():
