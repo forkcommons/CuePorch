@@ -27,7 +27,7 @@ import campaign_monitor_crm
 import hubspot_crm
 import mailchimp_crm
 import library_mailchimp_forms
-import library_constant_contact_forms
+import library_list_registration
 import marketo_crm
 import linkedin_upload
 import mail_relay
@@ -530,7 +530,9 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                 event_mailchimp_registration.disconnect(con)
                 library_mailchimp_forms.disconnect(con)
         elif provider == "constant-contact":
-            cleanup = library_constant_contact_forms.disconnect
+            cleanup = library_list_registration.disconnect
+        elif provider == "campaign-monitor":
+            cleanup = lambda con: library_list_registration.disconnect(con,provider=library_list_registration.CAMPAIGN_MONITOR)
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)

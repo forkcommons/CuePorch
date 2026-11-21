@@ -1,15 +1,59 @@
 import hmac
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from types import ModuleType
 from uuid import uuid4
 
 from flask import abort
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
+import campaign_monitor_crm
 import constant_contact_crm
 import event_contact_delivery
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS library_constant_contact_form_plan (
+
+@dataclass(frozen=True)
+class Provider:
+    key: str
+    label: str
+    table: str
+    adapter: ModuleType
+    list_id: Callable[[object], bool]
+    email_limit: int
+    name_limit: int
+
+    @property
+    def plan(self) -> str:
+        return self.table + "_plan"
+
+    @property
+    def delivery(self) -> str:
+        return self.table + "_delivery"
+
+
+CONSTANT_CONTACT = Provider(
+    "constant-contact",
+    "Constant Contact",
+    "library_constant_contact_form",
+    constant_contact_crm,
+    constant_contact_crm.list_id,
+    80,
+    50,
+)
+CAMPAIGN_MONITOR = Provider(
+    "campaign-monitor",
+    "Campaign Monitor",
+    "library_campaign_monitor_form",
+    campaign_monitor_crm,
+    campaign_monitor_crm.identifier,
+    254,
+    80,
+)
+PROVIDERS = (CONSTANT_CONTACT, CAMPAIGN_MONITOR)
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS {plan} (
     kind TEXT NOT NULL,
     subject TEXT NOT NULL,
     generation TEXT NOT NULL,
@@ -20,7 +64,7 @@ CREATE TABLE IF NOT EXISTS library_constant_contact_form_plan (
     PRIMARY KEY (kind, subject)
 );
 
-CREATE TABLE IF NOT EXISTS library_constant_contact_form_delivery (
+CREATE TABLE IF NOT EXISTS {delivery} (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     subject TEXT NOT NULL,
@@ -38,23 +82,32 @@ CREATE TABLE IF NOT EXISTS library_constant_contact_form_delivery (
     UNIQUE (generation, recipient_key)
 );
 
-CREATE INDEX IF NOT EXISTS library_constant_contact_form_due
-ON library_constant_contact_form_delivery (state, due);
+CREATE INDEX IF NOT EXISTS {prefix}_due
+ON {delivery} (state, due);
 """
 
+SCHEMA = "".join(
+    _SCHEMA.format(
+        plan=provider.plan,
+        delivery=provider.delivery,
+        prefix=provider.table,
+    )
+    for provider in PROVIDERS
+)
 
-def get(con, kind, subject):
+
+def get(con, kind, subject, provider=CONSTANT_CONTACT):
     return con.execute(
-        "SELECT * FROM library_constant_contact_form_plan WHERE kind=? AND subject=?",
+        f"SELECT * FROM {provider.plan} WHERE kind=? AND subject=?",
         (kind, subject),
     ).fetchone()
 
 
-def next_job(con, now):
+def next_job(con, now, provider=CONSTANT_CONTACT):
     row = con.execute(
-        """
+        f"""
         SELECT d.*, a.status AS action_status
-        FROM library_constant_contact_form_delivery AS d
+        FROM {provider.delivery} AS d
         JOIN action AS a ON a.id = d.id
         WHERE d.state IN ('queued', 'submitted')
           AND d.due <= ?
@@ -67,13 +120,13 @@ def next_job(con, now):
     return dict(row) if row is not None else None
 
 
-def scope(con, job, connection, validate, stop):
+def scope(con, job, connection, validate, stop, provider=CONSTANT_CONTACT):
     if stop.is_set():
         abort(423)
     row = con.execute(
-        """
+        f"""
         SELECT d.*, a.status AS action_status
-        FROM library_constant_contact_form_delivery AS d
+        FROM {provider.delivery} AS d
         JOIN action AS a ON a.id = d.id
         WHERE d.id = ?
         """,
@@ -86,7 +139,7 @@ def scope(con, job, connection, validate, stop):
     if row["action_status"] != "eligible":
         abort(409)
 
-    plan = get(con, row["kind"], row["subject"])
+    plan = get(con, row["kind"], row["subject"], provider)
     if plan is None or row["generation"] != plan["generation"]:
         abort(409)
     form = validate(con, row["kind"], row["subject"])
@@ -98,40 +151,40 @@ def scope(con, job, connection, validate, stop):
     return dict(row), plan
 
 
-def save(con, kind, subject, provider_revision, form_revision, destination):
-    row = get(con, kind, subject)
+def save(con, kind, subject, provider_revision, form_revision, destination, provider=CONSTANT_CONTACT):
+    row = get(con, kind, subject, provider)
     list_id, list_name = destination["id"], destination["name"]
     if (row
             and row["provider_revision"] == provider_revision
             and row["form_revision"] == form_revision
             and row["list_id"] == list_id):
         con.execute(
-            "UPDATE library_constant_contact_form_plan SET list_name=? WHERE kind=? AND subject=?",
+            f"UPDATE {provider.plan} SET list_name=? WHERE kind=? AND subject=?",
             (list_name, kind, subject),
         )
         return
-    stop(con, kind, subject)
+    stop(con, kind, subject, provider)
     con.execute(
-        "INSERT INTO library_constant_contact_form_plan "
+        f"INSERT INTO {provider.plan} "
         "(kind, subject, generation, provider_revision, form_revision, list_id, list_name) "
         "VALUES (?,?,?,?,?,?,?)",
         (kind, subject, uuid4().hex, provider_revision, form_revision, list_id, list_name),
     )
 
 
-def stop(con, kind, subject):
+def stop(con, kind, subject, provider=CONSTANT_CONTACT):
     cur = con.cursor()
 
     # 1) Reject matching actions
     cur.execute(
-        """
+        f"""
         UPDATE action
            SET status   = 'rejected',
                decision = 'canceled'
          WHERE status IN ('waiting', 'eligible')
            AND id IN (
                 SELECT id
-                  FROM library_constant_contact_form_delivery
+                  FROM {provider.delivery}
                  WHERE kind    = ?
                    AND subject = ?
                    AND state IN ('queued', 'submitted')
@@ -142,8 +195,8 @@ def stop(con, kind, subject):
 
     # 2) Cancel/track-stop the pending delivery rows and clear PII
     cur.execute(
-        """
-        UPDATE library_constant_contact_form_delivery
+        f"""
+        UPDATE {provider.delivery}
            SET state         = CASE
                                    WHEN activity_id IS NOT NULL
                                      OR write_started = 1
@@ -164,8 +217,8 @@ def stop(con, kind, subject):
 
     # 3) Remove the scoped plan row
     cur.execute(
-        """
-        DELETE FROM library_constant_contact_form_plan
+        f"""
+        DELETE FROM {provider.plan}
          WHERE kind    = ?
            AND subject = ?
         """,
@@ -173,23 +226,28 @@ def stop(con, kind, subject):
     )
 
 
-def disconnect(con):
+def stop_all(con, kind, subject):
+    for provider in PROVIDERS:
+        stop(con, kind, subject, provider)
+
+
+def disconnect(con, provider=CONSTANT_CONTACT):
     cur = con.cursor()
     cur.execute(
-        """
+        f"""
         SELECT kind, subject
-          FROM library_constant_contact_form_plan
+          FROM {provider.plan}
         """
     )
     for kind, subject in cur.fetchall():
-        stop(con, kind, subject)
+        stop(con, kind, subject, provider)
 
 
-def enqueue(con, action, plan, email, answers, now, signing_key):
+def enqueue(con, action, plan, email, answers, now, signing_key, provider=CONSTANT_CONTACT):
     if not isinstance(email, str):
         return None
     email_s = email.strip()
-    if not email_s or len(email_s) > 80:
+    if not email_s or len(email_s) > provider.email_limit:
         return None
 
     def _name(key):
@@ -197,7 +255,7 @@ def enqueue(con, action, plan, email, answers, now, signing_key):
         if not isinstance(v, str):
             return None
         v = v.strip()
-        if not v or len(v) > 50 or not v.isprintable():
+        if not v or len(v) > provider.name_limit or not v.isprintable():
             return None
         return v
 
@@ -213,7 +271,7 @@ def enqueue(con, action, plan, email, answers, now, signing_key):
 
     cur = con.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO library_constant_contact_form_delivery "
+        f"INSERT OR IGNORE INTO {provider.delivery} "
         "(id, kind, subject, generation, recipient_key, email, first_name, last_name, due, state) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -236,7 +294,7 @@ def enqueue(con, action, plan, email, answers, now, signing_key):
             job_id,
             event_contact_delivery.STEP,
             {
-                "provider": "constant-contact",
+                "provider": provider.key,
                 "kind": plan["kind"],
                 "subject": plan["subject"],
                 "list_id": plan["list_id"],
@@ -248,17 +306,19 @@ def enqueue(con, action, plan, email, answers, now, signing_key):
 
 
 class Consent:
-    def __init__(self, connection, action, operator):
+    def __init__(self, connection, action, operator, provider=CONSTANT_CONTACT):
         self.connection = connection
         self.action = action
+        self.provider = provider
+        salt = f"CuePorch {provider.label} form consent"
         self.signing_key = hmac.digest(
             operator.encode(),
-            b"CuePorch Constant Contact form consent",
+            salt.encode(),
             "sha256",
         )
         self.signer = URLSafeTimedSerializer(
             self.signing_key,
-            salt="CuePorch Constant Contact form consent",
+            salt=salt,
         )
 
     def _plan(self, con, kind, subject, form):
@@ -267,7 +327,7 @@ class Consent:
         if not self.connection.configured:
             return None
         row = self.connection.connection(con)
-        plan = get(con, kind, subject)
+        plan = get(con, kind, subject, provider=self.provider)
         if not row or not plan:
             return None
         if plan["provider_revision"] != row["revision"]:
@@ -282,7 +342,7 @@ class Consent:
             return ""
         return self.signer.dumps(
             [
-                "constant-contact-form",
+                f"{self.provider.key}-form",
                 kind,
                 subject,
                 scope,
@@ -295,7 +355,7 @@ class Consent:
         if not plan or not ticket:
             return None
         payload = [
-            "constant-contact-form",
+            f"{self.provider.key}-form",
             kind,
             subject,
             scope,
@@ -318,35 +378,37 @@ class Consent:
                 answers,
                 int(time.time()),
                 self.signing_key,
+                provider=self.provider,
             )
 
         return on_record
 
-def configure(tx, connection, validate, kind, uid, body):
+
+def configure(tx, connection, validate, kind, uid, body, provider=CONSTANT_CONTACT):
     revision = connection.revision()
     with tx() as con:
         list_id = body.get("list_id")
-        if not constant_contact_crm.list_id(list_id):
-            abort(422, "Choose a Constant Contact list.")
+        if not provider.list_id(list_id):
+            abort(422, f"Choose a {provider.label} list.")
         form = validate(con, kind, uid)
         if (not form or form["first_name"] == "off" or
                 form["last_name"] == "off"):
             abort(409, "Enable the form with first and last name fields.")
-        prior = get(con, kind, uid)
+        prior = get(con, kind, uid, provider=provider)
 
-    destination = constant_contact_crm.contact_list(connection, revision, list_id)
+    destination = provider.adapter.contact_list(connection, revision, list_id)
 
     with tx() as con:
         connection.authorize(con, revision)
         form2 = validate(con, kind, uid)
-        if (get(con, kind, uid) != prior or not form2 or
+        if (get(con, kind, uid, provider=provider) != prior or not form2 or
                 form2["revision"] != form["revision"]):
             abort(409, "The form was changed concurrently. Please try again.")
-        save(con, kind, uid, revision, form["revision"], destination)
+        save(con, kind, uid, revision, form["revision"], destination, provider=provider)
 
 
-def receipt(con, connection, kind, subject, form):
-    plan = get(con, kind, subject)
+def receipt(con, connection, kind, subject, form, provider=CONSTANT_CONTACT):
+    plan = get(con, kind, subject, provider=provider)
     conn_row = connection.connection(con)
     available = bool(connection.configured and conn_row)
     enabled = bool(
@@ -368,7 +430,7 @@ def receipt(con, connection, kind, subject, form):
     rows = con.execute(
         "SELECT CASE WHEN d.state='queued' AND a.status='waiting' THEN 'waiting' "
         "ELSE d.state END AS receipt_state, COUNT(*) AS count "
-        "FROM library_constant_contact_form_delivery d "
+        f"FROM {provider.delivery} d "
         "LEFT JOIN action a ON a.id=d.id WHERE d.generation=? GROUP BY receipt_state",
         (plan["generation"],)).fetchall()
     return {
@@ -381,7 +443,7 @@ def receipt(con, connection, kind, subject, form):
     }
 
 
-def register_routes(app, tx, staff, origin, connection, validate):
+def register_routes(app, tx, staff, origin, connection, validate, provider=CONSTANT_CONTACT):
     from flask import request
     from browser_account_security import (
         json_mutation,
@@ -391,16 +453,18 @@ def register_routes(app, tx, staff, origin, connection, validate):
     )
 
     @app.route(
-        "/api/library/work/<uid>/registration/constant-contact/outbound",
+        f"/api/library/work/<uid>/registration/{provider.key}/outbound",
         defaults={"kind": "video"},
+        endpoint=f"{provider.key}-video-registration-delivery",
         methods=["GET", "PUT", "DELETE"],
     )
     @app.route(
-        "/api/showcases/<uid>/registration/constant-contact/outbound",
+        f"/api/showcases/<uid>/registration/{provider.key}/outbound",
         defaults={"kind": "showcase"},
+        endpoint=f"{provider.key}-showcase-registration-delivery",
         methods=["GET", "PUT", "DELETE"],
     )
-    def constant_contact_forms(uid, kind):
+    def form_delivery(uid, kind):
         staff()
         secure = secure_site(origin)
         if request.method == "GET":
@@ -408,12 +472,13 @@ def register_routes(app, tx, staff, origin, connection, validate):
         else:
             body = json_mutation(secure, "X-CuePorch-Integration")
             if request.method == "PUT":
-                configure(tx, connection, validate, kind, uid, body)
+                configure(tx, connection, validate, kind, uid, body, provider=provider)
         with tx() as con:
             form = validate(con, kind, uid)
             if request.method == "DELETE":
-                stop(con, kind, uid)
-            return private(receipt(con, connection, kind, uid, form))
+                stop(con, kind, uid, provider=provider)
+            return private(receipt(con, connection, kind, uid, form, provider=provider))
+
 
 def _confirmed_membership(record, list_id):
     """Classify read-contact evidence for a single-list delivery."""
@@ -428,13 +493,23 @@ def _confirmed_membership(record, list_id):
     return None
 
 
-def _follow_delivery(row, plan, connection, now):
+def _follow_delivery(row, plan, connection, now, provider):
     """Resolve the delivery state for a submission via read-only provider reads."""
     activity_id = row["activity_id"]
     revision = plan["provider_revision"]
     list_id = plan["list_id"]
 
-    if activity_id and now >= row["poll_deadline"]:
+    if row["poll_deadline"] is not None and now >= row["poll_deadline"]:
+        return "unconfirmed"
+
+    if provider is CAMPAIGN_MONITOR:
+        outcome = provider.adapter.read_registration(
+            connection, revision, list_id, row["email"]
+        )
+        if outcome is not None:
+            return outcome
+        if row["poll_deadline"] is not None:
+            return "submitted"
         return "unconfirmed"
 
     if activity_id:
@@ -456,31 +531,31 @@ def _follow_delivery(row, plan, connection, now):
     return "unconfirmed"
 
 
-def deliver(tx, job, connection, validate, stop_event, clock):
+def deliver(tx, job, connection, validate, stop_event, clock, provider=CONSTANT_CONTACT):
     from werkzeug.exceptions import TooManyRequests
 
     with tx() as con:
-        row, plan = scope(con, job, connection, validate, stop_event)
+        row, plan = scope(con, job, connection, validate, stop_event, provider=provider)
 
     if row["activity_id"] or row["write_started"]:
-        return _follow_delivery(row, plan, connection, int(clock()))
+        return _follow_delivery(row, plan, connection, int(clock()), provider)
 
     marker_set = False
 
     def before_send():
         nonlocal marker_set
         with tx() as con:
-            scope(con, job, connection, validate, stop_event)
+            scope(con, job, connection, validate, stop_event, provider=provider)
             # at-most-once recovery marker: persist intent before network send
             con.execute(
-                "UPDATE library_constant_contact_form_delivery SET write_started=1 "
+                f"UPDATE {provider.delivery} SET write_started=1 "
                 "WHERE id=? AND state='queued'",
                 (row["id"],)
             )
         marker_set = True
 
     try:
-        result = constant_contact_crm.send_registration(
+        result = provider.adapter.send_registration(
             connection,
             plan["provider_revision"],
             plan["list_id"],
@@ -493,43 +568,50 @@ def deliver(tx, job, connection, validate, stop_event, clock):
         if marker_set:
             with tx() as con:
                 con.execute(
-                    "UPDATE library_constant_contact_form_delivery SET write_started=0 "
+                    f"UPDATE {provider.delivery} SET write_started=0 "
                     "WHERE id=? AND state='queued' AND activity_id IS NULL",
                     (row["id"],)
                 )
         raise
 
-    if result["state"] == "submitted":
+    if isinstance(result, str):
+        state = result
+        activity_id = None
+    else:
+        state = result["state"]
+        activity_id = result.get("activity_id")
+
+    if state == "submitted":
         with tx() as con:
             # activity id checkpoint: record submission so polling can recover
             con.execute(
-                "UPDATE library_constant_contact_form_delivery SET activity_id=?, poll_deadline=? "
+                f"UPDATE {provider.delivery} SET activity_id=?, poll_deadline=? "
                 "WHERE id=? AND state='queued' AND activity_id IS NULL",
-                (result["activity_id"], int(clock()) + 1800, row["id"])
+                (activity_id, int(clock()) + 1800, row["id"])
             )
 
-    return result["state"]
+    return state
 
 
-def run_one(tx, connection, validate, stop_event, clock=time.time):
+def run_one(tx, connection, validate, stop_event, clock=time.time, provider=CONSTANT_CONTACT):
     def finish(con, job_id, state, due, attempts):
         if state == "submitted":
             con.execute(
-                "UPDATE library_constant_contact_form_delivery "
+                f"UPDATE {provider.delivery} "
                 "SET state='submitted', due=?, attempts=0 "
                 "WHERE id=? AND state IN ('queued','submitted')",
                 (int(clock()) + 30, job_id),
             )
         elif state == "queued":
             con.execute(
-                "UPDATE library_constant_contact_form_delivery "
+                f"UPDATE {provider.delivery} "
                 "SET due=?, attempts=? "
                 "WHERE id=? AND state IN ('queued','submitted')",
                 (due, attempts, job_id),
             )
         else:
             con.execute(
-                "UPDATE library_constant_contact_form_delivery "
+                f"UPDATE {provider.delivery} "
                 "SET state=?, attempts=?, due=NULL, email=NULL, first_name=NULL, "
                 "last_name=NULL, poll_deadline=NULL "
                 "WHERE id=? AND state IN ('queued','submitted')",
@@ -538,20 +620,22 @@ def run_one(tx, connection, validate, stop_event, clock=time.time):
 
     return event_contact_delivery.run_job(
         tx,
-        next_job,
-        lambda job: deliver(tx, job, connection, validate, stop_event, clock),
+        lambda con, now: next_job(con, now, provider=provider),
+        lambda job: deliver(tx, job, connection, validate, stop_event, clock, provider=provider),
         finish,
         stop_event,
         clock,
     )
 
 
-def start(app, tx, database, connection, validate):
+def start(app, tx, database, connection, validate, provider=CONSTANT_CONTACT):
     if not connection.configured:
         return lambda: None
     return event_contact_delivery._start_worker(
         app,
         database,
-        "constant-contact-forms",
-        lambda stop_event: run_one(tx, connection, validate, stop_event),
+        provider.key + "-forms",
+        lambda stop_event: run_one(
+            tx, connection, validate, stop_event, provider=provider
+        ),
     )

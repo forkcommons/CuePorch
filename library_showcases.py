@@ -18,7 +18,7 @@ from browser_account_security import is_loopback
 import folder_slack_queue
 import library_analytics
 import library_details
-import library_constant_contact_forms
+import library_list_registration
 import library_mailchimp_forms
 import library_peer_handoff
 import library_privacy as privacy
@@ -271,7 +271,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
                 con.execute("DELETE FROM viewer_registrant WHERE kind='showcase' AND subject=?", (uid,))
                 library_mailchimp_forms.stop(con,"showcase",uid)
-                library_constant_contact_forms.stop(con,"showcase",uid)
+                library_list_registration.stop_all(con,"showcase",uid)
                 return "", 204
             if request.method == "POST":
                 new_id = uuid.uuid4().hex

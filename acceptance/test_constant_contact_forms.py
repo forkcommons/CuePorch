@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import constant_contact_crm as contact
-import library_constant_contact_forms as forms
+import library_list_registration as forms
 import workspace_oauth
 from institution import create_app
 from test_marketo_connection import _resp
@@ -142,8 +142,9 @@ class ConstantContactFormsTest(unittest.TestCase):
             )
         )
 
-        def capture(app, tx, database, connection, validate):
-            self.runner = (tx, connection, validate)
+        def capture(app, tx, database, connection, validate, provider=forms.CONSTANT_CONTACT):
+            if provider == forms.CONSTANT_CONTACT:
+                self.runner = (tx, connection, validate)
             return lambda: None
 
         stack.enter_context(patch.object(forms, "start", side_effect=capture))
@@ -235,7 +236,7 @@ class ConstantContactFormsTest(unittest.TestCase):
             assert outbound_get.get_json().get("enabled") is True
         return f"/embed/work/{work_id}", outbound_path
 
-    def submit(self, path, email, consent=True):
+    def submit(self, path, email, consent=True, *, consent_field="constant_contact_form_consent"):
         visitor = self.client.application.test_client()
         headers = {"Sec-Fetch-Dest": "iframe"}
         get_resp = visitor.get(path, headers=headers)
@@ -243,7 +244,7 @@ class ConstantContactFormsTest(unittest.TestCase):
         page = get_resp.get_data(as_text=True)
         tags = re.findall(r'<input[^>]*>', page)
         enrollment_tag = next(tag for tag in tags if 'name="enrollment"' in tag)
-        consent_tag = next(tag for tag in tags if 'name="constant_contact_form_consent"' in tag)
+        consent_tag = next(tag for tag in tags if f'name="{consent_field}"' in tag)
         enrollment = html.unescape(re.search(r'value="([^"]+)"', enrollment_tag).group(1))
         consent_token = html.unescape(re.search(r'value="([^"]+)"', consent_tag).group(1))
         assert not re.search(r"\bchecked\b", consent_tag, re.I)
@@ -255,7 +256,7 @@ class ConstantContactFormsTest(unittest.TestCase):
             "last_name": "Viewer",
         }
         if consent:
-            data["constant_contact_form_consent"] = consent_token
+            data[consent_field] = consent_token
         post_resp = visitor.post(path, headers=headers, data=data)
         assert post_resp.status_code == 200
         assert "<video" in post_resp.get_data(as_text=True)

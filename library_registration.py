@@ -134,7 +134,7 @@ def presentation(con, form, sign_on=None, language=None, *, mailchimp_target=Non
     offers = {}
     if mailchimp_target:
         kind, uid, scope = mailchimp_target
-        for name in ("mailchimp_form_consent", "constant_contact_form_consent"):
+        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent"):
             provider = current_app.extensions.get(name)
             if provider:
                 offers[name] = provider.offer(con, kind, uid, form, scope)
@@ -150,7 +150,7 @@ def admit(con, kind, uid, form, scope, occurrence=None, on_record=None):
         return current_app.extensions["registration_sign_on"].attempt(con, kind, uid, form, scope, occurrence)
     if on_record is None and kind in ("video", "showcase"):
         captures = []
-        for name in ("mailchimp_form_consent", "constant_contact_form_consent"):
+        for name in ("mailchimp_form_consent", "constant_contact_form_consent", "campaign_monitor_form_consent"):
             provider = current_app.extensions.get(name)
             if provider:
                 capture = provider.capture(con, kind, uid, form, scope, request.form.get(name, ""))
@@ -266,8 +266,8 @@ def operator_form(con, kind, uid, protected_public=False):
                 import library_mailchimp_forms
                 library_mailchimp_forms.stop(con,kind,uid)
             if kind in ("video","showcase") and current_app.extensions.get("constant_contact_form_consent"):
-                import library_constant_contact_forms
-                library_constant_contact_forms.stop(con,kind,uid)
+                import library_list_registration
+                library_list_registration.stop_all(con,kind,uid)
             revision = uuid.uuid4().hex
             config = updated
             con.execute("""INSERT INTO viewer_form VALUES(?,?,?,?) ON CONFLICT(kind,subject) DO UPDATE SET

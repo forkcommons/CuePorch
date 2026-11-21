@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
+from threading import Event
+import time
 import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
@@ -11,6 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 from werkzeug.exceptions import BadGateway, TooManyRequests
 
 import campaign_monitor_crm as cm
+import library_list_registration as forms
+import test_constant_contact_forms as cc_fixture
 import workspace_oauth
 from institution import create_app
 from test_marketo_connection import _resp
@@ -27,6 +31,8 @@ class CampaignMonitorProvider:
         self.exchanges = 0
         self.refreshes = 0
         self.list_reads = 0
+        self.deliveries = []
+        self.accepted = set()
 
     def request(self, method, url, **kwargs):
         method = (method or "").upper()
@@ -88,6 +94,27 @@ class CampaignMonitorProvider:
                 {"ListID": LIST_ID, "Name": "Station audience"},
             ])
 
+        if method == "GET" and url == cm.API_BASE + f"/lists/{LIST_ID}.json":
+            assert auth == "Bearer a2"
+            return _resp({"ListID": LIST_ID, "Title": "Station audience"})
+
+        if method == "GET" and url == cm.API_BASE + f"/subscribers/{LIST_ID}.json":
+            assert auth == "Bearer a2"
+            email = kwargs["params"]["email"]
+            if email in self.accepted:
+                return _resp({"EmailAddress": email, "State": "Active"})
+            response = _resp({"Code": 203})
+            response.status_code = 400
+            return response
+
+        if method == "POST" and url == cm.API_BASE + f"/subscribers/{LIST_ID}.json":
+            assert auth == "Bearer a2"
+            body = kwargs.get("json") or {}
+            self.deliveries.append(kwargs["json"])
+            response = _resp(body["EmailAddress"])
+            response.status_code = 201
+            return response
+
         raise AssertionError(f"unexpected Campaign Monitor request: {method} {url}")
 
 
@@ -117,6 +144,15 @@ class CampaignMonitorConnectionTest(unittest.TestCase):
                 side_effect=self.provider.request,
             )
         )
+
+        def capture(app, tx, database, connection, validate, provider=forms.CONSTANT_CONTACT):
+            if provider == forms.CAMPAIGN_MONITOR:
+                self.runner = (tx, connection, validate)
+            return lambda: None
+
+        stack.enter_context(patch.object(forms, "start", side_effect=capture))
+        self.now = time.time() + 1
+        self.stop = Event()
         self.app = create_app(temp_root, self.database, OPERATOR, "station")
         for name in list(self.app.extensions):
             if name.startswith("stop_"):
@@ -204,6 +240,50 @@ class CampaignMonitorConnectionTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.get_json()["connected"])
         self.assertEqual(self.client.get(clients, headers=self.auth).status_code, 409)
+
+
+    def test_registration_queue(self):
+        self.connect()
+        self.client.get('/api/integrations/campaign-monitor/clients', headers=self.auth)
+        embed_path, path = cc_fixture.ConstantContactFormsTest.enable_video(self, configure_delivery=False)
+        path = path.replace('/constant-contact/', '/campaign-monitor/')
+        response = self.client.put(path, headers=self.auth, json={'list_id': LIST_ID})
+        self.assertEqual(response.status_code, 200)
+
+        def receipt():
+            return self.client.get(path, headers=self.auth).get_json()['states']
+
+        def tick():
+            return forms.run_one(*self.runner, self.stop, clock=lambda: self.now, provider=forms.CAMPAIGN_MONITOR)
+
+        self.now = time.time() + 1
+
+        def submit(email, consent):
+            return cc_fixture.ConstantContactFormsTest.submit(
+                self, embed_path, email,
+                consent=consent,
+                consent_field='campaign_monitor_form_consent',
+            )
+
+        submit('test@example.test', False)
+        self.assertFalse(tick())
+
+        fresh_address = 'fresh@example.test'
+        submit(fresh_address, True)
+        self.assertTrue(tick())
+        self.assertEqual(receipt(), {'submitted': 1})
+        self.assertEqual(len(self.provider.deliveries), 1)
+
+        self.now += 31
+        self.assertTrue(tick())
+        self.assertEqual(receipt(), {'submitted': 1})
+
+        self.provider.accepted.add(fresh_address)
+        self.now += 31
+        self.assertTrue(tick())
+        self.assertEqual(receipt(), {'sent': 1})
+        self.assertEqual(len(self.provider.deliveries), 1)
+
 
 class CampaignMonitorSubscriberTest(unittest.TestCase):
     def test_new_subscriber_awaits_readback(self):
