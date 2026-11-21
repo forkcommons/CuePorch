@@ -52,15 +52,24 @@ def due(con, now):
         JOIN live_occurrence o ON o.event=s.event AND o.delivery='ready' AND o.opens>s.after_opens
         JOIN workspace_integration_connection w ON w.provider=CASE WHEN s.page LIKE 'profile:%' THEN 'facebook-profile-live' ELSE 'facebook-live' END AND w.revision=s.revision
         LEFT JOIN facebook_live_auto a ON a.event=s.event AND a.opens=o.opens AND a.page=s.page
+            AND (a.state='canceled' OR (a.revision=s.revision AND a.event_revision=s.event_revision))
         LEFT JOIN facebook_live_creation c ON c.event=s.event AND c.opens=o.opens AND c.page=s.page
         WHERE o.opens<=? AND a.event IS NULL AND c.event IS NULL ORDER BY opens""", (now, now)).fetchall()
 
 
 def claim(con, key, automatic):
     if automatic["series"]:
-        return con.execute("""INSERT OR IGNORE INTO facebook_live_auto
+        return con.execute("""INSERT INTO facebook_live_auto
             (event, opens, page, revision, event_revision, state, privacy)
-            VALUES(?,?,?,?,?,'attempted',?)""",
+            VALUES(?,?,?,?,?,'attempted',?)
+            ON CONFLICT(event, opens, page) DO UPDATE SET
+              revision=excluded.revision,
+              event_revision=excluded.event_revision,
+              state='attempted',
+              privacy=excluded.privacy
+            WHERE facebook_live_auto.state!='canceled'
+              AND (facebook_live_auto.revision!=excluded.revision
+                   OR facebook_live_auto.event_revision!=excluded.event_revision)""",
             (*key, automatic["revision"], automatic["event_revision"],
              automatic["privacy"])).rowcount == 1
     return con.execute("""UPDATE facebook_live_auto SET state='attempted'
