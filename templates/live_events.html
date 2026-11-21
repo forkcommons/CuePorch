@@ -195,6 +195,20 @@
           <button id="eventHubSpotReadSync">Refresh sync status</button>
           <p id="eventHubSpotSyncStatus" role="status"></p>
         </fieldset>
+        <fieldset id="eventHubSpotOutbound" hidden>
+          <legend>Send consented registrations to HubSpot</legend>
+          <p>Choose a static contact segment above and an email subscription below.</p>
+          <button type="button" id="eventHubSpotLoadSubscriptions">Load email subscriptions</button>
+          <label>Email subscription
+            <select id="eventHubSpotSubscription">
+              <option value="">Choose an email subscription</option>
+            </select>
+          </label>
+          <button type="button" id="eventHubSpotEnableOutbound">Enable registration delivery</button>
+          <button type="button" id="eventHubSpotDisableOutbound">Stop registration delivery</button>
+          <button type="button" id="eventHubSpotReadOutbound">Refresh delivery status</button>
+          <p id="eventHubSpotOutboundStatus" role="status"></p>
+        </fieldset>
       </details>
       <details id="eventCsvSettings">
         <summary>Import attendee CSV</summary>

@@ -72,6 +72,10 @@
     <label><input type="checkbox" name="share_watch_time" value="yes" {% if request.form.get('share_watch_time') == 'yes' %}checked{% endif %}>
       {{ copy('watch_time') }}</label>
     {% endif %}
+    {% if hubspot_consent %}
+    <label><input type="checkbox" name="hubspot_consent" value="{{ hubspot_consent }}">
+      Share my email address and name with the organizer in HubSpot for this event.</label>
+    {% endif %}
     {% if registration.privacy_url %}
     <p><a href="{{ registration.privacy_url }}" target="_blank" rel="noopener noreferrer">{{ copy('privacy') }}</a></p>
     {% endif %}

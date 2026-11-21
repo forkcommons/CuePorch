@@ -19,10 +19,178 @@ from institution import create_app
 import requests
 
 
+from urllib.parse import unquote
+
+
+def outbound_fixture(provider, method, path, kwargs):
+    path = path.split("?", 1)[0]
+    contacts_prefix = "/crm/objects/2026-09/contacts/"
+
+    if method == "GET" and path == "/crm/lists/2026-09/10":
+        return provider.response(
+            {
+                "list": {
+                    "listId": "10",
+                    "name": "Warm list",
+                    "processingType": "MANUAL",
+                    "processingStatus": "COMPLETE",
+                    "objectTypeId": "0-1",
+                }
+            }
+        )
+
+    if method == "GET" and path == "/communication-preferences/2026-09/definitions":
+        return provider.response(
+            {
+                "status": "COMPLETE",
+                "results": [
+                    {
+                        "id": "44",
+                        "name": "Event updates",
+                        "communicationMethod": "Email",
+                        "isActive": True,
+                        "isInternal": False,
+                    }
+                ],
+            }
+        )
+
+    statuses_prefix = "/communication-preferences/2026-09/statuses/"
+    if method == "GET" and path.startswith(statuses_prefix):
+        assert kwargs["params"]["channel"] == "EMAIL"
+        rest = path[len(statuses_prefix) :]
+        unsub_all = rest.endswith("/unsubscribe-all")
+        raw_email = rest[: -len("/unsubscribe-all")] if unsub_all else rest
+        email = unquote(raw_email)
+        if not unsub_all and email == "blocked@example.invalid":
+            results = [
+                {
+                    "subscriptionId": 44,
+                    "subscriberIdString": email,
+                    "channel": "EMAIL",
+                    "status": "UNSUBSCRIBED",
+                }
+            ]
+        else:
+            results = []
+        return provider.response({"status": "COMPLETE", "results": results})
+
+    if method == "GET" and path.startswith(contacts_prefix):
+        assert kwargs["params"]["idProperty"] == "email"
+        email = unquote(path[len(contacts_prefix) :])
+        rec = provider.outbound_contacts.get(email)
+        if rec is None or rec.get("archived", False):
+            return provider.response(
+                {
+                    "status": "error",
+                    "message": "Contact not found",
+                    "category": "OBJECT_NOT_FOUND",
+                },
+                status=404,
+            )
+        props = {"email": rec["email"]}
+        if "firstname" in rec:
+            props["firstname"] = rec["firstname"]
+        if "lastname" in rec:
+            props["lastname"] = rec["lastname"]
+        return provider.response(
+            {"id": rec["id"], "properties": props, "archived": False}
+        )
+
+    if method == "POST" and path == "/crm/objects/2026-09/contacts":
+        props = kwargs["json"]["properties"]
+        assert "email" in props
+        assert set(props) <= {"email", "firstname", "lastname"}
+        email = props["email"]
+        new_id = str(len(provider.outbound_contacts) + 1)
+        record = {"id": new_id, "email": email, "archived": False}
+        if "firstname" in props:
+            record["firstname"] = props["firstname"]
+        if "lastname" in props:
+            record["lastname"] = props["lastname"]
+
+        provider.outbound_writes.append(("create", email))
+        if email == "conflict@example.invalid":
+            if email not in provider.outbound_contacts:
+                provider.outbound_contacts[email] = record
+            return provider.response(
+                {
+                    "status": "error",
+                    "message": "Contact already exists",
+                    "category": "CONFLICT",
+                },
+                status=409,
+            )
+
+        provider.outbound_contacts[email] = record
+        out_props = {"email": email}
+        if "firstname" in record:
+            out_props["firstname"] = record["firstname"]
+        if "lastname" in record:
+            out_props["lastname"] = record["lastname"]
+        return provider.response(
+            {"id": new_id, "properties": out_props, "archived": False}, status=201
+        )
+
+    if method == "PATCH" and path.startswith(contacts_prefix):
+        contact_id = path[len(contacts_prefix) :]
+        body = kwargs.get("json") or {}
+        props = body.get("properties", {})
+        assert set(props) <= {"firstname", "lastname"}
+        rec = None
+        for candidate in provider.outbound_contacts.values():
+            if candidate["id"] == contact_id:
+                rec = candidate
+                break
+        assert rec is not None
+        if "firstname" in props:
+            rec["firstname"] = props["firstname"]
+        if "lastname" in props:
+            rec["lastname"] = props["lastname"]
+        provider.outbound_writes.append(("update", rec["email"]))
+        out_props = {"email": rec["email"]}
+        if "firstname" in rec:
+            out_props["firstname"] = rec["firstname"]
+        if "lastname" in rec:
+            out_props["lastname"] = rec["lastname"]
+        return provider.response(
+            {"id": rec["id"], "properties": out_props, "archived": False}
+        )
+
+    if method == "PUT" and path == "/crm/lists/2026-09/10/memberships/add":
+        record_ids = kwargs["json"]
+        assert len(record_ids) == 1
+        record_id = record_ids[0]
+        known_ids = {rec["id"] for rec in provider.outbound_contacts.values()}
+        assert record_id in known_ids
+        provider.outbound_members.add(record_id)
+        provider.outbound_writes.append(("add", record_id))
+        return provider.response({})
+
+    member_prefix = "/crm/lists/2026-09/records/0-1/"
+    member_suffix = "/memberships"
+    if (
+        method == "GET"
+        and path.startswith(member_prefix)
+        and path.endswith(member_suffix)
+    ):
+        member_id = path[len(member_prefix) : -len(member_suffix)]
+        if member_id in provider.outbound_members:
+            return provider.response(
+                {"results": [{"listId": "10", "recordId": member_id}], "total": 1}
+            )
+        return provider.response({"results": [], "total": 0})
+
+    return None
+
+
 class Provider:
     def __init__(self):
         self.refreshes = 0
         self.revoked = False
+        self.outbound_contacts = {}
+        self.outbound_members = set()
+        self.outbound_writes = []
         self.corrupt = False
         self.rejected = False
         from threading import Event
@@ -44,7 +212,7 @@ class Provider:
         prefix = "https://api.hubapi.com/"
         assert url.startswith(prefix), url
         path = url[len(prefix) - 1 :]
-        if path.startswith("/crm/"):
+        if path.startswith(("/crm/", "/communication-preferences/")):
             return self.crm(method, path, **kwargs)
         assert method == "POST"
         data = kwargs["data"]
@@ -81,6 +249,10 @@ class Provider:
             return self.response({"error": "unauthorized"}, status=401)
         assert auth == "Bearer fixture-access-two"
 
+        response = outbound_fixture(self, method, path, kwargs)
+        if response is not None:
+            return response
+
         if path == "/crm/lists/2026-09/all":
             assert method == "POST"
             payload = kwargs.get("json") or {}
@@ -111,7 +283,7 @@ class Provider:
                             "listId": "10",
                             "name": "Warm list",
                             "objectTypeId": "0-1",
-                            "processingType": "DYNAMIC",
+                            "processingType": "MANUAL",
                         }
                     ],
                     "paging": {
@@ -260,6 +432,7 @@ class HubSpotCRM(unittest.TestCase):
                         "CUEPORCH_PUBLIC_URL": base,
                         "CUEPORCH_HUBSPOT_CLIENT_ID": "fixture-client",
                         "CUEPORCH_HUBSPOT_CLIENT_SECRET": "fixture-secret",
+                        "CUEPORCH_HUBSPOT_OUTBOUND": "1",
                     },
                 )
             )
@@ -466,6 +639,7 @@ class HubSpotCRM(unittest.TestCase):
             assert b"fixture-refresh" not in token
 
         self.verify_automatic(page, base, auth, created, database, fixture)
+        self.verify_outbound(page, base, auth, created, fixture)
 
         page.goto(f"{base}/operator/integrations")
         page.click("text=Disconnect HubSpot")
@@ -478,6 +652,137 @@ class HubSpotCRM(unittest.TestCase):
             url, data={"segment": "20"}, headers=headers
         )
         assert response.status == 409
+
+    def verify_outbound(self, page, base, auth, created, fixture):
+        import time
+
+        event_id = created["id"]
+        opens = created["occurrences"][1]["id"]
+        outbound_url = (
+            f"{base}/api/live-events/{event_id}/{opens}/registration/hubspot/outbound"
+        )
+
+        def wait_for(**counts):
+            deadline = time.time() + 10
+            receipt = None
+            while time.time() < deadline:
+                response = page.request.get(outbound_url, headers=auth)
+                assert response.ok
+                receipt = response.json()
+                states = receipt.get("states") or {}
+                if all(states.get(key, 0) == value for key, value in counts.items()):
+                    return receipt
+                time.sleep(0.2)
+            raise AssertionError(
+                f"Timed out waiting for outbound states {counts}; last receipt: {receipt!r}"
+            )
+
+        def register(email, first_name, last_name, consent):
+            visitor = page.context.browser.new_page()
+            try:
+                visitor.goto(f"{base}/events/crm-rehearsal?occurrence={opens}")
+                visitor.fill("input[name=email]", email)
+                visitor.fill("input[name=first_name]", first_name)
+                visitor.fill("input[name=last_name]", last_name)
+                box = visitor.locator("input[name=hubspot_consent]")
+                expect(box).not_to_be_checked()
+                if consent:
+                    box.check()
+                visitor.locator("form button[type=submit]").first.click()
+                expect(box).to_have_count(0)
+            finally:
+                visitor.close()
+
+        page.goto(f"{base}/operator/live-events")
+        page.get_by_role("button", name="Open production for CRM rehearsal").nth(
+            1
+        ).click()
+
+        page.get_by_text("Attendees for this occurrence", exact=True).click()
+
+        page.get_by_role("button", name="Load contact segments").click()
+        page.locator("#eventHubSpotSegment").select_option(label="Warm list")
+        page.get_by_role("button", name="Load email subscriptions").click()
+        page.locator("#eventHubSpotSubscription").select_option(label="Event updates")
+
+        page.get_by_role("button", name="Enable registration delivery").click()
+        expect(page.locator("#eventHubSpotOutboundStatus")).to_contain_text(
+            "Registration delivery enabled"
+        )
+
+        receipt = wait_for(sent=0, skipped=0, waiting=0)
+        assert receipt.get("enabled") is True
+
+        register("local@example.invalid", "Local", "User", False)
+        assert "local@example.invalid" not in fixture.outbound_contacts
+        assert not any(
+            op in ("create", "update") and value == "local@example.invalid"
+            for op, value in fixture.outbound_writes
+        )
+        wait_for(sent=0, skipped=0, waiting=0)
+
+        register("blocked@example.invalid", "Blocked", "User", True)
+        wait_for(skipped=1)
+        assert "blocked@example.invalid" not in fixture.outbound_contacts
+        assert not any(
+            op in ("create", "update") and value == "blocked@example.invalid"
+            for op, value in fixture.outbound_writes
+        )
+
+        register("agreed@example.invalid", "Agreed", "User", True)
+        wait_for(sent=1)
+        contact = fixture.outbound_contacts["agreed@example.invalid"]
+        assert (contact["firstname"], contact["lastname"]) == ("Agreed", "User")
+
+        register("conflict@example.invalid", "Conflict", "User", True)
+        wait_for(sent=2)
+
+        creates = [value for op, value in fixture.outbound_writes if op == "create"]
+        updates = [value for op, value in fixture.outbound_writes if op == "update"]
+        assert creates == ["agreed@example.invalid", "conflict@example.invalid"]
+        assert len(updates) == 1
+        assert updates == ["conflict@example.invalid"]
+
+        expected_members = {
+            fixture.outbound_contacts["agreed@example.invalid"]["id"],
+            fixture.outbound_contacts["conflict@example.invalid"]["id"],
+        }
+        assert fixture.outbound_members == expected_members
+
+        response = page.request.put(
+            f"{base}/api/policy/event_contact_sync",
+            headers=auth,
+            data={"required": True},
+        )
+        assert response.ok
+
+        register("held@example.invalid", "Held", "User", True)
+        wait_for(waiting=1)
+        assert "held@example.invalid" not in fixture.outbound_contacts
+        assert not any(
+            op in ("create", "update") and value == "held@example.invalid"
+            for op, value in fixture.outbound_writes
+        )
+
+        response = page.request.put(
+            f"{base}/api/policy/event_contact_sync",
+            headers=auth,
+            data={"required": False},
+        )
+        assert response.ok
+        wait_for(sent=3, waiting=0)
+
+        page.get_by_role("button", name="Stop registration delivery").click()
+        expect(page.locator("#eventHubSpotOutboundStatus")).to_contain_text(
+            "Registration delivery is off"
+        )
+
+        visitor = page.context.browser.new_page()
+        try:
+            visitor.goto(f"{base}/events/crm-rehearsal?occurrence={opens}")
+            expect(visitor.locator("input[name=hubspot_consent]")).to_have_count(0)
+        finally:
+            visitor.close()
 
     def verify_automatic(self, page, base, auth, created, database, fixture):
         from time import monotonic, sleep

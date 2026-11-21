@@ -82,6 +82,7 @@ import library_timeline
 import library_trash
 import library_upload
 import hubspot_crm
+import event_hubspot_outbound
 import library_integrations
 import intake_watch
 import social_publication
@@ -114,6 +115,7 @@ STEPS = (
     "translation",
     *library_ai_drafts.FEATURES,
     studio_scripts.STEP,
+    event_hubspot_outbound.STEP,
     "publication",
     "replay",
     "migration",
@@ -817,6 +819,10 @@ def create_app(root, database, operator, institution, simulation=None):
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM social_publication WHERE state='queued' AND final_sent=0
                             AND (provider<>'youtube' OR (probe=0 AND offset=0)))""", (step,))
+                if step == event_hubspot_outbound.STEP:
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM live_event_hubspot_delivery WHERE state='queued')""", (step,))
             if not required:
                 con.execute(
                     "UPDATE action SET status='eligible',decision='automatic' WHERE step=? AND status='waiting'",
@@ -1364,7 +1370,7 @@ def create_app(root, database, operator, institution, simulation=None):
         authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
-    hubspot = workspace_oauth.Connection(hubspot_crm.OAUTH, tx, operator)
+    hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
                             ai_actor, hubspot)

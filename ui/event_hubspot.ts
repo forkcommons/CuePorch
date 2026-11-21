@@ -21,6 +21,147 @@ type SyncReceipt = {
   last_result?: ImportResponse | null;
 };
 
+function setupContactDelivery(request: Request, segment: HTMLSelectElement): (newBase: string) => void {
+  type Receipt = {
+    available?: boolean;
+    states?: Record<string, number>;
+    enabled?: boolean;
+    segment?: string;
+    subscription?: string;
+  };
+  type Subscriptions = {
+    subscriptions?: { id: string; name: string }[];
+  };
+
+  const fieldset = document.getElementById('eventHubSpotOutbound') as HTMLFieldSetElement;
+  const subscription = document.getElementById('eventHubSpotSubscription') as HTMLSelectElement;
+  const load = document.getElementById('eventHubSpotLoadSubscriptions') as HTMLButtonElement;
+  const enable = document.getElementById('eventHubSpotEnableOutbound') as HTMLButtonElement;
+  const disable = document.getElementById('eventHubSpotDisableOutbound') as HTMLButtonElement;
+  const read = document.getElementById('eventHubSpotReadOutbound') as HTMLButtonElement;
+  const status = document.getElementById('eventHubSpotOutboundStatus') as HTMLElement;
+
+  let base = '';
+  let generation = 0;
+  const inFlight = new Set<number>();
+
+  const setStatus = (text: string): void => {
+    status.textContent = text;
+  };
+
+  const call = async <T>(
+    b: string,
+    gen: number,
+    path: string,
+    method?: string,
+    body?: object,
+    integration?: boolean
+  ): Promise<T | undefined> => {
+    if (!b || b !== base || gen !== generation) return;
+    if (inFlight.has(gen)) return;
+    inFlight.add(gen);
+    try {
+      const result = await request<T>(path, method, body, integration);
+      return b === base && gen === generation ? result : undefined;
+    } catch (error) {
+      if (b === base && gen === generation) {
+        setStatus(error instanceof Error ? error.message : 'Request failed');
+      }
+      return undefined;
+    } finally {
+      inFlight.delete(gen);
+    }
+  };
+
+  const refresh = async (b: string, gen: number): Promise<void> => {
+    const receipt = await call<Receipt>(b, gen, `${b}/registration/hubspot/outbound`, 'GET');
+    if (!receipt) return;
+
+    if (receipt.available === false) {
+      fieldset.hidden = true;
+      setStatus('Outbound unavailable');
+      return;
+    }
+
+    fieldset.hidden = false;
+    const keys = ['queued', 'waiting', 'sent', 'skipped', 'canceled', 'problem'] as const;
+    const counts = keys.map((key) => `${key}: ${receipt.states?.[key] ?? 0}`).join(', ');
+    const enabledText = receipt.enabled
+      ? 'Registration delivery enabled'
+      : 'Registration delivery is off';
+    const ids = [
+      receipt.segment ? `segment ${receipt.segment}` : '',
+      receipt.subscription ? `subscription ${receipt.subscription}` : ''
+    ].filter(Boolean).join(', ');
+
+    setStatus([enabledText, counts, ids].filter(Boolean).join(' · '));
+  };
+
+  load.addEventListener('click', async () => {
+    if (!base) return;
+    const b = base;
+    const gen = generation;
+    const data = await call<Subscriptions>(b, gen, '/api/integrations/hubspot/subscriptions', 'GET');
+    if (!data) return;
+
+    subscription.replaceChildren(new Option("Choose an email subscription", ""));
+    subscription.value = '';
+    for (const item of data.subscriptions ?? []) {
+      subscription.append(new Option(item.name, item.id));
+    }
+  });
+
+  enable.addEventListener('click', async () => {
+    if (!base) return;
+    if (!segment.value || !subscription.value) {
+      setStatus('Select a segment and a subscription');
+      return;
+    }
+
+    const b = base;
+    const gen = generation;
+    const result = await call<Receipt>(
+      b,
+      gen,
+      `${b}/registration/hubspot/outbound`,
+      'PUT',
+      { segment: segment.value, subscription: subscription.value },
+      true
+    );
+    if (result) void refresh(b, gen);
+  });
+
+  disable.addEventListener('click', async () => {
+    if (!base) return;
+    const b = base;
+    const gen = generation;
+    const result = await call<Receipt>(
+      b,
+      gen,
+      `${b}/registration/hubspot/outbound`,
+      'DELETE',
+      {},
+      true
+    );
+    if (result && b === base && gen === generation) void refresh(b, gen);
+  });
+
+  read.addEventListener('click', () => {
+    if (!base) return;
+    void refresh(base, generation);
+  });
+
+  return (newBase: string): void => {
+    base = newBase;
+    generation += 1;
+    subscription.replaceChildren(new Option("Choose an email subscription", ""));
+    subscription.value = '';
+    setStatus('');
+    fieldset.hidden = true;
+    if (base) void refresh(base, generation);
+  };
+}
+
 export function setupHubSpot(
   request: Request,
   refreshRoster: () => void,
@@ -34,6 +175,7 @@ export function setupHubSpot(
   const stopSyncBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotStopSync")!;
   const readSyncBtn = document.querySelector<HTMLButtonElement>("#eventHubSpotReadSync")!;
   const syncStatus = document.querySelector<HTMLElement>("#eventHubSpotSyncStatus")!;
+  const chooseOutbound = setupContactDelivery(request, segmentSel);
 
   let base = "";
   let scope = 0;
@@ -194,5 +336,6 @@ const parts: string[] = [stateLabels[receipt.state] ?? receipt.state];
     stopSyncBtn.hidden = true;
     setBusy(false);
     void syncRequest("GET");
+    chooseOutbound(newBase);
   };
 }

@@ -30,6 +30,7 @@ import event_chat
 import event_captions
 import event_engagement
 import event_hubspot_sync
+import event_hubspot_outbound
 import event_library_recordings
 import event_mail
 import event_player
@@ -76,7 +77,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
-       + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA)
+       + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA)
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 TYPES = ("live", "webinar", "team", "learning", "custom")
 EVENT_VISIBILITY = ("public", "private", "unlisted", "password", "embed_only")
@@ -437,6 +438,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if stop_webhooks := app.extensions.get("stop_event_webhooks"):
             stop_webhooks()
         stop_hubspot()
+        stop_hubspot_outbound()
         stop_mail()
         outputs.close()
         preview_outputs.close()
@@ -863,9 +865,71 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             event_hubspot_sync.set_sync(con, uid, opens, segment=segment, connection=revision, actor=actor, event_revision=row["revision"], form_revision=form["revision"], closes=closes, zone=zone, now=now)
             return private(event_hubspot_sync.receipt(event_hubspot_sync.get(con, uid, opens)))
 
+    @app.route("/api/live-events/<uid>/<int:opens>/registration/hubspot/outbound", methods=["GET", "PUT", "DELETE"])
+    def configure_hubspot_outbound(uid, opens):
+        staff()
+        secure = secure_site(mail_origin)
+        available = hubspot.configured and "optional_scope" in hubspot.config.authorization_parameters
+        if request.method == "GET":
+            same_origin(secure)
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                return private(dict(
+                    event_hubspot_outbound.receipt(con, uid, opens),
+                    available=available,
+                ))
+        from browser_account_security import json_mutation
+        body = json_mutation(secure, "X-CuePorch-Integration")
+        if request.method == "DELETE":
+            with tx() as con:
+                row, event = read(con, uid)
+                selected_open(event, opens)
+                event_hubspot_outbound.disable(con, uid, opens)
+            return private(dict(enabled=False, state="off"))
+        if not available:
+            abort(400)
+        import hubspot_crm
+        segment = body.get("segment")
+        subscription = body.get("subscription")
+        if not hubspot_crm.segment_id(segment) or not hubspot_crm.segment_id(subscription):
+            abort(400)
+        with tx() as con:
+            row, slot, form = registration_intake(con, uid, opens)
+            event_revision = row["revision"]
+            form_revision = form["revision"]
+        revision = hubspot.revision()
+        if not hubspot_crm.outbound_segment(hubspot, revision, segment):
+            abort(400)
+        chosen = next((item for item in hubspot_crm.subscriptions(hubspot, revision) if item["id"] == subscription), None)
+        if chosen is None:
+            abort(400)
+        unit = chosen.get("business_unit", 0)
+        if not isinstance(unit, int) or isinstance(unit, bool) or unit < 0:
+            abort(400)
+        with tx() as con:
+            hubspot.authorize(con, revision)
+            row, slot, form = registration_intake(con, uid, opens)
+            if row["revision"] != event_revision or form["revision"] != form_revision:
+                abort(409, "The event or registration form changed.")
+            event_hubspot_outbound.set_destination(
+                con,
+                uid,
+                opens,
+                connection=revision,
+                event_revision=row["revision"],
+                form_revision=form["revision"],
+                segment=segment,
+                subscription=subscription,
+                business_unit=unit,
+                deadline=event_attendance.expires_at(slot),
+            )
+            return private(dict(event_hubspot_outbound.receipt(con, uid, opens), available=available))
+
     stop_hubspot = event_hubspot_sync.start(
         app, tx, database, hubspot, validate_hubspot_plan, apply_hubspot_plan,
     )
+    stop_hubspot_outbound = event_hubspot_outbound.start(app, tx, database, hubspot, validate_hubspot_plan) if "optional_scope" in hubspot.config.authorization_parameters else lambda: None
 
     @app.get("/api/live-events/<uid>/registrants/<registrant>")
     def event_registrant_details(uid, registrant):
@@ -1659,6 +1723,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             withdrawn = delivery and delivery["delivery"] in ("withdrawing", "withdrawn")
             form = library_registration.active(con, "event", row["id"]) if shown else None
             offer_sharing = bool(form and form["attendance_analytics"] and analytics_allowed)
+            hubspot_consent = ""
+            contact_plan = None
             options = event_playlist.settings(con, row["id"])
             playlist_enabled = options["enabled"] and event["schedule"]["repeat"] != "none"
             captioned = bool(shown and not withdrawn and (not delivery or delivery["delivery"] != "replay") and
@@ -1666,6 +1732,20 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
+            if (form and not withdrawn and (not delivery or delivery["delivery"] != "replay")
+                    and event["visibility"] in event_mail.WATCHABLE
+                    and hubspot.configured
+                    and "optional_scope" in hubspot.config.authorization_parameters):
+                candidate = event_hubspot_outbound.get(con, row["id"], shown["id"])
+                connection = hubspot.connection(con)
+                if (candidate and connection
+                        and candidate["connection"] == connection["revision"]
+                        and candidate["event_revision"] == row["revision"]
+                        and candidate["form_revision"] == form["revision"]
+                        and candidate["deadline"] > int(now.timestamp())):
+                    consent_scope = ["hubspot-outbound", scope, candidate["generation"]]
+                    hubspot_consent = forms.dumps(consent_scope)
+                    contact_plan = candidate
             if form:
                 just_unlocked = event["visibility"] == "password" and "password" in request.form and "enrollment" not in request.form
                 if request.method == "POST" and not withdrawn and not just_unlocked:
@@ -1674,7 +1754,10 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
                     def remember(email, answers):
                         nonlocal sharing
-                        registrant, _ = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
+                        registrant, created = event_registrants.record(con, row["id"], shown["id"], email, answers, "form")
+                        if (created and contact_plan
+                                and valid_ticket(forms, request.form.get("hubspot_consent", ""), consent_scope, 1200)):
+                            event_hubspot_outbound.enqueue(con, action, contact_plan, registrant, int(now.timestamp()))
                         if offer_sharing and request.form.get("share_watch_time") == "yes":
                             sharing = event_registrants.share(con, registrant)
 
@@ -1818,6 +1901,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
+                                     hubspot_consent=hubspot_consent,
                                      unlock_token=frame_grant, event_access=access,
                                      current_event_url=viewer_url(row, event, embed, link_key),
                                      content_labels=content_rating.viewer_labels(event.get("content_rating", {})),

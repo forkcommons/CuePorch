@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from flask import abort
 from workspace_oauth import Config, check_provider, response_object
 
@@ -13,6 +15,20 @@ OAUTH = Config(
     implicit_bearer=True,
 )
 LISTS = ORIGIN + "/crm/lists/2026-09"
+
+
+def oauth_config():
+    import os
+    from dataclasses import replace
+
+    if os.environ.get("CUEPORCH_HUBSPOT_OUTBOUND") == "1":
+        return replace(
+            OAUTH,
+            authorization_parameters={
+                "optional_scope": "crm.lists.write crm.objects.contacts.write communication_preferences.read_write"
+            },
+        )
+    return OAUTH
 
 
 def crm(connection, revision, method, url, **kwargs):
@@ -212,3 +228,276 @@ def contacts(connection, revision, list_id):
             )
 
     return output, skipped
+
+
+def contact_record(connection, revision, email):
+    url = ORIGIN + "/crm/objects/2026-09/contacts/" + quote(email, safe="")
+    with connection.api(
+        revision,
+        "GET",
+        url,
+        params={"idProperty": "email", "properties": "email"},
+    ) as response:
+        if response.status_code == 404:
+            return None
+        check_provider(response)
+        data = response_object(response)
+
+    properties = data.get("properties")
+    if (
+        not segment_id(data.get("id"))
+        or data.get("archived") is not False
+        or not isinstance(properties, dict)
+        or not isinstance(properties.get("email"), str)
+        or properties["email"].casefold() != email.casefold()
+    ):
+        abort(502, "HubSpot returned an unrelated contact.")
+
+    return data["id"]
+
+
+PREFS = ORIGIN + "/communication-preferences/2026-09"
+
+
+def preference_results(data):
+    if not isinstance(data, dict):
+        abort(502)
+
+    if data.get("status") not in ("COMPLETE", "SUCCESS"):
+        abort(502)
+
+    if data.get("errors"):
+        abort(502)
+
+    if "numErrors" in data and data["numErrors"] != 0:
+        abort(502)
+
+    if data.get("error"):
+        abort(502)
+
+    items = data.get("results")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        abort(502)
+
+    return items
+
+
+def subscriptions(connection, revision):
+    data = crm(connection, revision, "GET", PREFS + "/definitions")
+    items = preference_results(data)
+
+    out = []
+    for item in items:
+        method = item.get("communicationMethod")
+        if not isinstance(method, str) or method.lower() != "email":
+            continue
+        if item.get("isActive") is not True:
+            continue
+        if item.get("isInternal") is True:
+            continue
+
+        subscription_id = item.get("id")
+        if not segment_id(subscription_id):
+            continue
+
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+
+        entry = {"id": str(subscription_id), "name": name}
+
+        business_unit = item.get("businessUnitId", 0)
+        if business_unit is None:
+            business_unit = 0
+        if business_unit:
+            entry["business_unit"] = business_unit
+
+        out.append(entry)
+
+    return out
+
+
+def opted_out(connection, revision, email, subscription_id, business_unit=0):
+    if (
+        not isinstance(business_unit, int)
+        or isinstance(business_unit, bool)
+        or business_unit < 0
+    ):
+        abort(400)
+
+    path = PREFS + "/statuses/" + quote(email, safe="")
+    email_key = email.casefold()
+    known_statuses = ("UNSUBSCRIBED", "SUBSCRIBED", "NOT_SPECIFIED")
+
+    base_params = {"channel": "EMAIL"}
+    queries = [dict(base_params)]
+    if business_unit:
+        queries.append(dict(base_params, businessUnitId=business_unit))
+
+    def preference_rows(url, params):
+        data = crm(connection, revision, "GET", url, params=params)
+        items = preference_results(data)
+
+        for item in items:
+            subscriber = item.get("subscriberIdString")
+            if not isinstance(subscriber, str) or subscriber.casefold() != email_key:
+                abort(502)
+
+            if item.get("channel") != "EMAIL":
+                abort(502)
+
+            status = item.get("status")
+            if status not in known_statuses:
+                abort(502)
+
+        return items
+
+    unsubscribe_all = False
+    for params in queries:
+        for item in preference_rows(path + "/unsubscribe-all", params):
+            if item["status"] == "UNSUBSCRIBED":
+                unsubscribe_all = True
+
+    if unsubscribe_all:
+        return True
+
+    target = str(subscription_id)
+    selected_unsubscribed = False
+
+    for params in queries:
+        for item in preference_rows(path, params):
+            sid = item.get("subscriptionId")
+            if sid is None or str(sid) != target:
+                continue
+            if item["status"] == "UNSUBSCRIBED":
+                selected_unsubscribed = True
+
+    return selected_unsubscribed
+
+
+def outbound_segment(connection, revision, list_id):
+    if not segment_id(list_id):
+        abort(400, "Invalid list id")
+
+    data = crm(connection, revision, "GET", LISTS + "/" + list_id)
+    if not isinstance(data, dict):
+        abort(502)
+    wrapper = data.get("list")
+    if not isinstance(wrapper, dict):
+        abort(502)
+    if wrapper.get("listId") != list_id:
+        abort(502)
+    if wrapper.get("objectTypeId") != "0-1":
+        abort(422)
+    if wrapper.get("processingType") not in ("MANUAL", "SNAPSHOT"):
+        abort(422)
+    if wrapper.get("processingStatus") != "COMPLETE":
+        abort(409)
+    name = wrapper.get("name")
+    if not isinstance(name, str) or not name or len(name) > 512:
+        abort(502)
+    return name
+
+
+def save_contact(connection, revision, email, properties, *, before_write):
+    base = ORIGIN + "/crm/objects/2026-09/contacts"
+
+    fields = {}
+    for key in ("firstname", "lastname"):
+        value = properties.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            if value:
+                fields[key] = value[:80]
+
+    contact_id = contact_record(connection, revision, email)
+
+    if contact_id is None:
+        before_write()
+        with connection.api(
+            revision,
+            "POST",
+            base,
+            json={"properties": dict(fields, email=email)},
+        ) as response:
+            if response.status_code == 201:
+                data = response_object(response)
+                contact_id = data.get("id")
+                if not segment_id(contact_id):
+                    abort(502)
+
+                returned_properties = data.get("properties")
+                if isinstance(returned_properties, dict):
+                    echoed_email = returned_properties.get("email")
+                    if echoed_email is not None:
+                        if (
+                            not isinstance(echoed_email, str)
+                            or echoed_email.casefold() != email.casefold()
+                        ):
+                            abort(502)
+                return contact_id
+
+            if response.status_code == 409:
+                contact_id = contact_record(connection, revision, email)
+                if contact_id is None:
+                    abort(409)
+            else:
+                check_provider(response)
+                abort(502)
+
+    if fields:
+        before_write()
+        crm(
+            connection,
+            revision,
+            "PATCH",
+            f"{base}/{contact_id}",
+            json={"properties": fields},
+        )
+
+    return contact_id
+
+
+def add_to_segment(connection, revision, list_id, contact_id, *, before_write):
+    if not segment_id(list_id) or not segment_id(contact_id):
+        abort(400, "Invalid id")
+
+    before_write()
+    crm(
+        connection,
+        revision,
+        "PUT",
+        LISTS + "/" + list_id + "/memberships/add",
+        json=[contact_id],
+    )
+
+    confirm = LISTS + "/records/0-1/" + contact_id + "/memberships"
+    after = None
+    seen_cursors = set()
+    seen_lists = set()
+
+    for _ in range(20):
+        params = {"limit": 100}
+        if after is not None:
+            params["after"] = after
+        data = crm(connection, revision, "GET", confirm, params=params)
+        rows = results(data)
+        if len(rows) > 100:
+            abort(502)
+        for row in rows:
+            rid = row.get("listId")
+            if not segment_id(rid):
+                abort(502)
+            if rid in seen_lists:
+                abort(502, "Duplicate list id")
+            seen_lists.add(rid)
+            if rid == list_id:
+                return True
+        after = cursor(data)
+        if after is None:
+            break
+        if after in seen_cursors:
+            abort(502, "Repeated cursor")
+        seen_cursors.add(after)
+
+    abort(502, "Membership not confirmed")

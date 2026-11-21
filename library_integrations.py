@@ -18,6 +18,7 @@ from browser_account_security import json_mutation, private, same_origin, secure
 from intake_watch import CursorReset, Watch, changed_since
 import editor_exports
 import event_hubspot_sync
+import event_hubspot_outbound
 import facebook_upload
 import google_meet_recordings
 import hubspot_crm
@@ -515,7 +516,9 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
         elif provider == "hubspot":
-            cleanup = event_hubspot_sync.disconnect
+            def cleanup(con):
+                event_hubspot_sync.disconnect(con)
+                event_hubspot_outbound.disconnect(con)
         return private(dict(connected=False, provider_revoked=connection.disconnect(cleanup)))
 
     @app.get("/api/integrations/hubspot/segments")
@@ -526,6 +529,17 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             hubspot.authorize(con, revision)
         return private(result)
+
+    @app.get("/api/integrations/hubspot/subscriptions")
+    def hubspot_subscriptions():
+        read_api()
+        if "optional_scope" not in hubspot.config.authorization_parameters:
+            abort(404)
+        revision = hubspot.revision()
+        result = hubspot_crm.subscriptions(hubspot, revision)
+        with tx() as con:
+            hubspot.authorize(con, revision)
+        return private(dict(subscriptions=result))
 
     @app.get("/api/integrations/google-drive/files")
     def google_drive_files():
