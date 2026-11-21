@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc --strict --target ES2022 --module ES2022 --outDir ../integrations/wordpress/cueporch-video ../integrations/wordpress/editor-picker.ts && node build_vendor.mjs"
+    "build": "tsc -p tsconfig.json && tsc --strict --target ES2022 --module ES2022 --outDir ../integrations/wordpress/cueporch-video ../integrations/wordpress/editor-picker.ts ../integrations/wordpress/post-video-block.ts && node build_vendor.mjs"
   },
   "dependencies": {
     "hls.js": "1.6.18"

@@ -239,6 +239,47 @@ def select_in_cueporch_picker(ap, base, operator, uid, clip):
     expect(ap.locator('#_cueporch_video_urls')).to_have_value(embed)
 
 
+def verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid):
+    ap.goto(f'{storefront}/wp-admin/post-new.php?post_type=page')
+    ap.wait_for_function("window.wp?.blocks?.getBlockType('cueporch/video') && wp.data.select('core/editor').getCurrentPostType() === 'page'")
+    ap.evaluate("() => { const b = wp.blocks.createBlock('cueporch/video'); wp.data.dispatch('core/block-editor').insertBlocks(b); wp.data.dispatch('core/editor').editPost({title: 'CuePorch Video Test'}); }")
+    editor = ap
+    try:
+        ap.wait_for_selector('[data-type="cueporch/video"]', timeout=5000)
+    except Exception:
+        editor = ap.frame_locator('iframe[name="editor-canvas"]')
+        editor.locator('[data-type="cueporch/video"]').wait_for()
+    button = editor.get_by_role('button', name='Choose from CuePorch', exact=True)
+    expect(button).to_be_enabled()
+    for _ in range(3):
+        overlay = ap.locator(".components-modal__screen-overlay").first
+        if not overlay.is_visible():
+            break
+        dialog = ap.get_by_role("dialog").last
+        close = dialog.locator('button[aria-label="Close"], button[aria-label="Dismiss"]')
+        close.first.click() if close.count() else ap.keyboard.press("Escape")
+        expect(overlay).to_be_hidden()
+    with ap.expect_popup() as popup_info:
+        button.click()
+    popup = popup_info.value
+    popup.fill('#pickerKey', operator)
+    popup.click('#pickerAuth button')
+    popup.wait_for_selector('#pickerLibrary', state='visible')
+    popup.fill('#pickerSearch', 'Embed clip')
+    with popup.expect_event('close'):
+        popup.get_by_role('button', name='Choose Embed clip', exact=False).click()
+    expect(editor.get_by_label('Video URL')).to_have_value(f'{base}/embed/work/{uid}')
+    post_id = ap.evaluate("async () => { await wp.data.dispatch('core/editor').editPost({status:'publish'}); await wp.data.dispatch('core/editor').savePost(); const id = wp.data.select('core/editor').getCurrentPostId(); if (wp.data.select('core/editor').getEditedPostAttribute('status') !== 'publish') throw new Error('not published'); return id; }")
+    page = guest.new_page()
+    try:
+        page.goto(f'{storefront}/?page_id={post_id}')
+        embed = f"{base}/embed/work/{uid}"
+        iframe = page.locator(f'iframe[src="{base}/embed/work/{uid}"]')
+        verify_woocommerce_player(iframe, embed)
+    finally:
+        page.close()
+
+
 def verify_block_gallery(page, mode):
     video_region = page.locator('.cueporch-block-product-videos')
     gallery = page.locator('.wp-block-woocommerce-product-gallery')
@@ -304,6 +345,8 @@ def verify_storefront(browser, storefront, product_id, base, operator, uid, clip
             expect(iframe).to_be_visible()
             verify_woocommerce_player(iframe, embed)
             gp.close()
+        if not block_gallery:
+            verify_wordpress_post_video_block(ap, guest, storefront, base, operator, uid)
         verify_woocommerce_revocation(guest, storefront, product_id, base, operator, uid)
     finally:
         admin.close()

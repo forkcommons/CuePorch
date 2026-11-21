@@ -15,6 +15,7 @@ defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/embed-url.php';
 require_once __DIR__ . '/product-video.php';
 require_once __DIR__ . '/storefront.php';
+require_once __DIR__ . '/post-video-block.php';
 function cueporch_woo_register_settings_page(): void {
 	add_options_page(
 		__( 'CuePorch Video', 'cueporch-video' ),
