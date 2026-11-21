@@ -33,7 +33,7 @@ def due(con, now):
     return con.execute("""SELECT a.*,0 AS series FROM facebook_live_auto a
         JOIN live_event e ON e.id=a.event AND e.revision=a.event_revision
         JOIN live_occurrence o ON o.event=a.event AND o.opens=a.opens AND o.delivery='ready'
-        JOIN workspace_integration_connection w ON w.provider='facebook-live' AND w.revision=a.revision
+        JOIN workspace_integration_connection w ON w.provider=CASE WHEN a.page LIKE 'profile:%' THEN 'facebook-profile-live' ELSE 'facebook-live' END AND w.revision=a.revision
         LEFT JOIN facebook_live_creation c ON c.event=a.event AND c.opens=a.opens AND c.page=a.page
         WHERE a.state='queued' AND a.opens<=? AND c.event IS NULL
         UNION ALL
@@ -41,7 +41,7 @@ def due(con, now):
         FROM facebook_live_series s
         JOIN live_event e ON e.id=s.event AND e.revision=s.event_revision
         JOIN live_occurrence o ON o.event=s.event AND o.delivery='ready' AND o.opens>s.after_opens
-        JOIN workspace_integration_connection w ON w.provider='facebook-live' AND w.revision=s.revision
+        JOIN workspace_integration_connection w ON w.provider=CASE WHEN s.page LIKE 'profile:%' THEN 'facebook-profile-live' ELSE 'facebook-live' END AND w.revision=s.revision
         LEFT JOIN facebook_live_auto a ON a.event=s.event AND a.opens=o.opens AND a.page=s.page
         LEFT JOIN facebook_live_creation c ON c.event=s.event AND c.opens=o.opens AND c.page=s.page
         WHERE o.opens<=? AND a.event IS NULL AND c.event IS NULL ORDER BY opens""", (now, now)).fetchall()
