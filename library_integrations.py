@@ -25,6 +25,7 @@ import google_meet_recordings
 import constant_contact_crm
 import campaign_monitor_crm
 import keap_crm
+import salesforce_crm
 import hubspot_crm
 import mailchimp_crm
 import library_mailchimp_forms
@@ -286,7 +287,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -314,7 +315,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
     shopify = shopify_product_media.StoreConnection(tx, operator)
     publishing = {item.config.key: item for item in (youtube, linkedin, facebook, x_account, tiktok)}
     outbound = publishing | {"shopify": shopify}
-    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap)} | outbound
+    connections = {item.config.key: item for item in (drive, dropbox, box, meet, zoom, webex, hubspot, mailchimp, constant_contact, campaign_monitor, keap, salesforce)} | outbound
     watch = Watch(
         app, tx, database, dropbox, lambda state: dropbox_entries(
             dropbox, state["connection"], state["source"], state["cursor"], watch=True,
@@ -440,7 +441,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         with tx() as con:
             items = [dict(
                 id=item.config.key, name=item.config.name,
-                category=("Marketing" if item.config.key in ("hubspot", "mailchimp", "constant-contact", "campaign-monitor", "keap") else
+                category=("Marketing" if item.config.key in ("hubspot", "mailchimp", "constant-contact", "campaign-monitor", "keap", "salesforce") else
                           "Commerce" if item.config.key == "shopify" else
                           "Social publishing" if item.config.key in outbound else
                           "Communications" if item.config.key in meetings else "Cloud storage"),
@@ -449,6 +450,7 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
                              "Connect Constant Contact to access your email lists." if item.config.key == "constant-contact" else
                              "Connect Campaign Monitor to access your client lists." if item.config.key == "campaign-monitor" else
                              "Connect Keap to access your marketing tags." if item.config.key == "keap" else
+                             "Connect Salesforce Sales Cloud to find active campaigns." if item.config.key == "salesforce" else
                              "Add a Library video to a Shopify product's media."
                              if item.config.key == "shopify" else
                              "Upload a native video from the Library to your channel."
@@ -488,6 +490,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             return publishing[provider].for_member(uid).prepare(secure, current)
         _, body, secure, current = mutate()
         connection = configured_provider(provider)
+        if provider == "salesforce":
+            credential_owner()
         if provider == "shopify":
             return connection.prepare(secure, current, context={"shop": body.get("shop")})
         return connection.prepare(secure, current)
@@ -523,6 +527,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
             return private(dict(connected=False, provider_revoked=revoked))
         mutate()
         connection = configured_provider(provider)
+        if provider == "salesforce":
+            credential_owner()
         active_watch = watches.get(provider)
         cleanup = active_watch.clear if active_watch else None
         if provider in outbound:
@@ -559,6 +565,15 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         result = constant_contact_crm.contact_lists(constant_contact, revision, request.args.get("cursor"))
         with tx() as con:
             constant_contact.authorize(con, revision)
+        return private(result)
+
+    @app.get("/api/integrations/salesforce/campaigns")
+    def salesforce_campaigns():
+        read_api()
+        revision = salesforce.revision()
+        result = salesforce_crm.campaigns(salesforce, revision, request.args.get("cursor"))
+        with tx() as con:
+            salesforce.authorize(con, revision)
         return private(result)
 
     @app.get("/api/integrations/keap/tags")
