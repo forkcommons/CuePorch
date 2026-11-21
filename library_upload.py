@@ -22,7 +22,7 @@ from review_settings import new_upload
 from stock_assets import normalize_upload
 from team_accounts import actor_id
 
-IMAGE_INPUT = {"png": "png_pipe", "jpg": "jpeg_pipe", "jpeg": "jpeg_pipe", "webp": "webp_pipe"}
+IMAGE_INPUT = {"png": "png_pipe", "jpg": "jpeg_pipe", "jpeg": "jpeg_pipe", "webp": "webp_pipe", "gif": "gif"}
 AUDIO_INPUT = {"mp3": "mp3", "wav": "wav", "flac": "flac", "ogg": "ogg", "m4a": "mov"}
 VIDEO_INPUT = {"mp4": "mov", "mov": "mov", "webm": "matroska", "mkv": "matroska"}
 DOCUMENTS = {"pdf", "docx", "txt"}
@@ -118,7 +118,7 @@ def register(app, tx, staff, team_contributor, action, root, database, instituti
         elif fmt in DOCUMENTS:
             kind, decoder = "document", None
         else:
-            abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
+            abort(415, "Choose MP4, MOV, WebM, MKV, JPEG, PNG, WebP, GIF, MP3, WAV, FLAC, Ogg, M4A, PDF, DOCX, or TXT.")
         if stock_asset and kind == "document":
             abort(400, "Stock metadata is not supported for documents.")
         if authorize_import and kind != "video":

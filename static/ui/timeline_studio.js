@@ -2,7 +2,8 @@ import { mountTimelineTemplates } from "./timeline_templates.js";
 import { uploadLibraryFile } from "./library_upload.js";
 import { privateSettings } from "./library_privacy.js";
 import { showTimelineCard } from "./timeline_templates.js";
-import { createTimelineGraphicPreview, mountTimelineGraphics } from "./timeline_graphics.js";
+import { createTimelineGraphicPreview, createTimelineOverlayPreview, mountTimelineGraphics } from "./timeline_graphics.js";
+import { mountTimelineStickers } from "./timeline_stickers.js";
 import { mountTimelineStock } from "./timeline_stock.js";
 function isMedia(clip) {
     return clip !== undefined && "work" in clip;
@@ -42,6 +43,8 @@ let uploadId = "";
 let kits = [];
 let graphicControls;
 const paintGraphic = createTimelineGraphicPreview();
+const paintSticker = createTimelineOverlayPreview("sticker");
+const stickerControls = mountTimelineStickers(setSticker);
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 function message(error) {
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -184,6 +187,8 @@ function paint() {
     const selectedClip = state.clips[selected];
     graphicControls?.show(selectedClip?.graphic ?? null, Boolean(selectedClip));
     paintGraphic(selectedClip?.graphic ?? null, state.ratio, state.color, key.value);
+    stickerControls.show(selectedClip?.sticker ?? null, Boolean(selectedClip), [...media.values()]);
+    paintSticker(selectedClip?.sticker ?? null, state.ratio, state.color, key.value);
     if (selectedClip && !isMedia(selectedClip)) {
         cardPreview.hidden = false;
         showTimelineCard(cardPreview, selectedClip, state.ratio);
@@ -572,6 +577,20 @@ async function loadTimelineGraphics() {
         node("timelineGraphicStatus").textContent = error instanceof Error ? error.message : String(error);
     }
 }
+function setSticker(sticker) {
+    const clip = state.clips[selected];
+    if (!clip)
+        throw new Error("Select a clip before applying a sticker.");
+    let updated;
+    if (sticker) {
+        updated = { ...clip, sticker };
+    }
+    else {
+        const { sticker: _removed, ...rest } = clip;
+        updated = rest;
+    }
+    change({ ...state, clips: state.clips.map((item, index) => index === selected ? updated : item) });
+}
 async function open() {
     const [items, loaded, shelf] = await Promise.all([
         call("/api/library"), call(endpoint() + "/timeline"), call("/api/library/brand-kits"),
@@ -607,10 +626,15 @@ async function open() {
             paint();
         },
         use: async (item) => {
-            if (item.asset_type === "audio")
+            if (item.asset_type === "image" && item.source_cut) {
+                setSticker({ work: item.id, cut: item.source_cut, position: "bottom-right", size: 30 });
+            }
+            else if (item.asset_type === "audio") {
                 change({ ...state, music: { work: item.id, start: 0, gain: 25 } });
-            else
+            }
+            else {
                 await appendClip(item.id);
+            }
         },
     });
 }

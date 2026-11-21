@@ -38,6 +38,7 @@ from flask import (
 from waitress import serve
 
 from cueporch import dump, verify
+from catalog import video_version_key
 import analytics_reports
 import account_email
 import account_recovery
@@ -1607,6 +1608,7 @@ def create_app(root, database, operator, institution, simulation=None):
                 visibility=visibility.get(w["id"]) if w["id"] not in protected else None,
                 duration_seconds=w.get("duration_seconds"),
                 creator=w.get("source_creator"),
+                source_cut=video_version_key(w) if w.get("asset_type") == "image" else None,
                 stock_asset=(
                     {k: v for k, v in w["stock_asset"].items() if k != "permission_note"}
                     if isinstance(w.get("stock_asset"), dict)
