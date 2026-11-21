@@ -515,7 +515,7 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, marketo=None):
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, salesforce, youtube_live_connection, marketo=None):
     marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
@@ -1564,21 +1564,33 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     def outgoing_programs(con):
         now = datetime.now(timezone.utc)
         candidates = {}
+        connection = youtube_live_connection.connection(con)
+        youtube_revision = connection["revision"] if connection else None
         rows = con.execute("""SELECT o.*,e.settings FROM live_occurrence o JOIN live_event e ON e.id=o.event
             JOIN action a ON a.id=e.publication WHERE o.delivery='ready' AND o.opens<=? AND a.status='eligible'
-            AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1 AND (d.opens IS NULL OR d.opens=o.opens))""",
-                           (int(now.timestamp()),))
+            AND EXISTS (SELECT 1 FROM live_simulcast_destination d WHERE d.event=o.event AND d.enabled=1
+            AND (d.opens IS NULL OR d.opens=o.opens)
+            AND (d.provider IS NULL OR (d.provider='youtube-live' AND d.revision=?)))""",
+                           (int(now.timestamp()), youtube_revision))
         for row in rows:
             uid, opens = row["event"], row["opens"]
             event = json.loads(row["settings"])
             slot = find_open(event, opens)
             if slot and datetime.fromisoformat(slot["end"]) > now and can_simulcast(con, uid, event):
-                targets = con.execute("SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1 AND (opens IS NULL OR opens=?)", (uid, opens)).fetchall()
+                targets = con.execute(
+                    "SELECT * FROM live_simulcast_destination WHERE event=? AND enabled=1"
+                    " AND (opens IS NULL OR opens=?)"
+                    " AND (provider IS NULL OR (provider='youtube-live' AND revision=?))",
+                    (uid, opens, youtube_revision),
+                ).fetchall()
                 candidates[uid, opens] = (row["origin"], row["remote"], targets, None)
         return candidates
 
     outputs = event_simulcast.Simulcast(app, tx, media, database, signing_key, outgoing_programs)
-    event_simulcast.register(app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing)
+    event_simulcast.register(
+        app, tx, staff, destination_access, outputs, sharing_access, enforce_sharing,
+        youtube_live_connection,
+    )
 
     def released_previews(con):
         now = datetime.now(timezone.utc)

@@ -457,6 +457,17 @@
         <summary>Simulcast destinations</summary>
         <p id="destinationStatus" role="status"></p>
         <ul id="destinationList"></ul>
+        <section id="youtubeBroadcasts" aria-label="YouTube broadcasts" hidden>
+          <h3>YouTube broadcasts</h3>
+          <p><a href="/operator/integrations">Configure YouTube integration</a></p>
+          <button type="button" id="loadYoutubeBroadcasts">Load YouTube broadcasts</button>
+          <label>YouTube broadcast <select id="youtubeBroadcastList"></select></label>
+          <button type="button" id="youtubeBroadcastsMore" hidden>More YouTube broadcasts</button>
+          <form id="addYouTubeDestination">
+            <button type="submit" id="addYouTubeDestinationButton" disabled>Add YouTube destination</button>
+          </form>
+          <p id="youtubeBroadcastStatus" role="status"></p>
+        </section>
         <form id="addDestination">
           <label>Destination type <select name="preset"><option value="custom">Custom RTMP or RTMPS</option><option value="patreon">Patreon Live</option></select></label>
           <p id="patreonDestinationHelp" hidden>Create a Live in Patreon, choose Other streaming source, copy the RTMPS server and key for this occurrence, select the audience, and start it in Patreon.</p>

@@ -289,7 +289,7 @@ def meeting_archive_notifier(tx, origin):
     return notify
 
 
-def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, marketo=None):
+def register(app, tx, staff, operator, origin, import_video, database, sharing_access, hubspot, mailchimp, *, constant_contact, campaign_monitor, keap, salesforce, credential_owner, youtube_live_connection, marketo=None):
     drive = Connection(Config("google-drive", "Google Drive", AUTH, TOKEN_URL, REVOKE, SCOPE,
                               dict(access_type="offline", prompt="consent")), tx, operator)
     dropbox = Connection(Config(
@@ -310,7 +310,6 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         "", webex_recordings.SCOPE,
     ), tx, operator)
     youtube = Connection(youtube_upload.OAUTH, tx, operator)
-    youtube_live_connection = youtube_live.WorkspaceConnection(tx, operator, sharing_access)
     linkedin = linkedin_upload.CompanyConnection(tx, operator)
     facebook = facebook_upload.PageConnection(tx, operator)
     x_account = x_upload.AccountConnection(tx, operator)
