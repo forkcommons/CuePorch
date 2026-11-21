@@ -32,6 +32,7 @@ import event_engagement
 import event_hubspot_sync
 import event_hubspot_outbound
 import event_contact_delivery
+import event_mailchimp_registration
 import event_marketo_engagement
 import marketo_crm
 import event_hubspot_engagement
@@ -465,7 +466,7 @@ def overlapping(entries):
 
 
 def register(app, tx, staff, action, database, public_url, signing_key, root, read_works, institution, remember_work,
-             sharing_access, enforce_sharing, ai_actor, hubspot, *, marketo=None):
+             sharing_access, enforce_sharing, ai_actor, hubspot, *, mailchimp, marketo=None):
     marketo_revision = marketo.revision(signing_key) if marketo is not None else None
     media = Gateway()
     studio = Studio(database)
@@ -482,6 +483,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         stop_hubspot()
         stop_hubspot_outbound()
         stop_marketo()
+        stop_mailchimp()
         stop_marketo_sync()
         stop_mail()
         outputs.close()
@@ -1250,6 +1252,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             abort(409)
         return event["title"]
 
+    event_mailchimp_registration.register_routes(app, tx, staff, mail_origin, mailchimp, read, selected_open, registration_intake)
+    stop_mailchimp = event_mailchimp_registration.start(app, tx, database, mailchimp, validate_hubspot_plan)
     stop_marketo = event_contact_delivery.start_marketo(
         app, tx, database, marketo, marketo_revision, validate_hubspot_plan,
         engagement_validate=validate_hubspot_engagement,
@@ -2104,6 +2108,27 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             replay_captioned = bool(delivery and delivery["delivery"] == "replay" and
                                     event_replay_captions.read(con, row["id"], shown["id"]))
             scope = [row["id"], row["revision"], shown["id"], form["revision"] if form else None, embed] if shown else None
+            mailchimp_consent = ""
+            mailchimp_plan = None
+            if (
+                form
+                and not withdrawn
+                and (not delivery or delivery["delivery"] != "replay")
+                and event["visibility"] in event_mail.WATCHABLE
+            ):
+                current = mailchimp.connection(con)
+                candidate = event_contact_delivery.get(con, "mailchimp", row["id"], shown["id"])
+                if (
+                    current
+                    and candidate
+                    and candidate["provider_revision"] == current["revision"]
+                    and candidate["event_revision"] == row["revision"]
+                    and candidate["form_revision"] == form["revision"]
+                    and candidate["deadline"] > int(now.timestamp())
+                ):
+                    mailchimp_plan = candidate
+                    mailchimp_scope = ["mailchimp-outbound", scope, candidate["generation"]]
+                    mailchimp_consent = forms.dumps(mailchimp_scope)
             marketo_plan = None
             marketo_consent = ""
             marketo_engagement_consent = ""
@@ -2156,6 +2181,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         marketo_agreed = created and marketo_plan and valid_ticket(forms, request.form.get('marketo_consent', ''), mark_scope, 1200)
                         if marketo_agreed:
                             event_contact_delivery.enqueue(con,action,marketo_plan,registrant,int(now.timestamp()))
+                        if created and mailchimp_plan and valid_ticket(forms, request.form.get("mailchimp_consent",""),mailchimp_scope,1200):
+                            event_contact_delivery.enqueue(con, action, mailchimp_plan, registrant,int(now.timestamp()))
                         engagement_agreed = bool(hubspot_engagement_consent) and valid_ticket(
                             forms, request.form.get("hubspot_engagement_consent", ""), engagement_scope, 1200)
                         marketo_engagement_agreed = bool(marketo_agreed and marketo_engagement_consent and valid_ticket(forms, request.form.get("marketo_engagement_consent", ""), marketo_engagement_scope, 1200))
@@ -2308,6 +2335,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
                                      hubspot_consent=hubspot_consent,
                                      marketo_consent=marketo_consent,
+                                     mailchimp_consent=mailchimp_consent,
                                      marketo_engagement_consent=marketo_engagement_consent,
                                      hubspot_engagement_consent=hubspot_engagement_consent,
                                      unlock_token=frame_grant, event_access=access,

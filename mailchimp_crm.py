@@ -1,4 +1,7 @@
+import hashlib
+import math
 import re
+from urllib.parse import urlsplit
 
 from flask import abort
 
@@ -216,3 +219,228 @@ def merge_fields(connection, revision, list_id, offset=0):
     else:
         next_offset = consumed if len(rows) == 100 else None
     return {"fields": fields, "next_offset": next_offset}
+
+
+_ALLOWED = {
+    "subscribed",
+    "unsubscribed",
+    "pending",
+    "cleaned",
+    "transactional",
+    "archived",
+}
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+\Z")
+
+
+def _member_identity(list_id, email):
+    if not isinstance(email, str):
+        abort(400)
+    normalized = email.strip().lower()
+    if (
+        len(normalized) > 254
+        or not normalized.isprintable()
+        or not _EMAIL.fullmatch(normalized)
+    ):
+        abort(400)
+    if not audience_id(list_id):
+        abort(400)
+    subscriber_hash = hashlib.md5(
+        normalized.encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+    return normalized, subscriber_hash, f"/lists/{list_id}/members/{subscriber_hash}"
+
+
+def _member_status(row, list_id, normalized, subscriber_hash):
+    provider_email = row.get("email_address")
+    if not isinstance(provider_email, str):
+        abort(502)
+    status = row.get("status")
+    if not isinstance(status, str) or status not in _ALLOWED:
+        abort(502)
+    if (
+        row.get("list_id") != list_id
+        or provider_email.strip().lower() != normalized
+        or row.get("id") != subscriber_hash
+    ):
+        abort(502)
+    return {"id": subscriber_hash, "status": status}
+
+
+def read_member(connection, revision, list_id, email):
+    normalized, subscriber_hash, path = _member_identity(list_id, email)
+    with connection.api(
+        revision,
+        "GET",
+        API + path,
+        params={"fields": "id,email_address,list_id,status"},
+    ) as response:
+        if response.status_code == 404:
+            return None
+        check_provider(response)
+        return _member_status(
+            response_object(response), list_id, normalized, subscriber_hash
+        )
+
+
+def save_member(connection, revision, list_id, email, merge_values, *, before_write):
+    normalized, subscriber_hash, path = _member_identity(list_id, email)
+    policy = audience(connection, revision, list_id)
+    if policy["marketing_permissions"] is True:
+        abort(409, "Mailchimp audience requires a marketing permission mapping.")
+
+    existing = read_member(connection, revision, list_id, normalized)
+    if existing is not None and existing["status"] != "subscribed":
+        return {"result": "suppressed", "status": existing["status"]}
+
+    if existing is not None and not merge_values:
+        return {"result": "delivered", "status": "subscribed"}
+
+    payload = {}
+    if merge_values:
+        payload["merge_fields"] = merge_values
+
+    if existing is None:
+        method = "PUT"
+        payload["email_address"] = normalized
+        payload["status_if_new"] = "pending" if policy["double_optin"] else "subscribed"
+    else:
+        method = "PATCH"
+
+    before_write()
+    with connection.api(revision, method, API + path, json=payload) as resp:
+        if method == "PATCH" and resp.status_code == 404:
+            abort(409)
+        check_provider(resp)
+        status = _member_status(
+            response_object(resp), list_id, normalized, subscriber_hash
+        )["status"]
+
+    if status == "subscribed" or (
+        existing is None and policy["double_optin"] and status == "pending"
+    ):
+        return {"result": "delivered", "status": status}
+    return {"result": "suppressed", "status": status}
+
+
+def audience_schema(connection, revision, list_id):
+    seen, out, offset = set(), [], 0
+    for _ in range(20):
+        page = merge_fields(connection, revision, list_id, offset)
+        nxt = page["next_offset"]
+        for f in page["fields"]:
+            tag = f["tag"]
+            if tag in seen:
+                abort(502)
+            seen.add(tag)
+            out.append(f)
+        if nxt is None:
+            return out
+        if isinstance(nxt, bool) or not isinstance(nxt, int) or nxt <= offset:
+            abort(502)
+        offset = nxt
+    abort(502)
+
+
+def validate_mapping(form, mapping, fields):
+    if not isinstance(mapping, dict) or len(mapping) > 20:
+        raise ValueError("invalid mapping")
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        raise ValueError("invalid mapping")
+
+    src = {}
+    for f in form["fields"]:
+        t = f["type"]
+        if t not in ("text", "select"):
+            continue
+        src[f["id"]] = (
+            t,
+            bool(f.get("required")),
+            list(f.get("options") or []) if t == "select" else None,
+        )
+    for name in ("first_name", "last_name"):
+        s = form.get(name, "off")
+        if s in ("optional", "required"):
+            src[name] = ("text", s == "required", None)
+
+    dest = {f["tag"]: f for f in fields}
+    if any(tag not in dest for tag in mapping.values()):
+        raise ValueError("invalid mapping")
+
+    supported = {"text", "radio", "dropdown", "number", "zip", "phone", "url"}
+    used, out = set(), {}
+    for sid, tag in mapping.items():
+        if sid not in src or tag in used:
+            raise ValueError("invalid mapping")
+        stype, sreq, sopts = src[sid]
+        df = dest[tag]
+        dtype = df["type"]
+        req = bool(df.get("required"))
+        if dtype not in supported:
+            raise ValueError("invalid mapping")
+        choices = list(df.get("choices") or [])
+        if dtype in ("radio", "dropdown"):
+            if stype != "select":
+                raise ValueError("invalid mapping")
+            if not set(sopts).issubset(set(choices)):
+                raise ValueError("invalid mapping")
+            oc = choices
+        elif dtype == "text":
+            if stype not in ("text", "select"):
+                raise ValueError("invalid mapping")
+            oc = None
+        else:
+            if stype != "text":
+                raise ValueError("invalid mapping")
+            oc = None
+        if req and not sreq:
+            raise ValueError("invalid mapping")
+        used.add(tag)
+        out[sid] = {"tag": tag, "type": dtype, "choices": oc, "required": req}
+
+    for tag, df in dest.items():
+        if bool(df.get("required")) and tag not in used:
+            raise ValueError("invalid mapping")
+    return out
+
+
+def mapped_values(answers, mapping):
+    MAX = 255
+    out = {}
+    for sid, spec in mapping.items():
+        raw = answers.get(sid)
+        if raw is None or raw == "":
+            if spec["required"]:
+                raise ValueError("missing required value")
+            continue
+        if not isinstance(raw, str) or not raw.isprintable() or len(raw) > MAX:
+            raise ValueError("invalid value")
+
+        t = spec["type"]
+        if t in ("radio", "dropdown"):
+            if raw not in (spec.get("choices") or []):
+                raise ValueError("invalid choice")
+            out[spec["tag"]] = raw
+        elif t == "number":
+            try:
+                v = float(raw)
+            except ValueError:
+                raise ValueError("invalid number")
+            if not math.isfinite(v):
+                raise ValueError("invalid number")
+            out[spec["tag"]] = v
+        elif t == "url":
+            try:
+                u = urlsplit(raw)
+            except ValueError:
+                raise ValueError("invalid url")
+            if (
+                u.scheme not in ("http", "https")
+                or not u.hostname
+                or u.username is not None
+                or u.password is not None
+            ):
+                raise ValueError("invalid url")
+            out[spec["tag"]] = raw
+        else:
+            out[spec["tag"]] = raw
+    return out

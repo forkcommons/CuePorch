@@ -19,6 +19,7 @@ from intake_watch import CursorReset, Watch, changed_since
 import editor_exports
 import event_hubspot_sync
 import event_hubspot_outbound
+import event_mailchimp_registration
 import facebook_upload
 import google_meet_recordings
 import hubspot_crm
@@ -518,6 +519,8 @@ def register(app, tx, staff, operator, origin, import_video, database, sharing_a
         cleanup = active_watch.clear if active_watch else None
         if provider in outbound:
             cleanup = lambda con: social_publication.disconnect(con, provider)
+        elif provider == "mailchimp":
+            cleanup = event_mailchimp_registration.disconnect
         elif provider == "hubspot":
             def cleanup(con):
                 event_hubspot_sync.disconnect(con)

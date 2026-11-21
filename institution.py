@@ -1397,7 +1397,7 @@ def create_app(root, database, operator, institution, simulation=None):
     hubspot_origins = library_hubspot_media_events.configured_origins()
     library_events.register(app, tx, staff, action, database, os.environ.get("CUEPORCH_PUBLIC_URL", ""),
                             operator, root, read_library_works, institution, remember_work, sharing_access, enforce_sharing,
-                            ai_actor, hubspot, marketo=marketo)
+                            ai_actor, hubspot, marketo=marketo, mailchimp=mailchimp)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 

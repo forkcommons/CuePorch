@@ -268,18 +268,18 @@ def deliver_marketo(tx, job, connection, revision, validate, stop, clock):
     return "sent"
 
 
-def run_one_marketo(tx, connection, revision, validate, stop, clock):
+def _run_one(tx, provider, deliver, stop, clock):
     from werkzeug.exceptions import HTTPException
 
     if stop.is_set():
         return False
     with tx() as con:
-        job = next_job(con, "marketo", int(clock()))
+        job = next_job(con, provider, int(clock()))
     if job is None:
         return False
     attempts, due = job["attempts"] + 1, None
     try:
-        state = deliver_marketo(tx, job, connection, revision, validate, stop, clock)
+        state = deliver(job)
     except HTTPException as exc:
         code = getattr(exc, "code", None)
         if code == 423:
@@ -304,6 +304,48 @@ def run_one_marketo(tx, connection, revision, validate, stop, clock):
     return True
 
 
+def run_one_marketo(tx, connection, revision, validate, stop, clock):
+    return _run_one(
+        tx,
+        "marketo",
+        lambda job: deliver_marketo(
+            tx, job, connection, revision, validate, stop, clock
+        ),
+        stop,
+        clock,
+    )
+
+
+def _start_worker(app, database, provider, tick):
+    from threading import Event, Thread
+    from filelock import FileLock, Timeout
+
+    stop = Event()
+    lock_path = str(database) + f".{provider}-outbound.lock"
+
+    def worker():
+        while not stop.is_set():
+            try:
+                with FileLock(lock_path, timeout=0):
+                    if tick(stop):
+                        continue
+                stop.wait(1)
+            except Timeout:
+                stop.wait(1)
+            except Exception:
+                app.logger.error("%s outbound worker failed", provider)
+                stop.wait(1)
+
+    thread = Thread(target=worker, daemon=True)
+    thread.start()
+
+    def stop_worker():
+        stop.set()
+        thread.join(8)
+
+    return stop_worker
+
+
 def start_marketo(
     app,
     tx,
@@ -315,10 +357,8 @@ def start_marketo(
     *,
     engagement_validate=None,
 ):
-    from threading import Event, Thread
-    import event_marketo_engagement
     from time import time
-    from filelock import FileLock, Timeout
+    import event_marketo_engagement
 
     if connection is None:
         return lambda: None
@@ -326,40 +366,20 @@ def start_marketo(
     if clock is None:
         clock = time
 
-    stop = Event()
-    lock_path = str(database) + ".marketo-outbound.lock"
+    def tick(stop):
+        registration_result = run_one_marketo(
+            tx, connection, revision, validate, stop, clock
+        )
+        engagement_result = (
+            event_marketo_engagement.run_one(
+                tx, connection, revision, engagement_validate, stop, clock
+            )
+            if engagement_validate is not None
+            else False
+        )
+        return registration_result or engagement_result
 
-    def worker():
-        while not stop.is_set():
-            try:
-                with FileLock(lock_path, timeout=0):
-                    registration_result = run_one_marketo(
-                        tx, connection, revision, validate, stop, clock
-                    )
-                    engagement_result = (
-                        event_marketo_engagement.run_one(
-                            tx, connection, revision, engagement_validate, stop, clock
-                        )
-                        if engagement_validate is not None
-                        else False
-                    )
-                    if registration_result or engagement_result:
-                        continue
-                stop.wait(1)
-            except Timeout:
-                stop.wait(1)
-            except Exception:
-                app.logger.error("marketo outbound worker failed")
-                stop.wait(1)
-
-    thread = Thread(target=worker, daemon=True)
-    thread.start()
-
-    def stop_worker():
-        stop.set()
-        thread.join(8)
-
-    return stop_worker
+    return _start_worker(app, database, "marketo", tick)
 
 
 def receipt(con, provider, event, opens, revision):
@@ -382,6 +402,11 @@ def receipt(con, provider, event, opens, revision):
             (provider, event, opens, plan["generation"]),
         ).fetchall()
         result["states"] = {r[0]: r[1] for r in rows}
+    if enabled and provider == "mailchimp":
+        destination = json.loads(plan["destination"])
+        result["audience"] = destination["audience"]
+        result["mapping"] = {key: value["tag"] for key, value in destination["mapping"].items()}
+        return result
     if enabled:
         destination = json.loads(plan["destination"])
         result["program"] = destination["program"]
