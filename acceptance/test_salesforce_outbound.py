@@ -18,6 +18,8 @@ REGISTRANT_KEY = "a02000000000001"
 
 class Provider:
     origin = ORIGIN
+    email = EMAIL
+    campaign = CAMPAIGN
 
     def __init__(self):
         self.writes = []
@@ -38,13 +40,13 @@ class Provider:
         if method == "GET":
             if path == "query":
                 q = (kwargs.get("params") or {})["q"]
-                assert f"Email = '{EMAIL}'" in q, q
+                assert f"Email = '{self.email}'" in q, q
                 name = next((n for n in ("Contact", "Lead") if n in q), None)
                 assert name is not None, q
                 return _resp({"done": True, "records": self.rows[name]})
 
-            if path == f"sobjects/Campaign/{CAMPAIGN}":
-                return _resp({"Id": CAMPAIGN, "Name": "Fixture Campaign", "IsActive": True})
+            if path == f"sobjects/Campaign/{self.campaign}":
+                return _resp({"Id": self.campaign, "Name": "Fixture Campaign", "IsActive": True})
 
             match = re.fullmatch(r"sobjects/([^/]+)/External_Key__c/([^/]+)", path)
             if match:
