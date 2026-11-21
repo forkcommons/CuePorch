@@ -22,6 +22,7 @@ from event_media import Gateway, local_hls
 from institution import create_app
 from installed_audio_tracks import SAMPLE_AUDIO
 from installed_events import play_event
+from installed_recording import DISPLAY_FIXTURE
 from test_drive_import import QuietHandler, service_worker
 
 
@@ -228,6 +229,92 @@ class PrivateLiveEventTest(unittest.TestCase):
                 for address in (stable, stable + "/embed", segment, replay):
                     self.assertEqual(team.request.get(address).status, 404)
 
+
+    def test_recording_only_from_public_event(self):
+        created = self.create_event("record-only-rehearsal", "public")
+        folder = self.client.post("/api/library/folders", headers=self.auth, json={
+            "name": "Event recordings", "color": "#286266", "parent": None,
+        })
+        self.assertEqual(folder.status_code, 201, folder.get_data(as_text=True))
+        folder_id = folder.get_json()["id"]
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        base = f"http://127.0.0.1:{server.server_port}"
+        flags = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
+        with service_worker(server), sync_playwright() as pw, chromium(pw, flags) as browser:
+            context = browser.new_context(permissions=["camera", "microphone"])
+            context.add_init_script("(" + DISPLAY_FIXTURE + ")()")
+            context.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.auth['Authorization'][7:])})")
+            page = context.new_page()
+            page.goto(base + "/operator/live-events")
+            page.get_by_role("button", name="Open production for Private rehearsal", exact=False).first.click()
+            writes = []
+            opens = created["occurrences"][0]["id"]
+            prefix = f"{base}/api/live-events/{created['id']}/{opens}/"
+
+            def capture_writes(request):
+                if request.method != "GET" and request.url.startswith(prefix):
+                    writes.append(request.url)
+
+            page.on("request", capture_writes)
+            page.get_by_role("link", name="Recording only", exact=True).click(timeout=4000)
+            expect(page.get_by_label("Production mode")).to_have_value("record")
+            viewer = browser.new_page()
+            viewer.goto(base + created["watch"])
+            expect(viewer.locator("#eventPlayer")).to_have_attribute("data-address", "")
+            expect(viewer.locator("#eventPlayer video, #eventPlayer iframe")).to_have_count(0)
+
+            title = "Public event rehearsal take"
+            page.get_by_label("Recording title").fill(title)
+            page.get_by_label("Destination folder").select_option(folder_id)
+            page.locator("#recordLayout").select_option("screen", timeout=5000)
+            page.get_by_role("button", name="Connect camera and microphone").click()
+            expect(page.locator("#recordStatus")).to_have_text("Recording devices connected.")
+            page.get_by_role("button", name="Share screen", exact=True).click()
+            expect(page.locator("#recordStatus")).to_have_text("Screen sharing is ready.")
+            page.get_by_role("button", name="Start recording", exact=True).click()
+            expect(page.locator("#recordTime")).to_have_text("0:01", timeout=5000)
+            page.get_by_role("button", name="Pause", exact=True).click()
+            expect(page.locator("#recordStatus")).to_have_text("Recording paused.")
+            page.get_by_role("button", name="Resume", exact=True).click()
+            expect(page.locator("#recordTime")).to_have_text("0:02", timeout=5000)
+            page.get_by_role("button", name="Stop", exact=True).click()
+            expect(page.locator("#recordStatus")).to_contain_text("Recording ready.")
+            page.get_by_role("button", name="Save recording", exact=True).click()
+            expect(page.locator("#recordStatus")).to_have_text("Recording saved to the library.", timeout=30000)
+            link = page.get_by_role("link", name="Open saved video")
+            work_id = link.get_attribute("href").rsplit("/", 1)[-1]
+            works = self.client.get("/api/library", headers=self.auth).get_json()
+            work = next(item for item in works if item["id"] == work_id)
+            self.assertEqual((work["folder"], work["title"]), (folder_id, title))
+            self.assertEqual(viewer.request.get(f"{base}/watch/work/{work_id}").status, 404)
+            details = self.client.get(f"/api/library/work/{work_id}/details", headers=self.auth)
+            self.assertEqual(details.status_code, 200)
+            media = details.get_json()["media"]
+            self.assertEqual((media["width"], media["height"]), (1280, 720))
+            self.assertTrue(media["audio"])
+
+            link.click()
+            preview = page.locator("video#workspacePreview")
+            expect(preview).to_be_visible()
+            preview.evaluate("async video => { video.muted = true; await video.play(); }")
+            page.wait_for_function("""() => {
+                const video = document.querySelector('#workspacePreview');
+                if (!video || video.getVideoPlaybackQuality().totalVideoFrames === 0) return false;
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 1;
+                const paint = canvas.getContext('2d');
+                paint.drawImage(video, video.videoWidth / 2, video.videoHeight / 2, 1, 1, 0, 0, 1, 1);
+                const [red, , blue] = paint.getImageData(0, 0, 1, 1).data;
+                return video.duration >= 1.8 && blue > 200 && red < 40;
+            }""")
+            viewer.reload()
+            expect(viewer.locator("#eventPlayer")).to_have_attribute("data-address", "")
+            expect(viewer.locator("#eventPlayer video, #eventPlayer iframe")).to_have_count(0)
+            self.assertEqual(writes, [])
+            with self.tx() as con:
+                self.assertIsNone(con.execute(
+                    "SELECT 1 FROM live_occurrence WHERE event=? AND delivery!='scheduled'", (created["id"],)
+                ).fetchone())
 
     def flush_event_playback(self, page, position, expected_caption):
         page.wait_for_function(

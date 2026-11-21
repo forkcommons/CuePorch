@@ -33,7 +33,7 @@
         <video id="takePreview" controls playsinline hidden aria-label="Finished recording"></video>
         {% if broadcast_endpoint %}
         <label id="recordProductionMode">Production mode <select id="browserProductionMode">
-          <option value="broadcast">Broadcast from this browser</option><option value="record">Recording only</option>
+          <option value="broadcast">Broadcast from this browser</option><option value="record"{% if record_only %} selected{% endif %}>Recording only</option>
         </select></label>
         {% endif %}
         <div class="video-work-actions">

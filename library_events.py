@@ -640,7 +640,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
-        return render_template("record_studio.html", broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens),
+        return render_template("record_studio.html", record_only=request.args.get("mode") == "record",
+                               broadcast_endpoint=url_for("start_event_capture", uid=uid, opens=opens),
                                scene_endpoint=url_for("studio_scene_deck", uid=uid, opens=opens),
                                health_endpoint=url_for("event_health", uid=uid, opens=opens),
                                speaker_endpoint=url_for("event_speakers", event=uid, opens=opens),

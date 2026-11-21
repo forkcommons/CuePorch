@@ -424,6 +424,7 @@ function choose(event, instance) {
     const watch = element("eventWatch");
     const studio = element("eventStudio");
     studio.href = `/operator/live-events/${event.id}/${instance.id}/studio`;
+    element("eventRecordOnly").href = studio.href + "?mode=record";
     element("eventShare").hidden = !event.watch;
     element("eventEmbedField").hidden = !event.embed;
     function occurrenceLink(path) {
