@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import uuid
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from flask import abort, make_response, render_template, request, url_for
@@ -10,6 +12,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import event_schedule
+import event_series_hosts
 import event_series_locale
 import event_series_presentation
 import library_events
@@ -37,6 +40,7 @@ DEFAULTS = dict(
     title="Untitled event series",
     description="",
     visibility="private",
+    custom_host="",
     upcoming_mode="all",
     localization=event_series_locale.DEFAULTS,
     events=[],
@@ -164,7 +168,7 @@ def save_translation(con, row, settings, language, translated, action):
     return write_series(con, row, row["slug"], settings | dict(localization=localized), action)
 
 
-def validate(con, body, prior):
+def validate(con, body, prior, allowed_hosts):
     if not isinstance(body, dict) or set(body) - set(DEFAULTS):
         abort(422, "Invalid event series settings.")
     title = text_field(body.get("title", DEFAULTS["title"]), "a title", 128, required=True)
@@ -172,6 +176,10 @@ def validate(con, body, prior):
     visibility = body.get("visibility", DEFAULTS["visibility"])
     if visibility not in VISIBILITIES:
         abort(422, "Choose private draft, public, team only, or password protected.")
+    previous_host = prior["custom_host"] if prior["custom_host"] in allowed_hosts else ""
+    custom_host = event_series_hosts.requested_host(
+        body.get("custom_host", previous_host), allowed_hosts, visibility
+    )
     events = body.get("events", DEFAULTS["events"])
     if not isinstance(events, list) or any(not isinstance(item, str) for item in events):
         abort(422, "Select valid events.")
@@ -203,6 +211,7 @@ def validate(con, body, prior):
         title=title,
         description=description,
         visibility=visibility,
+        custom_host=custom_host,
         upcoming_mode=upcoming_mode,
         localization=localization,
         events=events,
@@ -241,7 +250,39 @@ def replay_choices(con):
     return items
 
 
-def summary(con, row):
+def read_alias(con, hostname):
+    row = con.execute(
+        "SELECT * FROM live_series_page WHERE json_extract(settings,'$.custom_host')=?",
+        (hostname,),
+    ).fetchone()
+    if row is None:
+        abort(404)
+    return row
+
+
+def require_unique_host(con, uid, custom_host):
+    if not custom_host:
+        return
+    dup = con.execute(
+        "SELECT 1 FROM live_series_page AS same "
+        "WHERE json_extract(same.settings,'$.custom_host')=? AND same.id <> ?",
+        (custom_host, uid),
+    ).fetchone()
+    if dup:
+        abort(409)
+
+
+def watch_url(row, settings, status, allowed_hosts):
+    if status != "eligible":
+        return None
+    host = settings.get("custom_host") if settings else None
+    visibility = settings.get("visibility") if settings else None
+    if host and host in allowed_hosts and visibility in ("public", "password"):
+        return f"https://{host}/"
+    return url_for("event_series_view", slug=row["slug"])
+
+
+def summary(con, row, allowed_hosts):
     settings = DEFAULTS | json.loads(row["settings"])
     status = series_status(con, row, settings)
     return dict(
@@ -252,11 +293,11 @@ def summary(con, row):
         publication=status,
         has_password=bool(password_hash(con, row["id"])),
         created=row["created"],
-        watch=url_for("event_series_view", slug=row["slug"]) if status == "eligible" else None,
+        watch=watch_url(row, settings, status, allowed_hosts),
     )
 
 
-def page_events(con, settings, preview=False, audience="public"):
+def page_events(con, settings, preview=False, audience="public", link_origin=""):
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=366)
     upcoming, recordings = [], []
@@ -297,7 +338,7 @@ def page_events(con, settings, preview=False, audience="public"):
                 library_events.viewer_url(row, event, False, opens=occ["id"]) if can_link else None
             )
             upcoming.append(dict(
-                slug=row["slug"], title=title, href=href,
+                slug=row["slug"], title=title, href=link_origin + href if href else None,
                 opens=occ["id"],
                 timezone=tzname,
                 label=occ["local"].replace("T", " ") + " " + tzname,
@@ -311,7 +352,7 @@ def page_events(con, settings, preview=False, audience="public"):
             )
             local = datetime.fromtimestamp(opens, timezone.utc).astimezone(zone)
             recordings.append(dict(
-                slug=row["slug"], title=title, href=href, opens=opens,
+                slug=row["slug"], title=title, href=link_origin + href if href else None, opens=opens,
                 timezone=tzname,
                 label=local.strftime("%Y-%m-%d %H:%M %Z"),
             ))
@@ -336,10 +377,17 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
         signing_key, salt="cueporch-event-series-preview"
     )
     series_passwords = URLSafeTimedSerializer(signing_key, salt="cueporch-event-series-access")
+    allowed_hosts = event_series_hosts.configured_hosts(
+        team_origin, os.environ.get("CUEPORCH_EVENT_SERIES_HOSTS", "")
+    )
+    event_series_hosts.guard(app, allowed_hosts, lambda: event_series_view(None))
 
     @app.get("/operator/event-series")
     def event_series_editor():
-        return render_template("event_series_editor.html", languages=event_series_locale.LANGUAGES)
+        return render_template(
+            "event_series_editor.html", languages=event_series_locale.LANGUAGES,
+            allowed_hosts=allowed_hosts,
+        )
 
     @app.route("/api/event-series", methods=["GET", "POST"])
     def all_event_series():
@@ -347,7 +395,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
         with tx() as con:
             if request.method == "GET":
                 return dict(
-                    series=[summary(con, row)
+                    series=[summary(con, row, allowed_hosts)
                             for row in con.execute("SELECT * FROM live_series_page ORDER BY created DESC")],
                     events=choice_list(con),
                     recordings=replay_choices(con),
@@ -356,7 +404,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             con.execute("INSERT INTO live_series_page VALUES(?,?,?,?,NULL,?)",
                         (uid, uid, uuid.uuid4().hex, json.dumps(DEFAULTS), datetime.now(timezone.utc).isoformat()))
             row = series_row(con, uid)
-            return summary(con, row), 201
+            return summary(con, row, allowed_hosts), 201
 
     @app.post("/api/event-series/<uid>/preview")
     def preview_event_series(uid):
@@ -372,7 +420,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
         with tx() as con:
             row = series_row(con, uid)
             if request.method == "GET":
-                return summary(con, row)
+                return summary(con, row, allowed_hosts)
             request.max_content_length = 512 * 1024
             body = request.get_json(silent=True)
             if not isinstance(body, dict) or body.get("revision") != row["revision"]:
@@ -383,7 +431,8 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 con.execute("DELETE FROM live_series_page WHERE id=?", (row["id"],))
                 return ("", 204)
             prior = DEFAULTS | json.loads(row["settings"])
-            values = validate(con, body.get("settings"), prior)
+            values = validate(con, body.get("settings"), prior, allowed_hosts)
+            require_unique_host(con, uid, values["custom_host"])
             previous_digest = password_hash(con, uid)
             digest = requested_password(body, values, previous_digest)
             enforce_sharing(
@@ -409,18 +458,23 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             if clash is not None:
                 abort(409)
             if values == prior and new_slug == row["slug"] and digest == previous_digest:
-                return summary(con, row)
+                return summary(con, row, allowed_hosts)
             updated = write_series(con, row, new_slug, values, action)
             store_password(con, uid, digest)
-            return summary(con, updated)
+            return summary(con, updated, allowed_hosts)
 
     @app.route("/event-series/<slug>", methods=["GET", "POST"])
     def event_series_view(slug):
         ticket = None
+        alias = event_series_hosts.current_host(allowed_hosts) if slug is None else None
+        if slug is None and alias is None:
+            abort(404)
         with tx() as con:
-            row = series_row(con, slug, by_slug=True)
+            row = read_alias(con, alias) if alias else series_row(con, slug, by_slug=True)
             settings = DEFAULTS | json.loads(row["settings"])
             token = request.args.get("preview")
+            if alias and (token is not None or settings["visibility"] not in ("public", "password")):
+                abort(404)
             internal = False
 
             if token is not None:
@@ -457,7 +511,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 digest = password_hash(con, row["id"])
                 if not digest:
                     abort(404)
-                secure = secure_site(team_origin, required=False)
+                secure = secure_site(f"https://{alias}" if alias else team_origin, required=False)
                 scope = [row["id"], row["revision"]]
                 if request.method == "POST":
                     request.max_content_length = 4096
@@ -472,7 +526,13 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 ):
                     return locked_series(False)
 
-            payload = page_events(con, settings, preview=internal, audience=audience)
+            payload = page_events(
+                con,
+                settings,
+                preview=internal,
+                audience=audience,
+                link_origin=team_origin if alias else "",
+            )
             language, options, viewer_settings, payload["presentation"] = event_series_locale.resolve(
                 settings["localization"],
                 settings,
@@ -481,8 +541,12 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             )
             viewer_settings["upcoming_mode"] = settings["upcoming_mode"]
             language_links = [
-                choice | {"href": url_for(
-                    "event_series_view", slug=slug, lang=choice["code"], preview=token if internal else None
+                choice | {"href": (
+                    "/?" + urlencode({"lang": choice["code"], **({"preview": token} if internal else {})})
+                    if request.path == "/"
+                    else url_for(
+                        "event_series_view", slug=slug, lang=choice["code"], preview=token if internal else None
+                    )
                 )}
                 for choice in options
             ]

@@ -6,3 +6,9 @@ watch.example.org {
 video.example.org {
     reverse_proxy 127.0.0.1:19000
 }
+
+# Optional Event Series hostname. Set DNS for this name and add it to
+# CUEPORCH_EVENT_SERIES_HOSTS in the publishing service environment.
+# festival.example.org {
+#     reverse_proxy 127.0.0.1:19001
+# }

@@ -61,6 +61,17 @@
       </label>
       <small>Used in the public address for this series.</small>
 
+      <div {% if not allowed_hosts %}hidden{% endif %}>
+        <label for="seriesCustomHost">Custom hostname</label>
+        <select id="seriesCustomHost" name="custom_host">
+          <option value="">Use workspace address</option>
+          {% for host in allowed_hosts %}
+            <option value="{{ host }}">{{ host }}</option>
+          {% endfor %}
+        </select>
+        <small class="help">Configure DNS and HTTPS before using a custom hostname.</small>
+      </div>
+
       <label for="seriesVisibility">Visibility</label>
       <select id="seriesVisibility" name="visibility">
         <option value="private" selected>Private draft</option>
