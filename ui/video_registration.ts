@@ -45,11 +45,12 @@ interface FormDataState {
   protected_public: boolean;
   presets: Record<string, Definition>;
   registrants: Registrant[];
+  vimeo_history?: boolean;
 }
 type VideoRequest = <T>(suffix: string, method?: string, body?: object) => Promise<T>;
 
 export function setupRegistration(call: VideoRequest, download: () => Promise<void>, credential: () => string,
-    saved?: () => void, registrationEndpoint?: () => string) {
+    saved?: () => void, registrationEndpoint?: () => string, downloadVimeoHistory?: () => Promise<void>) {
   const form = document.querySelector<HTMLFormElement>("#registrationEditor")!;
   const mailchimpPanel = form.querySelector<HTMLElement>("#registrationMailchimp");
   const mailchimp = mailchimpPanel && registrationEndpoint
@@ -343,11 +344,31 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     });
   };
   form.querySelector<HTMLButtonElement>("#registrationExport")!.onclick = () => void action(download);
+  const vimeoHistoryPanel = form.querySelector<HTMLElement>("#registrationVimeoHistory");
+  const vimeoHistoryFile = form.querySelector<HTMLInputElement>("#vimeoHistoryFile");
+  const vimeoHistoryUpload = form.querySelector<HTMLButtonElement>("#vimeoHistoryUpload");
+  const vimeoHistoryDownload = form.querySelector<HTMLButtonElement>("#vimeoHistoryDownload");
+  if (vimeoHistoryPanel && vimeoHistoryFile && vimeoHistoryUpload && vimeoHistoryDownload && downloadVimeoHistory) {
+    vimeoHistoryUpload.onclick = () => void action(async () => {
+      const file = vimeoHistoryFile.files?.[0];
+      if (!file) throw new Error("Choose a Vimeo registrant CSV.");
+      const endpoint = registrationEndpoint?.();
+      if (!endpoint) return;
+      const data = new FormData();
+      data.append("registrants", file);
+      const result = await request<{archive: number}>(endpoint + "/vimeo-history", data);
+      if (endpoint !== registrationEndpoint?.()) return;
+      message.textContent = `Archived ${result.archive} Vimeo registration${result.archive === 1 ? "" : "s"}.`;
+      vimeoHistoryFile.value = "";
+    });
+    vimeoHistoryDownload.onclick = () => void action(downloadVimeoHistory);
+  }
   return () => action(async () => {
     const endpoint = registrationEndpoint?.();
     const state = await call<FormDataState>("/registration");
     if (endpoint !== registrationEndpoint?.()) return;
     render(state, endpoint);
+    if (vimeoHistoryPanel) vimeoHistoryPanel.hidden = state.vimeo_history !== true;
     form.hidden = false;
   });
 }

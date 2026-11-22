@@ -12,7 +12,9 @@ from flask import Response, abort, current_app, make_response, render_template, 
 
 from library_appearance import brand_image
 from library_interactivity import image_id, text_field, web_link
+import registration_csv
 import registration_locale
+import vimeo_registration_history
 
 
 SCHEMA = """
@@ -24,6 +26,9 @@ CREATE TABLE IF NOT EXISTS viewer_registrant(
  registered REAL NOT NULL, answers TEXT NOT NULL, PRIMARY KEY(kind,subject,email_key));
 CREATE TABLE IF NOT EXISTS viewer_form_preset(
  name TEXT PRIMARY KEY COLLATE NOCASE, settings TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS vimeo_registration_history(
+ work TEXT NOT NULL, row_key TEXT NOT NULL, row_json TEXT NOT NULL,
+ PRIMARY KEY(work,row_key));
 """
 UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medium")
 DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
@@ -337,7 +342,9 @@ def register(app, tx, staff, get_work, protected_public):
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
-            return operator_form(con, "video", uid, protected_public(con, uid))
+            payload = operator_form(con, "video", uid, protected_public(con, uid))
+            payload.update({"vimeo_history": work.get("provider") == "vimeo"})
+            return payload
 
     @app.get("/api/library/work/<uid>/registration/export")
     def export_registration(uid):
@@ -345,3 +352,46 @@ def register(app, tx, staff, get_work, protected_public):
         with tx() as con:
             get_work(con, uid)
             return export(con, "video", uid)
+
+    @app.route("/api/library/work/<uid>/registration/vimeo-history", methods=["GET", "POST"])
+    def vimeo_history(uid):
+        staff()
+        rows = None
+        if request.method == "POST":
+            request.max_content_length = registration_csv.MAX_BYTES + 128 * 1024
+            rows = vimeo_registration_history.read(request.files.get("registrants"))
+        with tx() as con:
+            work = get_work(con, uid)
+            if work.get("provider") != "vimeo":
+                abort(404)
+            if work.get("asset_type", "video") != "video":
+                abort(404)
+            if rows is not None:
+                dedup = {}
+                for row in rows:
+                    dedup[vimeo_registration_history.row_key(row)] = row
+                con.executemany(
+                    "INSERT INTO vimeo_registration_history(work,row_key,row_json) VALUES(?,?,?) "
+                    "ON CONFLICT(work,row_key) DO UPDATE SET row_json=excluded.row_json",
+                    [(uid, key, json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+                     for key, row in dedup.items()],
+                )
+                archive = con.execute(
+                    "SELECT COUNT(*) FROM vimeo_registration_history WHERE work=?", (uid,)
+                ).fetchone()[0]
+                return dict(imported=len(dedup), archive=archive)
+            result = con.execute(
+                "SELECT row_json FROM vimeo_registration_history WHERE work=? ORDER BY row_key",
+                (uid,),
+            ).fetchall()
+            columns = list(vimeo_registration_history.COLUMNS)
+            buf = StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(columns)
+            for (raw,) in result:
+                row = json.loads(raw)
+                writer.writerow([csv_cell(row.get(column, "")) for column in columns])
+            response = Response(buf.getvalue(), mimetype="text/csv")
+            response.headers["Content-Disposition"] = 'attachment; filename="vimeo-registration-history.csv"'
+            response.headers["Cache-Control"] = "private, no-store"
+            return response

@@ -74,7 +74,8 @@ const showRatings = teamPreview ? undefined : setupRatings(call, timestamp, disp
   () => exportCsv("/rating/export", "cueporch-video-rating.csv"));
 const showRegistration = teamPreview ? undefined : setupRegistration(call,
   () => exportCsv("/registration/export", "cueporch-registrants.csv"), () => key.value, undefined,
-  () => endpoint + "/registration");
+  () => endpoint + "/registration",
+  () => exportCsv("/registration/vimeo-history", "vimeo-registration-history.csv"));
 
 function appendChapter(chapter: Chapter) {
   const row = rowTemplate.content.firstElementChild!.cloneNode(true) as HTMLElement;
