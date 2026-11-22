@@ -103,6 +103,10 @@ for (const toolbar of document.querySelectorAll<HTMLElement>("[data-save-video]"
     void update(async () => {
       const response = await viewerRequest(`collections/${item.id}/videos/${video.path}`, item.included ? "DELETE" : "PUT");
       if (response.status === 401) { location.assign(video.account); return; }
+      if (response.status === 403 && !item.included) {
+        status.textContent = "The publisher has disabled adding this video to collections.";
+        return;
+      }
       if (!response.ok) throw new Error();
       item.included = (await response.json()).included;
       status.textContent = item.included ? "Video added to collection." : "Video removed from collection.";

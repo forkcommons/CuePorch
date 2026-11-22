@@ -82,7 +82,7 @@ def source_details(work):
 def details_for(con, work):
     row = con.execute("SELECT metadata FROM library_video_details WHERE work=?", (work["id"],)).fetchone()
     state = json.loads(row["metadata"]) if row else source_details(work)
-    return {"panorama": "flat"} | state
+    return {"panorama": "flat", "allow_viewer_collections": True} | state
 
 
 def labels(values, name):
@@ -151,11 +151,16 @@ def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
                 embed_pages = []
             if request.method == "PUT":
                 body = request.get_json()
+                stored = details_for(con, work)
                 state = parse_details(body)
-                panorama = body.get("panorama", details_for(con, work)["panorama"])
+                panorama = body.get("panorama", stored["panorama"])
                 if not isinstance(panorama, str) or panorama not in PANORAMAS:
                     abort(400, "Choose an available panoramic projection.")
                 state["panorama"] = panorama
+                allow = body.get("allow_viewer_collections", stored["allow_viewer_collections"])
+                if not isinstance(allow, bool):
+                    abort(400, "Choose whether viewers can add this video to collections.")
+                state["allow_viewer_collections"] = allow
                 if "embed_pages" in body:
                     embed_pages = parse_embed_pages(body["embed_pages"])
                     con.execute("""INSERT INTO library_embed_pages VALUES(?,?)
