@@ -58,6 +58,14 @@ def _normalize(tag):
             return code
     return None
 
+def player_context(preferences):
+    language = choose(preferences)
+    return dict(
+        player_language=language,
+        player_labels=dict(zip(labels.PLAYER_CORE_KEYS, labels.PLAYER_CORE[language], strict=True)),
+    )
+
+
 def template_context(preferences):
     language = choose(preferences)
     return dict(

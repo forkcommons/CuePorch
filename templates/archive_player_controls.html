@@ -1,29 +1,32 @@
-<div class="archive-controls" hidden aria-label="Video controls">
-  <button type="button" data-control="play">Play</button>
+{% set pl = player_labels | default({}) %}
+<div class="archive-controls" hidden lang="{{ player_language | default('en') }}" aria-label="{{ pl.get('controls', 'Video controls') }}">
+  <button type="button" data-control="play" data-play="{{ pl.get('play', 'Play') }}"
+          data-pause="{{ pl.get('pause', 'Pause') }}">{{ pl.get('play', 'Play') }}</button>
   {% if appearance.progress and appearance.allow_seek %}
-  <label>Position <input type="range" data-control="position" min="0" max="1" step=".05" value="0"></label>
+  <label>{{ pl.get('position', 'Position') }} <input type="range" data-control="position" min="0" max="1" step=".05" value="0"></label>
   {% endif %}
   {% if appearance.progress %}<span data-control="clock" aria-hidden="true"></span>{% endif %}
   {% if appearance.volume %}
-  <button type="button" data-control="mute">Mute</button>
-  <label>Volume <input type="range" data-control="volume" min="0" max="1" step=".05" value="1"></label>
+  <button type="button" data-control="mute" data-mute="{{ pl.get('mute', 'Mute') }}"
+          data-unmute="{{ pl.get('unmute', 'Unmute') }}">{{ pl.get('mute', 'Mute') }}</button>
+  <label>{{ pl.get('volume', 'Volume') }} <input type="range" data-control="volume" min="0" max="1" step=".05" value="1"></label>
   {% endif %}
   {% if appearance.captions and tracks %}
-  <label>Captions
+  <label>{{ pl.get('captions', 'Captions') }}
     <select data-control="captions">
-      <option value="">Off</option>
-      {% for track in tracks %}<option value="{{ loop.index0 }}">{{ track.language or 'Captions' }}</option>{% endfor %}
+      <option value="">{{ pl.get('off', 'Off') }}</option>
+      {% for track in tracks %}<option value="{{ loop.index0 }}">{{ track.language or pl.get('captions', 'Captions') }}</option>{% endfor %}
     </select>
   </label>
   {% endif %}
   {% include "archive_audio_controls.html" %}
   {% if appearance.speed %}
-  <label>Speed <select data-control="speed">
+  <label>{{ pl.get('speed', 'Speed') }} <select data-control="speed">
     <option value=".5">0.5×</option><option value=".75">0.75×</option><option value="1" selected>1×</option>
     <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
   </select></label>
   {% endif %}
-  {% if appearance.pip %}<button type="button" data-control="pip" hidden>Picture in picture</button>{% endif %}
-  {% if appearance.fullscreen %}<button type="button" data-control="fullscreen" hidden>Fullscreen</button>{% endif %}
+  {% if appearance.pip %}<button type="button" data-control="pip" hidden>{{ pl.get('pip', 'Picture in picture') }}</button>{% endif %}
+  {% if appearance.fullscreen %}<button type="button" data-control="fullscreen" hidden>{{ pl.get('fullscreen', 'Fullscreen') }}</button>{% endif %}
   <p data-control="status" aria-live="polite"></p>
 </div>

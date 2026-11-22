@@ -22,7 +22,7 @@ function time(seconds) {
     return Math.floor(whole / 60) + ":" + String(whole % 60).padStart(2, "0");
 }
 function updatePlayback() {
-    play.textContent = video.paused ? "Play" : "Pause";
+    play.textContent = video.paused ? (play.dataset.play ?? "Play") : (play.dataset.pause ?? "Pause");
     player.dataset.state = started ? (video.paused ? "paused" : "playing") : "ready";
 }
 function updatePosition() {
@@ -41,7 +41,7 @@ function updatePosition() {
 }
 function updateVolume() {
     if (mute)
-        mute.textContent = video.muted ? "Unmute" : "Mute";
+        mute.textContent = video.muted ? (mute.dataset.unmute ?? "Unmute") : (mute.dataset.mute ?? "Mute");
     if (volume)
         volume.value = String(video.muted ? 0 : video.volume);
 }

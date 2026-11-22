@@ -88,10 +88,39 @@ def check_appearance(page, browser, base, auth):
             expect(frame.get_by_role("combobox", name="Speed", exact=True)).to_be_visible()
             expect(frame.get_by_role("img", name="Publisher logo")).to_have_count(0)
             assert frame.locator("video").evaluate("async v=>{await v.play();return v.muted && v.videoWidth===256}")
+            with browser.new_context(locale="fr-FR") as localized:
+                marker = {"X-CuePorch-Viewer": "1"}
+                signup = localized.request.post(base + "/api/viewer/signup", headers=marker, data={
+                    "name": "Player locale fixture", "email": "player-locale@example.invalid",
+                    "password": "Player locale fixture passphrase!",
+                })
+                assert signup.status == 201
+                preferences = localized.request.put(base + "/api/viewer/preferences", headers=marker,
+                                                    data={"mode": "all", "language": "ja"})
+                assert preferences.ok
+                screening = localized.new_page()
+                screening.goto(f"{base}/watch/work/{uid}")
+                controls = screening.locator(".archive-controls")
+                expect(controls).to_have_attribute("lang", "ja")
+                controls.get_by_role("button", name="ミュート", exact=True).click()
+                expect(controls.get_by_role("button", name="ミュート解除", exact=True)).to_be_visible()
+                controls.get_by_role("button", name="再生", exact=True).click()
+                expect(controls.get_by_role("button", name="一時停止", exact=True)).to_be_visible()
+                screening.wait_for_function("document.querySelector('video').videoWidth === 256")
+                with screening.expect_response(lambda response: f"/embed/work/{uid}" in response.url) as embedded:
+                    screening.goto("http://" + address + "/")
+                assert "Accept-Language" in embedded.value.headers["vary"]
+                french_frame = screening.frame_locator("iframe")
+                french_controls = french_frame.locator(".archive-controls")
+                expect(french_controls).to_have_attribute("lang", "fr")
+                french_controls.get_by_role("button", name="Lecture", exact=True).click()
+                expect(french_controls.get_by_role("button", name="Pause", exact=True)).to_be_visible()
+                assert french_frame.locator("video").evaluate("async v=>{await v.play();return v.videoWidth}") == 256
         finally:
             guest.close()
             fixture.shutdown()
             server.join(timeout=4)
     return dict(separate_watch_and_embed_presets=True, live_appearance_preview=True, logo_decoded=True,
                 custom_playback_controls=True, independent_theme_bulk_apply=True,
-                editorial_disclosures_visible_when_description_hidden=True, played_both_surfaces=True)
+                editorial_disclosures_visible_when_description_hidden=True, played_both_surfaces=True,
+                hosted_and_embedded_player_locales_independent=True)
