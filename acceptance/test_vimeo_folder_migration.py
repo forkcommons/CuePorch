@@ -161,6 +161,67 @@ class VimeoFolderMigration(unittest.TestCase):
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
 
+    def test_showcase_style_migration_roundtrip(self):
+        self.source.showcase_style_fixture = dict(
+            theme="dark", layout="player", brand_color="267ABC",
+            web_brand_color=True, embed_brand_color=True, autoplay=True, loop=True,
+            allow_share=False, allow_downloads=True, hide_nav=True, seo_title="Festival screenings",
+            seo_allow_indexed=True, privacy=dict(view="password", password="no-copy-source-password"),
+            embed=dict(html="<button>no-copy-source-html</button>"),
+        )
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+
+            response = self.client.get("/api/migration", headers=self.auth)
+            self.assertNotIn("no-copy-source-password", response.get_data(as_text=True))
+            self.assertNotIn("no-copy-source-html", response.get_data(as_text=True))
+            album, = response.get_json()["showcases"]
+            uid = album["target"]
+            endpoint = f"/api/showcases/{uid}"
+            gallery = self.client.get(endpoint, headers=self.auth).get_json()
+            settings = gallery["settings"]
+            self.assertEqual("password", album["source_visibility"])
+            self.assertEqual("private", settings["visibility"])
+            self.assertFalse(settings["indexable"])
+            self.assertFalse(gallery["has_password"])
+            self.assertIsNone(gallery["watch"])
+            self.assertFalse(settings["copy_link"])
+            self.assertTrue(settings["download"])
+            self.assertEqual("Festival screenings", settings["seo_title"])
+            self.assertEqual(404, self.client.get(f"/showcases/{gallery['slug']}").status_code)
+
+            page.get_by_role("link", name="Open showcase").click()
+            accent = page.locator('input[name="accent"]')
+            expect(accent).to_have_value("#267abc")
+            expect(page.locator("#showcaseLayout")).to_have_value("featured")
+            page.get_by_role("button", name="Preview saved showcase").click()
+            frame_body = page.frame_locator("#showcaseFrame").locator("body.showcase-page")
+            expect(frame_body).to_have_attribute("data-theme", "dark")
+            expect(frame_body).to_have_attribute("data-next", "yes")
+            expect(frame_body).to_have_attribute("data-loop", "yes")
+            expect(frame_body).to_have_attribute("style", "--showcase-accent:#267abc")
+
+            accent.fill("#123456")
+            page.get_by_role("button", name="Save showcase").click()
+            expect(page.locator("#showcaseStatus")).to_have_text("Showcase saved.")
+
+            self.source.showcase_style_fixture.update(brand_color="dddddd", embed_brand_color=False)
+            page.goto(f"{self.base}/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            expect(page.locator("#showcaseInventoryRows")).to_contain_text("web and embed accent preferences differ")
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+            updated = self.client.get(endpoint, headers=self.auth).get_json()
+            self.assertEqual("#123456", updated["settings"]["accent"])
+
     def test_reconciliation_csv_export(self):
         self.source.extra_inventory_count = 101
         endpoint = "/api/migration/reconciliation.csv"

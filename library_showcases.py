@@ -65,6 +65,13 @@ def import_showcases(con, records):
         else:
             slug = uid if not con.execute("SELECT 1 FROM video_showcase WHERE slug=?", (uid,)).fetchone() else uuid.uuid4().hex
             settings = DEFAULTS | dict(title=record["title"], description=record["description"], videos=record["members"])
+            style = record.get("source_style", {})
+            settings.update({
+                name: style[name]
+                for name in ("accent", "dark", "layout", "next_video", "loop", "copy_link", "download",
+                             "navigation", "seo_title", "seo_description", "seo_keywords")
+                if name in style
+            })
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, slug, uuid.uuid4().hex, json.dumps(settings), datetime.now(timezone.utc).isoformat()))
             con.execute("INSERT INTO video_showcase_migration VALUES(?,?,?)", (record["uri"], uid, snapshot))

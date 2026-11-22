@@ -255,6 +255,7 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                 if path == "/users/10/albums":
                     values = [dict(uri="/users/10/albums/805", name="Station and Gallery",
                                    description="Local programming and an artist screening", privacy="password")]
+                    values[0].update(getattr(self.server, "showcase_style_fixture", {}))
                 elif path == "/users/10/albums/805/videos":
                     page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
                     subset = ["72", "71"] if page == "1" else ["999"]
