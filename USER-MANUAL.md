@@ -408,6 +408,8 @@ Under **TV apps**, enable the Roku catalog and enter the channel provider, langu
 
 From **Live events**, select **Event series** and create a private draft. Enter the title, description, and link name, then select the events to include.
 
+In **Your event series**, search by title or link name, sort by title or creation date, and switch between list and grid. Open a series to edit, preview, or delete it. Once published, use **Copy link** to share its viewer address.
+
 Under **Presentation**, choose a theme and accent color, upload a logo or hero image, and add the date and time zone text you want viewers to see. Enable and reorder the blocks you need. Add navigation links and FAQ entries in their lists. Choose **Save Event Series**, then **Preview** and **Open preview** to review the page.
 
 To publish, choose **Public**, **Team only**, or **Password protected**, then save. The workspace’s optional **Publication** approval applies. Team viewers must sign in with an active account. For a password-protected series, set a viewer password and share it separately from the link. Leave the field blank on later edits to keep the existing password.

@@ -473,6 +473,25 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .event-series-page img.event-series-hero { width: 100%; max-width: 100%; height: auto; max-height: none; max-block-size: min(26rem,60vh); object-fit: cover }
 .showcase-header p, .showcase-feature p { white-space: pre-wrap; max-width: 65ch; }
 .showcase-note { font-weight: 700; font-size: .9rem; }
+#seriesBrowser .series-controls {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: .5rem; margin-block: .5rem 1rem;
+}
+#seriesBrowser .series-controls label { font-size: .85rem; font-weight: 600; }
+
+#seriesList[data-view="grid"] {
+  display: grid; gap: 1rem; padding: 0; margin: 0; list-style: none;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+}
+#seriesList[data-view="grid"] > li { min-width: 0; }
+
+#seriesList[data-view="grid"] li button {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+#seriesBrowser #seriesEmpty[hidden] { display: none; }
 .showcase-access { max-width: 30rem; }
 #showcaseMemberRegistration { margin: 1rem 0; }
 #showcaseMemberRegistration iframe {

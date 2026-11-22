@@ -62,6 +62,11 @@ const form = byId<HTMLFormElement>("seriesEdit");
 const editorHeading = byId("seriesEditHeading");
 const previewLink = byId<HTMLAnchorElement>("seriesPreviewLink");
 const watchLink = byId<HTMLAnchorElement>("seriesWatchLink");
+const seriesSearch = document.querySelector<HTMLInputElement>("#seriesSearch")!;
+const seriesSort = document.querySelector<HTMLSelectElement>("#seriesSort")!;
+const seriesView = document.querySelector<HTMLSelectElement>("#seriesView")!;
+const seriesEmpty = document.querySelector<HTMLElement>("#seriesEmpty")!;
+const seriesCopyLink = document.querySelector<HTMLButtonElement>("#seriesCopyLink")!;
 
 let credential =
   sessionStorage.getItem("cueporchOperator") || sessionMarker;
@@ -221,11 +226,46 @@ function renderEditor(entry: Series | null) {
   watchLink.hidden = !entry.watch;
   if (entry.watch) watchLink.href = entry.watch;
   else watchLink.removeAttribute("href");
+  seriesCopyLink.hidden = !entry.watch;
+  seriesCopyLink.onclick = async () => {
+    if (!entry.watch) return;
+    try {
+      await navigator.clipboard.writeText(new URL(entry.watch, location.href).href);
+      setStatus("Link copied.");
+    } catch {
+      setStatus("Could not copy the link.", true);
+    }
+  };
+}
+
+function getVisibleEntries(): Series[] {
+  const searchTerm = seriesSearch.value.trim().toLowerCase();
+  const sortMode = seriesSort.value;
+  let result = entries.filter(entry => {
+    if (!searchTerm) return true;
+    const title = entry.settings.title.toLowerCase();
+    const slug = entry.slug.toLowerCase();
+    return title.includes(searchTerm) || slug.includes(searchTerm);
+  });
+  if (sortMode === "oldest") {
+    result = result.slice().reverse();
+  } else if (sortMode === "title") {
+    result = result.slice().sort((a, b) => {
+      const at = (a.settings.title || a.slug).toLowerCase();
+      const bt = (b.settings.title || b.slug).toLowerCase();
+      return at.localeCompare(bt);
+    });
+  }
+  return result;
 }
 
 function renderList() {
+  const visible = getVisibleEntries();
+  list.dataset.view = seriesView.value;
+  seriesEmpty.textContent = visible.length ? "" : "No event series match your search.";
+  seriesEmpty.hidden = visible.length > 0;
   list.replaceChildren(
-    ...entries.map((entry) => {
+    ...visible.map((entry) => {
       const li = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
@@ -240,7 +280,7 @@ function renderList() {
       };
       li.append(button);
       return li;
-    }),
+    })
   );
 }
 
@@ -377,4 +417,11 @@ seriesPreview.addEventListener("click", e => {
     previewLink.href = preview;
     previewLink.hidden = false;
   });
+});
+
+seriesSearch.addEventListener("input", () => renderList());
+seriesSort.addEventListener("change", () => renderList());
+seriesView.addEventListener("change", () => {
+  list.dataset.view = seriesView.value;
+  renderList();
 });

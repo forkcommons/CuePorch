@@ -19,7 +19,29 @@
   <main id="seriesWorkspace" class="live-events" hidden>
     <section id="seriesBrowser">
       <h2>Your event series</h2>
-      <ul id="seriesList"></ul>
+
+      <div class="series-controls">
+        <label for="seriesSearch">Search event series</label>
+        <input type="search" id="seriesSearch" name="seriesSearch" autocomplete="off">
+
+        <label for="seriesSort">Sort</label>
+        <select id="seriesSort" name="seriesSort">
+          <option value="newest" selected>Newest</option>
+          <option value="title">Title</option>
+          <option value="oldest">Oldest</option>
+        </select>
+
+        <label for="seriesView">View</label>
+        <select id="seriesView" name="seriesView">
+          <option value="list" selected>List</option>
+          <option value="grid">Grid</option>
+        </select>
+      </div>
+
+      <ul id="seriesList" data-view="list"></ul>
+
+      <p id="seriesEmpty" role="status" hidden>No event series match your search.</p>
+
       <button type="button" id="seriesNew">New Event Series</button>
     </section>
 
@@ -109,7 +131,10 @@
       <button type="button" id="seriesPreview">Preview</button>
       <button type="button" id="seriesDelete">Delete Event Series</button>
       <p><a id="seriesPreviewLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Open preview</a></p>
-      <p><a id="seriesWatchLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Open public watch page</a></p>
+      <p>
+        <a id="seriesWatchLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Open watch page</a>
+        <button type="button" id="seriesCopyLink" hidden>Copy link</button>
+      </p>
     </form>
   </main>
 
