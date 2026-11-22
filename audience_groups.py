@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS audience_group_member(
  PRIMARY KEY(group_id,account));
 CREATE INDEX IF NOT EXISTS audience_group_member_account
  ON audience_group_member(account,joined);
+CREATE TABLE IF NOT EXISTS audience_group_follow(
+ account TEXT NOT NULL, group_id TEXT NOT NULL,
+ PRIMARY KEY(account,group_id));
+CREATE INDEX IF NOT EXISTS audience_group_follow_group ON audience_group_follow(group_id);
 CREATE TABLE IF NOT EXISTS audience_group_video(
  group_id TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL,
  added REAL NOT NULL, PRIMARY KEY(group_id,kind,slug));
@@ -107,6 +111,25 @@ def submission_settings(con, group_id):
             "require_review": bool(row["require_review"])}
 
 
+def followed_program(con, aid):
+    rows = con.execute("""SELECT g.id,g.slug,g.title,v.kind,v.slug,v.added
+        FROM audience_group_follow f JOIN audience_group g ON g.id=f.group_id
+        LEFT JOIN audience_group_video v ON v.group_id=g.id
+        WHERE f.account=? AND (g.access='public' OR g.owner=? OR EXISTS (
+            SELECT 1 FROM audience_group_member m WHERE m.group_id=g.id AND m.account=?
+        ))
+        ORDER BY g.title COLLATE NOCASE,g.slug
+    """, (aid, aid, aid)).fetchall()
+    groups = {}
+    added = {}
+    for gid, group_slug, title, kind, video_slug, timestamp in rows:
+        groups[gid] = dict(slug=group_slug, title=title)
+        if kind is not None:
+            key = (kind, video_slug)
+            added[key] = max(added.get(key, 0), timestamp)
+    return list(groups.values()), added
+
+
 def invitation_for(con, group, account):
     if account is None:
         return False
@@ -125,6 +148,7 @@ def delete(con, uid):
     con.execute("DELETE FROM audience_group_submission_policy WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_album WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_follow WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group WHERE id=?", (uid,))
 
 
@@ -136,10 +160,34 @@ def remove_account(con, uid):
     con.execute("DELETE FROM audience_group_member WHERE account=?", (uid,))
     con.execute("DELETE FROM audience_group_moderator WHERE account=?", (uid,))
     con.execute("DELETE FROM audience_group_submission WHERE account=?", (uid,))
+    con.execute("DELETE FROM audience_group_follow WHERE account=?", (uid,))
 
 
 def register(app, tx, viewer, mutation, listing, private, watch_preferences, public_origin):
     invite_mail = mail_relay.configured(public_origin)
+
+    @app.route("/api/viewer/feed/group", methods=("GET", "PUT", "DELETE"))
+    def viewer_feed_group():
+        data = mutation() if request.method in ("PUT", "DELETE") else request.args
+        name = data.get("name")
+        if not isinstance(name, str) or SLUG.fullmatch(name) is None:
+            abort(400)
+        with tx() as con:
+            aid = viewer(con)["id"]
+            row = get_group(con, name)
+            if row["access"] != "public" and not member_of(con, row, aid):
+                abort(404)
+            key = (aid, row["id"])
+            if request.method == "PUT":
+                con.execute("INSERT OR IGNORE INTO audience_group_follow VALUES(?,?)", key)
+                following = True
+            elif request.method == "DELETE":
+                con.execute("DELETE FROM audience_group_follow WHERE account=? AND group_id=?", key)
+                following = False
+            else:
+                following = con.execute("SELECT 1 FROM audience_group_follow WHERE account=? AND group_id=?",
+                                        key).fetchone() is not None
+            return private(dict(following=following))
 
     @app.get("/watch/groups")
     def community_groups_page():

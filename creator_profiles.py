@@ -42,7 +42,8 @@ def follower_count(con, uid):
     return con.execute("SELECT count(*) FROM audience_creator_follow WHERE member=?", (uid,)).fetchone()[0]
 
 
-def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size, account_preferences):
+def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size, account_preferences,
+                      followed_program):
     @app.route("/api/viewer/follow/<handle>", methods=("GET", "PUT", "DELETE"))
     def viewer_follow_creator(handle):
         if not HANDLE.fullmatch(handle):
@@ -164,6 +165,7 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
         category_follows = []
         creator_follows = []
         channel_follows = []
+        group_follows = []
         rows = []
         with tx() as con:
             account = viewer(con, required=False)
@@ -195,18 +197,23 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                     if not form or form["timing"] != "before":
                         channel_works.update(values["videos"])
                 channel_follows.sort(key=lambda item: (item["title"].casefold(), item["slug"]))
-                if owned or category_keys or channel_works:
+                group_follows, group_works = followed_program(con, account["id"])
+                if owned or category_keys or channel_works or group_works:
                     preference = account_preferences(con, account["id"])
                     entries = ordered(
                         entry for (kind, slug), entry in listing(con).items()
-                        if kind == "work"
-                        and (slug in owned or slug in channel_works
-                             or any(name.casefold() in category_keys for name in entry["categories"]))
+                        if ((kind, slug) in group_works or (
+                            kind == "work" and (slug in owned or slug in channel_works
+                            or any(name.casefold() in category_keys for name in entry["categories"]))
+                        ))
                         and not content_rating.filtered(preference, entry)
                     )
-                    if category_keys or channel_works:
+                    if category_keys or channel_works or group_works:
                         publication_times = {row["work"]: row["published_at"] for row in con.execute("SELECT work,published_at FROM library_publication_time").fetchall()}
-                        entries.sort(key=lambda entry: (publication_times.get(entry["slug"]) or 0), reverse=True)
+                        entries.sort(key=lambda entry: max(
+                            publication_times.get(entry["slug"]) or 0,
+                            group_works.get((entry["kind"], entry["slug"]), 0),
+                        ), reverse=True)
                     else:
                         entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)
                     rows = [dict(entry_payload(entry), creator=owned.get(entry["slug"])) for entry in entries]
@@ -214,7 +221,7 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
         return private(render_template("viewer_feed.html", rows=rows[start:start + page_size],
                                        signed_in=bool(account), page=page, next_page=start + page_size < len(rows),
                                        category_follows=category_follows, creator_follows=creator_follows,
-                                       channel_follows=channel_follows))
+                                       channel_follows=channel_follows, group_follows=group_follows))
 
 
 def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):

@@ -351,5 +351,5 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                              viewing_preferences, public_origin)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
-                                       ordered, PAGE_SIZE, account_preferences)
+                                       ordered, PAGE_SIZE, account_preferences, audience_groups.followed_program)
     return viewing_preferences
