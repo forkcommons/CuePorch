@@ -272,6 +272,8 @@ Use **Video rating** to collect thumbs or star ratings from viewers. Choose when
 
 In **Registration**, turn on the form to require an email before CuePorch-hosted playback. You can ask for names, add text fields, dropdowns and checkboxes, and link to your privacy policy. Choose one or two steps and save the settings as a preset to reuse on another video. Campaign fields are recorded only when **Save UTM campaign fields** is enabled. View **Recent registrants** or download the complete list as a CSV. Registration works together with the video’s password and embed permissions. Designated public records remain open.
 
+To keep registration history for an imported Vimeo video, export its registrant CSV from Vimeo. In CuePorch, open the same video’s **Registration** settings and choose **Upload Vimeo registrants**. Use **Download Vimeo registration history** to reopen the archive. Imported history stays in the operator archive and does not give former registrants playback access, change the form, or subscribe anyone to a mailing list.
+
 Under **Registration appearance**, choose the form alignment, organizer logo, background image or color, and overlay color and opacity. Select **Preview registration** to view the draft at desktop or mobile width, then choose **Save registration** to apply it. The same controls and presets are available for a video, showcase or live event.
 
 Use a **Hidden** field to record a value such as a campaign code alongside a registration. For example, set the URL parameter to `campaign` and share a link with `?reg_campaign=fall-screenings`. Direct visitors produce the configured default answer.

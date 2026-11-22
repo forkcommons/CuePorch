@@ -241,6 +241,76 @@ class VimeoVersionMigration(unittest.TestCase):
             expect(picture).to_be_visible()
             self.assertGreater(picture.evaluate('el => el.naturalWidth'), 0)
 
+    def test_vimeo_registration_history_csv(self):
+        import csv
+        import io
+
+        uid = work_id("station", "vimeo", "71")
+        registration_path = f"/api/library/work/{uid}/registration"
+        history_path = registration_path + "/vimeo-history"
+        header = b"First name,Last name,Email,Registration Date (UTC),Views,% Watched,Source Type,Source\n"
+        valid_row_bytes = b"=1+1,Row,archive@example.test,2026-11-05T10:00:00Z,0,,embed,https://example.test/\n"
+        payload = header + valid_row_bytes
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer", exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            page.get_by_role("button", name="Transfer privately", exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            page.goto(self.base + f"/operator/videos/{uid}/interactivity")
+            expect(page.locator("#registrationVimeoHistory")).to_be_visible()
+            page.set_input_files("#vimeoHistoryFile", {"name": "vimeo-history.csv", "mimeType": "text/csv", "buffer": payload})
+            page.get_by_role("button", name="Upload Vimeo registrants").click()
+            expect(page.locator("#registrationStatus")).to_have_text("Archived 1 Vimeo registration.")
+            with page.expect_download() as download_info:
+                page.get_by_role("button", name="Download Vimeo registration history").click()
+            download = download_info.value
+            self.assertEqual("vimeo-registration-history.csv", download.suggested_filename)
+
+        def upload(payload):
+            return self.client.post(
+                history_path,
+                data={"registrants": (io.BytesIO(payload), "vimeo.csv")},
+                headers=self.auth,
+            )
+
+        r1 = upload(payload)
+        assert r1.status_code == 200
+        assert r1.json["archive"] == 1
+        r2 = upload(payload)
+        assert r2.status_code == 200
+        assert r2.json["archive"] == 1
+
+        assert self.client.get(history_path).status_code == 403
+
+        resp = self.client.get(history_path, headers=self.auth)
+        assert resp.status_code == 200
+        assert "no-store" in resp.headers.get("Cache-Control", "")
+
+        rows = list(csv.DictReader(io.StringIO(resp.data.decode())))
+        assert len(rows) == 1
+        parsed = rows[0]
+        assert parsed["First name"] == "'=1+1"
+        assert parsed["Email"] == "archive@example.test"
+        assert parsed["Registration Date (UTC)"] == "2026-11-05T10:00:00+00:00"
+        assert parsed["Views"] == "0"
+        assert parsed["% Watched"] == ""
+
+        reg = self.client.get(registration_path, headers=self.auth)
+        assert reg.status_code == 200
+        assert reg.json["registrants"] == []
+
+        invalid_row = b"=1+1,Row,archive@example.test,invalid-date,0,,embed,https://example.test/\n"
+        bad_payload = header + valid_row_bytes.replace(b"archive@", b"second@") + invalid_row
+        bad = upload(bad_payload)
+        assert bad.status_code == 422
+
+        hist2 = self.client.get(history_path, headers=self.auth)
+        assert hist2.status_code == 200
+        assert len(list(csv.DictReader(io.StringIO(hist2.data.decode())))) == 1
+
     def test_vimeo_chapters_survive_denied_repeat_transfer(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/chapters"
