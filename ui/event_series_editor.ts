@@ -25,6 +25,7 @@ export interface Settings {
   title: string;
   description: string;
   visibility: Visibility;
+  custom_host: string;
   upcoming_mode: UpcomingMode;
   localization: Localization;
   events: string[];
@@ -205,6 +206,7 @@ function renderEditor(entry: Series | null) {
   (field("description") as HTMLTextAreaElement).value =
     entry.settings.description;
   field("slug").value = entry.slug;
+  field("custom_host").value = entry.settings.custom_host;
   const visibilitySelect = field("visibility") as HTMLSelectElement;
   visibilitySelect.value = entry.settings.visibility;
   (field("upcoming_mode") as HTMLSelectElement).value = entry.settings.upcoming_mode;
@@ -382,6 +384,7 @@ form.addEventListener("submit", e => {
         title: (field("title") as HTMLInputElement).value.trim(),
         description: (field("description") as HTMLTextAreaElement).value.trim(),
         visibility: (field("visibility") as HTMLSelectElement).value,
+        custom_host: field("custom_host").value,
         upcoming_mode: (field("upcoming_mode") as HTMLSelectElement).value as UpcomingMode,
         events: Array.from(
           eventChoices.querySelectorAll<HTMLInputElement>('input[name="events"]:checked'),

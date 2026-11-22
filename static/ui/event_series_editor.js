@@ -116,6 +116,7 @@ function renderEditor(entry) {
     field("description").value =
         entry.settings.description;
     field("slug").value = entry.slug;
+    field("custom_host").value = entry.settings.custom_host;
     const visibilitySelect = field("visibility");
     visibilitySelect.value = entry.settings.visibility;
     field("upcoming_mode").value = entry.settings.upcoming_mode;
@@ -288,6 +289,7 @@ form.addEventListener("submit", e => {
                 title: field("title").value.trim(),
                 description: field("description").value.trim(),
                 visibility: field("visibility").value,
+                custom_host: field("custom_host").value,
                 upcoming_mode: field("upcoming_mode").value,
                 events: Array.from(eventChoices.querySelectorAll('input[name="events"]:checked')).map(el => el.value),
                 hidden_recordings: collectHiddenRecordings(target),
