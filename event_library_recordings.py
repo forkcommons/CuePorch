@@ -110,12 +110,12 @@ class Recordings:
             con.execute("""INSERT OR IGNORE INTO live_library_recording
                           SELECT o.event,o.opens,'waiting',NULL,NULL,0 FROM live_occurrence o
                           JOIN live_event e ON e.id=o.event
-                          WHERE o.opens<=? AND o.delivery IN ('ready','replay')
+                          WHERE o.opens<=? AND o.delivery IN ('ready','replay') AND o.origin<>''
                           AND json_extract(e.settings,'$.save_replay')=1 AND json_extract(e.settings,'$.archive_replay')=1""", (now,))
             return con.execute("""SELECT j.*,o.origin,o.remote,e.settings FROM live_library_recording j
                      JOIN live_occurrence o ON o.event=j.event AND o.opens=j.opens
                      JOIN live_event e ON e.id=j.event
-                     WHERE j.state IN ('waiting','preparing') AND j.next_attempt<=?
+                     WHERE j.state IN ('waiting','preparing') AND j.next_attempt<=? AND o.origin<>''
                      ORDER BY j.next_attempt,j.opens LIMIT 1""", (now,)).fetchone()
 
     def update(self, selected, state, *, work=None, error=None, retry=0):
@@ -249,8 +249,13 @@ def register(app, tx, staff, access):
         staff()
         with tx() as con:
             event, target = access(con, uid, opens)
+            if target and not target["origin"] and target["delivery"] in ("archive_pending", "replay"):
+                linked = con.execute("SELECT work FROM live_imported_replay WHERE event=? AND opens=? AND remote=?",
+                                     (uid, opens, target["remote"])).fetchone()
+                if linked:
+                    return dict(state="ready", work=linked["work"], error=None)
             current = job(con, uid, opens)
-            available = bool(event["save_replay"] and target and target["delivery"] != "staged")
+            available = bool(event["save_replay"] and target and target["origin"] and target["delivery"] != "staged")
             if request.method == "POST":
                 if not available:
                     abort(409, "Enable replay recording and prepare the occurrence before retaining its Library copy.")

@@ -11,7 +11,7 @@ import secrets
 import uuid
 
 from filelock import FileLock, Timeout
-from flask import abort, make_response, render_template, request, url_for
+from flask import abort, make_response, render_template, request, send_file, url_for
 from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
 import requests
 from werkzeug.exceptions import Conflict, UnprocessableEntity
@@ -44,6 +44,7 @@ import marketo_crm
 import event_hubspot_engagement
 import hubspot_crm
 import event_library_recordings
+import event_imported_replay
 import event_replay_spool
 import event_mail
 import event_player
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
 """ + (event_program.SCHEMA + event_chat.SCHEMA + event_engagement.SCHEMA + event_scenes.SCHEMA
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
+       + event_imported_replay.SCHEMA
        + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
        + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
@@ -503,6 +505,8 @@ def summary(con, row, event, first, last):
         target = occurrence(con, row["id"], upcoming["id"])
         program = event_program.program(con, row["id"], upcoming["id"])
         upcoming["delivery"] = target["delivery"] if target else "scheduled"
+        if target and not target["origin"] and event_imported_replay.read(con, row["id"], upcoming["id"]):
+            upcoming["imported_replay"] = True
         upcoming["program"] = program["state"] if program else None
         sessions.append(upcoming)
     return dict(id=row["id"], slug=row["slug"], revision=row["revision"], event=event, editable=editable(con, row["id"]),
@@ -549,9 +553,46 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     app.extensions["event_interpreter_inputs"] = interpreters
     event_rtmp.register(app, rtmp_config, studio, interpreters)
     programs = event_program.Programs(app, tx, root, database, read_works, studio)
+    def replay_source(con, event, work, digest=None):
+        if (event["save_replay"] and work and work["provider"] == "vimeo"
+                and event_program.permitted(con, work, event["visibility"])):
+            return event_imported_replay.source(root, work, digest)
+        return None
+
+    def imported_source(con, event, target, uid, opens):
+        if target is None or target["origin"]:
+            return None
+        linked = event_imported_replay.read(con, uid, opens)
+        if not linked or linked["remote"] != target["remote"]:
+            return None
+        work = next((item for item in read_works() if item["id"] == linked["work"]), None)
+        return replay_source(con, event, work, linked["digest"])
+
+    def advance_imported(con, uid, opens, remote):
+        if event_imported_replay.advance(con, uid, opens, remote):
+            event_replay_captions.queue(con, action, uid, opens)
+
+    def publish_local_replays():
+        publish_replays(tx, database, None, None, action)
+        with tx() as con:
+            waiting = con.execute("""SELECT r.event,r.opens,r.remote FROM live_imported_replay r
+                JOIN action a ON a.id=r.approval AND a.status='eligible'
+                JOIN live_occurrence o ON o.event=r.event AND o.opens=r.opens AND o.remote=r.remote
+                WHERE o.delivery='archive_pending'""").fetchall()
+        for uid, opens, remote in waiting:
+            try:
+                with lock_event(database, uid, timeout=0), tx() as con:
+                    row, event = read(con, uid)
+                    target = occurrence(con, uid, opens)
+                    if (publication(con, row, event) in ("eligible", "private")
+                            and target and target["remote"] == remote and target["delivery"] == "archive_pending"
+                            and imported_source(con, event, target, uid, opens)):
+                        advance_imported(con, uid, opens, remote)
+            except Timeout:
+                continue
+
     recordings = event_library_recordings.Recordings(
-        app, tx, media, database, root, institution, remember_work,
-        lambda: publish_replays(tx, database, None, None, action),
+        app, tx, media, database, root, institution, remember_work, publish_local_replays,
     )
     stop_voice, start_voice, voice_audio = studio_voice.register(app, staff)
 
@@ -1601,7 +1642,16 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_captions.register(app, tx, staff, operator_chat, audience_chat, ai_actor)
     captions = event_captions.LiveCaptionJobs(tx, action, media, caption_access, database)
     event_replay_captions.register(app, tx, staff, action, operator_chat, audience_chat)
-    replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database)
+    def imported_caption_source(con, uid, opens, remote):
+        _, event = read(con, uid)
+        target = occurrence(con, uid, opens)
+        if target and target["remote"] == remote and target["delivery"] == "replay":
+            asset = imported_source(con, event, target, uid, opens)
+            if asset:
+                return asset["path"]
+        return None
+
+    replay_captions = event_replay_captions.ReplayCaptionJobs(app, tx, media, database, imported_caption_source)
 
     def can_simulcast(con, uid, event):
         return (event["visibility"] == "public" and territories(event)["mode"] == "anywhere"
@@ -1788,6 +1838,60 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         if previous:
             programs.clean(previous)
         return dict(state, editable=editable_program, choices=sorted(choices, key=lambda entry: entry["title"].casefold()))
+
+    @app.route("/api/live-events/<uid>/<int:opens>/imported-replay", methods=["GET", "PUT"])
+    def event_imported_recording(uid, opens):
+        staff()
+        try:
+            with locked(uid), tx() as con:
+                row, event = read(con, uid)
+                slot = selected_open(event, opens)
+                target = occurrence(con, uid, opens)
+                linked = event_imported_replay.read(con, uid, opens)
+                program = event_program.program(con, uid, opens)
+                busy = program and program["state"] in (*event_program.PENDING, *event_program.ACTIVE)
+                available = (event["save_replay"] and not target and not busy
+                             and datetime.fromisoformat(slot["end"]) <= datetime.now(timezone.utc)
+                             and publication(con, row, event) in ("private", "eligible"))
+                attachment = None
+                choices = []
+                state = "available" if available else "unavailable"
+                works = read_works() if available or linked else []
+                if request.method == "PUT":
+                    body = request.get_json()
+                    if not isinstance(body, dict) or set(body) != {"work", "digest"}:
+                        abort(422, "Choose a matching Vimeo recording from the Library.")
+                    if linked is None:
+                        if not available:
+                            abort(409, "Choose a past occurrence with replay enabled and no existing recording.")
+                        work = next((item for item in works if item["id"] == body["work"]), None)
+                        asset = replay_source(con, event, work)
+                        if asset is None or asset["digest"] != body["digest"]:
+                            abort(409, "This recording changed or is unavailable for this event audience.")
+                        remote = event_imported_replay.attach(con, action, uid, opens, event["title"], work["id"], asset)
+                        advance_imported(con, uid, opens, remote)
+                        linked = event_imported_replay.read(con, uid, opens)
+                        target = occurrence(con, uid, opens)
+                        available = False
+                    elif body["work"] != linked["work"] or body["digest"] != linked["digest"]:
+                        abort(409, "An imported recording is already attached to this occurrence.")
+                if linked and target:
+                    decision = con.execute("SELECT status FROM action WHERE id=?", (linked["approval"],)).fetchone()
+                    state = target["delivery"]
+                    if state == "archive_pending" and decision and decision["status"] == "rejected":
+                        state = "rejected"
+                    work = next((item for item in works if item["id"] == linked["work"]), None)
+                    attachment = dict(work=linked["work"], digest=linked["digest"],
+                                      title=title_for(con, work) if work else "Library recording")
+                if available:
+                    for work in works:
+                        asset = replay_source(con, event, work)
+                        if asset:
+                            choices.append(dict(work=work["id"], digest=asset["digest"], title=title_for(con, work)))
+                    choices.sort(key=lambda item: item["title"].casefold())
+                return private(dict(state=state, editable=available, attachment=attachment, choices=choices))
+        except Timeout:
+            abort(409, "Another operation is preparing this event.")
 
     def qualify_program(con, uid, opens):
         row, event = read(con, uid)
@@ -2070,9 +2174,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             selected_open(event, opens)
             target = occurrence(con, uid, opens)
             managed = private_delivery(con, event, uid, opens) or library_registration.active(con, "event", uid)
+            asset = imported_source(con, event, target, uid, opens)
         local = studio.health(uid, opens)
         if request.args.get("source") == "relay":
             return dict(encoder=local)
+        if target and not target["origin"] and target["delivery"] in ("archive_pending", "replay"):
+            if not asset:
+                return dict(state="unavailable", encoder=local)
+            released = target["delivery"] == "replay"
+            with tx() as con:
+                viewers = event_analytics.current(con, uid, opens, "replay") if released else 0
+            return dict(state="replay" if released else "preparing_replay", public=False,
+                        viewers=viewers, duration=asset["duration"], encoder=local)
         if target is None or target["delivery"] not in DELIVERED:
             return dict(state=target["delivery"] if target else "scheduled", encoder=local)
         archive = (event_replay_spool.available(recordings.replay_root, uid, opens, target["remote"])
@@ -2117,14 +2230,18 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                         return "", 204
                     if target["delivery"] == "withdrawn":
                         return "", 204
+                    attached = event_imported_replay.read(con, uid, opens) if not target["origin"] else None
+                    if attached and attached["remote"] == target["remote"]:
+                        supersede_publication(con, attached["approval"])
                     con.execute("UPDATE live_occurrence SET delivery='withdrawing' WHERE event=? AND opens=?",
                                 (uid, opens))
                 interpreters.stop_all(uid, opens)
                 studio.withdraw(uid, opens)
-                with event_peer.connected_host(target["origin"]) as host:
-                    video = host.call("GET", "/api/v1/videos/" + target["remote"]).json()
-                    if video["privacy"]["id"] != 3:
-                        host.set_public(target["remote"], False)
+                if target["origin"]:
+                    with event_peer.connected_host(target["origin"]) as host:
+                        video = host.call("GET", "/api/v1/videos/" + target["remote"]).json()
+                        if video["privacy"]["id"] != 3:
+                            host.set_public(target["remote"], False)
                 with tx() as con:
                     con.execute("UPDATE live_occurrence SET delivery='withdrawn' WHERE event=? AND opens=?",
                                 (uid, opens))
@@ -2237,10 +2354,21 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         return None
 
     def viewer_playback(event, delivery, scope, native_video, host_private, analytics_scope, joined=None,
-                        sharing=None, archive=None):
+                        sharing=None, archive=None, library_asset=None):
         address = analytics_token = None
         status = "Scheduled"
         attendance = [joined] if joined else []
+        if not delivery["origin"]:
+            if library_asset is None or delivery["delivery"] != "replay":
+                return None, None, "The replay is unavailable"
+            remote = delivery["remote"]
+            ticket = files.dumps(scope + [remote, "library:" + remote, True] + attendance)
+            address = url_for("event_media_file", token=ticket, filename="replay.mp4")
+            if analytics_scope is not None:
+                duration = library_asset["duration"]
+                analytics_token = playback_token(scope, delivery, True, analytics_scope,
+                                                round(duration * 1000) if duration else None, joined, sharing)
+            return address, analytics_token, "Replay"
         if archive is not None:
             if delivery["delivery"] != "replay":
                 return None, None, "The replay is awaiting release"
@@ -2345,6 +2473,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         sign_on = None
         archives = None
         latest = latest_slot = None
+        library_asset = latest_library_asset = None
         latest_captioned = False
         with tx() as con:
             row, event = read(con, slug, True)
@@ -2534,6 +2663,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     registration_view = library_registration.presentation(con, form, sign_on)
             if playlist_enabled and not joined and (not form or grant):
                 archives = event_playlist.archive_playlist(con, row["id"], options, event["schedule"])
+            if shown and delivery and delivery["delivery"] == "replay":
+                library_asset = imported_source(con, event, delivery, row["id"], shown["id"])
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
             managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
@@ -2545,6 +2676,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     latest_slot = selected_open(event, latest["opens"])
                     latest_managed = private_delivery(con, event, row["id"], latest["opens"])
                     latest_captioned = bool(event_replay_captions.read(con, row["id"], latest["opens"]))
+                    latest_library_asset = imported_source(con, event, latest, row["id"], latest["opens"])
             poster = url_for("event_artwork", slug=slug, opens=shown["id"], kind="poster", digest=artwork["poster"], **artwork_access) if (
                 shown and not withdrawn and artwork["poster"]) else None
             logo = url_for("event_artwork", slug=slug, opens=shown["id"], kind="logo", digest=artwork["logo"], **artwork_access) if (
@@ -2586,6 +2718,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             status = "This occurrence was withdrawn"
         if protected and not grant and not withdrawn:
             status = "Registration required"
+        elif delivery and delivery["delivery"] == "archive_pending":
+            status = "The replay is awaiting release"
         elif delivery and delivery["delivery"] in DELIVERED and shown["id"] <= now.timestamp():
             dash = event["latency"] == "fail-safe" and studio.dash_contribution(row["id"], shown["id"])
             finished = dash and dash.playback.audience_finished()
@@ -2613,21 +2747,28 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 status = "Buffering the Fail-safe signal"
             else:
                 archive = interpreted_archive(event, delivery, scope)
-                if archive is not None:
+                if library_asset is not None:
+                    native_video, transport = True, f"library:{delivery['remote']}"
+                elif archive is not None:
                     native_video, transport = True, f"replay:{archive.identity}"
                 address, analytics_token, status = viewer_playback(
-                    event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing, archive)
+                    event, delivery, scope, native_video, host_private, reporting_scope, joined, sharing, archive,
+                    library_asset)
         if not address and latest:
             replay_scope = [*scope[:2], latest["opens"], *scope[3:]]
             private_replay = protected or latest_managed
             archive = interpreted_archive(event, latest, replay_scope)
-            native_replay = private_replay or latest_captioned or appearance["customize"] or archive is not None
+            native_replay = (private_replay or latest_captioned or appearance["customize"]
+                             or archive is not None or latest_library_asset is not None)
             replay_address, replay_measurement, replay_status = viewer_playback(
-                event, latest, replay_scope, native_replay, private_replay, reporting_scope, archive=archive)
+                event, latest, replay_scope, native_replay, private_replay, reporting_scope, archive=archive,
+                library_asset=latest_library_asset)
             if replay_address and replay_status == "Replay":
                 address, analytics_token, status = replay_address, replay_measurement, replay_status
                 native_video, playing, preview_replay = native_replay, latest_slot, True
-                if archive is not None:
+                if latest_library_asset is not None:
+                    transport = f"library:{latest['remote']}"
+                elif archive is not None:
                     transport = f"replay:{archive.identity}"
         caption_endpoint = None
         if can_participate:
@@ -2777,13 +2918,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
         local = isinstance(gateway, str) and gateway.startswith("local:")
         if not local and not replay and not LIVE_FILE.fullmatch(filename):
             abort(404)
+        library_asset = None
         with tx() as con:
             delivery = delivered(con, uid, revision, opens, form_revision, remote, replay, embed,
                                  attendance[0] if attendance else None)
+            if not delivery["origin"]:
+                if not replay or filename != "replay.mp4" or gateway != "library:" + remote:
+                    abort(404)
+                _, event = read(con, uid)
+                library_asset = imported_source(con, event, delivery, uid, opens)
+                if library_asset is None:
+                    abort(404)
             if local and (replay or (not studio.dash_contribution(uid, opens) and event_captions.active_track(con, uid, opens))):
                 abort(404)
         try:
-            if local:
+            if library_asset is not None:
+                response = private(send_file(library_asset["path"], mimetype="video/mp4", conditional=True))
+            elif local:
                 source_id, _, mix_id = gateway.removeprefix("local:").partition(":")
                 source = studio.playback(uid, opens, source_id)
                 if not source:
