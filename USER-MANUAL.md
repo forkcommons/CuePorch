@@ -46,6 +46,8 @@ Use **Viewing preferences** to show everything, hide mature videos, or hide sele
 
 Under **Viewing preferences**, choose **Use video setting**, **Play automatically** to start muted, or **Wait for me** on CuePorch Watch pages. Embeds keep their own settings.
 
+Follow a creator or choose **Follow category** under **Watch → Categories** to add matching public videos to your Feed. Open **Manage your feed** from your account or the Feed to remove follows.
+
 On a public video, use **Like video** to save it to **Liked videos**. The public count shows how many viewers liked it. Your Liked videos list is private. Use **Add to collection** to create or choose a personal collection and add the current video. Open **Collections** to play saved videos, edit a collection, remove entries or delete the collection. Video access still follows the publisher’s privacy settings. Deleting a collection leaves the videos in CuePorch.
 
 On a public watch page, read the discussion under **Comments**. Search by text or author and sort newest or oldest first. Sign in to post under your display name or delete one of your own comments. If the operator requires approval, see the comment’s status under **Your unpublished comments**.

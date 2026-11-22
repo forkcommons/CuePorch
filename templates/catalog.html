@@ -40,6 +40,14 @@
           {% endfor %}
         </nav>
       {% endif %}
+      {% if section == 'categories' and category %}
+        <div class="follow-category" data-follow-category="{{ category }}">
+          <button type="button" hidden aria-pressed="false">Follow this category</button>
+          <a href="{{ url_for('viewer_account_page') }}" hidden>Sign in to follow this category</a>
+          <span role="status" aria-live="polite"></span>
+        </div>
+        <script type="module" src="/static/ui/follow_category.js"></script>
+      {% endif %}
       {% if rows %}
         <ul class="watch-grid">
           {% for item in rows %}

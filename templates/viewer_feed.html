@@ -9,7 +9,37 @@
     <h1>Feed</h1>
     {% if not signed_in %}
       <p><a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}">Sign in to see your feed</a></p>
-    {% elif rows %}
+    {% endif %}
+    {% if signed_in %}
+      <details id="feed-preferences">
+        <summary>Manage your feed</summary>
+        {% if category_follows %}
+          <ul class="feed-follows">
+            {% for item in category_follows %}
+              <li data-follow-category="{{ item.label }}" data-feed-remove="true">
+                <span>{{ item.label }}</span>
+                <button type="button" aria-pressed="true" aria-label="Unfollow {{ item.label }}">Unfollow {{ item.label }}</button>
+                <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>Sign in to manage</a>
+                <span role="status" aria-live="polite"></span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if creator_follows %}
+          <ul class="feed-follows">
+            {% for item in creator_follows %}
+              <li>
+                <span>{{ item.name }} (@{{ item.handle }})</span>
+                <button type="button" data-feed-unfollow-creator="{{ item.handle }}" aria-label="Unfollow {{ item.name }}">Unfollow {{ item.name }}</button>
+                <span role="status" aria-live="polite"></span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </details>
+      <script type="module" src="/static/ui/follow_category.js"></script>
+    {% endif %}
+    {% if signed_in and rows %}
       <ul class="watch-grid">
         {% for item in rows %}
           <li>
@@ -17,12 +47,18 @@
               {% if item.cover %}<img src="{{ item.cover }}" alt="" loading="lazy">{% endif %}
               {{ item.title }}
             </a>
-            <a href="{{ url_for('creator_page', handle=item.creator.handle) }}">{{ item.creator.name }}</a>
+            {% if item.creator %}
+              <a href="{{ url_for('creator_page', handle=item.creator.handle) }}">{{ item.creator.name }}</a>
+            {% endif %}
           </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p>No public videos from creators you follow.</p>
+    {% elif signed_in %}
+      {% if category_follows %}
+        <p>No public videos from your follows.</p>
+      {% else %}
+        <p>No public videos from creators you follow.</p>
+      {% endif %}
     {% endif %}
     {% if signed_in and (page > 1 or next_page) %}
       <nav aria-label="Feed pages">
