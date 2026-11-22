@@ -819,17 +819,51 @@ class LinkedInPublication(unittest.TestCase):
                             (data["id"], opens),
                         ).fetchall()
 
-                with patch.object(live_destination_series, "due", lambda con, _: real_due(con, clock)):
+                draft_received, allow_return = Event(), Event()
+                create_scheduled = linkedin_live.LiveConnection.create_scheduled
+
+                def hold_company_draft(connection, revision, owner, title, start_ms, before_send):
+                    video = create_scheduled(connection, revision, owner, title, start_ms, before_send)
+                    if video == "1113":
+                        draft_received.set()
+                        if not allow_return.wait(8):
+                            raise TimeoutError("The test did not release the acknowledged LinkedIn draft.")
+                    return video
+
+                announced_url = f"{path}/{later['id']}/destinations/linkedin/series"
+                company_draft = (company["company"], "1113", "created", None)
+                prior_schedules, prior_announcements = len(scheduled_videos), len(announcement_writes)
+                with (patch.object(live_destination_series, "due", lambda con, _: real_due(con, clock)),
+                      patch.object(linkedin_live.LiveConnection, "create_scheduled", hold_company_draft)):
+                    try:
+                        self.assertTrue(draft_received.wait(8), "LinkedIn did not acknowledge the draft.")
+                        skipped = api.delete(announced_url, headers=auth, data={"date": True})
+                        self.assertEqual(200, skipped.status, skipped.text())
+                    finally:
+                        allow_return.set()
+
+                    deadline = monotonic() + 8
+                    while company_draft not in live_rows(later["id"]) and monotonic() < deadline:
+                        sleep(.05)
+                    self.assertIn(company_draft, live_rows(later["id"]))
+                    self.assertEqual(prior_announcements, len(announcement_writes))
+                    state = api.get(announced_url, headers=auth).json()
+                    self.assertTrue(state["skipped"])
+                    self.assertTrue(state["restorable"])
+                    restored = api.put(announced_url, headers=auth, data={"date": True})
+                    self.assertEqual(200, restored.status, restored.text())
+
                     deadline = monotonic() + 8
                     while monotonic() < deadline:
                         rows = live_rows(later["id"])
                         if len(rows) == 2 and all(row[2] == "scheduled" for row in rows):
                             break
                         sleep(.05)
+                self.assertEqual(prior_schedules + 1, len(scheduled_videos))
+                self.assertEqual(["urn:li:liveVideo:1113"], announcement_writes[prior_announcements:])
+                self.assertTrue(all(row[2] == "scheduled" for row in rows), rows)
                 self.assertEqual(["1113", "5501"], [row[1] for row in rows])
                 self.assertTrue(live_rows(first["id"]))
-
-                announced_url = f"{path}/{later['id']}/destinations/linkedin/series"
 
                 def announced_due():
                     with closing(sqlite3.connect(database)) as db:
