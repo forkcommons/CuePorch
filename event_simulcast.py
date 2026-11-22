@@ -1158,12 +1158,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if not live_now:
                 staff()
             with tx() as con:
-                check(con)
                 try:
+                    check(con)
                     check_provider_capacity(con, uid, opens)
                 except Conflict as error:
                     if live_now:
-                        raise facebook_live_job.AutomaticCapacityDeferred() from error
+                        raise facebook_live_job.AutomaticStartDeferred() from error
                     raise
                 if not live_now and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc):
                     abort(409, "Choose a future occurrence to prepare a Facebook Live broadcast.")

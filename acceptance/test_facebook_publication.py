@@ -609,10 +609,35 @@ class FacebookPublication(unittest.TestCase):
                             first_poll.set()
                     return due(con, now)
 
+                interrupted = Event()
+                paused_write_counts = []
+                original_create = facebook_live.ProfileLiveConnection.create_profile_live
+
+                def interrupt_profile_start(connection, revision, owner, title, opens, before_send, **options):
+                    if not release.is_set() or opens != int(inherited["id"]) or interrupted.is_set():
+                        return original_create(connection, revision, owner, title, opens, before_send, **options)
+                    key = (created["id"], f"profile:{owner}")
+                    with closing(sqlite3.connect(database)) as con:
+                        series = con.execute(
+                            "SELECT * FROM facebook_live_series WHERE event=? AND page=?", key
+                        ).fetchone()
+                        con.execute("DELETE FROM facebook_live_series WHERE event=? AND page=?", key)
+                        con.commit()
+                    interrupted.set()
+                    try:
+                        return original_create(connection, revision, owner, title, opens, before_send, **options)
+                    finally:
+                        paused_write_counts.append(len(profile_writes))
+                        with closing(sqlite3.connect(database)) as con:
+                            con.execute("INSERT INTO facebook_live_series VALUES(?,?,?,?,?,?)", series)
+                            con.commit()
+
                 inherited_profile = []
                 try:
-                    with patch.object(facebook_live_job, "due", observe_capacity_poll), patch.object(
-                        facebook_live_job, "time", lambda: scheduled
+                    with (
+                        patch.object(facebook_live_job, "due", observe_capacity_poll),
+                        patch.object(facebook_live_job, "time", lambda: scheduled),
+                        patch.object(facebook_live.ProfileLiveConnection, "create_profile_live", interrupt_profile_start),
                     ):
                         self.assertTrue(second_poll.wait(8), "The scheduler did not advance while capacity was full.")
                         self.assertEqual([], profile_writes)
@@ -637,6 +662,8 @@ class FacebookPublication(unittest.TestCase):
                     with closing(sqlite3.connect(database)) as seed_con:
                         seed_con.execute("DELETE FROM live_simulcast_destination WHERE id LIKE 'capacity-fixture-%'")
                         seed_con.commit()
+                self.assertTrue(interrupted.is_set(), "The test did not stop the series before the provider call.")
+                self.assertEqual([0], paused_write_counts)
                 self.assertEqual([{
                     "title": event["title"],
                     "status": "LIVE_NOW",
