@@ -122,6 +122,17 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     self.end_headers()
                     self.wfile.write(data)
                     return
+                if path == '/videos/71' and parse_qs(urlsplit(self.path).query).get('fields') == ['uri,page']:
+                    page = getattr(self.server, 'video_page_fixture', None)
+                    if page is None:
+                        return self.send_error(403)
+                    body = json.dumps(dict(uri=path, page=page)).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', content_type)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if version_fixture and path in ('/videos/71', '/videos/72'):
                     entries = []
                     if path == '/videos/71':

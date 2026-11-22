@@ -73,3 +73,33 @@ def embed_appearance(value):
             out['play_position'] = m.group(1)
 
     return out
+
+
+def watch_appearance(value):
+    result = embed_appearance(_get(value, "player"))
+    result.pop("background", None)
+    result.pop("text", None)
+    pairs = (
+        (("title",), "show_title"),
+        (("description",), "description"),
+        (("chapters",), "chapters"),
+        (("credits",), "credits"),
+        (("tags",), "tags"),
+        (("categories",), "categories"),
+        (("creative_commons",), "license"),
+        (("player", "fullscreen"), "fullscreen"),
+        (("customization", "ambient_backlight"), "ambient"),
+    )
+    for path, dest in pairs:
+        v = _get(value, *path)
+        if type(v) is bool:
+            result[dest] = v
+    h = _get(value, "customization", "hide_vimeo_header")
+    if type(h) is bool:
+        result["show_chrome"] = not h
+    bg = _get(value, "customization", "background_color")
+    if isinstance(bg, str) and bg.startswith("#"):
+        c = _color(bg)
+        if c:
+            result["background"] = c
+    return result

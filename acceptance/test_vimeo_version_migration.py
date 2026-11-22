@@ -125,6 +125,59 @@ class VimeoVersionMigration(unittest.TestCase):
             self.assertNotIn("fake-html-secret", migration_text)
             self.assertNotIn("fake-logo-secret", migration_text)
 
+    def test_vimeo_page_appearance_import(self):
+        uid = work_id("station", "vimeo", "71")
+        root = f"/api/library/work/{uid}"
+        watch_path = root + "/appearance/watch"
+        embed_path = root + "/appearance/embed"
+        self.source.public_viewer_fixture = True
+        self.source.video_page_fixture = {
+            "title": True,
+            "description": False,
+            "customization": {
+                "background_color": "#123456",
+                "ambient_backlight": True,
+                "logo": {"custom_logo_url": "https://example.test/secret"},
+            },
+            "player": {"speed": False, "muted": True, "colors": {"color_one": "339988", "color_four": "ffffff"}},
+        }
+        expected_watch = {"primary": "#339988", "background": "#123456", "ambient": True, "speed": False, "description": False}
+
+        def transfer(page):
+            page.get_by_role("button", name="Preview transfer", exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            page.get_by_role("button", name="Transfer privately", exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            transfer(page)
+
+            watch = self.client.get(watch_path, headers=self.auth).json["settings"]
+            self.assertEqual(expected_watch, {key: watch[key] for key in expected_watch})
+            self.assertEqual(404, self.client.get(f"/watch/work/{uid}").status_code)
+            self.assertEqual(200, self.client.put(root + "/source-privacy", headers=self.auth, json={}).status_code)
+
+            guest = browser.new_page()
+            guest.goto(self.base + f"/watch/work/{uid}")
+            guest.wait_for_selector("video", timeout=20000)
+            self.assertEqual("#123456", guest.evaluate("getComputedStyle(document.body).getPropertyValue('--viewer-background').trim()"))
+            self.assertTrue(guest.locator("video").evaluate("async video => { await video.play(); return video.videoWidth > 0; }"))
+
+            self.source.video_page_fixture = None
+            operator = browser.new_page()
+            operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            operator.goto(self.base + "/operator/migration")
+            transfer(operator)
+
+            watch2 = self.client.get(watch_path, headers=self.auth).json["settings"]
+            self.assertEqual(expected_watch, {key: watch2[key] for key in expected_watch})
+            embed = self.client.get(embed_path, headers=self.auth).json["settings"]
+            self.assertNotEqual("#123456", embed["background"])
+            self.assertTrue(embed["speed"])
+
     def test_vimeo_chapters_survive_denied_repeat_transfer(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/chapters"

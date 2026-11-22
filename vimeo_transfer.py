@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cueporch import checksum, dump, verify, work_id
-from vimeo_appearance import embed_appearance
+from vimeo_appearance import embed_appearance, watch_appearance
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -164,6 +164,31 @@ def vimeo_review_settings(row, video_uri):
         "show_other_videos": row.get("hide_end_cards") is False,
         "expires": expires,
     }
+
+def video_page(source, video):
+    page = video.get('page')
+    if isinstance(page, dict):
+        return page
+
+    url = source.base + video['uri'] + '?' + urlencode({'fields': 'uri,page'})
+
+    try:
+        with source.open(url, True) as response:
+            payload = json.load(response)
+    except SourceFailure as exc:
+        if exc.status in (403, 404):
+            return None
+        raise
+
+    if (
+        isinstance(payload, dict)
+        and payload.get('uri') == video['uri']
+        and isinstance(payload.get('page'), dict)
+    ):
+        return payload['page']
+
+    return None
+
 
 def video_review_inventory(source, video_uri):
     link_fields = (
@@ -1070,6 +1095,9 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         )
         if isinstance(video.get("embed"), dict):
             record["source_embed_appearance"] = embed_appearance(video["embed"])
+        page = video_page(source, video)
+        if isinstance(page, dict):
+            record["source_watch_appearance"] = watch_appearance(page)
         for family, fields in (
             ("credits", ("uri", "name", "role")),
             ("chapters", ("uri", "title", "timecode")),
