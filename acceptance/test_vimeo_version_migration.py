@@ -58,6 +58,88 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_review_csv_import_for_earlier_cut(self):
+        import csv
+        import io
+
+        from installed_cards import select_action
+
+        uid = work_id("station", "vimeo", "71")
+        root_text = 'A comma, a "quote", and\na second line.'
+        raw = io.StringIO(newline='')
+        writer = csv.writer(raw)
+        writer.writerow(('Video Version','#','Timecode','Username','Note','Reply','Date Added','Resolved'))
+        writer.writerows([
+            ('old-cut.mp4', '1', '00:00:00.500', 'Fixture Reviewer', root_text, '--', 'Tuesday, July 9, 2019 At 8:49 AM', 'No'),
+            ('', '2', '00:00:00.500', 'Guest Reviewer', root_text, 'Reply note', '2019-07-09T08:49:00+00:00', 'No'),
+            ('final-cut.mp4', '1', '00:00:01', 'Other Reviewer', 'Final note', '--', '2019-07-09T08:49:00Z', 'Yes'),
+        ])
+        payload = raw.getvalue().encode('utf-8-sig')
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer", exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            page.get_by_role("button", name="Transfer privately", exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            versions = self.client.get(f"/api/library/work/{uid}/versions", headers=self.auth).get_json()
+            earlier = next(version for version in versions if version.get("source_version") == "/videos/71/versions/202")
+            current = next(version for version in versions if version["current"])
+            response = self.client.post(f"/api/library/work/{uid}/review-links", headers=self.auth, json={"name": "CSV review", "password": "fixture-review-lock", "allow_versions": True, "allow_resolved": True})
+            assert response.status_code == 201
+            link = response.get_json()
+            page.goto(self.base + "/operator/library")
+            page.get_by_role("button", name="Load library", exact=True).click()
+            select_action(page, "Station meeting", "Review link", uid)
+            page.locator("#workDialog li").filter(has_text="CSV review").get_by_role("button", name="Comments", exact=True).click()
+            page.get_by_label("Video version").select_option(earlier["key"])
+            page.get_by_label("Vimeo review CSV").set_input_files({"name": "review.csv", "mimeType": "text/csv", "buffer": payload})
+            page.get_by_role("button", name="Import Vimeo review notes", exact=True).click()
+            expect(page.get_by_label("Source cut in CSV")).to_be_visible()
+            page.get_by_label("Source cut in CSV").select_option(label="old-cut.mp4")
+            page.get_by_role("button", name="Import Vimeo review notes", exact=True).click()
+            expect(page.locator("#workDialogStatus")).to_have_text("Imported 2 notes · 0 already present.")
+            page = browser.new_page()
+            page.goto(self.base + link["path"] + "?version=" + earlier["key"])
+            page.get_by_label("Review password", exact=True).fill("fixture-review-lock")
+            page.get_by_role("button", name="Open review", exact=True).click()
+            expect(page.locator("#reviewTourPlayer")).to_be_visible()
+            expect(page.get_by_text("Reply note", exact=True)).to_be_visible()
+            expect(page.get_by_text("Final note", exact=True)).to_have_count(0)
+            page.get_by_role("button", name="Go to 0:00.50").click()
+            page.wait_for_function(
+                """() => {
+                    const v = document.querySelector('video');
+                    return !!v && Math.abs(v.currentTime - 0.5) <= 0.04 && (v.paused || !v.seeking);
+                }"""
+            )
+            feedback = link['path'] + '/feedback/' + earlier['key']
+            endpoint = feedback + '/vimeo-comments.csv'
+
+            comments = self.client.get(feedback, headers=self.auth).get_json()['comments']
+            assert len(comments) == 2
+            root = next(c for c in comments if not c['parent'])
+            assert root['body'] == root_text
+            assert root['seconds'] == .5
+            reply = next(c for c in comments if c['parent'] == root['id'])
+            assert reply['body'] == 'Reply note'
+
+            assert self.client.get(link['path'] + '/feedback/' + current['key'], headers=self.auth).get_json()['comments'] == []
+            assert self.client.get(feedback).status_code == 403
+            assert self.client.post(endpoint, data={'file': (io.BytesIO(payload), 'review.csv')}).status_code == 403
+
+            response = self.client.post(endpoint, data={'file': (io.BytesIO(payload), 'review.csv'), 'source_cut': 'old-cut.mp4'}, headers=self.auth)
+            assert response.status_code == 201
+            assert response.get_json() == {'imported': 0, 'existing': 2}
+
+            response = self.client.put(feedback + '/' + root['id'] + '/resolved', json={'resolved': True}, headers=self.auth)
+            assert response.status_code == 204
+            assert self.client.post(endpoint, data={'file': (io.BytesIO(payload), 'review.csv'), 'source_cut': 'old-cut.mp4'}, headers=self.auth).get_json() == {'imported': 0, 'existing': 2}
+            comments = self.client.get(feedback, headers=self.auth).get_json()["comments"]
+            self.assertTrue(next(comment for comment in comments if comment["id"] == root["id"])["resolved"])
+
     def test_vimeo_viewer_discussions_keep_threads_and_privacy(self):
         self.source.viewer_comments_fixture = True
         self.source.public_viewer_fixture = True

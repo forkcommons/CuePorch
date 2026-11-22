@@ -14,6 +14,7 @@ from catalog import video_version_key
 import folder_slack_queue
 import review_notifications
 import review_push
+import review_vimeo_csv
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS review_feedback_permission(
@@ -420,6 +421,42 @@ def register(app, tx, scoped_access, export_access, confidential, session_digest
                 },
             )
         )
+
+    @app.post('/review/<uid>/feedback/<version>/vimeo-comments.csv')
+    def review_feedback_vimeo_comments_csv(uid, version):
+        max_csv_bytes = 2 * 1024 * 1024
+        request.max_content_length = max_csv_bytes + 16384
+        with tx() as con:
+            cut = export_access(con, uid, version)
+            file = request.files.get('file')
+            if file is None:
+                abort(400, 'Choose a Vimeo review CSV file.')
+            data = file.read(max_csv_bytes + 1)
+            if len(data) > max_csv_bytes:
+                abort(413)
+            try:
+                groups = review_vimeo_csv.read_vimeo_review_csv(data)
+            except ValueError as exc:
+                abort(400, str(exc))
+            if not groups:
+                abort(400, 'The CSV contains no review notes.')
+            try:
+                chosen = review_vimeo_csv.select_vimeo_note_cut(
+                    groups,
+                    request.form.get('source_cut'),
+                    cut.get('source_version_number'),
+                )
+            except KeyError:
+                abort(400, 'Unknown source cut label.')
+            except ValueError:
+                abort(409, 'Source version mismatch.')
+            if chosen is None:
+                return confidential(({'versions': list(groups), 'detail': 'Choose the source cut to import.'}, 409))
+            try:
+                result = review_vimeo_csv.store_review_notes(con, uid, version, cut, groups[chosen])
+            except ValueError as exc:
+                abort(400, str(exc))
+            return confidential((result, 201))
 
     @app.get("/review/<uid>/feedback/<version>/comments.csv")
     def export_review_comments(uid, version):
