@@ -31,6 +31,7 @@
         <label>Share link <input id="showcaseLink" readonly></label>
         <label>Embed code <input id="showcaseCode" readonly></label>
         <label>Roku catalog feed <input id="showcaseRokuFeed" readonly></label>
+        <label>Channel link <input id="showcaseChannelLink" readonly></label>
       </div>
       {% include 'registration_editor.html' %}
       <section id="showcaseReportPanel" aria-labelledby="showcaseReportTitle" hidden>
@@ -53,6 +54,9 @@
             <label>Visibility <select name="visibility"><option value="private">Private</option><option value="password">Password</option><option value="public">Public</option><option value="embed_only">Embed only</option></select></label>
             <label id="showcasePassword">Showcase password <input name="password" type="password" autocomplete="new-password" maxlength="256"></label>
             <label id="showcaseDomains">Allowed embed sites <textarea name="domains" placeholder="One domain per line"></textarea></label>
+            <label><input name="channel_listed" type="checkbox"> List in Watch channels</label>
+            <label>Channel category <input name="channel_category" maxlength="120"></label>
+            <p>Channels appear in Watch when the showcase is public.</p>
           </fieldset>
           <fieldset>
             <legend>Videos</legend>

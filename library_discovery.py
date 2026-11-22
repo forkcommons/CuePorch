@@ -6,6 +6,7 @@ import uuid
 from flask import abort, make_response, render_template, request, send_file, url_for
 
 import library_details
+import library_showcases
 import content_rating
 import team_branding
 from library_privacy import playback
@@ -68,7 +69,7 @@ def entry_payload(entry):
     kind, slug = entry["kind"], entry["slug"]
     return {
         "kind": kind, "slug": slug, "title": entry["title"], "categories": entry["categories"],
-        "watch": url_for("watch", kind=kind, slug=slug),
+        "watch": entry.get("watch") or url_for("watch", kind=kind, slug=slug),
         "cover": url_for("discovery_cover", kind=kind, slug=slug, digest=entry["image"]) if entry["image"] else None,
     }
 
@@ -102,11 +103,32 @@ def register(app, tx, staff, public_listing, root, institution, viewing_preferen
             entries = {key: entry for key, entry in public_listing(con).items()
                        if not content_rating.filtered(preference, entry)}
             _, keys = picks(con)
+            if section == "channels":
+                for row in con.execute("SELECT * FROM video_showcase ORDER BY created DESC"):
+                    settings = library_showcases.state(row)
+                    if not library_showcases.channel_visible(settings):
+                        continue
+                    category = settings["channel_category"]
+                    entries[("native-channel", row["id"])] = dict(
+                        kind="channel",
+                        slug=row["slug"],
+                        title=settings["title"],
+                        description=settings["description"],
+                        categories=[category] if category else [],
+                        tags=[],
+                        added=row["created"],
+                        image=None,
+                        watch=url_for("showcase_channel", slug=row["slug"]),
+                    )
             brand = team_branding.read(con, institution)
         featured = [entries[key] for key in keys if key in entries]
         videos = ordered(entry for entry in entries.values() if entry["kind"] != "channel")
         labels = {}
-        for entry in videos:
+        label_source = (
+            [entry for entry in entries.values() if entry["kind"] == "channel"]
+            if section == "channels" else videos
+        )
+        for entry in label_source:
             for label in entry["categories"]:
                 labels.setdefault(label.casefold(), label)
         categories = sorted(labels.values(), key=str.casefold)

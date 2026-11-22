@@ -32,11 +32,11 @@
         {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
         <button type="submit">Search</button>
       </form>
-      {% if section == 'categories' and categories %}
-        <nav class="watch-categories" aria-label="Video categories">
-          <a href="{{ url_for('catalog', section='categories', q=q or none) }}"{% if not category %} aria-current="page"{% endif %}>All categories</a>
+      {% if section in ('categories', 'channels') and categories %}
+        <nav class="watch-categories" aria-label="{{ 'Video categories' if section == 'categories' else 'Channel categories' }}">
+          <a href="{{ url_for('catalog', section=section, q=q or none) }}"{% if not category %} aria-current="page"{% endif %}>All categories</a>
           {% for name in categories %}
-            <a href="{{ url_for('catalog', section='categories', category=name, q=q or none) }}"{% if category.lower() == name.lower() %} aria-current="page"{% endif %}>{{ name }}</a>
+            <a href="{{ url_for('catalog', section=section, category=name, q=q or none) }}"{% if category.lower() == name.lower() %} aria-current="page"{% endif %}>{{ name }}</a>
           {% endfor %}
         </nav>
       {% endif %}

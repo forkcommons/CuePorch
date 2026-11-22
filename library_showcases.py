@@ -13,6 +13,7 @@ from flask import Response, abort, make_response, render_template, request, send
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash
 
+import content_rating
 from catalog import video_version_key
 from browser_account_security import is_loopback
 import folder_slack_queue
@@ -50,6 +51,7 @@ DEFAULTS = dict(
     feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
     download=False, questions=False, likes=False, comments=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
+    channel_listed=False, channel_category="",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
@@ -115,6 +117,10 @@ def roku_origin(public_url):
     return None
 
 
+def channel_visible(settings):
+    return bool(settings.get("channel_listed")) and settings.get("visibility") == "public"
+
+
 def summary(con, row, public_url):
     settings = state(row)
     mode = settings["visibility"]
@@ -123,7 +129,8 @@ def summary(con, row, public_url):
                 has_password=bool(row["password"]), created=row["created"],
                 watch=url_for("showcase_main", slug=row["slug"]) if mode in ("public", "password") else None,
                 embed=url_for("showcase_frame", slug=row["slug"]) if mode != "private" else None,
-                roku=origin + url_for("showcase_roku", uid=row["id"]) if origin else None)
+                roku=origin + url_for("showcase_roku", uid=row["id"]) if origin else None,
+                channel=url_for("showcase_channel", slug=row["slug"]) if channel_visible(settings) else None)
 
 
 def validate_settings(con, raw, lookup):
@@ -133,7 +140,7 @@ def validate_settings(con, raw, lookup):
     for name, limit in (("title", 128), ("description", 5000), ("seo_title", 140),
                         ("seo_description", 200), ("seo_keywords", 500), ("headline", 140),
                         ("summary", 2000), ("button_label", 100), ("roku_provider", 100),
-                        ("roku_genres", 250)):
+                        ("roku_genres", 250), ("channel_category", 120)):
         values[name] = text_field(raw.get(name, DEFAULTS[name]), name.replace("_", " "), limit, name == "title")
     values["button_url"] = web_link(raw.get("button_url", ""))
     if bool(values["button_label"]) != bool(values["button_url"]):
@@ -145,7 +152,8 @@ def validate_settings(con, raw, lookup):
         abort(422, "Choose a six-digit theme color.")
     values["accent"] = accent.lower()
     for name in ("dark", "search", "copy_link", "next_video", "loop", "indexable", "roku_enabled",
-                 "navigation", "product_brand", "download", "questions", "likes", "comments"):
+                 "navigation", "product_brand", "download", "questions", "likes", "comments",
+                 "channel_listed"):
         value = raw.get(name, DEFAULTS[name])
         if type(value) is not bool:
             abort(422, "Choose valid layout and playback switches.")
@@ -217,7 +225,8 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
     return file, policy
 
 
-def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url, questions_enabled):
+def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url, questions_enabled,
+             viewing_preferences):
     access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-access")
     media = URLSafeTimedSerializer(operator, salt="cueporch-showcase-media")
     member_access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-member-access")
@@ -290,7 +299,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 new_id = uuid.uuid4().hex
                 values = state(row)
                 values.update(title=(values["title"][:118] + " (copy)"), visibility="private", indexable=False,
-                              roku_enabled=False)
+                              roku_enabled=False, channel_listed=False)
                 con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                             (new_id, new_id, uuid.uuid4().hex, json.dumps(values), datetime.now(timezone.utc).isoformat()))
                 return summary(con, get_showcase(con, new_id), public_url), 201
@@ -396,10 +405,12 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                    url=url_for("showcase_file", token=token, track=index))
                               for index, track in enumerate(tracks_for(work))])
 
-    def viewer(slug, embed):
+    def viewer(slug, embed, *, channel=False):
         with tx() as con:
             row = get_showcase(con, slug, by_slug=True)
         values = state(row)
+        if channel and not channel_visible(values):
+            abort(404)
         mode = values["visibility"]
         internal = False
         ancestor = request.referrer or ""
@@ -469,9 +480,12 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     context = (library_analytics.request_context(trusted_proxies)
                                if not internal and library_analytics.permitted() else None)
                     works = library()
+                    preference = viewing_preferences(con) if channel and not internal else None
                     for uid in values["videos"]:
                         work = works.get(uid)
                         if not work:
+                            continue
+                        if preference is not None and content_rating.filtered(preference, library_details.details_for(con, work)):
                             continue
                         member_form = None if internal else library_registration.active(con, "video", uid)
                         member_revision = member_form["revision"] if member_form else None
@@ -520,6 +534,10 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     @app.route("/showcases/<slug>", methods=["GET", "POST"])
     def showcase_main(slug):
         return viewer(slug, False)
+
+    @app.route("/channels/<slug>", methods=["GET", "POST"])
+    def showcase_channel(slug):
+        return viewer(slug, False, channel=True)
 
     @app.route("/showcases/<slug>/embed", methods=["GET", "POST"])
     def showcase_frame(slug):
