@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cueporch import checksum, dump, verify, work_id
-from vimeo_appearance import embed_appearance, watch_appearance
+from vimeo_appearance import embed_appearance, embed_ending, watch_appearance
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -1150,6 +1150,9 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         )
         if isinstance(video.get("embed"), dict):
             record["source_embed_appearance"] = embed_appearance(video["embed"])
+            ending = embed_ending(video["embed"])
+            if ending is not None:
+                record["source_embed_ending"] = ending
         page = video_page(source, video)
         if isinstance(page, dict):
             record["source_watch_appearance"] = watch_appearance(page)

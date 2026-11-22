@@ -63,6 +63,7 @@ class VimeoVersionMigration(unittest.TestCase):
         self.source.video_embed_fixture = dict(
             colors=dict(color_one="112233", color_four="223344"),
             playbar=False, title=dict(name="show"), muted=True, speed=False,
+            end_screen=dict(type="loop"),
             html="fake-html-secret", logos=dict(custom=dict(url="https://example.test/?fake-logo-secret")),
         )
         uid = work_id("station", "vimeo", "71")
@@ -107,13 +108,17 @@ class VimeoVersionMigration(unittest.TestCase):
             expect(frame.get_by_role("combobox", name="Speed", exact=True)).to_have_count(0)
             played = frame.locator("video").evaluate("""async video => {
                 await video.play();
-                return video.muted && video.videoWidth > 0;
+                return video.muted && video.videoWidth > 0 && video.loop;
             }""")
             self.assertTrue(played)
+            loop_page = browser.new_page()
+            loop_page.goto(self.base + f"/watch/work/{uid}")
+            self.assertFalse(loop_page.locator("video").evaluate("video => video.loop"))
 
             local = source | {"speed": True}
             self.assertEqual(200, self.client.put(path, headers=self.auth, json=local).status_code)
             self.source.video_embed_fixture["colors"]["color_four"] = "99AABB"
+            self.source.video_embed_fixture["end_screen"] = {"type":"empty"}
             transfer()
             self.assertEqual(local, settings())
             self.assertEqual(200, self.client.delete(path, headers=self.auth).status_code)
@@ -124,6 +129,27 @@ class VimeoVersionMigration(unittest.TestCase):
             migration_text = self.client.get("/api/migration", headers=self.auth).text
             self.assertNotIn("fake-html-secret", migration_text)
             self.assertNotIn("fake-logo-secret", migration_text)
+            guest.locator("#migration-test-player").evaluate("(element) => { element.src = element.src; }")
+            expect(frame.locator('[data-ending="empty"]')).to_have_count(1)
+            self.assertFalse(frame.locator("video").evaluate("(video) => video.loop"))
+
+            path = root + "/presentation"
+            current = self.client.get(path, headers=self.auth).json
+            saved = self.client.put(
+                path,
+                headers=self.auth,
+                json=dict(
+                    version=current["version"],
+                    previous=current["settings"],
+                    cards=[],
+                    ending={"mode": "loop"},
+                ),
+            )
+            self.assertEqual(200, saved.status_code, saved.text)
+            guest.locator("#migration-test-player").evaluate(
+                "el => el.contentWindow.location.reload()"
+            )
+            expect(frame.locator("video")).to_have_attribute("loop", "")
 
     def test_vimeo_page_appearance_import(self):
         uid = work_id("station", "vimeo", "71")

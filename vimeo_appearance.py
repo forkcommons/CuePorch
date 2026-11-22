@@ -103,3 +103,13 @@ def watch_appearance(value):
         if c:
             result["background"] = c
     return result
+
+
+def embed_ending(value):
+    mode = _get(value, "end_screen", "type")
+    if isinstance(mode, str):
+        return mode if mode in ("empty", "loop", "share", "thumbnail") else "default"
+    legacy = _get(value, "outro_type")
+    if isinstance(legacy, str):
+        return legacy if legacy in ("empty", "loop", "share", "thumbnail") else "default"
+    return None
