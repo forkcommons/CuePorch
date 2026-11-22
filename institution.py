@@ -54,7 +54,7 @@ import facebook_live
 import linkedin_live
 import youtube_live
 import event_webhooks
-from browser_account_security import same_origin, secure_site
+from browser_account_security import private, same_origin, secure_site
 import community_analytics
 import creator_profiles
 import library_actions
@@ -475,6 +475,11 @@ def create_app(root, database, operator, institution, simulation=None):
     def migration_screen():
         return render_template("migration_screen.html")
 
+    def transfer_snapshot(state):
+        if state in ("inventoried", "transferred") or (state == "interrupted" and transfer_inventory.is_file()):
+            return transfer_directory / "manifest.json" if state == "transferred" else transfer_inventory
+        return None
+
     @app.get("/api/migration")
     def migration_status():
         staff()
@@ -483,8 +488,8 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(400, "Choose a positive inventory page number.")
         status = dict(transfer_status)
         state = status["state"]
-        if state in ("inventoried", "transferred") or (state == "interrupted" and transfer_inventory.is_file()):
-            snapshot = transfer_directory / "manifest.json" if state == "transferred" else transfer_inventory
+        snapshot = transfer_snapshot(state)
+        if snapshot is not None:
             try:
                 data = json.loads(snapshot.read_text(encoding="utf8"))
                 showcases = data.get("showcases", [])
@@ -503,7 +508,8 @@ def create_app(root, database, operator, institution, simulation=None):
                                 if local and library_privacy.playback(local) and not library_trash.hidden(con, "work", uid):
                                     recording["target"] = uid
                 status.update(live_event_archives=live_events,
-                              live_event_archives_issue=data.get("live_event_archives_issue"))
+                              live_event_archives_issue=data.get("live_event_archives_issue"),
+                              profile_available=bool(data.get("source_profile")))
                 entries = data["works"]
                 counts = Counter(work["disposition"] for work in entries)
                 status.update(total=len(entries), counts=dict(counts),
@@ -535,6 +541,21 @@ def create_app(root, database, operator, institution, simulation=None):
             except (ValueError, OSError, KeyError):
                 return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
         return status
+
+    @app.get("/api/migration/profile")
+    def migration_profile():
+        staff()
+        snapshot = transfer_snapshot(transfer_status["state"])
+        if snapshot is None:
+            abort(404)
+        try:
+            data = json.loads(snapshot.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            abort(404)
+        profile = data.get("source_profile") if isinstance(data, dict) else None
+        if not isinstance(profile, dict):
+            abort(404)
+        return private(profile)
 
     @app.post("/api/migration")
     def begin_transfer():

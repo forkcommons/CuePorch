@@ -17,6 +17,7 @@ const showcaseRows = document.querySelector<HTMLTableSectionElement>("#showcaseI
 const liveEvents = document.querySelector<HTMLElement>("#liveEventInventory")!;
 const liveEventIssue = document.querySelector<HTMLElement>("#liveEventInventoryIssue")!;
 const liveEventList = document.querySelector<HTMLElement>("#liveEventInventoryList")!;
+const creatorProfile = document.querySelector<HTMLElement>("#migrationCreatorProfile")!;
 const cutover = document.querySelector<HTMLElement>("#migrationCutover")!;
 const exportMap = document.querySelector<HTMLButtonElement>("#migrationExportMap")!;
 const cutoverStatus = document.querySelector<HTMLElement>("#migrationCutoverStatus")!;
@@ -43,6 +44,7 @@ const headers = () => ({
 async function run(dry: boolean) {
   inventory.disabled = transfer.disabled = true;
   cutover.hidden = true;
+  creatorProfile.hidden = true;
   cutoverStatus.textContent = "";
   summary.textContent = "";
   pagination.hidden = true;
@@ -72,6 +74,7 @@ async function poll(page = currentPage) {
   const active = data.state === "running" || data.state === "waiting";
   inventory.disabled = transfer.disabled = active;
   cutover.hidden = data.state !== "transferred";
+  creatorProfile.hidden = !data.profile_available;
   statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
   if (data.counts) {
     const dispositions = Object.entries(data.counts).map(([name, count]) => `${count} ${name}`);

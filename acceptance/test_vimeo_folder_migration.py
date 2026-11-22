@@ -344,6 +344,60 @@ class VimeoFolderMigration(unittest.TestCase):
             library = self.client.get("/api/library", headers=self.auth).get_json()
             self.assertIn(archive, {item["id"] for item in library})
 
+    def test_migrated_creator_profile_starts_private(self):
+        self.source.profile_fixture = True
+        self.assertEqual(403, self.client.get("/api/migration/profile").status_code)
+        invitation = self.client.post("/api/team/invitations", headers={**self.auth, "X-CuePorch-Team": "1"},
+                                      json=dict(email="profile-admin@example.com", role="admin"))
+        self.assertEqual(201, invitation.status_code, invitation.get_data(as_text=True))
+        code = invitation.get_json()["path"].split("#", 1)[1]
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            joined = page.request.post(self.base + "/api/team/join", headers={"X-CuePorch-Team": "1"},
+                                       data=dict(invitation=code, name="Existing member", password="admin-password"))
+            self.assertEqual(201, joined.status, joined.text())
+            page.goto(self.base + "/operator/migration")
+            page.locator("#key").fill(self.operator)
+            page.get_by_role("button", name="Preview transfer").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+
+            result = self.client.get("/api/migration", headers=self.auth).get_json()
+            self.assertIs(True, result["profile_available"])
+            self.assertNotIn("source_profile", result)
+            self.assertEqual(403, self.client.get("/api/migration/profile").status_code)
+            draft_url = self.base + "/api/migration/profile"
+            team_session = {"Authorization": "Bearer team-session"}
+            profile = page.request.get(draft_url, headers=team_session)
+            self.assertEqual(200, profile.status, profile.text())
+            self.assertIn("no-store", profile.headers["cache-control"])
+            biography = "Films and exhibitions. <em>Archive</em>"
+            website = "https://gallery.example.org/films"
+            expected = dict(name="Gallery Archive", bio=biography, links=[website])
+            self.assertEqual(expected, profile.json())
+
+            page.get_by_role("link", name="Set up creator profile").click()
+            form = page.locator("#creatorForm")
+            expect(form.locator('[name="name"]')).to_have_value("Gallery Archive")
+            expect(form.locator('[name="bio"]')).to_have_value(biography)
+            expect(form.locator('[name="links"]')).to_have_value(website)
+            expect(form.locator('[name="handle"]')).to_have_value("")
+            expect(form.locator('[name="visible"]')).not_to_be_checked()
+            api = self.base + "/api/team/profile"
+            self.assertEqual("", page.request.get(api).json()["revision"])
+            form.locator('[name="handle"]').fill("gallery-archive")
+            save = page.get_by_role("button", name="Save creator profile")
+            save.click()
+            expect(page.locator("#creatorStatus")).to_have_text("Creator profile saved.")
+            self.assertEqual(404, self.client.get("/creators/gallery-archive").status_code)
+            self.assertIs(False, page.request.get(api).json()["visible"])
+
+            form.locator('[name="bio"]').fill("Local edits")
+            save.click()
+            expect(page.locator("#creatorStatus")).to_have_text("Creator profile saved.")
+            page.goto(self.base + "/team/profile?fromVimeo=1")
+            expect(form.locator('[name="bio"]')).to_have_value("Local edits")
+            expect(page.locator("#creatorStatus")).to_have_text("Your existing creator profile was left as saved.")
+
     def test_vimeo_schedule_reconstruction(self):
         self.source.live_event_fixture = True
         with sync_playwright() as playwright, chromium(playwright) as browser:

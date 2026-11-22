@@ -1176,6 +1176,39 @@ def _streamed_on_utc(raw):
         return None
 
 
+def vimeo_creator_profile(profile):
+    name = profile.get("name")
+    if not isinstance(name, str) or not name.strip() or re.search(r"[\x00-\x1f\x7f]", name):
+        return None
+    bio = profile.get("bio")
+    if isinstance(bio, str):
+        bio = re.sub(r"[\x00-\x09\x0b-\x1f\x7f]", "", bio.replace("\r\n", "\n")).strip()
+    else:
+        bio = ""
+
+    links = []
+    websites = profile.get("websites")
+    for website in websites if isinstance(websites, list) else ():
+        link = website.get("link") if isinstance(website, dict) else None
+        if not isinstance(link, str):
+            continue
+        link = link.strip()
+        if (not link or len(link) > 2048 or link in links
+                or any(char.isspace() or char == "\\" or ord(char) < 32 or ord(char) == 127 for char in link)):
+            continue
+        try:
+            parsed = urlsplit(link)
+            if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None or parsed.port == 0):
+                continue
+        except ValueError:
+            continue
+        links.append(link)
+        if len(links) == 5:
+            break
+    return dict(name=name.strip()[:120], bio=bio[:2000], links=links)
+
+
 def live_event_archive_inventory(institution, source, account, video_ids):
     fields = ("uri,title,stream_privacy.view,recordings.uri,recordings.title,recordings.streamed_on,"
               "schedule.start_time,schedule.end_time,schedule.time_zone,schedule.rrule,"
@@ -1578,6 +1611,8 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         folders=folders, folder_issue=folder_issue,
         live_event_archives=live_event_archives, live_event_archives_issue=live_event_archives_issue,
     )
+    if (creator_profile := vimeo_creator_profile(profile)) is not None:
+        manifest["source_profile"] = creator_profile
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:
         verify(root)

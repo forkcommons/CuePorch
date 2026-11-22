@@ -124,6 +124,15 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     body = {"uri": "/users/10"}
                     if getattr(self.server, "folder_fixture", False):
                         body["metadata"] = {"connections": {"folders": {"uri": "/users/10/projects"}}}
+                    if getattr(self.server, "profile_fixture", False):
+                        body.update(name="Gallery Archive", bio="Films and exhibitions. <em>Archive</em>",
+                                    email="owner-only@example.org", profile_discovery=True, websites=[
+                                        {"link": "https://gallery.example.org/films"},
+                                        {"link": "https://gallery.example.org/films"},
+                                        {"link": "javascript:alert(1)"},
+                                        {"link": "https://user:secret@example.net/account"},
+                                        {"link": "https://example.org:99999/invalid-port"},
+                                    ])
                     data = json.dumps(body).encode()
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(data)))
