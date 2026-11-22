@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS video_analytics_session(
  watched INTEGER NOT NULL, intervals TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS video_analytics_work_date ON video_analytics_session(work,created);
 CREATE INDEX IF NOT EXISTS video_analytics_date ON video_analytics_session(created);
+CREATE TABLE IF NOT EXISTS video_analytics_engagement(
+    session TEXT PRIMARY KEY REFERENCES video_analytics_session(id) ON DELETE CASCADE,
+    ranges TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS video_analytics_context(
  session TEXT PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS video_analytics_region(
@@ -192,6 +196,20 @@ def track_pair_observations(work, samples, watched, source_language):
     return [(*labels, milliseconds) for labels, milliseconds in totals.items()]
 
 
+def _engagement_ranges(raw, limit):
+    if not isinstance(raw, list) or len(raw) > 512:
+        abort(422, "Invalid engagement ranges.")
+    out, total = [], 0
+    for pair in raw:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or any(type(v) is not int for v in pair)
+                or not 0 <= pair[0] < pair[1] <= limit):
+            abort(422, "Invalid engagement range.")
+        out.append([pair[0], pair[1]])
+        total += pair[1] - pair[0]
+    return out, total
+
+
 def record(con, work, nonce, surface, body, context=None, *, viewer_key=None, source_language=None):
     if not isinstance(body, dict):
         abort(400, "Enter a playback observation.")
@@ -214,6 +232,16 @@ def record(con, work, nonce, surface, body, context=None, *, viewer_key=None, so
     watched = max(watched, sum(end - start for start, end in edges))
     if not played and (watched or finished):
         abort(422, "A play is required for viewing progress.")
+
+    engagement_raw = body.get("engagement_ranges")
+    if engagement_raw is None:
+        eng_ranges = None
+    else:
+        eng_ranges, eng_total = _engagement_ranges(engagement_raw, limit)
+        if eng_ranges and not played:
+            abort(422, "A play is required for engagement ranges.")
+        if eng_total > watched + len(eng_ranges) * 2 + 1:
+            abort(422, "Engagement ranges exceed watched time.")
     caption_time = caption_observations(work, body.get("captions", []), watched)
     track_pairs = track_pair_observations(work, body.get("tracks", []), watched, source_language)
     now = datetime.now(timezone.utc).timestamp()
@@ -226,6 +254,12 @@ def record(con, work, nonce, surface, body, context=None, *, viewer_key=None, so
     )
     if not update.rowcount:
         return
+    if eng_ranges is not None:
+        con.execute(
+            """INSERT INTO video_analytics_engagement(session, ranges) VALUES(?, ?)
+               ON CONFLICT(session) DO UPDATE SET ranges = excluded.ranges""",
+            (nonce, json.dumps(eng_ranges)),
+        )
     con.executemany("""INSERT INTO video_analytics_caption VALUES(?,?,?,?)
         ON CONFLICT(session,language,kind) DO UPDATE SET watched=max(watched,excluded.watched)""",
         [(nonce, language, kind, milliseconds) for language, kind, milliseconds in caption_time])

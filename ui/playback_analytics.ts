@@ -10,6 +10,7 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
   const captionTime = new Map<string, number>();
   const trackTime = new Map<string, {audio: string; caption: string; seconds: number}>();
   let previousIntervals: [number, number][] = [];
+  const engagementRanges: [number, number][] = [];
 
   return (video: HTMLVideoElement, resume = false) => {
     const controller = new AbortController();
@@ -21,6 +22,7 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
     let last = performance.now();
     let lastSent = 0;
     let switching = false;
+    let lastEngagementRange: [number, number] | undefined;
     const freshIntervals: [number, number][] = [];
     const textTracks = Array.from(video.querySelectorAll("track"));
     let audio = audioKey();
@@ -51,6 +53,18 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
               previous[1] = Math.max(previous[1], end);
             } else if (freshIntervals.length < 512) {
               freshIntervals.push([begin, end]);
+            }
+          }
+        }
+        if (!hubspot) {
+          const begin = Math.round(position * 1000);
+          const end = Math.round(video.currentTime * 1000);
+          if (end > begin) {
+            if (lastEngagementRange && begin === lastEngagementRange[1]) {
+              lastEngagementRange[1] = end;
+            } else if (engagementRanges.length < 512) {
+              lastEngagementRange = [begin, end];
+              engagementRanges.push(lastEngagementRange);
             }
           }
         }
@@ -86,6 +100,7 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
     function send() {
       const intervals = coveredIntervals();
       const body = JSON.stringify({sequence: ++sequence, played, completed, watched: Math.round(watched * 1000), intervals, viewer,
+        ...(hubspot ? {} : {engagement_ranges: engagementRanges}),
         captions: [...captionTime].slice(0, 256).map(([key, seconds]) => [key, Math.round(seconds * 1000)]),
         tracks: [...trackTime.values()].slice(0, 256).map(({audio, caption, seconds}) => [audio, caption, Math.round(seconds * 1000)])});
       lastSent = performance.now();
@@ -108,6 +123,7 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
     video.addEventListener("cueporch-audio-before-change", () => {
       sample();
       previousIntervals = coveredIntervals();
+      lastEngagementRange = undefined;
       switching = true;
     }, listeners);
     video.addEventListener("cueporch-audio-change", () => {
@@ -120,7 +136,11 @@ export function playbackObservation(endpoint: string, anonymous = false, hubspot
       sample();
       if (started && performance.now() - lastSent >= 5000) send();
     }, listeners);
-    video.addEventListener("seeking", () => { position = video.currentTime; last = performance.now(); }, listeners);
+    video.addEventListener("seeking", () => {
+      lastEngagementRange = undefined;
+      position = video.currentTime;
+      last = performance.now();
+    }, listeners);
     video.addEventListener("pause", () => { sample(); if (started) send(); }, listeners);
     video.addEventListener("ended", () => { completed = true; sample(); send(); }, listeners);
     window.addEventListener("pagehide", () => { sample(); if (started) send(); }, listeners);
