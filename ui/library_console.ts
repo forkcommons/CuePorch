@@ -1636,7 +1636,100 @@ async function manageReviewFeedback(work: Work, link: ReviewLink, back: () => Pr
       window.setTimeout(() => URL.revokeObjectURL(object), 1000);
     });
   }
-  workDialogBody.append(backButton, label, download, markers, list);
+  const form = document.createElement('form');
+  form.hidden = !picker.value;
+
+  const csvLabel = document.createElement('label');
+  csvLabel.textContent = 'Vimeo review CSV';
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.csv,text/csv';
+  fileInput.required = true;
+
+  csvLabel.append(fileInput);
+
+  const submit = document.createElement('button');
+  submit.type = 'submit';
+  submit.textContent = 'Import Vimeo review notes';
+
+  const sourceCutLabel = document.createElement('label');
+  sourceCutLabel.textContent = 'Source cut in CSV';
+  sourceCutLabel.hidden = true;
+
+  const sourceCut = document.createElement('select');
+  sourceCutLabel.append(sourceCut);
+
+  form.append(csvLabel, submit, sourceCutLabel);
+
+  const clearSourceCut = () => {
+    sourceCut.replaceChildren();
+    sourceCutLabel.hidden = true;
+  };
+  fileInput.addEventListener('change', clearSourceCut);
+  picker.addEventListener('change', clearSourceCut);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const file = fileInput.files?.[0];
+    if (!file) return;
+
+    const target = url();
+    const cut = sourceCutLabel.hidden ? '' : sourceCut.value;
+
+    submit.disabled = true;
+    fileInput.disabled = true;
+    picker.disabled = true;
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (cut) formData.append('source_cut', cut);
+
+      const response = await fetch(target + '/vimeo-comments.csv', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + key.value },
+        body: formData,
+      });
+
+      if (
+        response.status === 409 &&
+        response.headers.get('content-type')?.includes('application/json')
+      ) {
+        const data = await response.clone().json();
+        if (
+          Array.isArray(data.versions) &&
+          data.versions.every((version: unknown) => typeof version === 'string')
+        ) {
+          sourceCut.replaceChildren(
+            ...data.versions.map((label: string) => new Option(label, label))
+          );
+          sourceCutLabel.hidden = false;
+          sourceCut.focus();
+          workDialogStatus.textContent =
+            'Choose the source cut from the CSV and import again.';
+          return;
+        }
+      }
+
+      const result: { imported: number; existing: number } = await (await completed(response)).json();
+      await render();
+      workDialogStatus.textContent =
+        `Imported ${result.imported} notes · ${result.existing} already present.`;
+      form.reset();
+      clearSourceCut();
+    } catch (error) {
+      workDialogStatus.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      submit.disabled = false;
+      fileInput.disabled = false;
+      picker.disabled = false;
+    }
+  });
+
+  workDialogBody.append(backButton, label, download, markers, form, list);
   await render();
 }
 
