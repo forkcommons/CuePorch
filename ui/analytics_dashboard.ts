@@ -1,4 +1,4 @@
-export {};
+import {setupAnalyticsFolders, type CatalogFolder} from "./analytics_folder_picker.js";
 
 const dimensionNames: Record<string, string> = {
   video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
@@ -16,7 +16,7 @@ type Metric = keyof typeof metricNames;
 type Counts = Record<Metric, number | null>;
 interface Entry extends Counts { category: string; breakdown: string; video: string | null }
 interface Bucket extends Counts { period: string }
-interface Video { id: string; title: string; event?: boolean }
+interface Video { id: string; title: string; event?: boolean; folder?: string | null }
 interface TopEntry { label: string; video: string | null; views: number }
 type TopBreakdowns = Record<"video" | "region" | "device" | "source", TopEntry[]>;
 interface Report {
@@ -76,6 +76,24 @@ let overview: Bucket[] = [];
 let requestNumber = 0;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 
+const folderPicker = setupAnalyticsFolders(panel, videoOptions,
+  (ids: string[]) => {
+    const candidate = new Set([...chosen, ...ids]);
+    message.textContent = "";
+    if (candidate.size > 10000) {
+      message.textContent = "Choose up to 10,000 items.";
+      return;
+    }
+    chosen.clear();
+    for (const id of candidate) chosen.add(id);
+    videoOptions();
+  },
+  (ids: string[]) => {
+    for (const id of ids) chosen.delete(id);
+    videoOptions();
+  },
+);
+
 async function call(path: string, filters?: object) {
   const headers: Record<string, string> = {Authorization: "Bearer " + key.value};
   if (filters) headers["Content-Type"] = "application/json";
@@ -107,7 +125,7 @@ function videoOptions() {
       chosen.delete(item.id);
       continue;
     }
-    if (!query || chosen.has(item.id) || item.title.toLocaleLowerCase().includes(query)) {
+    if (chosen.has(item.id) || ((!query || item.title.toLocaleLowerCase().includes(query)) && folderPicker.includes(item))) {
       list.append(new Option(item.title, item.id, false, chosen.has(item.id)));
     }
   }
@@ -379,7 +397,10 @@ function showError(error: unknown) {
 }
 
 async function open() {
-  catalog = await (await call("videos?events=1")).json();
+  const videoResponse = await call("videos?events=1&folders=1");
+  const {items, folders}: {items: Video[]; folders: CatalogFolder[]} = await videoResponse.json();
+  catalog = items;
+  folderPicker.populate(folders, items);
   eventIds.clear();
   for (const item of catalog) if (item.event) eventIds.add(item.id);
   const initial = new URLSearchParams(location.search).get("video");

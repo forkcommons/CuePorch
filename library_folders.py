@@ -42,6 +42,19 @@ def import_source_folders(con, folders, entries):
             con.execute("INSERT OR IGNORE INTO library_placement(work,folder) VALUES(?,?)", (uid, folder))
 
 
+def visible_folders(con):
+    return [
+        {"id": row[0], "parent": row[1], "name": row[2]}
+        for row in con.execute(
+            "SELECT f.id, f.parent, f.name FROM library_folder f "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM library_deleted_item "
+            "  WHERE kind='folder' AND item=f.id"
+            ") ORDER BY f.name COLLATE NOCASE, f.id"
+        )
+    ]
+
+
 def register(app, tx, staff, action, read_works, enforce_sharing):
     @app.put("/api/library/star/<kind>/<item>")
     def set_star(kind, item):

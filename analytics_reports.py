@@ -10,6 +10,7 @@ from flask import Response, abort, request
 
 from catalog import video_version_key
 from library_analytics import AUDIO_KINDS, CAPTION_KINDS, DEVICES, REGION_CODE, SURFACES, bounds, metrics
+from library_folders import visible_folders
 from library_registration import csv_cell
 import media_bandwidth
 from subtitles import LANGUAGE
@@ -359,9 +360,25 @@ def register(app, tx, staff, read_works):
         with tx() as con:
             works = catalog(con, read_works())
             events = event_titles(con) if request.args.get("events") == "1" else {}
+            folders = visible_folders(con) if request.args.get("folders") == "1" else None
+            placements = (dict(con.execute("SELECT work, folder FROM library_placement"))
+                          if folders is not None else {})
         entries = [dict(id=uid, title=title) for uid, title in works.items()]
         entries.extend(dict(id=uid, title=title, event=True) for uid, title in events.items())
-        return sorted(entries, key=lambda item: (item["title"].casefold(), item["id"]))
+        if folders is None:
+            return sorted(entries, key=lambda item: (item["title"].casefold(), item["id"]))
+        visible = {folder["id"] for folder in folders}
+        items = []
+        for item in entries:
+            if item.get("event"):
+                items.append(item)
+            else:
+                folder = placements.get(item["id"])
+                items.append(dict(item, folder=folder if folder in visible else None))
+        return {
+            "items": sorted(items, key=lambda item: (item["title"].casefold(), item["id"])),
+            "folders": folders,
+        }
 
     @app.post("/api/analytics/<any(video,date,device,source,region,engagement,rating,bandwidth):kind>-report")
     def report_view(kind):

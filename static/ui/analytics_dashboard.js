@@ -1,3 +1,4 @@
+import { setupAnalyticsFolders } from "./analytics_folder_picker.js";
 const dimensionNames = {
     video: "Video", date: "Date", device: "Device", source: "Referring site", region: "Region", surface: "Playback surface",
     caption: "Captions and subtitles",
@@ -39,6 +40,22 @@ const eventIds = new Set();
 let overview = [];
 let requestNumber = 0;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
+const folderPicker = setupAnalyticsFolders(panel, videoOptions, (ids) => {
+    const candidate = new Set([...chosen, ...ids]);
+    message.textContent = "";
+    if (candidate.size > 10000) {
+        message.textContent = "Choose up to 10,000 items.";
+        return;
+    }
+    chosen.clear();
+    for (const id of candidate)
+        chosen.add(id);
+    videoOptions();
+}, (ids) => {
+    for (const id of ids)
+        chosen.delete(id);
+    videoOptions();
+});
 async function call(path, filters) {
     const headers = { Authorization: "Bearer " + key.value };
     if (filters)
@@ -69,7 +86,7 @@ function videoOptions() {
             chosen.delete(item.id);
             continue;
         }
-        if (!query || chosen.has(item.id) || item.title.toLocaleLowerCase().includes(query)) {
+        if (chosen.has(item.id) || ((!query || item.title.toLocaleLowerCase().includes(query)) && folderPicker.includes(item))) {
             list.append(new Option(item.title, item.id, false, chosen.has(item.id)));
         }
     }
@@ -348,7 +365,10 @@ function showError(error) {
     message.textContent = error instanceof Error ? error.message : String(error);
 }
 async function open() {
-    catalog = await (await call("videos?events=1")).json();
+    const videoResponse = await call("videos?events=1&folders=1");
+    const { items, folders } = await videoResponse.json();
+    catalog = items;
+    folderPicker.populate(folders, items);
     eventIds.clear();
     for (const item of catalog)
         if (item.event)
@@ -385,4 +405,3 @@ document.querySelector("#downloadReport").onclick = async () => {
 };
 if (key.value)
     void open().catch(showError);
-export {};

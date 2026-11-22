@@ -12,14 +12,6 @@ HIDE = ("NOT EXISTS (SELECT 1 FROM library_deleted_item d "
         "WHERE d.kind='folder' AND d.item=f.id)")
 
 
-def folders(con):
-    rows = con.execute(
-        f"SELECT f.id, f.parent, f.name FROM library_folder f "
-        f"WHERE {HIDE} ORDER BY f.name COLLATE NOCASE, f.id"
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
 def active_folder(con, uid):
     row = con.execute(
         f"""SELECT c.folder
