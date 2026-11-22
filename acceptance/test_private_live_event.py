@@ -256,6 +256,30 @@ class PrivateLiveEventTest(unittest.TestCase):
             panel.get_by_role("button", name="Move Owen Lin up", exact=True).click()
             panel.get_by_role("button", name="Save landing page", exact=True).click()
             expect(panel.locator("#eventLandingStatus")).to_have_text("Saved")
+            panel.locator("#eventLandingLanguage").select_option("es")
+            panel.locator("#eventLandingTitle").fill("Ensayo privado")
+            panel.locator("#eventLandingDescription").fill("Resumen privado")
+            panel.get_by_role("button", name="Save landing page", exact=True).click()
+            expect(panel.locator("#eventLandingStatus")).to_have_text("Saved")
+            preview_url = panel.locator("#eventLandingPreviewLink").get_attribute("href")
+            r = team.request.get(preview_url)
+            assert r.status == 200
+            assert r.headers["content-language"] == "es"
+            assert "noindex" in r.headers["x-robots-tag"]
+            assert "Ensayo privado" in r.text()
+            assert (anon.request.get(preview_url)).status == 404
+            draft = team.request.get(stable + "?lang=es")
+            assert "Private rehearsal" in draft.text()
+            panel.locator("#eventLandingTranslationPublished").check()
+            panel.get_by_role("button", name="Save landing page", exact=True).click()
+            expect(panel.locator("#eventLandingStatus")).to_have_text("Saved")
+            pub = team.new_page()
+            pub.goto(stable + "?lang=es")
+            expect(pub.locator("h1")).to_have_text("Ensayo privado")
+            pub.get_by_role("link", name="English").click()
+            expect(pub.locator("h1")).to_have_text("Private rehearsal")
+            stale = team.request.get(preview_url)
+            assert "Private translation preview" not in stale.text()
             self.assertEqual(created["watch"], WATCH)
             self.assertEqual(created["embed"], WATCH + "/embed")
             self.make_media()
@@ -334,6 +358,92 @@ class PrivateLiveEventTest(unittest.TestCase):
                 for address in (stable, stable + "/embed", segment, replay):
                     self.assertEqual(team.request.get(address).status, 404)
 
+
+    def test_branded_password_event_language_switch(self):
+        password = secrets.token_urlsafe(18)
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M")
+        end = (now + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M")
+        response = self.client.post(
+            "/api/live-events", headers=self.auth, json={
+                "title": "Private rehearsal", "slug": "branded-password",
+                "visibility": "password",
+                "type": "live", "latency": "standard", "save_replay": True,
+                "view_password": password,
+                "schedule": {
+                    "timezone": "UTC", "repeat": "none",
+                    "start": start, "end": end,
+                },
+            }
+        )
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        record = response.get_json()
+
+        translated_title = "Repaso privado en español único"
+        put_response = self.client.put(
+            f"/api/live-events/{record['id']}/landing",
+            headers=self.auth,
+            json={
+                "revision": None,
+                "settings": {
+                    "enabled": True, "theme": "light", "layout": "stacked",
+                    "accent": "#3266aa", "show_logo": True, "show_poster": False,
+                    "localization": {
+                        "base": "en",
+                        "translations": {
+                            "es": {
+                                "title": translated_title,
+                                "description": "",
+                                "published": True,
+                            }
+                        },
+                    },
+                },
+            },
+        )
+        self.assertEqual(
+            put_response.status_code, 200,
+            put_response.get_data(as_text=True),
+        )
+
+        watch = record["watch"]
+        if not watch.startswith(("http://", "https://")):
+            if not watch.startswith("/"):
+                watch = "/" + watch
+
+        es_client = self.app.test_client()
+        locked = es_client.get(f"{watch}?lang=es")
+        self.assertEqual(locked.status_code, 200)
+        locked_body = locked.get_data(as_text=True)
+        self.assertIn("unlock", locked_body.lower())
+        self.assertNotIn(translated_title, locked_body)
+        self.assertNotIn(password, locked_body)
+
+        unlocked = es_client.post(
+            f"{watch}?lang=es", data={"password": password}
+        )
+        self.assertEqual(unlocked.status_code, 200)
+        translated_body = unlocked.get_data(as_text=True)
+        self.assertIn(translated_title, translated_body)
+        self.assertNotIn(password, translated_body)
+        set_cookie = unlocked.headers.get("Set-Cookie", "")
+        self.assertNotIn(password, set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+
+        en_view = es_client.get(f"{watch}?lang=en")
+        self.assertEqual(en_view.status_code, 200)
+        en_body = en_view.get_data(as_text=True)
+        self.assertNotIn("unlock", en_body.lower())
+        self.assertIn("Private rehearsal", en_body)
+        self.assertNotIn(translated_title, en_body)
+
+        fresh_client = self.app.test_client()
+        fresh_locked = fresh_client.get(f"{watch}?lang=es")
+        self.assertEqual(fresh_locked.status_code, 200)
+        fresh_body = fresh_locked.get_data(as_text=True)
+        self.assertIn("unlock", fresh_body.lower())
+        self.assertNotIn(translated_title, fresh_body)
+        self.assertNotIn(password, fresh_body)
 
     def test_recording_only_from_public_event(self):
         created = self.create_event("record-only-rehearsal", "public")

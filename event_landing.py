@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from flask import abort, request
 
+import event_landing_locale
 import event_landing_speakers
 from library_appearance import PALETTE
 
@@ -16,6 +17,7 @@ DEFAULTS = {
     "show_logo": True,
     "show_poster": False,
     "speaker_ids": [],
+    "localization": event_landing_locale.DEFAULTS,
 }
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS live_event_landing (
@@ -51,12 +53,19 @@ def _valid_settings(con, data, current_settings):
     settings = data["settings"]
     if not isinstance(settings, dict):
         abort(422)
-    appearance = set(DEFAULTS) - {"speaker_ids"}
-    if set(settings) not in (appearance, set(DEFAULTS)):
+    appearance = set(DEFAULTS) - {"speaker_ids", "localization"}
+    if set(settings) not in (
+        appearance,
+        appearance | {"speaker_ids"},
+        appearance | {"localization"},
+        appearance | {"speaker_ids", "localization"},
+    ):
         abort(422)
     settings = dict(settings)
     if "speaker_ids" not in settings:
         settings["speaker_ids"] = current_settings["speaker_ids"]
+    if "localization" not in settings:
+        settings["localization"] = current_settings["localization"]
     for key in ("enabled", "show_logo", "show_poster"):
         if type(settings[key]) is not bool:
             abort(422)
@@ -68,6 +77,9 @@ def _valid_settings(con, data, current_settings):
     if not isinstance(value, str) or not PALETTE.fullmatch(value):
         abort(422)
     settings["speaker_ids"] = event_landing_speakers.validate_ids(con, settings["speaker_ids"])
+    settings["localization"] = event_landing_locale.validate(
+        settings["localization"], current_settings["localization"]
+    )
     return settings
 
 
@@ -75,37 +87,57 @@ def viewer(con, uid, embed):
     if embed:
         return None
     row = con.execute(
-        "SELECT settings FROM live_event_landing WHERE uid = ?", (uid,)
+        "SELECT revision, settings FROM live_event_landing WHERE uid = ?", (uid,)
     ).fetchone()
     if row is None:
         return None
     settings = dict(DEFAULTS)
-    settings.update(json.loads(row[0] or "{}"))
+    settings.update(json.loads(row[1] or "{}"))
+    settings["_revision"] = row[0]
     if not settings["enabled"]:
         return None
     settings["speakers"] = event_landing_speakers.selected(con, settings["speaker_ids"])
     return settings
 
 
-def register(app, tx, staff, read):
+def register(app, tx, staff, read, preview_url):
     @app.route("/api/live-events/<uid>/landing", methods=("GET", "PUT"))
     def landing(uid):
         staff()
         with tx() as con:
-            read(con, uid)
+            event_row, event = read(con, uid)
             landing_row = con.execute(
                 "SELECT revision, settings FROM live_event_landing WHERE uid = ?",
                 (uid,),
             ).fetchone()
             if request.method in ("GET", "HEAD"):
-                return _payload(con, landing_row)
+                payload = _payload(con, landing_row)
+                payload["preview"] = (
+                    None
+                    if landing_row is None or not payload["settings"]["enabled"]
+                    else preview_url(con, event_row, event, landing_row[0])
+                )
+                return payload
             data = request.get_json(silent=True)
             current = _payload(con, landing_row)
             settings = _valid_settings(con, data, current["settings"])
             if data["revision"] != current["revision"]:
                 abort(409, "This landing page changed. Reload it before saving.")
             if settings == current["settings"]:
+                current["preview"] = (
+                    None
+                    if landing_row is None or not current["settings"]["enabled"]
+                    else preview_url(con, event_row, event, landing_row[0])
+                )
                 return current
             revision = uuid4().hex
             con.execute(UPSERT, (uid, revision, json.dumps(settings, sort_keys=True)))
-            return current | {"revision": revision, "settings": settings}
+            return current | {
+                "revision": revision,
+                "settings": settings,
+                "preview": (
+                    None
+                    if not settings["enabled"]
+                    else preview_url(con, event_row, event, revision)
+                ),
+            }

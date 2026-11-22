@@ -1,12 +1,19 @@
 import { setupSpeakerLineup, type SpeakerProfile } from './event_landing_speaker_lineup.js';
 import { setupSpeakerProfileEditor } from './event_landing_speaker_editor.js';
+import { setupLandingLocalization, type LandingLocalization } from './event_landing_locale.js';
 
 type Settings = {
   enabled: boolean; theme: 'light' | 'dark'; layout: 'stacked' | 'split';
   accent: string; show_logo: boolean; show_poster: boolean;
   speaker_ids: string[];
+  localization: LandingLocalization;
 };
-type ServerState = { revision: string | null; settings: Settings; profiles: SpeakerProfile[] };
+type ServerState = {
+  revision: string | null;
+  settings: Settings;
+  profiles: SpeakerProfile[];
+  preview: string | null;
+};
 type Request = <T>(path: string, method?: string, body?: object) => Promise<T>;
 
 export function setupEventLandingEditor(request: Request) {
@@ -19,9 +26,11 @@ export function setupEventLandingEditor(request: Request) {
   const get = <T extends HTMLElement>(n: string) => form.elements.namedItem(n) as T;
 
   const speakerFields = document.querySelector<HTMLFieldSetElement>("#eventLandingSpeakerFields")!;
+  const localeFields = document.querySelector<HTMLFieldSetElement>("#eventLandingLocale")!;
   const lineup = setupSpeakerLineup((profile) => editor.open(profile));
   const editor = setupSpeakerProfileEditor(request, (profile) => lineup.upsert(profile));
   document.querySelector("#eventLandingSpeakerNew")?.addEventListener("click", () => editor.open());
+  const locale = setupLandingLocalization();
 
   let uid: string | null = null;
   let gen = 0;
@@ -35,16 +44,18 @@ export function setupEventLandingEditor(request: Request) {
   const setSaveEnabled = () => {
     saveBtn.disabled = busy || !cache;
     speakerFields.disabled = saveBtn.disabled;
+    localeFields.disabled = saveBtn.disabled;
   };
 
-  const fill = (s: Settings, ps: SpeakerProfile[]) => {
-    get<HTMLInputElement>('enabled').checked = s.enabled;
-    get<HTMLSelectElement>('theme').value = s.theme;
-    get<HTMLSelectElement>('layout').value = s.layout;
-    get<HTMLInputElement>('accent').value = s.accent;
-    get<HTMLInputElement>('show_logo').checked = s.show_logo;
-    get<HTMLInputElement>('show_poster').checked = s.show_poster;
-    lineup.populate(s.speaker_ids, ps);
+  const fill = (s: ServerState) => {
+    get<HTMLInputElement>('enabled').checked = s.settings.enabled;
+    get<HTMLSelectElement>('theme').value = s.settings.theme;
+    get<HTMLSelectElement>('layout').value = s.settings.layout;
+    get<HTMLInputElement>('accent').value = s.settings.accent;
+    get<HTMLInputElement>('show_logo').checked = s.settings.show_logo;
+    get<HTMLInputElement>('show_poster').checked = s.settings.show_poster;
+    lineup.populate(s.settings.speaker_ids, s.profiles);
+    locale.populate(s.settings.localization, s.preview);
   };
 
   const read = (): Settings => ({
@@ -55,6 +66,7 @@ export function setupEventLandingEditor(request: Request) {
     show_logo: get<HTMLInputElement>('show_logo').checked,
     show_poster: get<HTMLInputElement>('show_poster').checked,
     speaker_ids: lineup.selected(),
+    localization: locale.payload(),
   });
 
   const url = (t: string) =>
@@ -67,6 +79,7 @@ export function setupEventLandingEditor(request: Request) {
     form.reset();
     editor.reset();
     lineup.populate([], []);
+    locale.reset();
     setStatus('');
     details.open = false;
   };
@@ -82,7 +95,7 @@ export function setupEventLandingEditor(request: Request) {
       const res = await request<ServerState>(url(target));
       if (gen !== myGen || uid !== target) return;
       cache = res;
-      fill(res.settings, res.profiles);
+      fill(res);
       setStatus('');
     } catch (e) {
       if (gen === myGen && uid === target) {
@@ -116,7 +129,7 @@ export function setupEventLandingEditor(request: Request) {
       });
       if (gen !== myGen || uid !== target) return;
       cache = res;
-      fill(res.settings, res.profiles);
+      fill(res);
       setStatus('Saved');
     } catch (e) {
       if (gen !== myGen || uid !== target) return;
