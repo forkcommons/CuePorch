@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from urllib.parse import urlencode
 
+import requests
 from flask import Flask, redirect, request
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
@@ -646,6 +647,24 @@ class YouTubeLiveCatalog(unittest.TestCase):
                     with patch("institution.library_worker.start", return_value=lambda: None):
                         service.app = create_app(root, database, operator, "station")
                     stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                    original_bound = youtube_live.bound_target
+
+                    def skip_during_confirmation(*args, **kwargs):
+                        bound = original_bound(*args, **kwargs)
+                        response = requests.delete(
+                            later_targets + series_suffix, headers=operator_headers, json={"date": True}, timeout=5,
+                        )
+                        self.assertEqual(200, response.status_code, response.text)
+                        return bound
+
+                    with patch.object(youtube_live, "bound_target", side_effect=skip_during_confirmation):
+                        r = api.put(old_path, headers=operator_headers, data={"enabled": True})
+                    self.assertEqual(409, r.status, r.text())
+                    retained = destination_rows(api.get(later_targets, headers=operator_headers))
+                    self.assertEqual([(old_path.rsplit("/", 1)[-1], False)],
+                                     [(row["id"], row["enabled"]) for row in retained])
+                    self.assertTrue(api.get(later_targets + series_suffix, headers=operator_headers).json()["skipped"])
+
                     r = api.put(old_path, headers=operator_headers, data={"enabled": True})
                     self.assertEqual(201, r.status, r.text())
                     kept = destination_rows(api.get(later_targets, headers=operator_headers))
