@@ -18,13 +18,13 @@
       <h2>Videos</h2>
       <ul id="groupVideoList">
         {% for video in videos %}
-          <li data-kind="{{ video.kind }}" data-slug="{{ video.slug }}"><a href="{{ video.watch }}">{{ video.title }}</a>{% if owner %} <button type="button" data-remove-group-video="{{ video.kind }}/{{ video.slug }}">Remove</button>{% endif %}</li>
+          <li data-kind="{{ video.kind }}" data-slug="{{ video.slug }}"><a href="{{ video.watch }}">{{ video.title }}</a>{% if moderator %} <button type="button" data-remove-group-video="{{ video.kind }}/{{ video.slug }}">Remove</button>{% endif %}</li>
         {% else %}
           <li>This group has no videos yet.</li>
         {% endfor %}
       </ul>
     </section>
-    {% if owner %}
+    {% if moderator %}
       <form id="groupVideoForm" method="post">
         <label for="groupVideoSelect">Video to add</label>
         <select id="groupVideoSelect" name="video">
@@ -32,6 +32,8 @@
         </select>
         <button type="submit"{% if not choices %} disabled{% endif %}>Add video</button>
       </form>
+    {% endif %}
+    {% if owner %}
       <form id="groupSettings" data-purpose="edit" data-slug="{{ group.slug }}" method="post">
         <label>Name <input name="title" value="{{ group.title }}" maxlength="120" required></label>
         <label>Link name <input name="slug" value="{{ group.slug }}" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]" required></label>
@@ -64,7 +66,10 @@
             <button type="submit">Transfer ownership</button>
           </form>
           <ul>{% for m in manage_members %}
-            <li>{{ m.name }} <button type="button" data-remove-group-member="{{ m.id }}"
+            <li>{{ m.name }}
+              <button type="button" data-group-moderator="{{ m.id }}" data-enabled="{{ 'false' if m.is_moderator else 'true' }}"
+                aria-label="{{ 'Revoke moderator for' if m.is_moderator else 'Grant moderator to' }} {{ m.name }}">{{ "Revoke moderator" if m.is_moderator else "Make moderator" }}</button>
+              <button type="button" data-remove-group-member="{{ m.id }}"
                 aria-label="Remove {{ m.name }}">Remove</button></li>
           {% endfor %}</ul>
         {% endif %}
