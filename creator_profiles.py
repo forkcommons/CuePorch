@@ -7,6 +7,8 @@ import uuid
 from flask import abort, make_response, render_template, request, url_for
 
 import content_rating
+import library_registration
+import library_showcases
 from browser_account_security import private, same_origin, secure_site
 from library_interactivity import text_field, web_link
 from library_trash import hidden
@@ -117,11 +119,51 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
             )
             return private(dict(following=True))
 
+    @app.route("/api/viewer/feed/channel", methods=("GET", "PUT", "DELETE"))
+    def viewer_feed_channel():
+        data = mutation() if request.method in ("PUT", "DELETE") else None
+        if request.method == "GET":
+            name = request.args.get("name", "")
+        else:
+            name = (data or {}).get("name", "")
+        if not isinstance(name, str) or library_showcases.SLUG.fullmatch(name) is None:
+            abort(400)
+        with tx() as con:
+            account = viewer(con)["id"]
+            row = con.execute(
+                "SELECT * FROM video_showcase WHERE slug=?", (name,)
+            ).fetchone()
+            if row is None or not library_showcases.channel_visible(
+                library_showcases.state(row)
+            ):
+                abort(404)
+            channel = row["id"]
+            if request.method == "PUT":
+                con.execute(
+                    "INSERT OR IGNORE INTO audience_channel_follow(account, channel)"
+                    " VALUES (?, ?)",
+                    (account, channel),
+                )
+                following = True
+            elif request.method == "DELETE":
+                con.execute(
+                    "DELETE FROM audience_channel_follow WHERE account=? AND channel=?",
+                    (account, channel),
+                )
+                following = False
+            else:
+                following = con.execute(
+                    "SELECT 1 FROM audience_channel_follow WHERE account=? AND channel=?",
+                    (account, channel),
+                ).fetchone() is not None
+            return private(dict(following=following))
+
     @app.get("/watch/feed")
     def viewer_feed():
         page = max(1, request.args.get("page", 1, type=int))
         category_follows = []
         creator_follows = []
+        channel_follows = []
         rows = []
         with tx() as con:
             account = viewer(con, required=False)
@@ -143,15 +185,26 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                     WHERE f.account=? AND {VISIBLE}
                     ORDER BY p.name COLLATE NOCASE,p.handle
                 """, (account["id"],)).fetchall()
-                if owned or category_keys:
+                channel_works = set()
+                for row in con.execute("SELECT s.* FROM audience_channel_follow f JOIN video_showcase s ON s.id=f.channel WHERE f.account=?", (account["id"],)):
+                    values = library_showcases.state(row)
+                    if not library_showcases.channel_visible(values):
+                        continue
+                    channel_follows.append(dict(slug=row["slug"], title=values["title"]))
+                    form = library_registration.active(con, "showcase", row["id"])
+                    if not form or form["timing"] != "before":
+                        channel_works.update(values["videos"])
+                channel_follows.sort(key=lambda item: (item["title"].casefold(), item["slug"]))
+                if owned or category_keys or channel_works:
                     preference = account_preferences(con, account["id"])
                     entries = ordered(
                         entry for (kind, slug), entry in listing(con).items()
                         if kind == "work"
-                        and (slug in owned or any(name.casefold() in category_keys for name in entry["categories"]))
+                        and (slug in owned or slug in channel_works
+                             or any(name.casefold() in category_keys for name in entry["categories"]))
                         and not content_rating.filtered(preference, entry)
                     )
-                    if category_keys:
+                    if category_keys or channel_works:
                         publication_times = {row["work"]: row["published_at"] for row in con.execute("SELECT work,published_at FROM library_publication_time").fetchall()}
                         entries.sort(key=lambda entry: (publication_times.get(entry["slug"]) or 0), reverse=True)
                     else:
@@ -160,7 +213,8 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
         start = (page - 1) * page_size
         return private(render_template("viewer_feed.html", rows=rows[start:start + page_size],
                                        signed_in=bool(account), page=page, next_page=start + page_size < len(rows),
-                                       category_follows=category_follows, creator_follows=creator_follows))
+                                       category_follows=category_follows, creator_follows=creator_follows,
+                                       channel_follows=channel_follows))
 
 
 def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):

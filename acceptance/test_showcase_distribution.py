@@ -174,10 +174,13 @@ class ShowcaseDistribution(unittest.TestCase):
                 ))
                 expect(guest.get_by_text("Private assembly", exact=True)).to_have_count(0)
                 marker = {"X-CuePorch-Viewer": "1"}
-                self.assertTrue(guest.context.request.post(base + "/api/viewer/signup", headers=marker, data={
-                    "name": "Channel viewer", "email": "channel-viewer@example.invalid",
-                    "password": "Channel fixture password 2026!",
-                }).ok)
+                guest.get_by_role("link", name="Sign in to follow this channel").click()
+                signup = guest.locator("#viewerSignUp")
+                signup.get_by_label("Display name").fill("Channel viewer")
+                signup.get_by_label("Email").fill("channel-viewer@example.invalid")
+                signup.get_by_label("Password").fill("Channel fixture password 2026!")
+                signup.get_by_role("button", name="Create account").click()
+                expect(guest).to_have_url(base + channel)
                 self.assertTrue(guest.context.request.put(base + "/api/viewer/preferences", headers=marker,
                                                          data={"mode": "hide_mature"}).ok)
                 second_details = f"/api/library/work/{second}/details"
@@ -187,12 +190,53 @@ class ShowcaseDistribution(unittest.TestCase):
                 expect(guest.get_by_role("button", name="Artist interview")).to_have_count(0)
                 expect(guest.get_by_role("button", name="Stage recording")).to_be_visible()
                 send("PUT", second_details, original_details)
+                guest.get_by_role("button", name="Follow channel", exact=True).click()
+                expect(guest.get_by_role("button", name="Unfollow channel")).to_be_visible()
+                guest.goto(base + "/watch/feed")
+                stage_link = guest.get_by_role("link", name="Stage recording")
+                expect(stage_link).to_have_count(1)
+                expect(guest.get_by_role("link", name="Private assembly")).to_have_count(0)
+
+                registration = endpoint + "/registration"
+                original_form = send("GET", registration)
+                send("PUT", registration, original_form | {
+                    "settings": original_form["settings"] | {"enabled": True, "timing": "before"},
+                })
+                guest.reload()
+                expect(stage_link).to_have_count(0)
+                guest.get_by_text("Manage your feed", exact=True).click()
+                unfollow = guest.get_by_role("button", name="Unfollow Station arts")
+                expect(unfollow).to_be_visible()
+                form = send("GET", registration)
+                send("PUT", registration, form | {"settings": original_form["settings"]})
+                guest.reload()
+                expect(stage_link).to_have_count(1)
+                guest.get_by_text("Manage your feed", exact=True).click()
+                unfollow.click()
+                expect(stage_link).to_have_count(0)
+
+                guest.goto(base + channel)
+                guest.get_by_role("button", name="Follow channel", exact=True).click()
+                expect(guest.get_by_role("button", name="Unfollow channel")).to_be_visible()
+                follow_api = base + "/api/viewer/feed/channel?name="
+                current = send("GET", endpoint)
+                renamed = send("PUT", endpoint, current | {"slug": "station-arts-renamed"})
+                self.assertEqual({"following": True},
+                                 guest.context.request.get(follow_api + "station-arts-renamed").json())
+                self.assertEqual(404, guest.context.request.get(follow_api + "station-arts").status)
+                current = send("PUT", endpoint, renamed | {"slug": "station-arts"})
+
                 send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "private"}})
+                self.assertEqual(404, guest.context.request.get(follow_api + "station-arts").status)
+                guest.goto(base + "/watch/feed")
+                expect(stage_link).to_have_count(0)
                 self.assertEqual(404, requests.get(base + channel, timeout=10).status_code)
                 guest.goto(directory)
                 expect(guest.get_by_role("link", name="Station arts", exact=True)).to_have_count(0)
                 current = send("GET", endpoint)
                 send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "public"}})
+                self.assertEqual({"following": False},
+                                 guest.context.request.get(follow_api + "station-arts").json())
                 page.reload()
                 editor = page.locator("#showcaseEdit")
                 expect(editor).to_be_visible()
