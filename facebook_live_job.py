@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS facebook_live_series(
 """
 
 
-class AutomaticCapacityDeferred(Exception):
-    """Connected capacity was full before an automatic provider request was sent."""
+class AutomaticStartDeferred(Exception):
+    """A local check deferred the automatic start before the provider request."""
 
 
 def migrate(con):
@@ -139,7 +139,7 @@ def provision(tx, check, create, save, event, opens, page, revision, *, automati
 
     try:
         target = create()
-    except AutomaticCapacityDeferred:
+    except AutomaticStartDeferred:
         with tx() as con:
             deleted = con.execute(
                 "DELETE FROM facebook_live_creation "
