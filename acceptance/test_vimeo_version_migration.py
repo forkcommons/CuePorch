@@ -64,7 +64,8 @@ class VimeoVersionMigration(unittest.TestCase):
             colors=dict(color_one="112233", color_four="223344"),
             playbar=False, title=dict(name="show"), muted=True, speed=False,
             end_screen=dict(type="loop"),
-            html="fake-html-secret", logos=dict(custom=dict(url="https://example.test/?fake-logo-secret")),
+            html="fake-html-secret",
+            logos=dict(custom=dict(active=True, url=f"http://127.0.0.1:{self.source.server_port}/media/vimeo-logo.png?fake-logo-secret", link="https://example.test/?fake-click-secret")),
         )
         uid = work_id("station", "vimeo", "71")
         root = f"/api/library/work/{uid}"
@@ -82,8 +83,10 @@ class VimeoVersionMigration(unittest.TestCase):
             page.goto(self.base + "/operator/migration")
 
             def transfer():
+                before = self.requests["/media/vimeo-logo.png"]
                 page.get_by_role("button", name="Preview transfer", exact=True).click()
                 expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+                self.assertEqual(before, self.requests["/media/vimeo-logo.png"])
                 page.get_by_role("button", name="Transfer privately", exact=True).click()
                 expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
             transfer()
@@ -111,24 +114,34 @@ class VimeoVersionMigration(unittest.TestCase):
                 return video.muted && video.videoWidth > 0 && video.loop;
             }""")
             self.assertTrue(played)
+            logo = frame.get_by_alt_text("Publisher logo")
+            expect(logo).to_be_visible()
+            self.assertEqual(1, logo.evaluate("element => element.naturalWidth"))
+            self.assertEqual(1, self.requests["/media/vimeo-logo.png"])
             loop_page = browser.new_page()
             loop_page.goto(self.base + f"/watch/work/{uid}")
             self.assertFalse(loop_page.locator("video").evaluate("video => video.loop"))
 
-            local = source | {"speed": True}
+            self.assertEqual(200, self.client.put(path, headers=self.auth, json=source).status_code)
+            local = source | {"speed": True, "logo": None}
             self.assertEqual(200, self.client.put(path, headers=self.auth, json=local).status_code)
+            self.assertIsNone(settings()["logo"])
+            self.source.video_embed_fixture["logos"]["custom"]["url"] = "https://i.vimeocdn.com/blocked-fixture.png"
             self.source.video_embed_fixture["colors"]["color_four"] = "99AABB"
             self.source.video_embed_fixture["end_screen"] = {"type":"empty"}
             transfer()
+            expect(page.get_by_text("Embed logo (Image source is unavailable)", exact=True)).to_have_count(1)
             self.assertEqual(local, settings())
             self.assertEqual(200, self.client.delete(path, headers=self.auth).status_code)
             self.assertEqual(source | {"background": "#99aabb"}, settings())
+            self.assertEqual(source["logo"], settings()["logo"])
             self.source.video_embed_fixture = None
             transfer()
             self.assertEqual(source | {"background": "#99aabb"}, settings())
             migration_text = self.client.get("/api/migration", headers=self.auth).text
             self.assertNotIn("fake-html-secret", migration_text)
             self.assertNotIn("fake-logo-secret", migration_text)
+            self.assertNotIn("fake-click-secret", migration_text)
             guest.locator("#migration-test-player").evaluate("(element) => { element.src = element.src; }")
             expect(frame.locator('[data-ending="empty"]')).to_have_count(1)
             self.assertFalse(frame.locator("video").evaluate("(video) => video.loop"))

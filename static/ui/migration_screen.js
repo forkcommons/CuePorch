@@ -28,6 +28,8 @@ const mediaIssueLabels = {
     media_connection_interrupted: "Media connection interrupted",
     image_too_large: "Image exceeds the transfer limit",
     invalid_image_type: "Unsupported image format",
+    unexpected_logo_origin: "Image source is unavailable",
+    logo_redirect_limit: "Too many image redirects",
 };
 const headers = () => ({
     Authorization: "Bearer " + key.value,
@@ -208,6 +210,9 @@ async function poll(page = currentPage) {
             ...(w.chapter_picture_issues || [])
                 .filter((issue) => issue.reason || issue.http_status)
                 .map((issue) => `Chapter thumbnail (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
+            ...(w.source_embed_logo_issue && (w.source_embed_logo_issue.reason || w.source_embed_logo_issue.http_status)
+                ? [`Embed logo (${w.source_embed_logo_issue.reason ? mediaIssueLabels[w.source_embed_logo_issue.reason] || "Transfer failed" : `HTTP ${w.source_embed_logo_issue.http_status}`})`]
+                : []),
         ];
         row.insertCell().textContent = exceptions.join(", ") || "None reported";
     }

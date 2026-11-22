@@ -113,3 +113,24 @@ def embed_ending(value):
     if isinstance(legacy, str):
         return legacy if legacy in ("empty", "loop", "share", "thumbnail") else "default"
     return None
+
+
+def custom_logo(value):
+    """Parse Vimeo ``logos.custom.active`` and ``logos.custom.url`` only.
+
+    - Explicit ``active is False`` yields ``False`` (explicit disable).
+    - ``active is True`` with a non-empty string ``url`` yields that string.
+    - Anything else yields ``None``.
+
+    No network access is performed here; only the documented fields are
+    inspected so unrelated logo state cannot leak into the record.
+    """
+    active = _get(value, "logos", "custom", "active")
+    if active is False:
+        return False
+    if active is True:
+        url = _get(value, "logos", "custom", "url")
+        if isinstance(url, str) and url.strip():
+            return url
+        return None
+    return None

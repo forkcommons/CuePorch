@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cueporch import checksum, dump, verify, work_id
-from vimeo_appearance import embed_appearance, embed_ending, watch_appearance
+from vimeo_appearance import custom_logo, embed_appearance, embed_ending, watch_appearance
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -54,18 +54,43 @@ class Source:
                 raise ValueError("Set VIMEO_ACCESS_TOKEN for the source account")
         self.opener = build_opener(NoRedirect())
 
-    def open(self, url, authenticated=False):
+    def open(self, url, authenticated=False, *, vimeo_image=False):
         for redirects in range(7):
-            parts = urlsplit(url)
-            same = (parts.scheme, parts.netloc) == (
-                urlsplit(self.base).scheme,
-                urlsplit(self.base).netloc,
-            )
-            if authenticated or self.simulation:
-                if not same:
-                    raise ValueError("Unexpected source origin")
-            elif parts.scheme != "https" or parts.username or parts.password:
-                raise ValueError("Invalid media URL")
+            if vimeo_image:
+                try:
+                    parts = urlsplit(url)
+                    port = parts.port
+                except ValueError:
+                    raise MediaFailure("unexpected_logo_origin") from None
+                loopback = self.simulation and (parts.scheme, parts.netloc) == (
+                    urlsplit(self.base).scheme,
+                    urlsplit(self.base).netloc,
+                )
+                cdn = (
+                    not self.simulation
+                    and parts.scheme == "https"
+                    and parts.hostname in {"i.vimeocdn.com", "f.vimeocdn.com"}
+                    and port in (None, 443)
+                )
+                if (
+                    authenticated
+                    or not (loopback or cdn)
+                    or parts.username is not None
+                    or parts.password is not None
+                    or parts.fragment
+                ):
+                    raise MediaFailure("unexpected_logo_origin")
+            else:
+                parts = urlsplit(url)
+                same = (parts.scheme, parts.netloc) == (
+                    urlsplit(self.base).scheme,
+                    urlsplit(self.base).netloc,
+                )
+                if authenticated or self.simulation:
+                    if not same:
+                        raise ValueError("Unexpected source origin")
+                elif parts.scheme != "https" or parts.username or parts.password:
+                    raise ValueError("Invalid media URL")
             headers = {"Authorization": "Bearer " + self.token} if authenticated else {}
             for attempt in range(3):
                 try:
@@ -85,6 +110,8 @@ class Source:
                     code = exc.code
                     exc.close()
                     raise SourceFailure(code) from None
+        if vimeo_image:
+            raise MediaFailure("logo_redirect_limit")
         raise ValueError("Media redirect limit exceeded")
 
     def pages(self, path, *, fields=None):
@@ -416,7 +443,7 @@ def chapter_picture_items(chapters, related, video_uri):
         yield (chosen[0], dict(role='chapter_picture', format='image', chapter_uri=uri, source_picture=chosen[1]), None, None)
 
 
-def store(root, source, link, expected, source_md5, *, max_bytes=None, check_image=False):
+def store(root, source, link, expected, source_md5, *, max_bytes=None, check_image=False, vimeo_image=False):
     digest = hashlib.sha256()
     if source_md5 and (not isinstance(source_md5, str) or not re.fullmatch("[a-fA-F0-9]{32}", source_md5)):
         raise MediaFailure("invalid_source_checksum")
@@ -425,7 +452,7 @@ def store(root, source, link, expected, source_md5, *, max_bytes=None, check_ima
         temporary = Path(target.name)
     try:
         try:
-            response = source.open(link)
+            response = source.open(link, vimeo_image=True) if vimeo_image else source.open(link)
         except INTERRUPTED:
             raise MediaFailure("media_connection_interrupted") from None
         with response, temporary.open("wb") as target:
@@ -1153,6 +1180,30 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             ending = embed_ending(video["embed"])
             if ending is not None:
                 record["source_embed_ending"] = ending
+            logo_url = custom_logo(video["embed"])
+            if logo_url is False:
+                record["source_embed_logo"] = None
+            elif isinstance(logo_url, str) and logo_url:
+                if dry_run:
+                    record["source_embed_logo_available"] = True
+                else:
+                    try:
+                        record["source_embed_logo"] = store(
+                            root,
+                            source,
+                            logo_url,
+                            None,
+                            None,
+                            max_bytes=4 * 1024**2,
+                            check_image=True,
+                            vimeo_image=True,
+                        )
+                    except SourceFailure as exc:
+                        if exc.status == 429:
+                            raise
+                        record["source_embed_logo_issue"] = {"http_status": exc.status}
+                    except MediaFailure as exc:
+                        record["source_embed_logo_issue"] = {"reason": exc.reason}
         page = video_page(source, video)
         if isinstance(page, dict):
             record["source_watch_appearance"] = watch_appearance(page)
