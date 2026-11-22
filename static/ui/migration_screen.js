@@ -15,6 +15,7 @@ const showcaseRows = document.querySelector("#showcaseInventoryRows");
 const liveEvents = document.querySelector("#liveEventInventory");
 const liveEventIssue = document.querySelector("#liveEventInventoryIssue");
 const liveEventList = document.querySelector("#liveEventInventoryList");
+const creatorProfile = document.querySelector("#migrationCreatorProfile");
 const cutover = document.querySelector("#migrationCutover");
 const exportMap = document.querySelector("#migrationExportMap");
 const cutoverStatus = document.querySelector("#migrationCutoverStatus");
@@ -41,6 +42,7 @@ const headers = () => ({
 async function run(dry) {
     inventory.disabled = transfer.disabled = true;
     cutover.hidden = true;
+    creatorProfile.hidden = true;
     cutoverStatus.textContent = "";
     summary.textContent = "";
     pagination.hidden = true;
@@ -73,6 +75,7 @@ async function poll(page = currentPage) {
     const active = data.state === "running" || data.state === "waiting";
     inventory.disabled = transfer.disabled = active;
     cutover.hidden = data.state !== "transferred";
+    creatorProfile.hidden = !data.profile_available;
     statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
     if (data.counts) {
         const dispositions = Object.entries(data.counts).map(([name, count]) => `${count} ${name}`);

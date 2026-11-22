@@ -1,4 +1,4 @@
-import { checked, teamRequest } from "./team_api.js";
+import { checked, sessionMarker, teamRequest } from "./team_api.js";
 const editor = document.querySelector("#creatorEditor");
 const form = document.querySelector("#creatorForm");
 const status = document.querySelector("#creatorStatus");
@@ -82,4 +82,28 @@ form.onsubmit = event => {
         status.textContent = "Creator profile saved.";
     }).finally(() => { save.disabled = false; });
 };
-void task(async () => show(await (await checked(await teamRequest("profile"))).json()));
+void task(async () => {
+    let settings = await (await checked(await teamRequest("profile"))).json();
+    let notice = "";
+    if (new URLSearchParams(location.search).get("fromVimeo") === "1") {
+        if (settings.revision) {
+            notice = "Your existing creator profile was left as saved.";
+        }
+        else {
+            try {
+                const response = await checked(await fetch("/api/migration/profile", {
+                    headers: { Authorization: "Bearer " + sessionMarker },
+                }));
+                const source = await response.json();
+                settings = { ...settings, name: source.name, bio: source.bio, links: source.links };
+                notice = "Vimeo profile loaded. Choose a handle and save when ready.";
+            }
+            catch {
+                notice = "To load a Vimeo draft, preview the transfer and sign in as a workspace Owner or Administrator.";
+            }
+        }
+    }
+    show(settings);
+    if (notice)
+        status.textContent = notice;
+});
