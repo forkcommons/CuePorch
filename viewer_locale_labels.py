@@ -175,3 +175,46 @@ FEEDBACK = {
         "設定を保存できませんでした。"
     )
 }
+
+
+CATALOG_NAV_KEYS = (
+    "watch", "staff_picks", "categories", "channels", "public_videos", "search_channels", "search_public", "search",
+)
+CATALOG_RESULT_KEYS = (
+    "video_categories", "channel_categories", "all_categories", "follow_this_category", "sign_in_follow_category",
+    "follow_category", "unfollow_category", "no_results", "no_staff_picks", "no_public_channels",
+    "no_public_videos", "results_pages",
+)
+CATALOG_PICK_KEYS = ("previous_pick", "next_pick", "pick_count")
+
+CATALOG_NAV = {
+    "en": ("Watch", "Staff Picks", "Categories", "Channels", "Public videos", "Search channels", "Search public videos", "Search"),
+    "fr": ("Regarder", "Sélections de l'équipe", "Catégories", "Chaînes", "Vidéos publiques", "Rechercher des chaînes", "Rechercher des vidéos publiques", "Rechercher"),
+    "es": ("Ver", "Selecciones del personal", "Categorías", "Canales", "Vídeos públicos", "Buscar canales", "Buscar vídeos públicos", "Buscar"),
+    "de": ("Ansehen", "Team-Empfehlungen", "Kategorien", "Kanäle", "Öffentliche Videos", "Kanäle suchen", "Öffentliche Videos suchen", "Suchen"),
+    "pt-BR": ("Assistir", "Escolhas da equipe", "Categorias", "Canais", "Vídeos públicos", "Pesquisar canais", "Pesquisar vídeos públicos", "Pesquisar"),
+    "ko": ("시청", "직원 추천", "카테고리", "채널", "공개 동영상", "채널 검색", "공개 동영상 검색", "검색"),
+    "ja": ("視聴", "スタッフのおすすめ", "カテゴリ", "チャンネル", "公開動画", "チャンネルを検索", "公開動画を検索", "検索"),
+}
+
+
+CATALOG_RESULTS = {
+    "en": ("Video categories", "Channel categories", "All categories", "Follow this category", "Sign in to follow this category", "Follow category", "Unfollow category", "No results. Try a different search.", "No Staff Picks have been selected.", "No public channels are available.", "No public videos are available.", "Results pages"),
+    "fr": ("Catégories de vidéos", "Catégories de chaînes", "Toutes les catégories", "Suivre cette catégorie", "Connectez-vous pour suivre cette catégorie", "Suivre la catégorie", "Ne plus suivre la catégorie", "Aucun résultat. Essayez une autre recherche.", "Aucune sélection de l’équipe n’a été choisie.", "Aucune chaîne publique n’est disponible.", "Aucune vidéo publique n’est disponible.", "Pages de résultats"),
+    "es": ("Categorías de videos", "Categorías de canales", "Todas las categorías", "Seguir esta categoría", "Inicia sesión para seguir esta categoría", "Seguir categoría", "Dejar de seguir categoría", "No hay resultados. Prueba otra búsqueda.", "No se han seleccionado recomendaciones del personal.", "No hay canales públicos disponibles.", "No hay videos públicos disponibles.", "Páginas de resultados"),
+    "de": ("Videokategorien", "Kanalkategorien", "Alle Kategorien", "Dieser Kategorie folgen", "Melde dich an, um dieser Kategorie zu folgen", "Kategorie folgen", "Kategorie nicht mehr folgen", "Keine Ergebnisse. Versuche eine andere Suche.", "Es wurden keine Redaktionstipps ausgewählt.", "Keine öffentlichen Kanäle verfügbar.", "Keine öffentlichen Videos verfügbar.", "Ergebnisseiten"),
+    "pt-BR": ("Categorias de vídeos", "Categorias de canais", "Todas as categorias", "Seguir esta categoria", "Faça login para seguir esta categoria", "Seguir categoria", "Deixar de seguir categoria", "Nenhum resultado. Tente outra pesquisa.", "Nenhuma escolha da equipe foi selecionada.", "Não há canais públicos disponíveis.", "Não há vídeos públicos disponíveis.", "Páginas de resultados"),
+    "ko": ("동영상 카테고리", "채널 카테고리", "모든 카테고리", "이 카테고리 팔로우", "이 카테고리를 팔로우하려면 로그인하세요", "카테고리 팔로우", "카테고리 팔로우 취소", "검색 결과가 없습니다. 다른 검색어를 사용해 보세요.", "선택된 직원 추천이 없습니다.", "사용 가능한 공개 채널이 없습니다.", "사용 가능한 공개 동영상이 없습니다.", "결과 페이지"),
+    "ja": ("動画カテゴリ", "チャンネルカテゴリ", "すべてのカテゴリ", "このカテゴリをフォロー", "このカテゴリをフォローするにはログインしてください", "カテゴリをフォロー", "カテゴリのフォローを解除", "結果がありません。別の検索をお試しください。", "スタッフのおすすめは選択されていません。", "利用できる公開チャンネルはありません。", "利用できる公開動画はありません。", "結果ページ"),
+}
+
+
+CATALOG_PICKS = {
+    "en": ("Previous pick", "Next pick", "{current} of {total}"),
+    "fr": ("Choix précédent", "Choix suivant", "{current} sur {total}"),
+    "es": ("Selección anterior", "Selección siguiente", "{current} de {total}"),
+    "de": ("Vorherige Auswahl", "Nächste Auswahl", "{current} von {total}"),
+    "pt-BR": ("Escolha anterior", "Próxima escolha", "{current} de {total}"),
+    "ko": ("이전 선택", "다음 선택", "{total}개 중 {current}"),
+    "ja": ("前の選択", "次の選択", "{total}件中{current}件目"),
+}

@@ -37,6 +37,10 @@ def check_discovery(page, browser, base, auth, sample):
         locale_page.goto(base + "/watch/feed")
         expect(locale_page.locator("html")).to_have_attribute("lang", "fr")
         expect(locale_page.get_by_role("heading", name="Fil", exact=True)).to_be_visible()
+        locale_page.goto(base + "/watch")
+        expect(locale_page.locator("html")).to_have_attribute("lang", "fr")
+        expect(locale_page.get_by_role("heading", name="Regarder", exact=True)).to_be_visible()
+        locale_page.goto(base + "/watch/feed")
         assert locale_context.request.put(preferences, headers=marker, data={"mode": "all"}).json()["language"] == "fr"
         assert locale_context.request.put(preferences, headers=marker,
                                           data={"mode": "all", "language": []}).status == 400
@@ -110,6 +114,28 @@ def check_discovery(page, browser, base, auth, sample):
     expect(page.locator("#picksStatus")).to_have_text("Staff Picks saved.")
     assert requests.put(base + picks_api, headers=auth, timeout=15,
                         json=dict(revision=initial["revision"], items=[])).status_code == 409
+
+    with browser.new_context(locale="fr-FR") as french:
+        watch = french.new_page()
+        watch.goto(base + "/watch")
+        expect(watch.locator("html")).to_have_attribute("lang", "fr")
+        expect(watch.get_by_role("heading", name="Regarder", exact=True)).to_be_visible()
+        picks = watch.get_by_role("region", name="Sélections de l'équipe")
+        expect(picks.get_by_role("link", name=other_title, exact=True)).to_be_visible()
+        count = picks.locator("[data-watch-count]")
+        expect(count).to_have_js_property("value", "1 sur 2")
+        picks.get_by_role("button", name="Choix suivant", exact=True).click()
+        expect(count).to_have_js_property("value", "2 sur 2")
+        picks.get_by_role("link", name=first_title, exact=True).click()
+        assert watch.locator("video").evaluate(
+            "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+        ) > 0
+        watch.goto(base + "/watch/categories?category=Art+and+film")
+        expect(watch.get_by_role("heading", name="Art and film", exact=True)).to_be_visible()
+        watch.get_by_role("searchbox", name="Rechercher des vidéos publiques").fill("ANALOGUE")
+        watch.get_by_role("button", name="Rechercher", exact=True).click()
+        expect(watch.get_by_role("link", name=first_title)).to_have_attribute("href", first_watch)
+        expect(watch.get_by_role("link", name="Connectez-vous pour suivre cette catégorie")).to_be_visible()
 
     context = browser.new_context(viewport=dict(width=420, height=760))
     viewer = context.new_page()

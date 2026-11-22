@@ -8,6 +8,7 @@ from flask import abort, make_response, render_template, request, send_file, url
 import library_details
 import library_showcases
 import content_rating
+import viewer_locale
 import team_branding
 from library_privacy import playback
 from library_thumbnail import selected_thumbnail, thumbnail_type
@@ -168,6 +169,7 @@ def register(app, tx, staff, public_listing, root, institution, viewing_preferen
             rows=[entry_payload(entry) for entry in videos[start:start + PAGE_SIZE]],
             featured=[entry_payload(entry) for entry in featured[:6]] if show_spotlight else [],
             previous=page_link(page - 1) if page > 1 else None, next_page=page_link(page + 1) if page < count else None,
+            **viewer_locale.template_context(preference),
         ))
 
     @app.get("/watch-cover/<kind>/<slug>/<digest>")

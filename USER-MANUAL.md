@@ -90,7 +90,7 @@ Sign in with a viewer account to **Follow creator** from a public profile or one
 
 Under **Manage your feed**, choose **Videos**, **Appearances**, and **Likes** for each followed creator and select **Save activity preferences**. In the Library, an editor can link a creator to a video through **Creator appearances** in the video details. Enter one public creator profile handle per line. Appearances respect the video's current visibility.
 
-In **Viewer account**, choose a **Language** under **Viewing preferences** to change Feed and its navigation. Choose **Use browser language** to reset the preference. This setting covers Feed and its navigation and leaves video titles, captions and other screens in their original language.
+In **Viewer account**, choose a **Language** under **Viewing preferences** to change the Watch catalog, Feed and their navigation. Choose **Use browser language** to reset the preference. Video titles, captions and user-written categories remain in their original language.
 
 To share likes with followers, sign in to your viewer account and to Team with a published creator profile in the same browser. Open **Viewer account** and select **Share new likes**. Only likes added after you turn on sharing can appear, and only while the videos are public. Select **Stop sharing likes** in your viewer account to remove those likes from followers' feeds.
 

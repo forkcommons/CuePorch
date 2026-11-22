@@ -1,4 +1,4 @@
-<nav class="viewer-watch-nav" aria-label="Watch"{% if viewer_language is defined %} lang="{{ viewer_language }}"{% endif %}>
+<nav class="viewer-watch-nav" aria-label="{{ viewer_labels.watch if viewer_labels is defined else 'Watch' }}"{% if viewer_language is defined %} lang="{{ viewer_language }}"{% endif %}>
   <a href="{{ url_for('catalog') }}">{{ viewer_labels.explore if viewer_labels is defined else "Explore" }}</a>
   <a href="{{ url_for('viewer_feed') }}">{{ viewer_labels.feed if viewer_labels is defined else "Feed" }}</a>
   <a href="{{ url_for('watch_later_page') }}">{{ viewer_labels.watch_later if viewer_labels is defined else "Watch Later" }}</a>

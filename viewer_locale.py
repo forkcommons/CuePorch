@@ -65,6 +65,9 @@ def template_context(preferences):
         viewer_languages=LANGUAGES,
         viewer_labels=dict(zip(labels.WATCH_KEYS, labels.WATCH[language], strict=True))
         | dict(zip(labels.VIEWER_KEYS, labels.VIEWER[language], strict=True))
-        | dict(zip(labels.FEED_KEYS, labels.FEED[language], strict=True)),
+        | dict(zip(labels.FEED_KEYS, labels.FEED[language], strict=True))
+        | dict(zip(labels.CATALOG_NAV_KEYS, labels.CATALOG_NAV[language], strict=True))
+        | dict(zip(labels.CATALOG_RESULT_KEYS, labels.CATALOG_RESULTS[language], strict=True))
+        | dict(zip(labels.CATALOG_PICK_KEYS, labels.CATALOG_PICKS[language], strict=True)),
         feed_feedback=tuple(values[_ORDERED_CODES.index(language)] for values in labels.FEEDBACK.values()),
     )
