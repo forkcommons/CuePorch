@@ -37,6 +37,7 @@ def listing(con, read_works, title_for, permits, item=None):
             kind=kind, slug=slug, title=title, description=details.get("description", ""),
             categories=details.get("categories", []), tags=details.get("tags", []),
             rating=details.get("rating", "unrated"), content=details.get("content", []),
+            allow_viewer_collections=details.get("allow_viewer_collections", True),
             added=work.get("library_added_at", "") if work else "",
             image=selected_thumbnail(con, work) if work else None,
         )

@@ -177,7 +177,10 @@ def register(app, tx, viewer, mutation, listing, private):
             if request.method == "DELETE":
                 con.execute("DELETE FROM audience_collection_video WHERE collection=? AND kind=? AND slug=?", (uid, kind, slug))
                 return private(dict(included=False))
-            if (kind, slug) not in listing(con, (kind, slug)):
+            entry = listing(con, (kind, slug)).get((kind, slug))
+            if entry is None:
                 abort(404)
+            if not entry.get("allow_viewer_collections", True):
+                abort(403)
             con.execute("INSERT OR IGNORE INTO audience_collection_video VALUES(?,?,?,?)", (uid, kind, slug, time.time()))
             return private(dict(included=True))

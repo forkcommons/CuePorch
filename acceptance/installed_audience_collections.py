@@ -101,6 +101,26 @@ def check_audience_collections(browser, base, staff, sample):
         assert viewer.url == watch(first)
         width = viewer.locator("video").evaluate("async v => {v.muted=true; await v.play(); return v.videoWidth;}")
         assert width == 256
+        details_url = f"{base}/api/library/work/{first}/details"
+        original = requests.get(details_url, headers=staff, timeout=15).json()
+        assert original["allow_viewer_collections"] is True
+        requests.put(details_url, headers=staff, timeout=15,
+                     json=original | {"allow_viewer_collections": False}).raise_for_status()
+        legacy = {key: value for key, value in original.items() if key != "allow_viewer_collections"}
+        saved = requests.put(details_url, headers=staff, timeout=15, json=legacy)
+        saved.raise_for_status()
+        assert saved.json()["allow_viewer_collections"] is False
+        viewer.get_by_role("button", name="Add to collection").click()
+        dialog.get_by_role("button", name="Remove video", exact=True).click()
+        expect(dialog.get_by_role("status")).to_have_text("Video removed from collection.")
+        dialog.get_by_role("button", name="Add video", exact=True).click()
+        expect(dialog.get_by_role("status")).to_have_text(
+            "The publisher has disabled adding this video to collections.")
+        assert a.request.get(watch(first)).ok
+        dialog.get_by_role("button", name="Close", exact=True).click()
+        requests.put(details_url, headers=staff, timeout=15, json=original).raise_for_status()
+        assert a.request.put(f"{entries}/{uid}/videos/work/{first}", headers=MUTATION, data={}).ok
+
         requests.put(privacy, headers=staff, timeout=15, json=dict(visibility="private", embed="disabled")).raise_for_status()
         viewer.goto(collection)
         expect(viewer.get_by_role("link", name=artist)).to_have_count(0)

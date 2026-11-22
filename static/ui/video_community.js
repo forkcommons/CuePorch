@@ -115,6 +115,10 @@ for (const toolbar of document.querySelectorAll("[data-save-video]")) {
                 location.assign(video.account);
                 return;
             }
+            if (response.status === 403 && !item.included) {
+                status.textContent = "The publisher has disabled adding this video to collections.";
+                return;
+            }
             if (!response.ok)
                 throw new Error();
             item.included = (await response.json()).included;

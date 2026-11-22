@@ -114,6 +114,18 @@ def check_discovery(page, browser, base, auth, sample):
         viewer.get_by_label("Link name").fill("arts-screenings")
         viewer.get_by_role("button", name="Create group").click()
         expect(viewer).to_have_url(base + group_path)
+        other_details_url = f"/api/library/work/{other}/details"
+        other_details = send("GET", other_details_url)
+        picker = viewer.get_by_label("Video to add")
+        expect(picker.locator(f'option[value="work/{other}"]')).to_have_count(1)
+        send("PUT", other_details_url, json=other_details | {"allow_viewer_collections": False})
+        viewer.reload()
+        expect(picker.locator(f'option[value="work/{other}"]')).to_have_count(0)
+        assert viewer.request.put(group_api + "/videos/work/" + other, headers=group_marker, data={}).status == 403
+        assert public(other_watch).status_code == 200
+        send("PUT", other_details_url, json=other_details | {"allow_viewer_collections": True})
+        viewer.reload()
+        expect(picker.locator(f'option[value="work/{other}"]')).to_have_count(1)
         viewer.get_by_label("Video to add").select_option("work/" + first)
         viewer.get_by_role("button", name="Add video").click()
         expect(viewer.get_by_role("link", name=first_title)).to_be_visible()

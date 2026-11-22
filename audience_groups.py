@@ -155,7 +155,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             included = set(selected_keys)
             choices = [entry_payload(entry) for entry in ordered(library.values())
                        if entry["kind"] in ("work", "meeting")
-                       and (entry["kind"], entry["slug"]) not in included] if owner else []
+                       and (entry["kind"], entry["slug"]) not in included
+                       and entry.get("allow_viewer_collections", True)] if owner else []
             manage_members = con.execute("""SELECT a.id, a.name FROM audience_group_member m
                 JOIN audience_account a ON a.id=m.account WHERE m.group_id=?
                 ORDER BY a.name COLLATE NOCASE, a.id""", (row["id"],)).fetchall() if owner else []
@@ -330,8 +331,11 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 con.execute("DELETE FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?",
                             (group["id"], kind, video))
                 return private("", 204)
-            if (kind, video) not in listing(con, (kind, video)):
+            entry = listing(con, (kind, video)).get((kind, video))
+            if entry is None:
                 abort(404)
+            if not entry.get("allow_viewer_collections", True):
+                abort(403)
             con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)",
                         (group["id"], kind, video, time.time()))
             return private("", 204)

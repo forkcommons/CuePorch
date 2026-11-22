@@ -15,6 +15,7 @@ interface VideoDetails {
   content: string[];
   realistic_ai: boolean;
   advertisement: boolean;
+  allow_viewer_collections?: boolean;
   media: {
     bytes: number;
     format: string;
@@ -123,6 +124,7 @@ function show(details: VideoDetails) {
   input("credits").value = details.credits.map(({ name, role }) => role ? `${name} | ${role}` : name).join("\n");
   input("realistic_ai").checked = details.realistic_ai;
   input("advertisement").checked = details.advertisement;
+  input("allow_viewer_collections").checked = details.allow_viewer_collections ?? true;
   for (const control of form.querySelectorAll<HTMLInputElement>("[name=content]")) {
     control.checked = details.content.includes(control.value);
   }
@@ -295,6 +297,7 @@ form.onsubmit = async (event) => {
       content: new FormData(form).getAll("content"),
       realistic_ai: input("realistic_ai").checked,
       advertisement: input("advertisement").checked,
+      allow_viewer_collections: input("allow_viewer_collections").checked,
       panorama: input("panorama").value,
     };
     show(await call<VideoDetails>("/details", "PUT", body));
