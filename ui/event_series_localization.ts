@@ -153,6 +153,11 @@ export function setupSeriesLocalization(root: HTMLElement) {
       baseLanguageSelect.value = loc.base;
       refresh();
     },
+    applyDraft(language: string, translation: Translation) {
+      state.translations[language] = { ...translation, published: false };
+      active = language;
+      refresh();
+    },
     payload(): Localization {
       return {
         base: state.base,

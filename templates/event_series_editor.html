@@ -118,6 +118,17 @@
           <small>Leave a field blank to use the base language.</small>
           <button id="seriesTranslationRemove" type="button">Remove translation</button>
         </div>
+        <div class="series-translation-jobs">
+          <p id="seriesAiHelp">Generation translates the saved base text.</p>
+          <div>
+            <button type="button" id="seriesAiGenerate" aria-describedby="seriesAiHelp">Generate translation</button>
+            <button type="button" id="seriesAiRefresh">Refresh translation status</button>
+            <button type="button" id="seriesAiDraft" hidden>Load generated draft</button>
+            <button type="button" id="seriesAiReload" hidden>Reload saved series</button>
+          </div>
+          <label for="seriesAiAuto"><input type="checkbox" id="seriesAiAuto" checked> Publish automatically</label>
+          <p id="seriesAiStatus" role="status" aria-live="polite"></p>
+        </div>
       </fieldset>
 
       <fieldset id="seriesPresentation">

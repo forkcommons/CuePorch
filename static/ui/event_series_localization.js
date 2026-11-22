@@ -122,6 +122,11 @@ export function setupSeriesLocalization(root) {
             baseLanguageSelect.value = loc.base;
             refresh();
         },
+        applyDraft(language, translation) {
+            state.translations[language] = { ...translation, published: false };
+            active = language;
+            refresh();
+        },
         payload() {
             return {
                 base: state.base,

@@ -49,6 +49,7 @@ import audience_comments
 import content_rating
 import event_api
 import event_series_pages
+import event_series_translation
 import event_registrants
 import event_simulcast
 import facebook_live
@@ -231,6 +232,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + registration_return.SCHEMA
             + library_events.SCHEMA
             + event_series_pages.SCHEMA
+            + event_series_translation.SCHEMA
             + library_hubspot_bridge.SCHEMA
             + library_hubspot_folders.SCHEMA
             + library_hubspot_media_events.SCHEMA
@@ -999,6 +1001,10 @@ def create_app(root, database, operator, institution, simulation=None):
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
                             SELECT id FROM caption_job WHERE state='queued')""", (step,))
+                if step == "translation":
+                    con.execute("""UPDATE action SET status='waiting',decision=NULL
+                        WHERE step=? AND decision='automatic' AND id IN (
+                            SELECT id FROM live_series_translation WHERE state='queued')""", (step,))
                 if step in library_ai_drafts.FEATURES:
                     con.execute("""UPDATE action SET status='waiting',decision=NULL
                         WHERE step=? AND decision='automatic' AND id IN (
@@ -1657,6 +1663,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             linkedin_live_connection=linkedin_live_connection,
                             linkedin_member_live_connection=linkedin_member_live_connection)
     event_series_pages.register(app, tx, staff, action, operator, enforce_sharing, team_origin)
+    event_series_translation.register(app, tx, ai_actor, action)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 
@@ -2022,6 +2029,12 @@ def create_app(root, database, operator, institution, simulation=None):
 
     library_worker.start(app, root, database, tx, action, apply_routes)
     app.extensions["stop_caption_jobs"] = library_caption_jobs.start(app, root, tx, remember_work)
+    app.extensions["stop_event_series_translation"] = event_series_translation.start(
+        app, root, tx,
+        lambda con, row, settings, language, translated: event_series_pages.save_translation(
+            con, row, settings, language, translated, action
+        ),
+    )
     app.extensions["stop_ai_drafts"] = start_ai_drafts()
     app.extensions["stop_editor"] = start_editor()
     app.extensions["stop_file_links"] = start_file_links()

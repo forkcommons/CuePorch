@@ -133,6 +133,37 @@ def hidden_recording_refs(con, submitted, selected, previous):
     return [dict(event=e, opens=o) for e, o in sorted(result)]
 
 
+def write_series(con, row, slug, values, action):
+    """Persist a new live_series_page revision: supersede the prior publication,
+    mint a fresh publication action for non-private visibility, write the new
+    slug/revision/settings/publication, and return the refreshed row."""
+    uid = row["id"]
+    library_events.supersede_publication(con, row["publication"])
+    publication = None
+    if values["visibility"] != "private":
+        new_action_id = f"live-series-{uid}-{uuid.uuid4().hex}"
+        action(
+            con,
+            new_action_id,
+            "publication",
+            dict(title=values["title"], series=uid, visibility=values["visibility"]),
+        )
+        publication = new_action_id
+    new_revision = uuid.uuid4().hex
+    con.execute(
+        "UPDATE live_series_page SET slug=?, revision=?, settings=?, publication=? WHERE id=?",
+        (slug, new_revision, json.dumps(values), publication, row["id"]),
+    )
+    return series_row(con, uid)
+
+
+def save_translation(con, row, settings, language, translated, action):
+    prior = settings.get("localization", event_series_locale.DEFAULTS)
+    translations = prior["translations"] | {language: translated | {"published": True}}
+    localized = event_series_locale.validate(dict(base=prior["base"], translations=translations), prior)
+    return write_series(con, row, row["slug"], settings | dict(localization=localized), action)
+
+
 def validate(con, body, prior):
     if not isinstance(body, dict) or set(body) - set(DEFAULTS):
         abort(422, "Invalid event series settings.")
@@ -379,24 +410,9 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 abort(409)
             if values == prior and new_slug == row["slug"] and digest == previous_digest:
                 return summary(con, row)
-            library_events.supersede_publication(con, row["publication"])
-            publication = None
-            if values["visibility"] != "private":
-                new_action_id = f"live-series-{uid}-{uuid.uuid4().hex}"
-                action(
-                    con,
-                    new_action_id,
-                    "publication",
-                    dict(title=values["title"], series=uid, visibility=values["visibility"]),
-                )
-                publication = new_action_id
-            new_revision = uuid.uuid4().hex
-            con.execute(
-                "UPDATE live_series_page SET slug=?, revision=?, settings=?, publication=? WHERE id=?",
-                (new_slug, new_revision, json.dumps(values), publication, row["id"]),
-            )
+            updated = write_series(con, row, new_slug, values, action)
             store_password(con, uid, digest)
-            return summary(con, series_row(con, uid))
+            return summary(con, updated)
 
     @app.route("/event-series/<slug>", methods=["GET", "POST"])
     def event_series_view(slug):
