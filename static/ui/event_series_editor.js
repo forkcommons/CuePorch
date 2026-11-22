@@ -40,6 +40,55 @@ async function api(path, method = "GET", body) {
 let current = null;
 let choices = [];
 let entries = [];
+let recordings = [];
+const hiddenKey = (event, opens) => event + "\u0000" + opens;
+function renderRecordingChoices() {
+    if (!current)
+        return;
+    const container = byId("seriesHiddenRecordings");
+    const prev = new Map();
+    container
+        .querySelectorAll('input[type="checkbox"]')
+        .forEach(el => prev.set(hiddenKey(el.dataset.event, Number(el.dataset.opens)), el.checked));
+    const selected = new Set(Array.from(eventChoices.querySelectorAll('input[name="events"]:checked')).map(el => el.value));
+    const saved = new Set(current.settings.hidden_recordings.map(hr => hiddenKey(hr.event, hr.opens)));
+    container.replaceChildren();
+    for (const rec of recordings) {
+        if (!selected.has(rec.event))
+            continue;
+        const key = hiddenKey(rec.event, rec.opens);
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "hidden_recordings";
+        input.dataset.event = rec.event;
+        input.dataset.opens = String(rec.opens);
+        input.checked = prev.get(key) ?? saved.has(key);
+        const text = document.createElement("span");
+        text.textContent = `Hide recording: ${rec.title} · ${rec.label}`;
+        label.append(input, text);
+        container.append(label);
+    }
+}
+function collectHiddenRecordings(target) {
+    const selected = new Set(Array.from(eventChoices.querySelectorAll('input[name="events"]:checked')).map(el => el.value));
+    const result = new Map();
+    for (const hr of target.settings.hidden_recordings) {
+        if (selected.has(hr.event))
+            result.set(hiddenKey(hr.event, hr.opens), hr);
+    }
+    const container = byId("seriesHiddenRecordings");
+    for (const el of container.querySelectorAll('input[type="checkbox"]')) {
+        const event = el.dataset.event;
+        const opens = Number(el.dataset.opens);
+        const key = hiddenKey(event, opens);
+        if (el.checked)
+            result.set(key, { event, opens });
+        else
+            result.delete(key);
+    }
+    return Array.from(result.values());
+}
 function field(name) {
     return form.elements.namedItem(name);
 }
@@ -56,6 +105,7 @@ function renderEditor(entry) {
     field("slug").value = entry.slug;
     const visibilitySelect = field("visibility");
     visibilitySelect.value = entry.settings.visibility;
+    field("upcoming_mode").value = entry.settings.upcoming_mode;
     const passwordRow = byId("seriesPasswordRow");
     const passwordInput = field("view_password");
     passwordInput.value = "";
@@ -75,11 +125,14 @@ function renderEditor(entry) {
         input.name = "events";
         input.value = choice.id;
         input.checked = selected.has(choice.id);
+        input.addEventListener("change", renderRecordingChoices);
         const text = document.createElement("span");
         text.textContent = choice.title;
         label.append(input, text);
         eventChoices.append(label);
     }
+    byId("seriesHiddenRecordings").replaceChildren();
+    renderRecordingChoices();
     previewLink.hidden = true;
     previewLink.removeAttribute("href");
     watchLink.hidden = !entry.watch;
@@ -148,11 +201,12 @@ async function withBusy(fn) {
     }
 }
 async function load() {
-    const { series, events } = await api("");
+    const { series, events, recordings: rec } = await api("");
     workspace.hidden = false;
     identify.hidden = true;
     entries = series;
     choices = events;
+    recordings = rec;
     if (current)
         current = entries.find(s => s.id === current.id) ?? null;
     renderList();
@@ -183,7 +237,9 @@ form.addEventListener("submit", e => {
                 title: field("title").value.trim(),
                 description: field("description").value.trim(),
                 visibility: field("visibility").value,
-                events: Array.from(eventChoices.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value),
+                upcoming_mode: field("upcoming_mode").value,
+                events: Array.from(eventChoices.querySelectorAll('input[name="events"]:checked')).map(el => el.value),
+                hidden_recordings: collectHiddenRecordings(target),
                 presentation: await presentation.payload(),
             },
         };

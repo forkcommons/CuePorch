@@ -16,6 +16,28 @@
   {% endif %}
 </section>
 {% endmacro %}
+{% macro grouped_entries(title, id, groups, prefix, empty) %}
+<section aria-labelledby="{{ id }}">
+  <h2 id="{{ id }}">{{ title }}</h2>
+  {% if groups %}
+  {% for group in groups %}
+  <section aria-labelledby="{{ id }}-{{ loop.index }}">
+    <h3 id="{{ id }}-{{ loop.index }}">{{ group.title }}</h3>
+    <ul>
+      {% for item in group["items"] %}
+      <li>
+        {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
+        {% if item.href %}<a href="{{ item.href }}">{{ prefix }} {{ item.title }}</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+  {% else %}
+  <p>{{ empty }}</p>
+  {% endif %}
+</section>
+{% endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -43,7 +65,13 @@
 {% elif block == "navigation" %}
 {% if presentation.navigation %}<nav class="event-series-nav" aria-label="Event series">{% for link in presentation.navigation %}<a href="{{ link.href }}">{{ link.label }}</a>{% endfor %}</nav>{% endif %}
 {% elif block == "upcoming" %}
+{% if settings.upcoming_mode == "next" %}
+{{ list_entries("Upcoming events", "upcoming-heading", next_upcoming, "View", "No upcoming events.") }}
+{% elif settings.upcoming_mode == "grouped" %}
+{{ grouped_entries("Upcoming events", "upcoming-heading", upcoming_groups, "View", "No upcoming events.") }}
+{% else %}
 {{ list_entries("Upcoming events", "upcoming-heading", upcoming, "View", "No upcoming events.") }}
+{% endif %}
 {% elif block == "on_demand" %}
 {{ list_entries("On demand", "ondemand-heading", recordings, "Watch", "No recordings yet.") }}
 {% elif block == "agenda" %}

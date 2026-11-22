@@ -36,11 +36,14 @@ DEFAULTS = dict(
     title="Untitled event series",
     description="",
     visibility="private",
+    upcoming_mode="all",
     events=[],
+    hidden_recordings=[],
     presentation=event_series_presentation.DEFAULTS,
 )
 
 VISIBILITIES = ("private", "public", "team", "password")
+UPCOMING_MODES = ("all", "next", "grouped")
 
 
 def password_hash(con, uid):
@@ -90,7 +93,45 @@ def series_status(con, row, settings):
     return status["status"] if status else "private"
 
 
-def validate(con, body, prior_presentation=None):
+def hidden_recording_refs(con, submitted, selected, previous):
+    if not isinstance(submitted, list):
+        abort(422, "Select valid hidden recordings.")
+    limit = 2 ** 53
+    selected_set = set(selected)
+    prior = set()
+    for item in (previous or []):
+        if (isinstance(item, dict) and set(item) == {"event", "opens"}
+                and isinstance(item.get("event"), str)
+                and isinstance(item.get("opens"), int)
+                and not isinstance(item.get("opens"), bool)):
+            prior.add((item["event"], item["opens"]))
+    known = set()
+    if selected_set:
+        marks = ",".join("?" * len(selected_set))
+        rows = con.execute(
+            f"SELECT event, opens FROM live_occurrence "
+            f"WHERE delivery='replay' AND event IN ({marks})",
+            tuple(selected_set),
+        ).fetchall()
+        known = {(r["event"], r["opens"]) for r in rows}
+    result = set()
+    for item in submitted:
+        if (not isinstance(item, dict) or set(item) != {"event", "opens"}
+                or not isinstance(item.get("event"), str)
+                or not isinstance(item.get("opens"), int)
+                or isinstance(item.get("opens"), bool)
+                or item["opens"] <= -limit or item["opens"] >= limit):
+            abort(422, "Select valid hidden recordings.")
+        ref = (item["event"], item["opens"])
+        if ref[0] not in selected_set:
+            abort(422, "Hidden recordings must reference selected events.")
+        if ref not in prior and ref not in known:
+            abort(422, "Hidden recordings must reference replay recordings.")
+        result.add(ref)
+    return [dict(event=e, opens=o) for e, o in sorted(result)]
+
+
+def validate(con, body, prior):
     if not isinstance(body, dict) or set(body) - set(DEFAULTS):
         abort(422, "Invalid event series settings.")
     title = text_field(body.get("title", DEFAULTS["title"]), "a title", 128, required=True)
@@ -109,14 +150,26 @@ def validate(con, body, prior_presentation=None):
         ).fetchall()}
         if known != set(events):
             abort(422, "Select known events.")
+    prior_hidden = prior["hidden_recordings"]
+    if "hidden_recordings" not in body:
+        requested_hidden = [h for h in prior_hidden if h["event"] in events]
+    else:
+        requested_hidden = body["hidden_recordings"]
+    hidden_recordings = hidden_recording_refs(con, requested_hidden, events, prior_hidden)
+
+    upcoming_mode = body.get("upcoming_mode", prior["upcoming_mode"])
+    if upcoming_mode not in UPCOMING_MODES:
+        abort(422, "Choose all dates, next date per event, or dates grouped by event.")
     presentation = event_series_presentation.validate(
-        con, body.get("presentation", prior_presentation)
+        con, body.get("presentation", prior["presentation"])
     )
     return dict(
         title=title,
         description=description,
         visibility=visibility,
+        upcoming_mode=upcoming_mode,
         events=events,
+        hidden_recordings=hidden_recordings,
         presentation=presentation,
     )
 
@@ -127,6 +180,27 @@ def choice_list(con):
         settings = json.loads(row["settings"])
         items.append(dict(id=row["id"], title=settings["title"], visibility=settings["visibility"]))
     items.sort(key=lambda item: (item["title"], item["id"]))
+    return items
+
+
+def replay_choices(con):
+    items = []
+    rows = con.execute(
+        "SELECT e.id, e.settings, o.opens "
+        "FROM live_occurrence o JOIN live_event e ON e.id=o.event "
+        "WHERE o.delivery='replay' "
+        "ORDER BY o.opens DESC, e.id"
+    ).fetchall()
+    for row in rows:
+        settings = json.loads(row["settings"])
+        tz = ZoneInfo(settings["schedule"]["timezone"])
+        opens = row["opens"]
+        items.append(dict(
+            event=row["id"],
+            opens=opens,
+            title=settings.get("title") or row["id"],
+            label=datetime.fromtimestamp(opens, tz).strftime("%Y-%m-%d %H:%M %Z"),
+        ))
     return items
 
 
@@ -151,7 +225,10 @@ def page_events(con, settings, preview=False, audience="public"):
     upcoming, recordings = [], []
     ids = settings.get("events") or []
     if not ids:
-        return dict(upcoming=upcoming, recordings=recordings)
+        return dict(
+            upcoming=[], next_upcoming=[], upcoming_groups=[], recordings=[]
+        )
+    hidden = {(h["event"], h["opens"]) for h in settings["hidden_recordings"]}
     marks = ",".join("?" * len(ids))
     rows = con.execute(
         f"SELECT * FROM live_event WHERE id IN ({marks})", tuple(ids)
@@ -188,7 +265,8 @@ def page_events(con, settings, preview=False, audience="public"):
                 label=occ["local"].replace("T", " ") + " " + tzname,
             ))
         for opens in sorted(
-            (o for o, d in deliveries.items() if d == "replay"), reverse=True
+            (o for o, d in deliveries.items() if d == "replay" and (row["id"], o) not in hidden),
+            reverse=True,
         ):
             href = (
                 library_events.viewer_url(row, event, False, opens=opens) if can_link else None
@@ -199,8 +277,19 @@ def page_events(con, settings, preview=False, audience="public"):
                 label=local.strftime("%Y-%m-%d %H:%M %Z"),
             ))
     upcoming.sort(key=lambda x: (x["opens"], x["title"], x["slug"]))
+    next_upcoming, seen, groups = [], set(), {}
+    for item in upcoming:
+        if item["slug"] not in seen:
+            seen.add(item["slug"])
+            next_upcoming.append(item)
+        groups.setdefault(item["slug"], {"title": item["title"], "items": []})["items"].append(item)
     recordings.sort(key=lambda x: (-x["opens"], x["title"], x["slug"]))
-    return dict(upcoming=upcoming, recordings=recordings)
+    return dict(
+        upcoming=upcoming,
+        next_upcoming=next_upcoming,
+        upcoming_groups=list(groups.values()),
+        recordings=recordings,
+    )
 
 
 def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
@@ -220,7 +309,8 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 return dict(
                     series=[summary(con, row)
                             for row in con.execute("SELECT * FROM live_series_page ORDER BY created DESC")],
-                    events=choice_list(con)
+                    events=choice_list(con),
+                    recordings=replay_choices(con),
                 )
             uid = uuid.uuid4().hex
             con.execute("INSERT INTO live_series_page VALUES(?,?,?,?,NULL,?)",
@@ -253,7 +343,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 con.execute("DELETE FROM live_series_page WHERE id=?", (row["id"],))
                 return ("", 204)
             prior = DEFAULTS | json.loads(row["settings"])
-            values = validate(con, body.get("settings"), prior["presentation"])
+            values = validate(con, body.get("settings"), prior)
             previous_digest = password_hash(con, uid)
             digest = requested_password(body, values, previous_digest)
             enforce_sharing(

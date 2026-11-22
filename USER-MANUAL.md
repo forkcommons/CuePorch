@@ -414,6 +414,8 @@ To publish, choose **Public**, **Team only**, or **Password protected**, then sa
 
 **Upcoming events** and **On demand** show selected events and released recordings available to the series audience. Team-only series can include private team events. Password-protected series can include password-protected events. Viewers open the original event page, where the event’s own password and registration rules still apply.
 
+Choose **All scheduled dates**, **Next date per event**, or **Group dates by event** for **Upcoming events**. **Agenda** always shows the full schedule. Use **Hide recording** beside an entry under **Hidden recordings** to remove it from this series. The original event page and other series keep their existing access and playback.
+
 ### Live events
 
 Open **Live events** from the library and choose **New event**. Set up from scratch, choose an event type for editable defaults, or reuse an earlier event's settings. Live broadcast starts with an external encoder, chat and captions. Webinar starts with the browser, registration, chat, captions and Q&A. Team event starts with the browser, low latency, chat and captions. Online learning starts with the browser, registration, captions and Q&A. Custom starts with audience options off. All start private. Set the preferred production method and change any of the suggested options before saving.
