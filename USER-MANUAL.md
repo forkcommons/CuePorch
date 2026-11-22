@@ -398,6 +398,8 @@ Open **Showcases** from the library. **New showcase** creates a private gallery.
 
 To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search and upload a **Channel thumbnail** for the directory. Share the **Channel link** to open the ordered gallery directly.
 
+Open **Channel curation** from the team workspace or the showcase editor. Owners and administrators can assign active Contributors and Contributors Plus to a channel under **Channel moderators**. An assigned moderator can change the order of public videos, remove them, or add public videos they can edit. Use **Save channel videos** to apply the changes. Removing the assignment takes effect on the moderator’s next request.
+
 Vimeo migration lists moderated channels under **Showcases and channels**. It brings over the playlist order, available account videos, and any channel thumbnail and header supplied in the source inventory. The report lists video IDs outside the transfer inventory. Use **Open channel** to preview the private draft and set its publication settings.
 
 Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
