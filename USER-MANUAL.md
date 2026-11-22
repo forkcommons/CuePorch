@@ -30,6 +30,8 @@ Open **Watch** at `/watch` or the site home page. Use **Explore** to browse publ
 
 Choose **Groups** to browse community groups. Sign in with a viewer account to join a public group or create one. The group owner sets the name, link and **Group access**, and can add public videos from Watch. Switching to **Members only** keeps existing members and hides the group from other visitors. Members can leave from the group page.
 
+Open **Manage group membership** on a group you own. Enter an email address and choose **Invite**, then share the **Group link**. With a configured email relay, **Send invite email** can deliver that link. The recipient signs in, verifies the invited email address and accepts from the group page. Invitations expire after seven days. Group owners can revoke invitations, remove members and transfer ownership to a current member.
+
 In the operator Library, open **Staff Picks**. Add public videos, use **Move up** and **Move down** to arrange them, then select **Save Staff Picks**. The first picks appear in Explore, and the full list has its own page. Making a pick private or deleting it hides it from Watch and closes its public cover link. The selection stays in the editor so it can be removed or shown again if the video becomes public.
 
 Open **Viewer account** from Watch to create an account or sign in. Use **Save to Watch Later** on a public video, then open **Watch Later** from the Watch navigation. Your list follows your account across browsers. A saved item is visible while its video is public. To remove an item, use the list or the video's **Remove from Watch Later** button.

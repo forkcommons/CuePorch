@@ -41,6 +41,35 @@
         <button type="submit">Save group</button>
       </form>
       <details>
+        <summary>Manage group membership</summary>
+        <form id="groupInvite" method="post">
+          <label>Invite email <input type="email" name="email" required></label>
+          {% if invite_mail_available %}<label><input type="checkbox" name="send_email"> Send invite email</label>{% endif %}
+          <input type="hidden" name="revision" value="{{ group.revision }}">
+          <button type="submit">Invite</button>
+        </form>
+        <label>Group link <input id="groupInviteLink" readonly></label>
+        {% if group_invites %}
+          <ul>{% for email in group_invites %}
+            <li>{{ email }} <button type="button" data-revoke-invite="{{ email }}"
+                aria-label="Revoke invitation to {{ email }}">Revoke</button></li>
+          {% endfor %}</ul>
+        {% endif %}
+        {% if manage_members %}
+          <form id="groupOwner" method="post">
+            <label>Transfer to <select name="member">
+              {% for m in manage_members %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+            </select></label>
+            <input type="hidden" name="revision" value="{{ group.revision }}">
+            <button type="submit">Transfer ownership</button>
+          </form>
+          <ul>{% for m in manage_members %}
+            <li>{{ m.name }} <button type="button" data-remove-group-member="{{ m.id }}"
+                aria-label="Remove {{ m.name }}">Remove</button></li>
+          {% endfor %}</ul>
+        {% endif %}
+      </details>
+      <details>
         <summary>Delete this group</summary>
         <form id="groupDelete" method="post"><input type="hidden" name="revision" value="{{ group.revision }}"><button type="submit">Delete group</button></form>
       </details>

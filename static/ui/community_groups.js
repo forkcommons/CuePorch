@@ -90,3 +90,62 @@ for (const button of document.querySelectorAll("[data-remove-group-video]")) {
         void update(async () => { await send("DELETE", videoPath(button.dataset.removeGroupVideo ?? "")); location.reload(); });
     };
 }
+const inviteForm = document.querySelector("#groupInvite");
+if (inviteForm) {
+    const groupPath = "groups/" + encodeURIComponent(groupSlug);
+    const link = document.querySelector("#groupInviteLink");
+    link.value = new URL(location.pathname, location.origin).href;
+    const url = new URL(location.href);
+    const inviteStatus = url.searchParams.get("invitation");
+    if (inviteStatus) {
+        const messages = new Map([
+            ["saved", "Invitation saved."],
+            ["accepted", "Invitation saved and accepted by the email relay."],
+            ["failed", "Invitation saved. Email delivery failed. Share the group link."],
+        ]);
+        status.textContent = messages.get(inviteStatus) || "";
+        url.searchParams.delete("invitation");
+        history.replaceState(null, "", url);
+    }
+    inviteForm.onsubmit = event => {
+        event.preventDefault();
+        const fields = new FormData(inviteForm);
+        void update(async () => {
+            const response = await send("POST", groupPath + "/invite", {
+                ...Object.fromEntries(fields), send_email: fields.has("send_email"),
+            });
+            const result = await response.json();
+            const destination = new URL(result.url, location.origin);
+            destination.searchParams.set("invitation", result.delivery || "saved");
+            location.assign(destination);
+        });
+    };
+    const ownerForm = document.querySelector("#groupOwner");
+    if (ownerForm)
+        ownerForm.onsubmit = event => {
+            event.preventDefault();
+            const fields = Object.fromEntries(new FormData(ownerForm));
+            void update(async () => {
+                const response = await send("POST", groupPath + "/ownership", fields);
+                location.assign((await response.json()).url);
+            });
+        };
+    const revision = () => new FormData(inviteForm).get("revision");
+    for (const button of document.querySelectorAll("[data-revoke-invite]")) {
+        button.onclick = () => {
+            void update(async () => {
+                await send("DELETE", groupPath + "/invite", { email: button.dataset.revokeInvite, revision: revision() });
+                location.reload();
+            });
+        };
+    }
+    for (const button of document.querySelectorAll("[data-remove-group-member]")) {
+        button.onclick = () => {
+            const member = encodeURIComponent(button.dataset.removeGroupMember);
+            void update(async () => {
+                await send("DELETE", groupPath + "/members/" + member, { revision: revision() });
+                location.reload();
+            });
+        };
+    }
+}
