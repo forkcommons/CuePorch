@@ -48,6 +48,12 @@ const libraryRecording = element("eventLibraryRecording");
 const libraryRecordingStatus = element("libraryRecordingStatus");
 const libraryRecordingLink = element("libraryRecordingLink");
 const saveLibraryRecording = button("saveLibraryRecording");
+const importedReplayPanel = element("importedReplayPanel");
+const importedReplayForm = element("importedReplayForm");
+const importedReplayChoice = element("importedReplayChoice");
+const importedReplayStatus = element("importedReplayStatus");
+const attachImportedReplay = button("attachImportedReplay");
+let importedReplayChoices = [];
 const eventPlaylistPanel = element("eventPlaylistSettings");
 const eventPlaylistForm = element("eventPlaylistForm");
 const eventPlaylistStatus = element("eventPlaylistStatus");
@@ -355,6 +361,13 @@ function choose(event, instance) {
     libraryRecording.open = false;
     libraryRecordingStatus.textContent = "";
     libraryRecordingLink.hidden = saveLibraryRecording.disabled = true;
+    importedReplayPanel.open = false;
+    importedReplayPanel.hidden = !event.event.save_replay || Date.parse(instance.end) > Date.now() ||
+        (instance.delivery !== "scheduled" && !instance.imported_replay);
+    importedReplayChoices = [];
+    importedReplayChoice.replaceChildren();
+    importedReplayChoice.disabled = attachImportedReplay.disabled = true;
+    importedReplayStatus.textContent = "";
     eventPlaylistPanel.open = false;
     eventPlaylistPanel.hidden = event.event.schedule.repeat === "none";
     eventPlaylistForm.reset();
@@ -401,7 +414,8 @@ function choose(event, instance) {
     linkedinAccount.value = "company";
     resetLinkedinAccount();
     button("editEvent").disabled = !event.editable;
-    button("prepareEncoder").disabled = !calendar.host_ready || ["withdrawing", "withdrawn", "replay"].includes(instance.delivery);
+    button("prepareEncoder").disabled = !calendar.host_ready ||
+        ["withdrawing", "withdrawn", "replay", "archive_pending"].includes(instance.delivery);
     button("prepareSrt").disabled = button("prepareEncoder").disabled;
     const rtmpAvailable = calendar.direct_rtmp && event.event.latency === "low";
     chooseInterpreterOccurrence(rtmpAvailable && !["withdrawn", "withdrawing", "replay"].includes(instance.delivery)
@@ -416,7 +430,7 @@ function choose(event, instance) {
     button("prepareDash").disabled = button("prepareEncoder").disabled;
     button("withdrawEvent").textContent = instance.delivery === "scheduled" ? "Cancel this occurrence" : "Withdraw this occurrence";
     button("withdrawEvent").disabled = instance.delivery === "withdrawn" ||
-        (instance.delivery !== "scheduled" && !calendar.host_ready);
+        (instance.delivery !== "scheduled" && !calendar.host_ready && !instance.imported_replay);
     element("productionTitle").textContent = `${event.event.title} · ${instance.local.replace("T", " ")} ${event.event.schedule.timezone}`;
     const preference = event.event.setup?.method;
     element("productionPreference").textContent = preference ?
@@ -1793,6 +1807,45 @@ libraryRecording.ontoggle = () => { if (libraryRecording.open)
     void action(() => updateLibraryRecording()); };
 button("refreshLibraryRecording").onclick = () => void action(() => updateLibraryRecording());
 saveLibraryRecording.onclick = () => void action(() => updateLibraryRecording(true));
+async function updateImportedReplay() {
+    const selected = active;
+    const result = await request(mediaPath("imported-replay"));
+    if (active !== selected)
+        return;
+    importedReplayChoices = result.choices;
+    const enabled = result.editable && result.choices.length > 0;
+    importedReplayForm.hidden = !enabled;
+    importedReplayChoice.disabled = attachImportedReplay.disabled = !enabled;
+    importedReplayChoice.replaceChildren(...result.choices.map((choice, index) => new Option(choice.title, String(index))));
+    const details = {
+        available: result.choices.length ? "Choose the recording for this occurrence." : "No eligible Vimeo recordings in the Library.",
+        archive_pending: "Waiting for Replay approval.",
+        replay: "Replay released.",
+        rejected: "Replay approval was declined.",
+        withdrawn: "This occurrence was withdrawn.",
+        unavailable: "This occurrence cannot accept an imported replay.",
+    };
+    importedReplayStatus.textContent = [result.attachment?.title, details[result.state]].filter(Boolean).join(" · ");
+}
+importedReplayPanel.ontoggle = () => {
+    if (importedReplayPanel.open)
+        void action(() => updateImportedReplay());
+};
+importedReplayForm.onsubmit = event => {
+    event.preventDefault();
+    void action(async () => {
+        const choice = importedReplayChoices[importedReplayChoice.selectedIndex];
+        if (!choice)
+            return;
+        const address = mediaPath("imported-replay");
+        await request(address, "PUT", { work: choice.work, digest: choice.digest });
+        await load();
+        if (active && address === mediaPath("imported-replay")) {
+            importedReplayPanel.open = true;
+            await updateImportedReplay();
+        }
+    });
+};
 async function updatePlaylist(save = false) {
     const body = save ? Object.fromEntries(playlistOptions.map(name => [name, playlistOption(name).checked])) : undefined;
     const result = await request(`${root}/${active.event.id}/playlist`, save ? "PUT" : "GET", body);

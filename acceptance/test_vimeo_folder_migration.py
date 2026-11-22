@@ -3,6 +3,7 @@
 import json
 import secrets
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -201,6 +202,120 @@ class VimeoFolderMigration(unittest.TestCase):
                 const video = document.querySelector('#reviewTourPlayer');
                 return video.videoWidth === 320 && video.currentTime > .2;
             }""")
+
+    def test_migrated_recordings_play_in_recurring_event(self):
+        self.source.live_event_fixture = True
+        start = (datetime.now(timezone.utc) - timedelta(hours=28)).replace(second=0, microsecond=0)
+        end = start + timedelta(minutes=10)
+        first_day, last_day = start.date().isoformat(), (start + timedelta(days=2)).date().isoformat()
+        archive = work_id("station", "vimeo", "998")
+        council = work_id("station", "vimeo", "71")
+        title = "Migrated recurring replay"
+        created = self.client.post(f"/api/live-events?from={first_day}&to={last_day}", headers=self.auth, json=dict(
+            title=title, slug="migrated-recurring-replay", visibility="private", type="live",
+            latency="standard", save_replay=True, schedule=dict(
+                timezone="UTC", repeat="days", interval=1, count=2,
+                start=start.strftime("%Y-%m-%dT%H:%M"), end=end.strftime("%Y-%m-%dT%H:%M")),
+        ))
+        self.assertEqual(201, created.status_code, created.get_data(as_text=True))
+        event = created.get_json()
+        first, second = [entry["id"] for entry in event["occurrences"]]
+        base_path = f"/api/live-events/{event['id']}"
+        first_replay = f"{base_path}/{first}/imported-replay"
+        second_replay = f"{base_path}/{second}/imported-replay"
+        self.assertEqual(200, self.client.put(base_path + "/playlist", headers=self.auth,
+                         json=dict(enabled=True, autoplay_next=False, loop=False)).status_code)
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            producer = browser.new_page()
+            producer.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            producer.goto(self.base + "/operator/migration")
+            producer.get_by_role("button", name="Preview transfer").click()
+            expect(producer.locator("#status")).to_have_text("inventoried", timeout=15000)
+            producer.get_by_role("button", name="Transfer privately").click()
+            expect(producer.locator("#status")).to_have_text("transferred", timeout=15000)
+
+            choices = self.client.get(first_replay, headers=self.auth).get_json()["choices"]
+            by_work = {item["work"]: item for item in choices}
+            chosen = by_work[archive]
+            producer.goto(self.base + "/operator/live-events")
+            producer.locator("#calendarFirst").fill(first_day)
+            producer.locator("#calendarLast").fill(last_day)
+            producer.get_by_role("button", name="Apply dates").click()
+            producer.get_by_role("button", name=f"Open production for {title}", exact=False).first.click()
+            producer.get_by_text("Imported replay", exact=True).click()
+            select = producer.get_by_label("Vimeo recording")
+            expect(select).to_be_enabled()
+            select.select_option(label=chosen["title"])
+            producer.get_by_role("button", name="Attach replay").click()
+            expect(producer.locator("#importedReplayStatus")).to_contain_text("Replay released.")
+            self.assertEqual(chosen, self.client.get(first_replay, headers=self.auth).get_json()["attachment"])
+            self.assertEqual(200, self.client.put(first_replay, headers=self.auth,
+                             json={key: chosen[key] for key in ("work", "digest")}).status_code)
+            self.assertEqual(409, self.client.put(first_replay, headers=self.auth,
+                             json=dict(work=council, digest=chosen["digest"])).status_code)
+
+            policy = self.client.put("/api/policy/replay", headers=self.auth, json=dict(required=True))
+            self.assertEqual(200, policy.status_code, policy.get_data(as_text=True))
+            gated = self.client.put(second_replay, headers=self.auth,
+                                    json=dict(work=council, digest=by_work[council]["digest"]))
+            self.assertEqual("archive_pending", gated.get_json()["state"])
+            actions = self.client.get("/api/actions", headers=self.auth).get_json()
+            gate, = [item["id"] for item in actions if item["step"] == "replay"]
+
+            invitation = self.client.post("/api/team/invitations", headers={**self.auth, "X-CuePorch-Team": "1"},
+                                          json=dict(email="replay-viewer@example.com", role="viewer"))
+            self.assertEqual(201, invitation.status_code, invitation.get_data(as_text=True))
+            code = invitation.get_json()["path"].split("#", 1)[1]
+            viewer = browser.new_page()
+            joined = viewer.request.post(self.base + "/api/team/join", headers={"X-CuePorch-Team": "1"},
+                                         data=dict(invitation=code, name="Viewer", password="viewer-password"))
+            self.assertEqual(201, joined.status, joined.text())
+            watch = self.base + event["watch"]
+            first_watch = f"{watch}?occurrence={first}"
+            self.assertEqual(404, producer.request.get(first_watch).status)
+            viewer.goto(first_watch)
+            expect(viewer.locator("#eventStatus")).to_have_text("Replay")
+            playlist = viewer.get_by_label("Choose a broadcast")
+            expect(playlist.locator("option:not([disabled])")).to_have_count(1)
+            playback = viewer.locator("#eventPlayer video")
+            playback.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function("""() => {
+                const video = document.querySelector('#eventPlayer video');
+                return video.videoWidth === 320 && video.currentTime > .2;
+            }""")
+            media = playback.evaluate("video => video.currentSrc")
+            self.assertTrue(media.endswith("/replay.mp4"), media)
+            ranged = viewer.request.get(media, headers={"Range": "bytes=0-31"})
+            self.assertEqual(206, ranged.status)
+            self.assertEqual(32, len(ranged.body()))
+            self.assertIn("no-store", ranged.headers["cache-control"])
+            self.assertEqual(404, producer.request.get(media).status)
+
+            decision = self.client.post(f"/api/actions/{gate}/decision", headers=self.auth, json=dict(decision="approve"))
+            self.assertEqual(204, decision.status_code, decision.get_data(as_text=True))
+            expect(playlist.locator("option:not([disabled])")).to_have_count(2, timeout=15000)
+            playlist.select_option(str(second))
+            viewer.wait_for_function("(opens) => new URL(location.href).searchParams.get('occurrence') === opens",
+                                     arg=str(second))
+            expect(viewer.locator("#eventStatus")).to_have_text("Replay", timeout=15000)
+            viewer.wait_for_function("""() => {
+                const video = document.querySelector('#eventPlayer video');
+                return video && video.currentSrc;
+            }""")
+            second_media = viewer.locator("#eventPlayer video").evaluate("video => video.currentSrc")
+            trashed = self.client.post("/api/library/recently-deleted", headers=self.auth,
+                                       json=dict(kind="work", items=[council]))
+            self.assertEqual(202, trashed.status_code, trashed.get_data(as_text=True))
+            self.assertEqual(404, viewer.request.get(second_media).status)
+            expect(viewer.locator("#eventStatus")).to_have_text("The replay is unavailable", timeout=15000)
+            expect(viewer.locator("#eventPlayer video")).to_have_count(0)
+
+            producer.get_by_role("button", name="Withdraw this occurrence").click()
+            expect(producer.locator("#eventsStatus")).to_have_text("Occurrence withdrawn.")
+            self.assertEqual(404, viewer.request.get(media).status)
+            library = self.client.get("/api/library", headers=self.auth).get_json()
+            self.assertIn(archive, {item["id"] for item in library})
 
     def test_vimeo_schedule_reconstruction(self):
         self.source.live_event_fixture = True

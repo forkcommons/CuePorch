@@ -65,10 +65,11 @@ def archive_source(media, origin, remote):
 
 
 class ReplayCaptionJobs:
-    def __init__(self, app, tx, media, database):
+    def __init__(self, app, tx, media, database, native_source=None):
         self.app = app
         self.tx = tx
         self.media = media
+        self.native_source = native_source
         self.directory = database.parent / "replay-captions"
         self.replay_root = database.parent / "interpreted-replays"
         self.stopping = Event()
@@ -96,13 +97,20 @@ class ReplayCaptionJobs:
             if team_ai_policy.restriction(con, event_captions.FEATURE, None):
                 con.execute("UPDATE live_replay_captions SET state='blocked' WHERE revision=?", (job["revision"],))
                 return
+            verified_path = (self.native_source(con, job["event"], job["opens"], job["remote"])
+                             if not job["origin"] and self.native_source else None)
             con.execute("UPDATE live_replay_captions SET state='running' WHERE revision=?", (job["revision"],))
         state, cues = "ready", None
         try:
             with TemporaryDirectory(dir=self.directory) as temp:
                 folder = Path(temp)
-                source = folder / "replay.mp4"
-                self.download(job, source)
+                if job["origin"]:
+                    source = folder / "replay.mp4"
+                    self.download(job, source)
+                else:
+                    if verified_path is None:
+                        raise ValueError("The imported recording is unavailable.")
+                    source = verified_path
                 vtt, _ = caption_adapter.transcribe_path(source, folder / "tracks", job["language"], self.stopping)
                 cues = subtitles.parse(vtt, "vtt")
                 if not cues:

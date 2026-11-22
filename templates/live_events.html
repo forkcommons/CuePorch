@@ -371,6 +371,14 @@
         <button type="button" id="refreshLibraryRecording">Refresh Library recording</button>
         <a id="libraryRecordingLink" hidden>Open Library recording</a>
       </details>
+      <details id="importedReplayPanel" hidden>
+        <summary>Imported replay</summary>
+        <form id="importedReplayForm">
+          <label>Vimeo recording <select id="importedReplayChoice" disabled></select></label>
+          <button type="submit" id="attachImportedReplay" disabled>Attach replay</button>
+        </form>
+        <p id="importedReplayStatus" role="status"></p>
+      </details>
       <details id="eventPlaylistSettings" hidden>
         <summary>Replay playlist</summary>
         <form id="eventPlaylistForm">

@@ -165,7 +165,15 @@ function renderVideo(address, phase, analytics, transport, video) {
         currentVideo.addEventListener("canplay", () => { void currentVideo.play().catch(() => { }); }, { once: true });
     }
     const replayDate = () => video.currentTime * 1000;
-    if (Hls?.isSupported()) {
+    if (transport.startsWith("library:")) {
+        if (currentVideo.getAttribute("src") !== address) {
+            currentVideo.src = address;
+            currentVideo.load();
+        }
+        stopAudio = bindEventAudio(audioLabel, audioSelect, currentVideo, onAudioSelection);
+        captions.bind(currentVideo, replayDate, replay);
+    }
+    else if (Hls?.isSupported()) {
         const session = new Hls({
             enableWorker: true,
             liveDurationInfinity: true,
@@ -278,6 +286,9 @@ async function checkStatus() {
             stopMeasuring = measurePeerEventPlayback(frame, analytics || "");
             if (next === "Replay" && !archives && !previewReplay)
                 stopChecking();
+        }
+        else if (!src && player.dataset.transport?.startsWith("library:")) {
+            closePlayer();
         }
         else if (current && !src && next === "The stream is unavailable") {
             // A live player can coast through a delayed host poll without restarting.
