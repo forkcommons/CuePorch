@@ -415,7 +415,8 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
         expect(successor.locator("#teamAnalyticsTotals")).to_have_text("Members 1 · Videos 1 · Views 1")
         named_row = successor.locator("#teamAnalyticsRows tr")
         expect(named_row).to_have_count(1)
-        expect(named_row.get_by_role("cell").nth(3)).to_have_text("1")
+        completion_column = successor.get_by_role("columnheader", name="Completions", exact=True).evaluate("cell => cell.cellIndex")
+        expect(named_row.get_by_role("cell").nth(completion_column)).to_have_text("1")
         named_row.get_by_role("button", name=draft_name).click()
         expect(successor.get_by_role("button", name="Clear member or video filter")).to_be_visible()
         with successor.expect_download() as named_download:
