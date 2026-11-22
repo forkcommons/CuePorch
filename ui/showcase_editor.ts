@@ -5,6 +5,7 @@ type Settings = Record<string, Value> & {
   title: string;
   logo: string | null;
   feature_image: string | null;
+  channel_cover: string | null;
   videos: string[];
   domains: string[];
 };
@@ -59,8 +60,10 @@ const assets = [
     clear: document.querySelector<HTMLButtonElement>("#showcaseClearLogo")!},
   {key: "feature_image", input: field("feature_file") as HTMLInputElement,
     clear: document.querySelector<HTMLButtonElement>("#showcaseClearFeature")!},
+  {key: "channel_cover", input: field("channel_cover_file") as HTMLInputElement,
+    clear: document.querySelector<HTMLButtonElement>("#showcaseClearChannelCover")!},
 ] as const;
-const images = {logo: null, feature_image: null} as Pick<Settings, "logo" | "feature_image">;
+const images = {logo: null, feature_image: null, channel_cover: null} as Pick<Settings, "logo" | "feature_image" | "channel_cover">;
 
 let current: Showcase;
 let showcases: Showcase[] = [];
@@ -315,7 +318,7 @@ form.onsubmit = (event) => {
     const settings: Settings = {...current.settings, ...images, videos: selected,
       domains: field("domains").value.split(/\s+/).filter(Boolean)};
     for (const [name, old] of Object.entries(settings)) {
-      if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image") continue;
+      if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image" || name === "channel_cover") continue;
       const control = field(name);
       settings[name] = typeof old === "boolean" ? (control as HTMLInputElement).checked : control.value;
     }

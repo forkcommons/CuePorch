@@ -152,6 +152,9 @@ class ShowcaseDistribution(unittest.TestCase):
                     async node => {node.muted = true; await node.play(); node.pause(); return node.videoWidth}
                 """))
 
+                thumbnail = root / "channel-thumbnail.png"
+                Image.new("RGB", (2, 2), (10, 20, 30)).save(thumbnail)
+                editor.get_by_label("Channel thumbnail").set_input_files(str(thumbnail))
                 editor.get_by_label("List in Watch channels").check()
                 editor.get_by_label("Channel category").fill("Arts")
                 with page.expect_response(lambda response: response.url == base + endpoint
@@ -165,6 +168,14 @@ class ShowcaseDistribution(unittest.TestCase):
                 directory = base + "/watch/channels?category=Arts"
                 guest.goto(base + "/watch/channels")
                 guest.get_by_role("navigation", name="Channel categories").get_by_role("link", name="Arts").click()
+                card_image = guest.get_by_role("link", name="Station arts", exact=True).locator("img")
+                expect(card_image).to_have_js_property("naturalWidth", 2)
+                cover_src = card_image.get_attribute("src")
+                cover_url = cover_src if cover_src.startswith("http") else base + cover_src
+                cover_response = requests.get(cover_url, timeout=10)
+                self.assertTrue(cover_response.ok)
+                self.assertEqual(cover_response.content, thumbnail.read_bytes())
+                self.assertIn("no-store", cover_response.headers["Cache-Control"])
                 guest.get_by_role("link", name="Station arts", exact=True).click()
                 expect(guest).to_have_url(base + channel)
                 expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
@@ -228,6 +239,7 @@ class ShowcaseDistribution(unittest.TestCase):
 
                 send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "private"}})
                 self.assertEqual(404, guest.context.request.get(follow_api + "station-arts").status)
+                self.assertEqual(404, requests.get(cover_url, timeout=10).status_code)
                 guest.goto(base + "/watch/feed")
                 expect(stage_link).to_have_count(0)
                 self.assertEqual(404, requests.get(base + channel, timeout=10).status_code)

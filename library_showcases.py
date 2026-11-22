@@ -51,7 +51,8 @@ DEFAULTS = dict(
     logo=None, accent="#2b7e7d", dark=False, layout="grid", size="medium", search=True,
     copy_link=True, next_video=False, loop=False, indexable=False, seo_title="", seo_description="",
     seo_keywords="", headline="", summary="", button_label="", button_url="",
-    feature_image=None, feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
+    feature_image=None, channel_cover=None,
+    feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
     download=False, questions=False, likes=False, comments=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
     channel_listed=False, channel_category="",
@@ -85,11 +86,20 @@ def import_showcases(con, records, transfer_root):
                              "navigation", "seo_title", "seo_description", "seo_keywords")
                 if name in style
             })
-            asset = record.get("source_logo")
-            if isinstance(asset, dict) and (blob := stored_image_blob(transfer_root, asset, asset.get("sha256"))):
-                con.execute("INSERT OR IGNORE INTO review_logo(digest,mime,content) VALUES(?,?,?)",
-                            (asset["sha256"], *blob))
-                settings["logo"] = asset["sha256"]
+            for source_key, target_key in (
+                ("source_logo", "logo"),
+                ("source_channel_cover", "channel_cover"),
+                ("source_channel_header", "feature_image"),
+            ):
+                asset = record.get(source_key)
+                if isinstance(asset, dict) and (
+                    blob := stored_image_blob(transfer_root, asset, asset.get("sha256"))
+                ):
+                    con.execute(
+                        "INSERT OR IGNORE INTO review_logo(digest,mime,content) VALUES(?,?,?)",
+                        (asset["sha256"], *blob),
+                    )
+                    settings[target_key] = asset["sha256"]
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, slug, uuid.uuid4().hex, json.dumps(settings), datetime.now(timezone.utc).isoformat()))
             con.execute("INSERT INTO video_showcase_migration VALUES(?,?,?)", (record["uri"], uid, snapshot))
@@ -158,6 +168,7 @@ def validate_settings(con, raw, lookup):
         abort(422, "Enter both a featured button label and link.")
     values["logo"] = image_id(con, raw.get("logo"))
     values["feature_image"] = image_id(con, raw.get("feature_image"))
+    values["channel_cover"] = image_id(con, raw.get("channel_cover"))
     accent = raw.get("accent", DEFAULTS["accent"])
     if not isinstance(accent, str) or not re.fullmatch(r"#[A-Fa-f0-9]{6}", accent):
         abort(422, "Choose a six-digit theme color.")
@@ -553,6 +564,25 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     @app.route("/channels/<slug>", methods=["GET", "POST"])
     def showcase_channel(slug):
         return viewer(slug, False, channel=True)
+
+    @app.get("/channels/<slug>/cover/<digest>")
+    def showcase_channel_cover(slug, digest):
+        with tx() as con:
+            settings = state(get_showcase(con, slug, by_slug=True))
+            if not channel_visible(settings) or settings["channel_cover"] != digest:
+                abort(404)
+            row = con.execute(
+                "SELECT mime, content FROM review_logo WHERE digest = ?",
+                (digest,),
+            ).fetchone()
+            if row is None:
+                abort(404)
+        response = make_response(row["content"])
+        response.mimetype = row["mime"]
+        response.cache_control.private = True
+        response.cache_control.no_store = True
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.route("/showcases/<slug>/embed", methods=["GET", "POST"])
     def showcase_frame(slug):

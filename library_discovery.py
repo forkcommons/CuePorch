@@ -70,7 +70,10 @@ def entry_payload(entry):
     return {
         "kind": kind, "slug": slug, "title": entry["title"], "categories": entry["categories"],
         "watch": entry.get("watch") or url_for("watch", kind=kind, slug=slug),
-        "cover": url_for("discovery_cover", kind=kind, slug=slug, digest=entry["image"]) if entry["image"] else None,
+        "cover": entry.get("cover") or (
+            url_for("discovery_cover", kind=kind, slug=slug, digest=entry["image"])
+            if entry["image"] else None
+        ),
     }
 
 
@@ -119,6 +122,14 @@ def register(app, tx, staff, public_listing, root, institution, viewing_preferen
                         added=row["created"],
                         image=None,
                         watch=url_for("showcase_channel", slug=row["slug"]),
+                        cover=(
+                            url_for(
+                                "showcase_channel_cover",
+                                slug=row["slug"],
+                                digest=settings["channel_cover"],
+                            )
+                            if settings["channel_cover"] else None
+                        ),
                     )
             brand = team_branding.read(con, institution)
         featured = [entries[key] for key in keys if key in entries]

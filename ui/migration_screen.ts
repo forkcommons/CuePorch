@@ -292,6 +292,10 @@ async function poll(page = currentPage) {
     }
     if (collection.source_logo_available) target.append(" Logo available to transfer.");
     else if (collection.source_logo) target.append(" Logo recovered.");
+    if (collection.source_channel_cover_available) target.append(" Thumbnail available to transfer.");
+    else if (collection.source_channel_cover) target.append(" Thumbnail recovered.");
+    if (collection.source_channel_header_available) target.append(" Header available to transfer.");
+    else if (collection.source_channel_header) target.append(" Header recovered.");
     if (collection.issues.length) target.append(" " + collection.issues.join(" "));
   }
   const archives = data.live_event_archives || [];

@@ -277,9 +277,10 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                                        link="https://vimeo.com/channels/902?untrusted=1")]
                         following = None
                     else:
+                        image = dict(sizes=[dict(width=100, height=100, link=origin + "/media/vimeo-logo.png")])
                         values = [dict(uri="/channels/901", name="Local Cinema", privacy="public",
                                        link="https://vimeo.com/channels/local-cinema",
-                                       categories=[{"name": "Arts"}])]
+                                       categories=[{"name": "Arts"}], pictures=image, header=image)]
                         following = path + "?page=2"
                     total = 2
                 elif path == "/channels/901/videos" and getattr(self.server, "channel_fixture", False):

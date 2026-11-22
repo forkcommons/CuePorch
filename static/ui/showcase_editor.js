@@ -32,8 +32,10 @@ const assets = [
         clear: document.querySelector("#showcaseClearLogo") },
     { key: "feature_image", input: field("feature_file"),
         clear: document.querySelector("#showcaseClearFeature") },
+    { key: "channel_cover", input: field("channel_cover_file"),
+        clear: document.querySelector("#showcaseClearChannelCover") },
 ];
-const images = { logo: null, feature_image: null };
+const images = { logo: null, feature_image: null, channel_cover: null };
 let current;
 let showcases = [];
 let library = [];
@@ -276,7 +278,7 @@ form.onsubmit = (event) => {
         const settings = { ...current.settings, ...images, videos: selected,
             domains: field("domains").value.split(/\s+/).filter(Boolean) };
         for (const [name, old] of Object.entries(settings)) {
-            if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image")
+            if (name === "domains" || name === "videos" || name === "logo" || name === "feature_image" || name === "channel_cover")
                 continue;
             const control = field(name);
             settings[name] = typeof old === "boolean" ? control.checked : control.value;
