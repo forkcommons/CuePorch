@@ -669,6 +669,29 @@ async function load() {
   if (startNew) {
     startNew = false;
     openEditor();
+    const vimeoId = entry.get("vimeoEvent");
+    if (vimeoId !== null) {
+      if (!/^[0-9]+$/.test(vimeoId)) throw new Error("Choose an event from Move from Vimeo.");
+      const source = await request<{live_event_archives?: Array<{
+        source_id: string; title: string; description?: string; method?: string; latency?: string; schedule?: Schedule;
+      }>}>("/api/migration");
+      const draft = source.live_event_archives?.find(event => event.source_id === vimeoId);
+      if (!draft?.schedule) throw new Error("Preview the Vimeo transfer again to load that schedule.");
+      const schedule = draft.schedule;
+      field("title").value = draft.title;
+      field("description").value = draft.description || "";
+      if (draft.method) field("method").value = draft.method;
+      if (draft.latency) field("latency").value = draft.latency;
+      for (const name of ["timezone", "start", "end", "repeat", "interval", "count", "until"] as const) {
+        field(name).value = String(schedule[name] ?? "");
+      }
+      for (const weekday of form.querySelectorAll<HTMLInputElement>('input[name="weekday"]')) {
+        weekday.checked = schedule.weekdays.includes(Number(weekday.value));
+      }
+      field("visibility").value = "private";
+      showEmbedPolicy({mode: "disabled", domains: []});
+      recurrence();
+    }
   } else if (activityEvent) {
     const match = calendar.events.find(event => event.id === activityEvent);
     activityEvent = null;

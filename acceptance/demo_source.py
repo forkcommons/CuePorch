@@ -262,12 +262,20 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     if page == "1":
                         values = [{"uri": "/live_events/801", "title": "Council replay archive",
                                    "stream_privacy": {"view": "team"},
+                                   "stream_description": "Recurring council meeting",
+                                   "preferred_stream_method": "encoder", "latency": "low",
+                                   "schedule": dict(start_time="2030-01-07T10:00:00-07:00",
+                                                    end_time="2030-01-07T11:00:00-07:00",
+                                                    time_zone="America/Denver", rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=4"),
                                    "recordings": [{"uri": "/videos/71", "title": "Council replay"},
                                                   {"uri": "/videos/999", "title": "Missing replay"},
                                                   {"uri": "/videos/998", "title": "Archive-only meeting"}],
                                    "streamable_clip": "/videos/72", "stream_key": "fixture-ingest-key"}]
                     else:
-                        values = [{"uri": "/live_events/802", "title": "No past streams", "recordings": []}]
+                        values = [{"uri": "/live_events/802", "title": "No past streams", "recordings": [],
+                                   "schedule": dict(start_time="2030-01-07T10:00:00-07:00",
+                                                    end_time="2030-01-07T11:00:00-07:00",
+                                                    time_zone="America/Denver", rrule="FREQ=YEARLY")}]
                 elif path == "/users/10/projects" and getattr(self.server, "folder_fixture", False):
                     page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
                     root_uri, root_title = "/users/10/projects/100", "Foundation archive"
