@@ -141,6 +141,23 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     self.end_headers()
                     self.wfile.write(body)
                     return
+                if path == "/videos/998" and getattr(self.server, "live_event_fixture", False) and not urlsplit(self.path).query:
+                    body = dict(
+                        uri=path,
+                        name="Archive-only meeting",
+                        user=dict(uri="/users/10", name="Station team"),
+                        privacy=dict(view="nobody", embed="private"),
+                        duration=4,
+                        modified_time="2026-11-03",
+                        download=[dict(quality="source", type="video/mp4", size=len(media), link=origin + "/media/998.mp4")],
+                    )
+                    data = json.dumps(body).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if version_fixture and path in ('/videos/71', '/videos/72'):
                     entries = []
                     if path == '/videos/71':
@@ -246,7 +263,8 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                         values = [{"uri": "/live_events/801", "title": "Council replay archive",
                                    "stream_privacy": {"view": "team"},
                                    "recordings": [{"uri": "/videos/71", "title": "Council replay"},
-                                                  {"uri": "/videos/999", "title": "Missing replay"}],
+                                                  {"uri": "/videos/999", "title": "Missing replay"},
+                                                  {"uri": "/videos/998", "title": "Archive-only meeting"}],
                                    "streamable_clip": "/videos/72", "stream_key": "fixture-ingest-key"}]
                     else:
                         values = [{"uri": "/live_events/802", "title": "No past streams", "recordings": []}]
