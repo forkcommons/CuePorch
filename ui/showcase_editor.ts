@@ -187,7 +187,7 @@ function select(value: Showcase) {
   selected = [...value.settings.videos];
   frame.hidden = true;
   frame.removeAttribute("src");
-  sharing.hidden = !value.watch && !value.embed;
+  sharing.hidden = !value.watch && !value.embed && !value.channel;
   link.value = value.watch ? new URL(value.watch, base).href : "";
   code.value = value.embed ? `<iframe src="${new URL(value.embed, base).href}" title="Video showcase" width="960" height="640" allowfullscreen></iframe>` : "";
   link.parentElement!.hidden = !value.watch;

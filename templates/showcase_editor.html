@@ -55,11 +55,16 @@
             <label>Visibility <select name="visibility"><option value="private">Private</option><option value="password">Password</option><option value="public">Public</option><option value="embed_only">Embed only</option></select></label>
             <label id="showcasePassword">Showcase password <input name="password" type="password" autocomplete="new-password" maxlength="256"></label>
             <label id="showcaseDomains">Allowed embed sites <textarea name="domains" placeholder="One domain per line"></textarea></label>
-            <label><input name="channel_listed" type="checkbox"> List in Watch channels</label>
+            <label><input name="channel_listed" type="checkbox"> Enable channel</label>
+            <label>Channel audience <select name="channel_access">
+              <option value="public">Anyone</option>
+              <option value="moderators">Moderators only</option>
+              <option value="invited">Moderators and invited viewers</option>
+            </select></label>
             <label>Channel category <input name="channel_category" maxlength="120"></label>
             <label>Channel thumbnail <input name="channel_cover_file" type="file" accept="image/png,image/jpeg,image/webp"></label>
             <button id="showcaseClearChannelCover" type="button">Remove channel thumbnail</button>
-            <p>Channels appear in Watch when the showcase is public.</p>
+            <p>Set showcase visibility to Private for a restricted audience. Public channels appear in Watch.</p>
           </fieldset>
           <fieldset>
             <legend>Videos</legend>

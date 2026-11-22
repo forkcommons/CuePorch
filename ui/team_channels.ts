@@ -4,6 +4,7 @@ type Item = {id: string; title: string};
 type Editor = {revision: string; videos: Item[]; choices: Item[]};
 type Member = {id: string; name: string; assigned: boolean};
 type Roster = {revision: string; members: Member[]};
+type Viewers = {revision: string; emails: string[]};
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const credentialInput = element<HTMLInputElement>("credential");
@@ -13,6 +14,8 @@ const reload = element<HTMLButtonElement>("reload");
 const channel = element<HTMLSelectElement>("channel");
 const curation = element<HTMLFieldSetElement>("curation");
 const moderation = element<HTMLFieldSetElement>("moderation");
+const viewerAccess = element<HTMLFieldSetElement>("viewerAccess");
+const viewerEmails = element<HTMLTextAreaElement>("viewerEmails");
 const videoList = element<HTMLOListElement>("videos");
 const choices = element<HTMLSelectElement>("choices");
 const addVideo = element<HTMLButtonElement>("addVideo");
@@ -22,13 +25,14 @@ let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
 let manage = false;
 let editor: Editor | undefined;
 let roster: Roster | undefined;
+let viewers: Viewers | undefined;
 let busy = false;
 const endpoint = () => "channels/" + encodeURIComponent(channel.value);
 
 async function run(task: () => Promise<void>) {
   if (busy) return;
   busy = true;
-  for (const control of [channel, curation, moderation, reload, credentialInput, identify.querySelector("button")!]) {
+  for (const control of [channel, curation, moderation, viewerAccess, reload, credentialInput, identify.querySelector("button")!]) {
     control.disabled = true;
   }
   status.textContent = "";
@@ -37,7 +41,7 @@ async function run(task: () => Promise<void>) {
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
   } finally {
-    for (const control of [channel, curation, moderation, reload, credentialInput, identify.querySelector("button")!]) {
+    for (const control of [channel, curation, moderation, viewerAccess, reload, credentialInput, identify.querySelector("button")!]) {
       control.disabled = false;
     }
     busy = false;
@@ -79,8 +83,9 @@ function renderVideos() {
 }
 
 async function loadChannel() {
-  curation.hidden = moderation.hidden = true;
-  editor = roster = undefined;
+  curation.hidden = moderation.hidden = viewerAccess.hidden = true;
+  viewerEmails.value = "";
+  editor = roster = viewers = undefined;
   if (!channel.value) return;
   const response = await teamRequest(endpoint(), "GET", {}, credential);
   if (response.ok) {
@@ -103,13 +108,22 @@ async function loadChannel() {
   }));
   if (!roster.members.length) memberList.textContent = "No eligible contributors.";
   moderation.hidden = false;
+  const viewerResponse = await teamRequest(endpoint() + "/viewers", "GET", {}, credential);
+  if (viewerResponse.ok) {
+    viewers = await viewerResponse.json() as Viewers;
+    viewerEmails.value = viewers.emails.join("\n");
+    viewerAccess.hidden = false;
+  } else if (viewerResponse.status !== 404) {
+    await checked(viewerResponse);
+  }
 }
 
 async function loadChannels() {
   const preferred = channel.value || new URLSearchParams(location.search).get("select");
   identify.hidden = false;
   channel.replaceChildren();
-  curation.hidden = moderation.hidden = true;
+  curation.hidden = moderation.hidden = viewerAccess.hidden = true;
+  viewerEmails.value = "";
   const result = await (await checked(await teamRequest("channels", "GET", {}, credential))).json() as {
     channels: Item[]; manage: boolean;
   };
@@ -150,5 +164,9 @@ element("saveVideos").addEventListener("click", () => {
 element("saveModerators").addEventListener("click", () => {
   const members = Array.from(memberList.querySelectorAll<HTMLInputElement>("input:checked")).map(input => input.value);
   if (roster) void save(endpoint() + "/moderators", {revision: roster.revision, members}, "Moderators saved.");
+});
+element("saveViewers").addEventListener("click", () => {
+  const emails = viewerEmails.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  if (viewers) void save(endpoint() + "/viewers", {revision: viewers.revision, emails}, "Invited viewers saved.");
 });
 void run(loadChannels);
