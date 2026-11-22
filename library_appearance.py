@@ -43,8 +43,9 @@ def read_settings(con, uid, surface):
 
 
 def imported_settings(work, surface):
-    appearance = work.get("source_embed_appearance")
-    if (surface != "embed" or work.get("provider") != "vimeo"
+    field = {"watch": "source_watch_appearance", "embed": "source_embed_appearance"}.get(surface)
+    appearance = work.get(field) if field else None
+    if (work.get("provider") != "vimeo"
             or not isinstance(appearance, dict) or not appearance):
         return None
     return surface_defaults(surface) | appearance
@@ -136,7 +137,7 @@ def register(app, tx, staff, get_work, read_works, title_for):
                         member = entry["id"]
                         if (member != uid and entry.get("asset_type", "video") == "video"
                                 and not hidden(con, "work", member)):
-                            previous = read_settings(con, member, surface) or surface_defaults(surface)
+                            previous = resolve_settings(con, entry, surface) or surface_defaults(surface)
                             store(con, member, surface, previous | theme)
             current = read_settings(con, uid, surface)
             presets = {
