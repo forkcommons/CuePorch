@@ -480,6 +480,21 @@ def create_app(root, database, operator, institution, simulation=None):
             return transfer_directory / "manifest.json" if state == "transferred" else transfer_inventory
         return None
 
+    def catalog_candidate(con, entry, current):
+        if entry is None or entry.get("provider") != "vimeo":
+            return None
+        settings, _ = vimeo_privacy.target_settings(entry)
+        if settings["visibility"] != "public":
+            return None
+        local = current.get(entry["id"])
+        if local and local.get("source_id") == entry["source_id"]:
+            video = library_privacy.playback(local)
+            if video and (root / "objects" / video["sha256"]).is_file():
+                candidate = vimeo_privacy.catalog_state(con, local)
+                if candidate is not None:
+                    return candidate
+        return dict(state="unavailable", issue=None)
+
     @app.get("/api/migration")
     def migration_status():
         staff()
@@ -522,6 +537,11 @@ def create_app(root, database, operator, institution, simulation=None):
                     entries = entries[(page - 1) * size:page * size]
                     status.update(page=page, pages=pages)
                 if state == "transferred":
+                    if page:
+                        with tx() as con:
+                            current = {work["id"]: work for work in read_library_works()}
+                            for entry in entries:
+                                entry["catalog"] = catalog_candidate(con, entry, current)
                     for entry in entries:
                         recovery = entry.get("version_recovery", [])
                         if not recovery:
@@ -556,6 +576,43 @@ def create_app(root, database, operator, institution, simulation=None):
         if not isinstance(profile, dict):
             abort(404)
         return private(profile)
+
+    @app.post("/api/migration/public-catalog")
+    def migration_public_catalog():
+        staff()
+        body = request.get_json()
+        requested = body.get("works") if isinstance(body, dict) else None
+        if (not isinstance(requested, list) or not 1 <= len(requested) <= 100
+                or any(not isinstance(uid, str) or not uid for uid in requested)
+                or len(set(requested)) != len(requested)):
+            abort(400, "Select between one and 100 distinct works.")
+        if not transfer_lock.acquire(blocking=False):
+            abort(409, "Wait for the current migration operation to finish.")
+        try:
+            if transfer_status["state"] != "transferred":
+                abort(409, "Transfer the Vimeo inventory privately first.")
+            try:
+                snapshot = transfer_snapshot("transferred")
+                entries = {entry["id"]: entry for entry in json.loads(snapshot.read_text(encoding="utf8"))["works"]}
+            except (OSError, ValueError, KeyError, TypeError):
+                abort(409, "The saved transfer inventory is unavailable.")
+            with tx() as con:
+                current = {work["id"]: work for work in read_library_works()}
+                for uid in requested:
+                    candidate = catalog_candidate(con, entries.get(uid), current)
+                    if candidate and candidate["state"] == "ready":
+                        work = current[uid]
+                        settings, _ = vimeo_privacy.target_settings(work)
+                        enforce_sharing(con, settings=settings, prior=library_privacy.DEFAULTS)
+                        library_privacy.apply_settings(con, action, work, settings, None)
+                library_privacy.apply_pending(con)
+                items = []
+                for uid in requested:
+                    candidate = catalog_candidate(con, entries.get(uid), current)
+                    items.append(dict(work=uid, state=candidate["state"] if candidate else "unavailable"))
+            return private(dict(items=items))
+        finally:
+            transfer_lock.release()
 
     @app.post("/api/migration")
     def begin_transfer():

@@ -333,7 +333,8 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                         dict(
                             uri="/videos/72",
                             name="Exhibition cut",
-                            privacy=dict(view="nobody", embed="whitelist"),
+                            privacy=dict(view="anybody" if getattr(self.server, "catalog_fixture", False) else "nobody",
+                                         embed="whitelist"),
                             duration=4,
                             user=dict(name="Independent artist"),
                             modified_time=getattr(self.server, "second_video_revision", "2026-11-01"),

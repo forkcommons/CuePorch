@@ -19,6 +19,14 @@ const creatorProfile = document.querySelector("#migrationCreatorProfile");
 const cutover = document.querySelector("#migrationCutover");
 const exportMap = document.querySelector("#migrationExportMap");
 const cutoverStatus = document.querySelector("#migrationCutoverStatus");
+const catalogColumn = document.querySelector("#migrationCatalogColumn");
+const restoreCatalog = document.querySelector("#migrationRestoreCatalog");
+const catalogStatus = document.querySelector("#migrationCatalogStatus");
+let catalogBusy = false;
+const catalogLabels = {
+    ready: "Ready", existing: "Public", pending: "Waiting for approval",
+    local: "Managed in Library", unavailable: "Unavailable",
+};
 const summary = document.querySelector("#migrationSummary");
 const pagination = document.querySelector("#migrationPages");
 const pageNumber = document.querySelector("#migrationPageNumber");
@@ -39,11 +47,19 @@ const headers = () => ({
     Authorization: "Bearer " + key.value,
     "Content-Type": "application/json",
 });
+function selectedCatalogIds() {
+    return Array.from(rows.querySelectorAll('input[name="migrationCatalog"]:checked'), (input) => input.value);
+}
+function updateRestoreCatalog() {
+    restoreCatalog.disabled = cutover.hidden || catalogBusy || selectedCatalogIds().length === 0;
+}
 async function run(dry) {
     inventory.disabled = transfer.disabled = true;
     cutover.hidden = true;
     creatorProfile.hidden = true;
     cutoverStatus.textContent = "";
+    catalogStatus.textContent = "";
+    updateRestoreCatalog();
     summary.textContent = "";
     pagination.hidden = true;
     currentPage = 1;
@@ -75,6 +91,7 @@ async function poll(page = currentPage) {
     const active = data.state === "running" || data.state === "waiting";
     inventory.disabled = transfer.disabled = active;
     cutover.hidden = data.state !== "transferred";
+    catalogColumn.hidden = cutover.hidden;
     creatorProfile.hidden = !data.profile_available;
     statusBox.textContent = data.state + (data.detail ? " · " + data.detail : "");
     if (data.counts) {
@@ -221,7 +238,23 @@ async function poll(page = currentPage) {
                 : []),
         ];
         row.insertCell().textContent = exceptions.join(", ") || "None reported";
+        if (!catalogColumn.hidden) {
+            const cell = row.insertCell();
+            const candidate = w.catalog;
+            if (candidate?.state === "ready") {
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = "migrationCatalog";
+                checkbox.value = w.id;
+                checkbox.setAttribute("aria-label", `Restore public listing for ${w.title}`);
+                cell.append(checkbox, " ");
+            }
+            cell.append(catalogLabels[candidate?.state] || "—");
+            if (candidate?.issue)
+                cell.append(" · ", candidate.issue);
+        }
     }
+    updateRestoreCatalog();
     const folders = data.folders || [];
     folderIssue.textContent = data.folder_issue || "";
     folderIssue.hidden = !data.folder_issue;
@@ -314,6 +347,36 @@ inventory.onclick = () => run(true);
 transfer.onclick = () => run(false);
 previousPage.onclick = () => void poll(currentPage - 1).catch(failed);
 nextPage.onclick = () => void poll(currentPage + 1).catch(failed);
+rows.onchange = updateRestoreCatalog;
+restoreCatalog.onclick = async () => {
+    if (restoreCatalog.disabled)
+        return;
+    const ids = selectedCatalogIds();
+    catalogBusy = true;
+    updateRestoreCatalog();
+    catalogStatus.textContent = "Restoring public listings…";
+    try {
+        const response = await fetch("/api/migration/public-catalog", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ works: ids }),
+        });
+        if (!response.ok)
+            throw new Error(`Could not restore public listings (${response.status}).`);
+        const result = await response.json();
+        const published = result.items.filter((item) => item.state === "existing").length;
+        const pending = result.items.filter((item) => item.state === "pending").length;
+        catalogStatus.textContent = `${published} public · ${pending} pending · ${result.items.length - published - pending} skipped`;
+        await poll();
+    }
+    catch (error) {
+        catalogStatus.textContent = error instanceof Error ? error.message : "Could not restore public listings.";
+    }
+    finally {
+        catalogBusy = false;
+        updateRestoreCatalog();
+    }
+};
 exportMap.onclick = async () => {
     exportMap.disabled = true;
     cutoverStatus.textContent = "";

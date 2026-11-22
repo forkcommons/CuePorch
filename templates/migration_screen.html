@@ -4,7 +4,7 @@
         <label>Vimeo account owner token <input type="password" id="source"></label>
         <button type="button" id="inventory">Preview transfer</button><button type="button" id="transfer">Transfer privately</button>
         </form><p role="status" id="status"></p><p id="migrationSummary" aria-live="polite"></p>
-        <table><thead><tr><th>Work</th><th>Source ID</th><th>Source folder</th><th>Recovery</th><th>Viewing permission</th><th>Previous cuts</th><th>Alternate audio</th><th>Review links</th><th>Viewer discussion</th><th>Source issues</th>
+        <table><thead><tr><th>Work</th><th>Source ID</th><th>Source folder</th><th>Recovery</th><th>Viewing permission</th><th>Previous cuts</th><th>Alternate audio</th><th>Review links</th><th>Viewer discussion</th><th>Source issues</th><th id="migrationCatalogColumn" hidden scope="col">Public catalog</th>
         </tr></thead><tbody id="rows"></tbody></table>
         <nav id="migrationPages" aria-label="Inventory pages" hidden>
           <button type="button" id="migrationPreviousPage">Previous page</button>
@@ -31,7 +31,10 @@
           <a href="/team/profile?fromVimeo=1">Set up creator profile</a>
         </section>
         <section id="migrationCutover" hidden aria-labelledby="migrationCutoverTitle">
-          <h2 id="migrationCutoverTitle">Prepare to replace embeds</h2>
+          <h2 id="migrationCutoverTitle">Prepare for cutover</h2>
+          <p>Select ready listings on this page to restore public access using their Vimeo sharing settings. Your Publication and Catalog approval settings apply.</p>
+          <button type="button" id="migrationRestoreCatalog" disabled>Restore selected public listings</button>
+          <p role="status" id="migrationCatalogStatus"></p>
           <p><a href="/operator/library">Review sharing in the Library</a> before downloading the map. Keep the CSV private because it can contain restricted links.</p>
           <button type="button" id="migrationExportMap">Download embed map</button>
           <p role="status" id="migrationCutoverStatus"></p>
