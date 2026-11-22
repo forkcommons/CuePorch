@@ -281,6 +281,84 @@ class SimulcastCapacity(unittest.TestCase):
                              [(row["provider"], row["enabled"]) for row in roster])
             self.assertNotIn("fixture-key", json.dumps(roster))
 
+    def test_facebook_profile_retries_after_rate_limit(self):
+        from requests import Response
+
+        from facebook_live_job import due
+        from facebook_upload import graph_object
+
+        first, current = self.targets("facebook-profile-throttle")
+        _, _, _, event_id, opening, _ = current.split("/")
+        opens = int(opening)
+        with closing(sqlite3.connect(self.database)) as con:
+            con.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')", (event_id, opens))
+            con.execute("INSERT INTO workspace_integration_connection VALUES ('facebook-profile-live','fb-fixture',X'')")
+            con.commit()
+
+        profile = {"page": "707", "series": True}
+        calls = []
+        clock = [opens + 1]
+
+        def provider_create(_revision, _owner, _title, _opens, before_send, **options):
+            before_send()
+            calls.append((clock[0], options["privacy"]))
+            if len(calls) == 1:
+                rejection = Response()
+                rejection.status_code = 429
+                rejection.headers["Retry-After"] = "30"
+                graph_object(rejection)
+            return {"id": "123456789", "server": "rtmps://live-api-s.facebook.com:443/rtmp", "key": "fixture-key"}
+
+        with (
+            patch("facebook_live.ProfileLiveConnection.connection", return_value={"revision": "fb-fixture"}),
+            patch("facebook_live.ProfileLiveConnection.tokens",
+                  return_value={"profile": {"id": "707", "name": "Profile fixture"}}),
+            patch("facebook_live.ProfileLiveConnection.create_profile_live", side_effect=provider_create),
+            patch("facebook_live_job.time", side_effect=lambda: clock[0]),
+        ):
+            response = self.client.put(first + "/facebook-profile/auto", headers=self.auth,
+                                       json=profile | {"privacy": "SELF"})
+            self.assertEqual(202, response.status_code, response.get_data(as_text=True))
+            deadline = monotonic() + 7
+            while monotonic() < deadline:
+                with closing(sqlite3.connect(self.database)) as con:
+                    sending = con.execute("SELECT 1 FROM facebook_live_creation WHERE event=? AND opens=?",
+                                          (event_id, opens)).fetchone()
+                if calls and not sending:
+                    break
+                sleep(.05)
+            self.assertEqual([(opens + 1, "SELF")], calls)
+            self.assertIsNone(sending, "The rejected create must release its reservation")
+
+            status_url = current + "/facebook-profile/auto?page=707"
+            status = self.client.get(status_url, headers=self.auth).get_json()
+            self.assertEqual({"state": "queued", "series": True, "privacy": "SELF"}, status)
+            with closing(sqlite3.connect(self.database)) as con:
+                self.assertEqual([], due(con, opens + 30))
+
+            # A skipped date stays off even after Meta permits a new attempt.
+            skipped = self.client.delete(current + "/facebook-profile/auto", headers=self.auth, json={"page": "707"})
+            self.assertEqual(200, skipped.status_code, skipped.get_data(as_text=True))
+            clock[0] = opens + 31
+            with closing(sqlite3.connect(self.database)) as con:
+                self.assertEqual([], due(con, clock[0]))
+            restored = self.client.put(current + "/facebook-profile/auto", headers=self.auth,
+                                       json={"page": "707", "restore": True})
+            self.assertEqual(202, restored.status_code, restored.get_data(as_text=True))
+
+            deadline = monotonic() + 7
+            while monotonic() < deadline:
+                status = self.client.get(status_url, headers=self.auth).get_json()
+                if status["state"] == "prepared":
+                    break
+                sleep(.05)
+            self.assertEqual("prepared", status["state"])
+            self.assertEqual([(opens + 1, "SELF"), (opens + 31, "SELF")], calls)
+            roster = self.client.get(current, headers=self.auth).get_json()["destinations"]
+            self.assertEqual([("facebook-profile-live", True)],
+                             [(row["provider"], row["enabled"]) for row in roster])
+            self.assertNotIn("fixture-key", json.dumps(roster))
+
     def test_connected_limit_is_separate_from_custom(self):
         first_url, next_url = self.targets("connected-capacity")
         for i in range(20):
