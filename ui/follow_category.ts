@@ -101,7 +101,7 @@ for (const form of document.querySelectorAll<HTMLFormElement>("[data-creator-act
     try {
       const fields = new FormData(form);
       const response = await viewerRequest("feed/creator/" + encodeURIComponent(handle), "PUT", {
-        videos: fields.has("videos"), appearances: fields.has("appearances"),
+        videos: fields.has("videos"), appearances: fields.has("appearances"), likes: fields.has("likes"),
       });
       if (!response.ok) {
         status.textContent = "Could not save preferences.";

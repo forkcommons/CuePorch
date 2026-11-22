@@ -69,7 +69,7 @@ def account_preferences(con, account):
     return json.loads(saved["maturity"]) if saved else content_rating.PREFERENCE_DEFAULT
 
 
-def register(app, tx, origin_url, operator, listing, action, staff):
+def register(app, tx, origin_url, operator, listing, action, staff, current_team):
     public_origin = source_origin(origin_url)
     dummy = generate_password_hash(secrets.token_urlsafe(24))
     limit_key = hmac.digest(operator.encode(), b"CuePorch viewer attempts", "sha256")
@@ -216,6 +216,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 audience_groups.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_creator_follow_activity WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_creator_follow_likes WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM creator_shared_likes WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_channel_follow WHERE account=?", (row["id"],))
@@ -352,5 +354,6 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                              viewing_preferences, public_origin)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
-                                       ordered, PAGE_SIZE, account_preferences, audience_groups.followed_program)
+                                       ordered, PAGE_SIZE, account_preferences, audience_groups.followed_program,
+                                       lambda con: current_team(con, scheme()))
     return viewing_preferences

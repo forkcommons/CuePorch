@@ -597,6 +597,41 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
                     ) > 0
                     feed.goto(base + "/watch/feed")
 
+            assert contributor.request.post(base + "/api/viewer/signup", headers=marker, data={
+                "name": "Artist account", "email": email("artist-likes"), "password": PASSWORD,
+            }).ok
+            like_path = f"{base}/api/viewer/likes/work/{second_work}"
+            assert contributor.request.put(f"{base}/api/viewer/likes/work/{owned[0]['id']}", headers=marker, data={}).ok
+            sharing_page = contributor.new_page()
+            sharing_page.goto(base + "/account")
+            sharing_page.get_by_role("button", name="Share new likes", exact=True).click()
+            expect(sharing_page.get_by_role("button", name="Stop sharing likes", exact=True)).to_be_visible()
+            feed.get_by_text("Manage your feed", exact=True).click()
+            activity = feed.locator("[data-creator-activity]")
+            activity.get_by_label("Videos", exact=True).set_checked(False)
+            activity.get_by_label("Appearances", exact=True).set_checked(False)
+            activity.get_by_label("Likes", exact=True).set_checked(True)
+            activity.get_by_role("button", name="Save activity preferences", exact=True).click()
+            expect(feed.locator(".watch-card")).to_have_count(0)
+            assert contributor.request.put(like_path, headers=marker, data={}).ok
+            feed.reload()
+            expect(feed.locator(".watch-card")).to_have_text([second_title])
+            feed.get_by_role("link", name=second_title, exact=True).click()
+            assert feed.locator("video").evaluate(
+                "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+            ) > 0
+            sharing_page.get_by_role("button", name="Stop sharing likes", exact=True).click()
+            expect(sharing_page.get_by_role("button", name="Share new likes", exact=True)).to_be_visible()
+            sharing_page.close()
+            feed.goto(base + "/watch/feed")
+            expect(feed.locator(".watch-card")).to_have_count(0)
+            feed.get_by_text("Manage your feed", exact=True).click()
+            activity = feed.locator("[data-creator-activity]")
+            activity.get_by_label("Videos", exact=True).set_checked(True)
+            activity.get_by_label("Likes", exact=True).set_checked(False)
+            activity.get_by_role("button", name="Save activity preferences", exact=True).click()
+            expect(feed.locator(".watch-card")).to_have_text([draft_name, second_title])
+
             independent_feed = viewer.new_page()
             independent_feed.goto(base + "/watch/feed")
             expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()

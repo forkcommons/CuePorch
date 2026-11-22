@@ -15,6 +15,10 @@ const preferenceForm = preferenceSection.querySelector("form");
 const preferenceMode = preferenceForm.querySelector("select[name=mode]");
 const preferenceAutoplay = preferenceForm.querySelector("select[name=autoplay]");
 const preferenceChoices = preferenceForm.querySelector("fieldset");
+const likeSharingSection = document.querySelector("#viewerLikeSharing");
+const likeSharingInfo = document.querySelector("#viewerLikeSharingInfo");
+const likeSharingToggle = document.querySelector("#viewerLikeSharingToggle");
+let likeSharing = null;
 let busy = false;
 function show(account) {
     entrance.hidden = !!account;
@@ -22,6 +26,7 @@ function show(account) {
     if (!account) {
         preferenceSection.hidden = true;
         preferenceForm.reset();
+        showLikeSharing(null);
         resetSignInCode(signIn);
         for (const form of [signIn, signUp, details, change, remove])
             form.reset();
@@ -62,14 +67,42 @@ function showPreferences(preferences) {
     preferenceChoices.hidden = preferences.mode !== "custom";
     preferenceSection.hidden = false;
 }
+function showLikeSharing(next) {
+    likeSharing = next;
+    const profile = next?.enabled ? next.viewer : next?.candidate;
+    likeSharingSection.hidden = !profile;
+    if (!next || !profile)
+        return;
+    likeSharingInfo.textContent = next.enabled
+        ? `New public likes are shared with followers of ${profile.name}.`
+        : `Share only new public likes with followers of ${profile.name}.`;
+    likeSharingToggle.textContent = next.enabled ? "Stop sharing likes" : "Share new likes";
+}
 async function showSignedIn(account) {
     show(account);
-    const response = await viewerRequest("preferences");
-    if (response.ok)
-        showPreferences(await response.json());
+    const [preferences, sharing] = await Promise.all([viewerRequest("preferences"), viewerRequest("like-sharing")]);
+    if (preferences.ok)
+        showPreferences(await preferences.json());
     else
         status.textContent = "Could not load viewing preferences. Reload to try again.";
+    if (sharing.ok)
+        showLikeSharing(await sharing.json());
 }
+likeSharingToggle.onclick = () => {
+    void perform(async () => {
+        if (!likeSharing)
+            return;
+        const enabled = !likeSharing.enabled;
+        const response = await viewerRequest("like-sharing", "PUT", { enabled, handle: likeSharing.candidate?.handle });
+        if (!response.ok)
+            return failure(response, {
+                401: "Sign in to change like sharing.",
+                409: "Check your creator sign-in and whether that profile already shares another account's likes.",
+            });
+        showLikeSharing(await response.json());
+        status.textContent = enabled ? "New likes will be shared." : "Like sharing turned off.";
+    });
+};
 preferenceMode.onchange = () => {
     preferenceChoices.hidden = preferenceMode.value !== "custom";
 };
