@@ -143,7 +143,28 @@
           <tbody id="bandwidthRows"></tbody></table>
       </div>
     </section>
+    <details id="vimeoHistoryDetails">
+      <summary>Vimeo analytics history</summary>
+      <p>Choose the UTC date range used for the Vimeo export. Each report shows its original rows and any reported total.</p>
+      <form id="vimeoHistoryForm">
+        <label>From (UTC) <input type="date" name="first" required></label>
+        <label>To (UTC) <input type="date" name="last" required></label>
+        <label>Vimeo Video report CSV <input type="file" name="file" accept=".csv" required></label>
+        <button type="submit" name="action" value="import">Import report</button>
+        <button type="submit" name="action" value="preview">Preview report</button>
+      </form>
+      <p id="vimeoHistoryStatus" role="status"></p>
+      <label>Report <select id="vimeoHistorySelect"><option value="">— select —</option></select></label>
+      <div id="vimeoHistorySummary"></div>
+      <div class="analytics-table"><table id="vimeoHistoryTable"></table></div>
+      <div id="vimeoHistoryPager">
+        <button type="button" id="vimeoHistoryPrev" disabled>Previous</button>
+        <span id="vimeoHistoryPage">Page 1</span>
+        <button type="button" id="vimeoHistoryNext" disabled>Next</button>
+      </div>
+    </details>
   </main>
   <script type="module" src="/static/ui/analytics_dashboard.js"></script>
+  <script type="module" src="/static/ui/vimeo_analytics_history.js"></script>
 </body>
 </html>

@@ -121,6 +121,7 @@ import team_branding
 import team_sharing_policy
 import team_workspaces
 import timeline_jobs
+import vimeo_analytics_history
 import vimeo_privacy
 import workspace_activity
 import workspace_help
@@ -236,6 +237,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + event_webhooks.SCHEMA
             + library_showcases.SCHEMA
             + library_analytics.SCHEMA
+            + vimeo_analytics_history.SCHEMA
             + media_bandwidth.SCHEMA
             + library_timeline.SCHEMA
             + timeline_jobs.SCHEMA
@@ -1443,6 +1445,7 @@ def create_app(root, database, operator, institution, simulation=None):
         authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
+    vimeo_analytics_history.register(app, tx, staff, read_library_works)
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
     mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
     constant_contact = workspace_oauth.Connection(constant_contact_crm.OAUTH, tx, operator)
