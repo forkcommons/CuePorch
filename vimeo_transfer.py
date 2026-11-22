@@ -1,7 +1,7 @@
 """Read-only Vimeo API transport and private, checkpointed collection migration."""
 
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from http.client import HTTPException
 import json
@@ -1134,7 +1134,7 @@ def event_schedule_draft(value):
         parts = {}
         for part in rule.strip().upper().removeprefix("RRULE:").split(";"):
             name, sep, content = part.partition("=")
-            if not sep or not content or name in parts or name not in {"FREQ", "INTERVAL", "BYDAY", "COUNT"}:
+            if not sep or not content or name in parts or name not in {"FREQ", "INTERVAL", "BYDAY", "COUNT", "UNTIL"}:
                 raise ValueError("Unsupported recurrence rule")
             parts[name] = content
         repeat = {"DAILY": "days", "WEEKLY": "weeks", "MONTHLY": "months"}.get(parts.get("FREQ"))
@@ -1152,6 +1152,15 @@ def event_schedule_draft(value):
             if repeat != "weeks" or any(day not in names for day in days):
                 raise ValueError("Unsupported recurrence weekdays")
             schedule["weekdays"] = [names.index(day) for day in days]
+        if "UNTIL" in parts:
+            if "COUNT" in parts or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", parts["UNTIL"]):
+                raise ValueError("invalid UNTIL")
+            cutoff = datetime.strptime(parts["UNTIL"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            day = cutoff.astimezone(zone).date()
+            opening = event_schedule.actual_time(datetime.combine(day, datetime.fromisoformat(schedule["start"]).time()), zone)
+            if opening is not None and opening > cutoff:
+                day -= timedelta(days=1)
+            schedule["until"] = day.isoformat()
     return event_schedule.validate(schedule)
 
 
