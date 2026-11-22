@@ -728,7 +728,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
                         works.update(merge_collection(transfer_directory, root))
                         with tx() as con:
-                            library_showcases.import_showcases(con, data.get("showcases", []))
+                            library_showcases.import_showcases(con, data.get("showcases", []), transfer_directory)
                             library_folders.import_source_folders(con, data.get("folders", []), data["works"])
                             review_feedback.import_vimeo_editorial_status(con, data["works"], works)
                             audience_comments.import_vimeo_viewer_comments(con, data["works"], action)

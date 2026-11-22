@@ -289,6 +289,8 @@ async function poll(page = currentPage) {
     } else {
       target.textContent = data.state === "transferred" ? "Removed locally" : "Private on transfer";
     }
+    if (album.source_logo_available) target.append(" Logo available to transfer.");
+    else if (album.source_logo) target.append(" Logo recovered.");
     if (album.issues.length) target.append(" " + album.issues.join(" "));
   }
   const archives = data.live_event_archives || [];

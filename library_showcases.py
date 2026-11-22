@@ -25,7 +25,7 @@ import library_privacy as privacy
 import library_registration
 import library_video_questions
 import media_bandwidth
-from library_appearance import brand_image
+from library_appearance import brand_image, stored_image_blob
 from library_interactivity import image_id, selected_ids, text_field, web_link
 from library_languages import original_language, track_key, tracks_for
 from library_thumbnail import selected_thumbnail, thumbnail_type
@@ -55,7 +55,7 @@ VISIBILITIES = ("private", "password", "public", "embed_only")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 
 
-def import_showcases(con, records):
+def import_showcases(con, records, transfer_root):
     for record in records:
         prior = con.execute("SELECT showcase FROM video_showcase_migration WHERE source=?", (record["uri"],)).fetchone()
         uid = record["id"]
@@ -72,6 +72,11 @@ def import_showcases(con, records):
                              "navigation", "seo_title", "seo_description", "seo_keywords")
                 if name in style
             })
+            asset = record.get("source_logo")
+            if isinstance(asset, dict) and (blob := stored_image_blob(transfer_root, asset, asset.get("sha256"))):
+                con.execute("INSERT OR IGNORE INTO review_logo(digest,mime,content) VALUES(?,?,?)",
+                            (asset["sha256"], *blob))
+                settings["logo"] = asset["sha256"]
             con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                         (uid, slug, uuid.uuid4().hex, json.dumps(settings), datetime.now(timezone.utc).isoformat()))
             con.execute("INSERT INTO video_showcase_migration VALUES(?,?,?)", (record["uri"], uid, snapshot))
