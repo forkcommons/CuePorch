@@ -160,6 +160,69 @@ class VimeoFolderMigration(unittest.TestCase):
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
 
+    def test_vimeo_folder_migration_public_catalog(self):
+        self.source.catalog_fixture = True
+        public = work_id("station", "vimeo", "71")
+        restricted_embed = work_id("station", "vimeo", "72")
+        private = work_id("station", "vimeo", "73")
+        restore = "/api/migration/public-catalog"
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+
+            self.assertEqual(403, self.client.post(restore, json=dict(works=[public])).status_code)
+            for uid in (public, restricted_embed, private):
+                self.assertEqual(404, self.client.get(f"/watch/work/{uid}").status_code)
+            expect(page.get_by_role("checkbox", name="Restore public listing for Exhibition cut", exact=True)).to_have_count(1)
+
+            page.get_by_label("Restore public listing for Station meeting").check()
+            page.locator("#migrationRestoreCatalog").click()
+            expect(page.locator("#migrationCatalogStatus")).to_contain_text("1 public")
+            viewer = browser.new_page()
+            viewer.goto(f"{self.base}/watch/work/{public}")
+            video = viewer.locator("video")
+            expect(video).to_be_visible()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function("""() => {
+                const video = document.querySelector('video');
+                return video.videoWidth > 0 && video.currentTime > 0;
+            }""")
+
+            policy = self.client.put("/api/policy/catalog", headers=self.auth, json=dict(required=True))
+            self.assertEqual(200, policy.status_code)
+            expect(page.get_by_label("Restore public listing for Station meeting")).to_have_count(0)
+            page.get_by_label("Restore public listing for Exhibition cut").check()
+            page.locator("#migrationRestoreCatalog").click()
+            expect(page.locator("#migrationCatalogStatus")).to_contain_text("1 pending")
+
+            retry = self.client.post(restore, headers=self.auth, json=dict(works=[restricted_embed, private]))
+            self.assertEqual(200, retry.status_code)
+            self.assertEqual({restricted_embed: "pending", private: "unavailable"},
+                             {item["work"]: item["state"] for item in retry.get_json()["items"]})
+            for uid in (restricted_embed, private):
+                self.assertEqual(404, self.client.get(f"/watch/work/{uid}").status_code)
+
+            actions = self.client.get("/api/actions", headers=self.auth).get_json()
+            waiting, = [item for item in actions if item["step"] == "catalog"]
+            self.assertEqual(restricted_embed, json.loads(waiting["payload"])["work"])
+            decision = self.client.post(f"/api/actions/{waiting['id']}/decision", headers=self.auth,
+                                        json=dict(decision="approve"))
+            self.assertEqual(204, decision.status_code)
+            self.assertEqual(200, self.client.get(f"/watch/work/{restricted_embed}").status_code)
+            self.assertEqual(404, self.client.get(f"/watch/work/{private}").status_code)
+            embed = f"/embed/work/{restricted_embed}"
+            denied = self.client.get(embed, headers={"Sec-Fetch-Dest": "iframe", "Referer": "https://other.example/"})
+            self.assertEqual(403, denied.status_code)
+            allowed = self.client.get(embed, headers={"Sec-Fetch-Dest": "iframe", "Referer": "https://museum.example/"})
+            self.assertEqual(200, allowed.status_code)
+            self.assertIn("museum.example", allowed.headers["Content-Security-Policy"])
+
     def test_live_event_recordings(self):
         self.assertEqual(403, self.client.get("/api/migration").status_code)
         self.source.live_event_fixture = True

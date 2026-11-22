@@ -55,6 +55,31 @@ def permits(work, settings):
     return work["provider"] != "vimeo" or target_settings(work)[0] == settings
 
 
+def catalog_state(con, work):
+    if work.get("provider") != "vimeo":
+        return None
+    settings, issue = target_settings(work)
+    if settings["visibility"] != "public":
+        return None
+
+    uid = work["id"]
+    if sharing.blocked(con, uid) or sharing.playback(work) is None:
+        return dict(state="unavailable", issue=issue)
+    transferring = con.execute(
+        "SELECT 1 FROM publication_job WHERE work=? AND want_public=1 AND status IN ('queued','waiting','processing') LIMIT 1",
+        (uid,),
+    ).fetchone()
+    if handoff.managed_route(con, uid) is not None or handoff.get(con, uid) is not None or transferring:
+        state = "local"
+    elif con.execute("SELECT 1 FROM library_privacy_change WHERE work=?", (uid,)).fetchone():
+        state = "pending"
+    elif (row := sharing.get_privacy(con, uid)) is not None:
+        state = "existing" if json.loads(row["settings"]) == settings else "local"
+    else:
+        state = "ready"
+    return dict(state=state, issue=issue)
+
+
 def register(app, tx, staff, action, read_works, enforce_sharing):
     @app.route("/api/library/work/<uid>/source-privacy", methods=["GET", "PUT"])
     def restore_source_privacy(uid):
