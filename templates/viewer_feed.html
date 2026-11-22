@@ -50,6 +50,20 @@
             {% endfor %}
           </ul>
         {% endif %}
+        {% if group_follows %}
+          <ul class="feed-follows">
+            {% for item in group_follows %}
+              <li>
+                <span>{{ item.title }}</span>
+                <div data-follow-group="{{ item.slug }}" data-feed-remove="true">
+                  <button type="button" aria-pressed="true" aria-label="Unfollow {{ item.title }}">Unfollow {{ item.title }}</button>
+                  <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>Sign in to manage</a>
+                  <span role="status" aria-live="polite"></span>
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       </details>
       <script type="module" src="/static/ui/follow_category.js"></script>
     {% endif %}
@@ -68,7 +82,7 @@
         {% endfor %}
       </ul>
     {% elif signed_in %}
-      {% if category_follows or channel_follows %}
+      {% if category_follows or channel_follows or group_follows %}
         <p>No public videos from your follows.</p>
       {% else %}
         <p>No public videos from creators you follow.</p>

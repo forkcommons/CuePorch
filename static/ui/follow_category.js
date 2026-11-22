@@ -1,10 +1,11 @@
 import { viewerRequest } from "./audience_api.js";
-for (const widget of document.querySelectorAll("[data-follow-category], [data-follow-channel]")) {
+for (const widget of document.querySelectorAll("[data-follow-category], [data-follow-channel], [data-follow-group]")) {
     const button = widget.querySelector("button");
     const signIn = widget.querySelector("a");
     const status = widget.querySelector("[role=status]");
-    const kind = widget.dataset.followChannel !== undefined ? "channel" : "category";
-    const name = (kind === "channel" ? widget.dataset.followChannel : widget.dataset.followCategory) || "";
+    const kind = widget.dataset.followGroup !== undefined ? "group" :
+        widget.dataset.followChannel !== undefined ? "channel" : "category";
+    const name = widget.dataset.followGroup ?? widget.dataset.followChannel ?? widget.dataset.followCategory ?? "";
     const isPresetRemove = widget.dataset.feedRemove === "true";
     async function update(method) {
         status.textContent = "";

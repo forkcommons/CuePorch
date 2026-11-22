@@ -236,6 +236,20 @@ def check_discovery(page, browser, base, auth, sample):
             album_editor.get_by_role("button", name="Delete album", exact=True).click()
             expect(viewer.get_by_role("heading", name="Opening night", exact=True)).to_have_count(0)
             member_page.reload()
+            member_page.get_by_role("button", name="Follow group", exact=True).click()
+            expect(member_page.get_by_role("button", name="Unfollow group", exact=True)).to_be_visible()
+            member_page.goto(base + "/watch/feed")
+            member_page.get_by_role("link", name=first_title, exact=True).click()
+            assert member_page.locator("video").evaluate(
+                "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+            ) > 0
+            member_page.goto(base + "/watch/feed")
+            member_page.get_by_text("Manage your feed", exact=True).click()
+            member_page.get_by_role("button", name="Unfollow " + group_name, exact=True).click()
+            expect(member_page.get_by_role("link", name=first_title, exact=True)).to_have_count(0)
+            member_page.goto(base + group_path)
+            member_page.get_by_role("button", name="Follow group", exact=True).click()
+            expect(member_page.get_by_role("button", name="Unfollow group", exact=True)).to_be_visible()
 
             before = viewer.locator("#groupSettings input[name=revision]").input_value()
             viewer.get_by_label("Group access").select_option("members")
@@ -253,6 +267,9 @@ def check_discovery(page, browser, base, auth, sample):
             member_page.goto(base + group_path)
             member_page.get_by_role("button", name="Leave group", exact=True).click()
             expect(member_page.get_by_role("heading", name="Not Found")).to_be_visible()
+            member_page.goto(base + "/watch/feed")
+            expect(member_page.get_by_role("link", name=first_title, exact=True)).to_have_count(0)
+            expect(member_page.get_by_text(group_name, exact=True)).to_have_count(0)
 
         viewer.get_by_text("Delete this group", exact=True).click()
         viewer.get_by_role("button", name="Delete group", exact=True).click()

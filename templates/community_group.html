@@ -12,6 +12,11 @@
     <h1 id="groupTitle">{{ group.title }}</h1>
     <p id="groupDescription" {% if not group.description %}hidden{% endif %}>{{ group.description }}</p>
     <p id="groupAccess" data-access="{{ group.access }}">{{ "Members only" if group.access == "members" else "Public" }}</p>
+    <div data-follow-group="{{ group.slug }}">
+      <button type="button" aria-pressed="false" hidden>Follow group</button>
+      <a href="{{ url_for('viewer_account_page', next=request.path) }}" hidden>Sign in to follow this group</a>
+      <span role="status" aria-live="polite"></span>
+    </div>
     {% if signed_in and not owner %}<button type="button" id="groupMembership" data-membership="{% if joined %}leave{% else %}join{% endif %}">{% if joined %}Leave group{% else %}Join group{% endif %}</button>
     {% elif not signed_in %}<p><a href="{{ url_for('viewer_account_page', next=request.path) }}">Sign in to join this group</a></p>{% endif %}
     <section>
@@ -103,5 +108,6 @@
     <p id="groupStatus" role="status"></p>
   </main>
   <script type="module" src="{{ url_for('static', filename='ui/community_groups.js') }}"></script>
+  <script type="module" src="{{ url_for('static', filename='ui/follow_category.js') }}"></script>
 </body>
 </html>

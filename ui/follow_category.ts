@@ -4,12 +4,13 @@ interface FollowCategoryState {
   following: boolean;
 }
 
-for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-category], [data-follow-channel]")) {
+for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-category], [data-follow-channel], [data-follow-group]")) {
   const button = widget.querySelector<HTMLButtonElement>("button")!;
   const signIn = widget.querySelector<HTMLAnchorElement>("a")!;
   const status = widget.querySelector<HTMLElement>("[role=status]")!;
-  const kind = widget.dataset.followChannel !== undefined ? "channel" : "category";
-  const name = (kind === "channel" ? widget.dataset.followChannel : widget.dataset.followCategory) || "";
+  const kind = widget.dataset.followGroup !== undefined ? "group" :
+    widget.dataset.followChannel !== undefined ? "channel" : "category";
+  const name = widget.dataset.followGroup ?? widget.dataset.followChannel ?? widget.dataset.followCategory ?? "";
   const isPresetRemove = widget.dataset.feedRemove === "true";
 
   async function update(method: "GET" | "PUT" | "DELETE") {
