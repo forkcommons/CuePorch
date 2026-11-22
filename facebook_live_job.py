@@ -5,7 +5,7 @@ from threading import Event, Thread
 from time import time
 
 from flask import abort
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, TooManyRequests
 
 from facebook_live import FacebookLiveUnconfirmed
 
@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS facebook_live_auto(
 CREATE TABLE IF NOT EXISTS facebook_live_series(
  event TEXT NOT NULL, page TEXT NOT NULL, revision TEXT NOT NULL, event_revision TEXT NOT NULL,
  after_opens INTEGER NOT NULL, privacy TEXT, PRIMARY KEY(event,page));
+CREATE TABLE IF NOT EXISTS facebook_live_retry (
+  page TEXT NOT NULL,
+  revision TEXT NOT NULL,
+  retry_at INTEGER NOT NULL,
+  PRIMARY KEY (page, revision)
+);
 """
 
 
@@ -43,7 +49,8 @@ def queue(con, key, revision, event_revision, *, state="queued", privacy=None):
 
 
 def due(con, now):
-    return con.execute("""SELECT a.*,0 AS series FROM facebook_live_auto a
+    return con.execute("""SELECT * FROM (
+        SELECT a.*,0 AS series FROM facebook_live_auto a
         JOIN live_event e ON e.id=a.event AND e.revision=a.event_revision
         JOIN live_occurrence o ON o.event=a.event AND o.opens=a.opens AND o.delivery='ready'
         JOIN workspace_integration_connection w ON w.provider=CASE WHEN a.page LIKE 'profile:%' THEN 'facebook-profile-live' ELSE 'facebook-live' END AND w.revision=a.revision
@@ -58,7 +65,10 @@ def due(con, now):
         LEFT JOIN facebook_live_auto a ON a.event=s.event AND a.opens=o.opens AND a.page=s.page
             AND (a.state='canceled' OR (a.revision=s.revision AND a.event_revision=s.event_revision))
         LEFT JOIN facebook_live_creation c ON c.event=s.event AND c.opens=o.opens AND c.page=s.page
-        WHERE o.opens<=? AND a.event IS NULL AND c.event IS NULL ORDER BY opens""", (now, now)).fetchall()
+        WHERE o.opens<=? AND a.event IS NULL AND c.event IS NULL
+    ) q
+    WHERE NOT EXISTS (SELECT 1 FROM facebook_live_retry r WHERE r.page=q.page AND r.revision=q.revision AND r.retry_at>?)
+    ORDER BY q.opens""", (now, now, now)).fetchall()
 
 
 def claim(con, key, automatic):
@@ -109,12 +119,46 @@ def start(app, tx, prepare):
     return stop
 
 
+def defer_automatic_start(tx, key, revision, automatic, error=None):
+    with tx() as con:
+        deleted = con.execute(
+            "DELETE FROM facebook_live_creation "
+            "WHERE event=? AND opens=? AND page=? AND revision=? "
+            "AND state='sending' AND destination IS NULL",
+            (*key, revision)
+        ).rowcount
+        if deleted and automatic is not None:
+            # An inherited date continues to follow the series after deferral.
+            statement = (
+                "DELETE FROM facebook_live_auto" if automatic["series"]
+                else "UPDATE facebook_live_auto SET state='queued'"
+            )
+            con.execute(
+                statement + " WHERE event=? AND opens=? AND page=? AND revision=? "
+                "AND event_revision=? AND privacy IS ? AND state='attempted'",
+                (*key, revision, automatic["event_revision"], automatic["privacy"]),
+            )
+        if error is not None:
+            retry_after = getattr(error, "retry_after", None)
+            delay = max(2, retry_after) if retry_after is not None else 60
+            con.execute(
+                "INSERT INTO facebook_live_retry(page, revision, retry_at) VALUES(?, ?, ?) "
+                "ON CONFLICT(page, revision) DO UPDATE SET retry_at=MAX(retry_at, excluded.retry_at)",
+                (key[2], revision, int(time()) + delay),
+            )
+
+
 def provision(tx, check, create, save, event, opens, page, revision, *,
               automatic=None, replace=None, final_check=None):
     key = (event, opens, page)
     replacing = False
     with tx() as con:
         check(con)
+        if automatic is not None and con.execute(
+            "SELECT 1 FROM facebook_live_retry WHERE page=? AND revision=? AND retry_at>?",
+            (page, revision, int(time())),
+        ).fetchone() is not None:
+            return {"state": "queued"}, 202
         prior = con.execute("SELECT * FROM facebook_live_creation WHERE event=? AND opens=? AND page=?", key).fetchone()
         if prior:
             if prior["revision"] != revision:
@@ -141,30 +185,16 @@ def provision(tx, check, create, save, event, opens, page, revision, *,
     try:
         target = create()
     except AutomaticStartDeferred:
-        with tx() as con:
-            deleted = con.execute(
-                "DELETE FROM facebook_live_creation "
-                "WHERE event=? AND opens=? AND page=? AND revision=? "
-                "AND state='sending' AND destination IS NULL",
-                (*key, revision)
-            ).rowcount
-            if deleted and automatic is not None:
-                # An inherited date continues to follow the series after deferral.
-                statement = (
-                    "DELETE FROM facebook_live_auto" if automatic["series"]
-                    else "UPDATE facebook_live_auto SET state='queued'"
-                )
-                con.execute(
-                    statement + " WHERE event=? AND opens=? AND page=? AND revision=? "
-                    "AND event_revision=? AND privacy IS ? AND state='attempted'",
-                    (*key, revision, automatic["event_revision"], automatic["privacy"]),
-                )
+        defer_automatic_start(tx, key, revision, automatic)
         return {"state": "queued"}, 202
     except FacebookLiveUnconfirmed:
         with tx() as con:
             con.execute("UPDATE facebook_live_creation SET state='unconfirmed' WHERE event=? AND opens=? AND page=?", key)
         return {"state": "unconfirmed"}, 202
     except HTTPException as error:
+        if automatic is not None and isinstance(error, TooManyRequests):
+            defer_automatic_start(tx, key, revision, automatic, error)
+            return {"state": "queued"}, 202
         if error.code is not None and 400 <= error.code < 500:
             with tx() as con:
                 if replacing:
