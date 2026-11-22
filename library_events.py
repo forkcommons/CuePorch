@@ -48,6 +48,7 @@ import event_imported_replay
 import event_replay_spool
 import event_mail
 import event_player
+import event_landing
 import event_playlist
 import event_program
 import event_questions
@@ -93,7 +94,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_imported_replay.SCHEMA
-       + event_player.SCHEMA + event_playlist.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_landing.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
        + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
        + event_mailchimp_engagement.SCHEMA + event_salesforce_engagement.SCHEMA)
@@ -637,6 +638,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     viewer_key = signing_key.encode("utf-8")
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
+    event_landing.register(app, tx, staff, read)
 
     def enforce_territories(event):
         if not regional_availability.permits(territories(event), analytics_proxies):
@@ -2667,6 +2669,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 library_asset = imported_source(con, event, delivery, row["id"], shown["id"])
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
+            landing = event_landing.viewer(con, row["id"], embed) if not json_status and not withdrawn else None
             managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
             latest_managed = False
             if shown and not withdrawn and not joined and artwork["show_latest"] and (not form or grant):
@@ -2790,6 +2793,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      address=address, status=status, embed=embed, protected=protected, transport=transport,
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
+                                     landing=landing, landing_logo=logo, landing_poster=poster,
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
