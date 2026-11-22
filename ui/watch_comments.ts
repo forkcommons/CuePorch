@@ -7,6 +7,8 @@ interface CommentEntry {
   created: number;
   owned: boolean;
   status: "eligible" | "waiting" | "rejected";
+  origin?: 'vimeo';
+  replies?: CommentEntry[];
 }
 
 export function setupWatchComments(section: HTMLElement) {
@@ -27,7 +29,7 @@ export function setupWatchComments(section: HTMLElement) {
   let page = 1;
   let loadVersion = 0;
 
-  function comment(entry: CommentEntry) {
+  function comment(entry: CommentEntry): HTMLLIElement {
     const item = document.createElement("li");
     const byline = document.createElement("p");
     const author = document.createElement("strong");
@@ -37,6 +39,7 @@ export function setupWatchComments(section: HTMLElement) {
     date.dateTime = created.toISOString();
     date.textContent = created.toLocaleString();
     byline.append(author, " · ", date);
+    if (entry.origin === 'vimeo') byline.append(' · From Vimeo');
     const body = document.createElement("p");
     body.className = "watch-comment-body";
     body.textContent = entry.body;
@@ -64,6 +67,12 @@ export function setupWatchComments(section: HTMLElement) {
         }
       };
       item.append(remove);
+    }
+    if (entry.replies?.length) {
+      const repliesEl = document.createElement('ol');
+      repliesEl.setAttribute('aria-label', 'Replies');
+      repliesEl.append(...entry.replies.map(comment));
+      item.append(repliesEl);
     }
     return item;
   }

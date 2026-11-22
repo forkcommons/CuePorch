@@ -238,7 +238,7 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                         dict(
                             uri="/videos/71",
                             name="Station meeting",
-                            privacy=dict(view="password" if audio_fixture else "anybody", embed="public"),
+                            privacy=dict(view="anybody" if (getattr(self.server, "public_viewer_fixture", False) or not audio_fixture) else "password", embed="public"),
                             duration=4,
                             user=dict(name="Station team"),
                             modified_time="2026-11-03",
@@ -317,6 +317,121 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                         values = values[start:start + 100]
                         if start + 100 < total:
                             following = f"{path}?per_page=100&page={page + 1}"
+                elif getattr(self.server, 'viewer_comments_fixture', False) and path in (
+                    '/videos/71/comments',
+                    '/videos/71/comments/501/replies',
+                    '/videos/72/comments',
+                ):
+                    if path == '/videos/71/comments':
+                        values = [
+                            {
+                                'id': 501,
+                                'uri': '/videos/71/comments/501',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': getattr(self.server, 'viewer_comment_text', 'Historic festival discussion'),
+                                'replies': {'total': 1},
+                                'metadata': {
+                                    'connections': {
+                                        'user': {'name': 'Festival Viewer'},
+                                    },
+                                },
+                            },
+                            {
+                                'id': 502,
+                                'uri': '/videos/71/comments/502',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': 'Matinee screening',
+                                'replies': {'total': 0},
+                                'metadata': {
+                                    'connections': {
+                                        'user': {'name': 'Festival Viewer'},
+                                    },
+                                },
+                            },
+                            {
+                                'id': 991,
+                                'uri': '/videos/999/comments/991',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': 'Foreign archive note',
+                                'replies': {'total': 0},
+                                'metadata': {
+                                    'connections': {
+                                        'user': {'name': 'Festival Viewer'},
+                                    },
+                                },
+                            },
+                            {
+                                'id': 503,
+                                'uri': '/videos/71/comments/503',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': 'Removed festival note',
+                                'deleted_on': '2020-02-03T04:05:06Z',
+                                'replies': {'total': 0},
+                                'metadata': {
+                                    'connections': {
+                                        'user': {'name': 'Festival Viewer'},
+                                    },
+                                },
+                            },
+                        ]
+                    elif path == '/videos/71/comments/501/replies':
+                        fields = parse_qs(urlsplit(self.path).query).get('fields', [''])[0].split(',')
+                        if {'user.name', 'metadata.connections.replies.total'}.intersection(fields):
+                            return self.send_error(400)
+                        values = [
+                            {
+                                'id': 601,
+                                'uri': '/videos/71/comments/501/replies/601',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': 'Historic festival reply',
+                                'replies': {'total': 0},
+                                'metadata': {
+                                    'connections': {
+                                        'guest_user': {'name': 'Guest Reviewer'},
+                                    },
+                                },
+                            },
+                        ]
+                    elif path == '/videos/72/comments':
+                        values = [
+                            {
+                                'id': 701,
+                                'uri': '/videos/72/comments/701',
+                                'type': 'video',
+                                'created_on': '2020-01-02T03:04:05Z',
+                                'text': 'Restricted archive message',
+                                'replies': {'total': 0},
+                                'metadata': {
+                                    'connections': {
+                                        'user': {'name': 'Festival Viewer'},
+                                    },
+                                },
+                            },
+                        ]
+                    if path == '/videos/71/comments' and getattr(self.server,'new_viewer_comment', False):
+                        values.append({
+                            'uri': '/videos/71/comments/504',
+                            'type': 'video',
+                            'text': 'Approval test viewer note',
+                            'created_on': '2020-01-03T03:04:05Z',
+                            'replies': {'total':0},
+                            'metadata': {'connections': {'user': {'name':'Second Festival Viewer'}}},
+                        })
+                    for row in values:
+                        row['metadata']['connections']['replies'] = row.pop('replies')
+                    if path == '/videos/71/comments':
+                        page = int(parse_qs(urlsplit(self.path).query).get('page', ['1'])[0])
+                        total = len(values)
+                        if page == 1:
+                            values = values[:1]
+                            following = path + '?page=2'
+                        elif page == 2:
+                            values = values[1:]
                 elif path == "/videos/72/privacy/domains":
                     values = [{"domain": "museum.example"}]
                 elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):

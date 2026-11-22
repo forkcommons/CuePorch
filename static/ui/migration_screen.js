@@ -167,6 +167,39 @@ async function poll(page = currentPage) {
         if (review?.status && reviewStatuses[review.status]) {
             reviewCell.textContent = `${reviewStatuses[review.status]} · ${reviewCell.textContent}`;
         }
+        const discussionCell = row.insertCell();
+        const sourceDiscussion = w.source_viewer_comments;
+        if (sourceDiscussion?.state !== 'available') {
+            discussionCell.textContent = 'Source comments unavailable';
+        }
+        else if (sourceDiscussion.roots.length === 0) {
+            discussionCell.textContent = 'None reported';
+        }
+        else {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.textContent = sourceDiscussion.roots.length + (sourceDiscussion.roots.length === 1 ? ' viewer thread' : ' viewer threads');
+            details.appendChild(summary);
+            const rootsList = document.createElement('ol');
+            for (const root of sourceDiscussion.roots) {
+                const li = document.createElement('li');
+                li.textContent = root.author + ': ' + root.body;
+                const repliesList = document.createElement('ol');
+                for (const reply of root.replies) {
+                    const rli = document.createElement('li');
+                    rli.textContent = reply.author + ': ' + reply.body;
+                    repliesList.appendChild(rli);
+                }
+                if (root.replies.length > 0)
+                    li.appendChild(repliesList);
+                if (!root.replies_available) {
+                    li.appendChild(document.createTextNode(' (reply inventory incomplete)'));
+                }
+                rootsList.appendChild(li);
+            }
+            details.appendChild(rootsList);
+            discussionCell.appendChild(details);
+        }
         const exceptions = [
             ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
             ...(w.transfer_issues || []).map((issue) => `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
