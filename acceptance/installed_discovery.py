@@ -96,6 +96,39 @@ def check_discovery(page, browser, base, auth, sample):
         viewer.get_by_label("Search public videos").fill("ANALOGUE")
         viewer.get_by_role("button", name="Search", exact=True).click()
         expect(viewer.get_by_role("link", name=first_title)).to_have_attribute("href", first_watch)
+        category_url = base + "/watch/categories?category=Art+and+film"
+        viewer.get_by_role("link", name="Sign in to follow this category").click()
+        signup = viewer.locator("#viewerSignUp")
+        signup.get_by_label("Display name").fill("Feed viewer")
+        signup.get_by_label("Email").fill("feed-viewer@example.invalid")
+        signup.get_by_label("Password").fill("Category feed fixture 2026!")
+        signup.get_by_role("button", name="Create account").click()
+        expect(viewer.locator("#viewerDetails")).to_be_visible()
+        viewer.goto(category_url)
+        viewer.get_by_role("button", name="Follow category", exact=True).click()
+        expect(viewer.get_by_role("button", name="Unfollow category")).to_be_visible()
+        viewer.get_by_role("link", name="Feed", exact=True).click()
+        feed_link = viewer.get_by_role("link", name=first_title)
+        expect(feed_link).to_have_count(1)
+        expect(viewer.get_by_role("link", name=other_title)).to_have_count(0)
+        expect(viewer.get_by_role("link", name=private_title)).to_have_count(0)
+        follow_api = base + "/api/viewer/feed/category"
+        marker = {"X-CuePorch-Viewer": "1"}
+        assert context.request.put(follow_api, headers=marker, data={"name": "Confidential category"}).status == 404
+        assert context.request.put(follow_api, headers=marker | {"Origin": "https://unrelated.invalid"},
+                                   data={"name": "Art and film"}).status == 403
+        assert context.request.get(follow_api + "?name=art+AND+film").json() == {"following": True}
+        send("PUT", f"/api/library/work/{first}/privacy", json=private_settings)
+        viewer.reload()
+        expect(feed_link).to_have_count(0)
+        send("PUT", f"/api/library/work/{first}/privacy", json=public_settings)
+        viewer.reload()
+        expect(feed_link).to_have_count(1)
+        viewer.get_by_text("Manage your feed", exact=True).click()
+        viewer.get_by_role("button", name="Unfollow Art and film").click()
+        expect(feed_link).to_have_count(0)
+        assert context.request.get(follow_api + "?name=Art+and+film").json() == {"following": False}
+        viewer.goto(category_url)
         viewer.get_by_role("link", name="Channels", exact=True).click()
         expect(viewer.get_by_role("link", name="Partner programs")).to_have_attribute("href", "/watch/channel/partner-program")
         viewer.get_by_role("link", name="Staff Picks", exact=True).click()

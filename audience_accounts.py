@@ -210,6 +210,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 audience_comments.remove_account(con, row["id"])
                 audience_library.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 authenticator.forget(con, row["id"])

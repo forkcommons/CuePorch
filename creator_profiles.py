@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS audience_creator_follow(
  account TEXT NOT NULL, member TEXT NOT NULL,
  PRIMARY KEY(account,member));
 CREATE INDEX IF NOT EXISTS creator_followers ON audience_creator_follow(member);
+CREATE TABLE IF NOT EXISTS audience_category_follow(
+ account TEXT NOT NULL, key TEXT NOT NULL, label TEXT NOT NULL,
+ PRIMARY KEY(account,key));
 """
 HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])")
 VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor','contributor_plus') AND p.visible=1"
@@ -63,12 +66,65 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                                     (account, member)).fetchone() is not None
             return private(dict(following=following, followers=follower_count(con, member)))
 
+    @app.route("/api/viewer/feed/category", methods=("GET", "PUT", "DELETE"))
+    def viewer_feed_category():
+        if request.method in ("PUT", "DELETE"):
+            data = mutation()
+        else:
+            data = None
+        if request.method == "GET":
+            name = request.args.get("name", "")
+        else:
+            name = (data or {}).get("name", "")
+        if not isinstance(name, str):
+            abort(400)
+        name = name.strip()
+        if not (1 <= len(name) <= 120):
+            abort(400)
+        key = name.casefold()
+        with tx() as con:
+            account = viewer(con)["id"]
+            if request.method == "GET":
+                following = con.execute(
+                    "SELECT 1 FROM audience_category_follow WHERE account=? AND key=?",
+                    (account, key)
+                ).fetchone() is not None
+                return private(dict(following=following))
+            if request.method == "DELETE":
+                con.execute(
+                    "DELETE FROM audience_category_follow WHERE account=? AND key=?",
+                    (account, key)
+                )
+                return private(dict(following=False))
+            preference = account_preferences(con, account)
+            canonical_label = None
+            for (kind, _), entry in listing(con).items():
+                if kind != "work":
+                    continue
+                if content_rating.filtered(preference, entry):
+                    continue
+                for label in entry["categories"]:
+                    if label.casefold() == key:
+                        canonical_label = label
+                        break
+                if canonical_label is not None:
+                    break
+            if canonical_label is None:
+                abort(404)
+            con.execute(
+                "INSERT OR IGNORE INTO audience_category_follow(account, key, label) VALUES(?,?,?)",
+                (account, key, canonical_label)
+            )
+            return private(dict(following=True))
+
     @app.get("/watch/feed")
     def viewer_feed():
         page = max(1, request.args.get("page", 1, type=int))
+        category_follows = []
+        creator_follows = []
+        rows = []
         with tx() as con:
             account = viewer(con, required=False)
-            rows = []
             if account:
                 owned = {row["work"]: row for row in con.execute(f"""
                     SELECT o.work,p.handle,p.name,t.published_at
@@ -77,16 +133,34 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                     LEFT JOIN library_publication_time t ON t.work=o.work
                     WHERE f.account=? AND {VISIBLE}
                 """, (account["id"],))}
-                if owned:
+                category_rows = con.execute("SELECT key,label FROM audience_category_follow WHERE account=? ORDER BY key", (account["id"],)).fetchall()
+                category_keys = {row["key"] for row in category_rows}
+                category_follows = category_rows
+                creator_follows = con.execute(f"""
+                    SELECT p.handle,p.name FROM audience_creator_follow f
+                    JOIN creator_profile p ON p.member=f.member
+                    JOIN team_member m ON m.id=p.member
+                    WHERE f.account=? AND {VISIBLE}
+                    ORDER BY p.name COLLATE NOCASE,p.handle
+                """, (account["id"],)).fetchall()
+                if owned or category_keys:
                     preference = account_preferences(con, account["id"])
-                    entries = ordered(entry for (kind, slug), entry in listing(con).items()
-                                      if kind == "work" and slug in owned
-                                      and not content_rating.filtered(preference, entry))
-                    entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)
-                    rows = [dict(entry_payload(entry), creator=owned[entry["slug"]]) for entry in entries]
+                    entries = ordered(
+                        entry for (kind, slug), entry in listing(con).items()
+                        if kind == "work"
+                        and (slug in owned or any(name.casefold() in category_keys for name in entry["categories"]))
+                        and not content_rating.filtered(preference, entry)
+                    )
+                    if category_keys:
+                        publication_times = {row["work"]: row["published_at"] for row in con.execute("SELECT work,published_at FROM library_publication_time").fetchall()}
+                        entries.sort(key=lambda entry: (publication_times.get(entry["slug"]) or 0), reverse=True)
+                    else:
+                        entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)
+                    rows = [dict(entry_payload(entry), creator=owned.get(entry["slug"])) for entry in entries]
         start = (page - 1) * page_size
         return private(render_template("viewer_feed.html", rows=rows[start:start + page_size],
-                                       signed_in=bool(account), page=page, next_page=start + page_size < len(rows)))
+                                       signed_in=bool(account), page=page, next_page=start + page_size < len(rows),
+                                       category_follows=category_follows, creator_follows=creator_follows))
 
 
 def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):
