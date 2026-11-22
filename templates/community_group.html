@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ group.title }} · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="community-group" data-group-slug="{{ group.slug }}">
+  {% include "viewer_watch_nav.html" %}
+  <main>
+    <h1 id="groupTitle">{{ group.title }}</h1>
+    <p id="groupDescription" {% if not group.description %}hidden{% endif %}>{{ group.description }}</p>
+    <p id="groupAccess" data-access="{{ group.access }}">{{ "Members only" if group.access == "members" else "Public" }}</p>
+    {% if signed_in and not owner %}<button type="button" id="groupMembership" data-membership="{% if joined %}leave{% else %}join{% endif %}">{% if joined %}Leave group{% else %}Join group{% endif %}</button>
+    {% elif not signed_in %}<p><a href="{{ url_for('viewer_account_page', next=request.path) }}">Sign in to join this group</a></p>{% endif %}
+    <section>
+      <h2>Videos</h2>
+      <ul id="groupVideoList">
+        {% for video in videos %}
+          <li data-kind="{{ video.kind }}" data-slug="{{ video.slug }}"><a href="{{ video.watch }}">{{ video.title }}</a>{% if owner %} <button type="button" data-remove-group-video="{{ video.kind }}/{{ video.slug }}">Remove</button>{% endif %}</li>
+        {% else %}
+          <li>This group has no videos yet.</li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% if owner %}
+      <form id="groupVideoForm" method="post">
+        <label for="groupVideoSelect">Video to add</label>
+        <select id="groupVideoSelect" name="video">
+          {% for choice in choices %}<option value="{{ choice.kind }}/{{ choice.slug }}">{{ choice.title }}</option>{% endfor %}
+        </select>
+        <button type="submit"{% if not choices %} disabled{% endif %}>Add video</button>
+      </form>
+      <form id="groupSettings" data-purpose="edit" data-slug="{{ group.slug }}" method="post">
+        <label>Name <input name="title" value="{{ group.title }}" maxlength="120" required></label>
+        <label>Link name <input name="slug" value="{{ group.slug }}" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]" required></label>
+        <label>Description <textarea name="description" maxlength="1500" rows="3">{{ group.description }}</textarea></label>
+        <label>Group access <select name="access"><option value="public"{% if group.access == "public" %} selected{% endif %}>Public</option><option value="members"{% if group.access == "members" %} selected{% endif %}>Members only</option></select></label>
+        <input type="hidden" name="revision" value="{{ group.revision }}">
+        <button type="submit">Save group</button>
+      </form>
+      <details>
+        <summary>Delete this group</summary>
+        <form id="groupDelete" method="post"><input type="hidden" name="revision" value="{{ group.revision }}"><button type="submit">Delete group</button></form>
+      </details>
+    {% endif %}
+    <p id="groupStatus" role="status"></p>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/community_groups.js') }}"></script>
+</body>
+</html>

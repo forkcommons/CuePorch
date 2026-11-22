@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Community groups · CuePorch</title><link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head><body>
+  {% include "viewer_watch_nav.html" %}<main>
+    <h1>Community groups</h1>
+    {% if groups %}
+      <ul class="community-groups">
+      {% for group in groups %}
+        <li><a href="{{ group.url }}">{{ group.title }}</a>{% if group.description %}<p>{{ group.description }}</p>{% endif %}{% if group.access == "members" %}<span>Members only</span>{% endif %}</li>
+      {% endfor %}
+      </ul>
+    {% else %}<p>No community groups yet.</p>{% endif %}
+    <nav class="pagination" aria-label="Group pages">
+      {% if page > 1 %}<a href="{{ url_for('community_groups_page', page=page-1) }}">Previous</a>{% endif %}
+      {% if has_next %}<a href="{{ url_for('community_groups_page', page=page+1) }}">Next</a>{% endif %}
+    </nav>
+    {% if signed_in %}
+      <form id="groupSettings" data-purpose="create" method="post">
+        <label>Name <input name="title" maxlength="120" required></label>
+        <label>Link name <input name="slug" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]" required></label>
+        <label>Description <textarea name="description" maxlength="1500" rows="3"></textarea></label>
+        <label>Group access <select name="access"><option value="public">Public</option><option value="members">Members</option></select></label>
+        <button type="submit">Create group</button>
+      </form>
+      <p id="groupStatus" role="status"></p>
+    {% else %}
+      <p><a href="{{ url_for('viewer_account_page', next='/watch/groups') }}">Sign in to create a group</a></p>
+    {% endif %}
+    <script type="module" src="{{ url_for('static', filename='ui/community_groups.js') }}"></script>
+  </main>
+</body>
+</html>

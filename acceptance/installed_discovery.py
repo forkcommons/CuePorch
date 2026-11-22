@@ -104,6 +104,54 @@ def check_discovery(page, browser, base, auth, sample):
         signup.get_by_label("Password").fill("Category feed fixture 2026!")
         signup.get_by_role("button", name="Create account").click()
         expect(viewer.locator("#viewerDetails")).to_be_visible()
+
+        group_path = "/groups/arts-screenings"
+        group_api = base + "/api/viewer" + group_path
+        group_name = "Arts screenings"
+        group_marker = {"X-CuePorch-Viewer": "1"}
+        viewer.get_by_role("link", name="Groups", exact=True).click()
+        viewer.get_by_label("Name", exact=True).fill(group_name)
+        viewer.get_by_label("Link name").fill("arts-screenings")
+        viewer.get_by_role("button", name="Create group").click()
+        expect(viewer).to_have_url(base + group_path)
+        viewer.get_by_label("Video to add").select_option("work/" + first)
+        viewer.get_by_role("button", name="Add video").click()
+        expect(viewer.get_by_role("link", name=first_title)).to_be_visible()
+        assert viewer.request.put(group_api + "/videos/work/" + hidden, headers=group_marker, data={}).status == 404
+        assert group_name in public("/watch/groups").text
+
+        with browser.new_context() as member:
+            join = member.request.post(base + "/api/viewer/signup", headers=group_marker, data={
+                "name": "Group member", "email": "group-member@example.invalid",
+                "password": "Group member fixture password!",
+            })
+            assert join.status == 201, join.text()
+            member_page = member.new_page()
+            member_page.goto(base + group_path)
+            member_page.get_by_role("button", name="Join group", exact=True).click()
+            expect(member_page.get_by_role("button", name="Leave group", exact=True)).to_be_visible()
+            before = viewer.locator("#groupSettings input[name=revision]").input_value()
+            viewer.get_by_label("Group access").select_option("members")
+            viewer.get_by_role("button", name="Save group", exact=True).click()
+            expect(viewer.locator("#groupAccess")).to_have_attribute("data-access", "members")
+            assert viewer.request.put(group_api, headers=group_marker, data={"revision": before}).status == 409
+            assert public(group_path).status_code == 404
+            assert group_name not in public("/watch/groups").text
+            member_page.reload()
+            member_page.get_by_role("link", name=first_title, exact=True).click()
+            assert member_page.url == base + first_watch
+            assert member_page.locator("video").evaluate(
+                "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+            ) > 0
+            member_page.goto(base + group_path)
+            member_page.get_by_role("button", name="Leave group", exact=True).click()
+            expect(member_page.get_by_role("heading", name="Not Found")).to_be_visible()
+
+        viewer.get_by_text("Delete this group", exact=True).click()
+        viewer.get_by_role("button", name="Delete group", exact=True).click()
+        expect(viewer).to_have_url(base + "/watch/groups")
+        assert public(group_path).status_code == 404
+        assert public(first_watch).ok
         viewer.goto(category_url)
         viewer.get_by_role("button", name="Follow category", exact=True).click()
         expect(viewer.get_by_role("button", name="Unfollow category")).to_be_visible()

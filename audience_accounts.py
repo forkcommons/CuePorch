@@ -16,6 +16,7 @@ import account_email_factor
 import account_recovery
 import account_totp
 import audience_comments
+import audience_groups
 import audience_library
 from browser_account_security import (email_key, json_mutation, password, private, secure_site, token_hash,
                                       workspace_session, workspace_session_cookie)
@@ -41,9 +42,12 @@ CREATE TABLE IF NOT EXISTS audience_watch_later(
  PRIMARY KEY(account,kind,slug));
 CREATE TABLE IF NOT EXISTS audience_view_preferences(
  account TEXT PRIMARY KEY, maturity TEXT NOT NULL);
-""" + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
+""" + audience_library.SCHEMA + audience_comments.SCHEMA + audience_groups.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
-VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|channels/[a-z0-9-]{1,64}|watch/feed)")
+VIEWER_RETURN_PATH = re.compile(
+    r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|"
+    r"(?:channels|groups)/[a-z0-9-]{1,64}|watch/(?:feed|groups))"
+)
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
@@ -209,6 +213,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 same_password(row, previous_hash)
                 audience_comments.remove_account(con, row["id"])
                 audience_library.remove_account(con, row["id"])
+                audience_groups.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
@@ -342,6 +347,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         return current(con, browser_session(scheme()), required)
 
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
+    audience_groups.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, viewing_preferences)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
                                        ordered, PAGE_SIZE, account_preferences)
