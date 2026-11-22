@@ -23,6 +23,7 @@ from stock_assets import stock_credit, write_credit_metadata
 import subtitles
 import timeline_cards
 import timeline_graphics
+import timeline_projects
 import timeline_stickers
 from timeline_render import Clip, Music, Sticker, render
 from timeline_text_motion import prepare_text
@@ -81,7 +82,7 @@ def register(app, tx, staff, get_work, root, remember_work):
         if not isinstance(body, dict) or not isinstance(body.get("revision"), str):
             abort(422, "Save the timeline before rendering.")
         with tx() as con:
-            work = get_work(con, uid)
+            work, _ = timeline_projects.target(con, uid, actor, get_work)
             prior = con.execute("SELECT * FROM video_editor_project WHERE work=? AND actor=?", (uid, actor)).fetchone()
             if prior is None or body["revision"] != prior["revision"]:
                 abort(409, "Reopen the saved project before rendering.")
@@ -104,7 +105,7 @@ def register(app, tx, staff, get_work, root, remember_work):
     def editor_job_status(uid, job):
         actor = staff()
         with tx() as con:
-            get_work(con, uid)
+            timeline_projects.target(con, uid, actor, get_work)
             row = con.execute("SELECT * FROM video_editor_job WHERE id=? AND work=? AND actor=?",
                               (job, uid, actor)).fetchone()
         if row is None:
@@ -113,9 +114,13 @@ def register(app, tx, staff, get_work, root, remember_work):
 
     def load_job(con, job):
         uid = job["work"]
-        work = get_work(con, uid)
+        actor = job["actor"]
+        work, draft = timeline_projects.target(con, uid, actor, get_work)
         for cut in (work, *work.get("versions_history", [])):
             if cut.get("editor_job") == job["id"]:
+                if draft:
+                    remember_work(work)
+                    timeline_projects.mark_published(con, uid)
                 return video_version_key(cut)
         if video_version_key(work) != job["base"]:
             raise ValueError("The current cut changed before rendering. Open the editor and save a new draft.")
@@ -224,9 +229,12 @@ def register(app, tx, staff, get_work, root, remember_work):
             replacement = VideoReplacement(original_path, screening_path, duration, captions, chapters,
                                            editor_job=job["id"], editor_assets=editor_assets or None)
             with tx() as con:
-                get_work(con, job["work"])
-                updated = update_video_version(root, job["work"], expected=job["base"], replacement=replacement)
+                work, draft = timeline_projects.target(con, job["work"], job["actor"], get_work)
+                updated = update_video_version(root, job["work"], expected=job["base"], replacement=replacement,
+                                              new_work=work if draft and not work["files"] else None)
                 remember_work(updated)
+                if draft:
+                    timeline_projects.mark_published(con, job["work"])
                 return video_version_key(updated)
 
     def render_next():

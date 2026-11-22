@@ -49,12 +49,25 @@ class VideoReplacement:
     editor_assets: list | None = None
 
 
-def update_video_version(root, uid, expected, replacement=None, restore_key=None, guard=None):
+def update_video_version(root, uid, expected, replacement=None, restore_key=None, guard=None, *, new_work=None):
     """Commit an exact media version while retaining all previous screening objects."""
     with FileLock(str(root / ".catalog.lock"), timeout=30):
         path = root / "manifest.json"
         manifest = json.loads(path.read_text(encoding="utf8"))
-        work = next(item for item in manifest["works"] if item["id"] == uid)
+        try:
+            work = next(item for item in manifest["works"] if item["id"] == uid)
+        except StopIteration:
+            if (new_work is not None
+                    and new_work.get("id") == uid
+                    and replacement is not None):
+                work = dict(new_work)
+                work["files"] = []
+                manifest["works"].append(work)
+            else:
+                raise
+        else:
+            if new_work is not None:
+                raise ValueError("This project already has a saved video.")
         if video_version_key(work) != expected:
             raise ValueError("The video changed. Reload and choose the version again.")
         if guard is not None:

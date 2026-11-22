@@ -23,13 +23,14 @@ from timeline_text_motion import prepare_text
 import timeline_stickers
 import timeline_templates
 import timeline_graphics
+import timeline_projects
 
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS video_editor_project(
  work TEXT NOT NULL, actor TEXT NOT NULL, revision TEXT NOT NULL, base TEXT NOT NULL,
  contents TEXT NOT NULL, updated TEXT NOT NULL, PRIMARY KEY(work,actor));
-"""
+""" + timeline_projects.SCHEMA
 SIZES = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720), "4:3": (960, 720)}
 DEFAULT = {"ratio": "16:9", "color": "182629", "clips": [], "music": None, "brand": None}
 VIDEO_FORMATS = ("mp4", "mov", "webm", "mkv")
@@ -126,25 +127,33 @@ def normalize(raw, get_work, root, con):
     return dict(ratio=ratio, color=color.lower(), clips=clips, music=music, brand=brand)
 
 
-def project(con, root, work, actor):
+def project(con, root, work, actor, standalone=None):
     uid = work["id"]
     row = con.execute("SELECT * FROM video_editor_project WHERE work=? AND actor=?", (uid, actor)).fetchone()
     current = video_version_key(work)
     if row:
         job = con.execute("SELECT id,state,result,error FROM video_editor_job WHERE work=? AND actor=? AND revision=?",
                           (uid, actor, row["revision"])).fetchone()
-        return dict(revision=row["revision"], base=row["base"], current=current,
-                    draft=True, settings=json.loads(row["contents"]), updated=row["updated"], job=dict(job) if job else None)
-    _, info = video_source(root, work)
-    defaults = deepcopy(DEFAULT)
-    defaults["clips"].append(dict(work=uid, cut=current, start=0, end=round(info["duration"] * 1000)))
-    return dict(revision=None, base=current, current=current, draft=False, settings=defaults, updated=None)
+        result = dict(revision=row["revision"], base=row["base"], current=current,
+                      draft=True, settings=json.loads(row["contents"]), updated=row["updated"],
+                      job=dict(job) if job else None)
+    else:
+        defaults = deepcopy(DEFAULT)
+        if not standalone:
+            _, info = video_source(root, work)
+            defaults["clips"].append(dict(work=uid, cut=current, start=0, end=round(info["duration"] * 1000)))
+        result = dict(revision=None, base=current, current=current, draft=False, settings=defaults, updated=None)
+    if standalone:
+        result["title"] = work.get("title")
+        result["standalone"] = True
+    return result
 
 
 def register(app, tx, staff, get_work, root, signing_key):
     signer = URLSafeTimedSerializer(signing_key, salt="cueporch-timeline-preview")
     timeline_templates.register_templates(app, staff)
     timeline_graphics.register_graphics(app, staff, SIZES)
+    timeline_projects.register(app, tx, staff)
 
     @app.post("/api/library/timeline-stickers/preview")
     def preview_timeline_sticker():
@@ -269,10 +278,10 @@ def register(app, tx, staff, get_work, root, signing_key):
     def edit_project(uid):
         actor = staff()
         with tx() as con:
-            work = get_work(con, uid)
+            work, draft = timeline_projects.target(con, uid, actor, get_work)
             if work.get("asset_type", "video") != "video":
                 abort(404)
-            previous = project(con, root, work, actor)
+            previous = project(con, root, work, actor, standalone=draft)
             if request.method == "GET":
                 return previous
             request.max_content_length = 128 * 1024
@@ -281,7 +290,7 @@ def register(app, tx, staff, get_work, root, signing_key):
                 abort(409, "A newer draft exists. Reopen the editor to recover it.")
             if request.method == "DELETE":
                 con.execute("DELETE FROM video_editor_project WHERE work=? AND actor=?", (uid, actor))
-                return project(con, root, work, actor)
+                return project(con, root, work, actor, standalone=draft)
             if body.get("base") != previous["current"]:
                 abort(409, "The current cut has changed. Reopen the editor before saving.")
             settings = normalize(body.get("settings"), lambda selected: get_work(con, selected), root, con)
@@ -291,5 +300,9 @@ def register(app, tx, staff, get_work, root, signing_key):
                            ON CONFLICT(work,actor) DO UPDATE SET revision=excluded.revision,
                              base=excluded.base, contents=excluded.contents, updated=excluded.updated""",
                         (uid, actor, revision, previous["current"], json.dumps(settings), updated))
-            return dict(revision=revision, base=previous["current"], current=previous["current"],
-                        draft=True, settings=settings, updated=updated)
+            result = dict(revision=revision, base=previous["current"], current=previous["current"],
+                          draft=True, settings=settings, updated=updated)
+            if draft:
+                result["title"] = work.get("title")
+                result["standalone"] = True
+            return result

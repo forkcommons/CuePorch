@@ -17,6 +17,10 @@ const select = (id) => node(id);
 const identity = node("timelineIdentity");
 const key = input("timelineKey");
 const status = node("timelineStatus");
+const heading = node("timelineEditorHeading");
+const detailsLink = node("videoDetailsLink");
+const trimLink = node("trimGifLink");
+const libraryLink = node("libraryNavLink");
 const video = node("timelinePreview");
 const trackList = node("timelineClips");
 const recorderDialog = node("timelineRecordDialog");
@@ -403,12 +407,24 @@ async function inspect(index) {
     controls();
     await transcript();
 }
+function applyProjectChrome(standalone, title) {
+    const renderButton = button("renderTimeline");
+    detailsLink.hidden = trimLink.hidden = standalone;
+    libraryLink.hidden = !standalone;
+    renderButton.textContent = standalone ? "Render video" : "Render as a new version";
+    if (title)
+        heading.textContent = title;
+}
 function showJob(job, fromReload = false) {
     running = job;
     controls();
     if (job.state === "saved") {
         if (job.result && !fromReload)
             project.current = job.result;
+        if (project.standalone) {
+            project.standalone = false;
+            applyProjectChrome(false);
+        }
         status.textContent = "New version saved.";
         return;
     }
@@ -642,6 +658,7 @@ async function open() {
     select("timelineBrandKit").replaceChildren(new Option("Choose a brand kit", ""), ...kits.map(kit => new Option(kit.name, kit.id)));
     media = new Map(items.map(item => [item.id, item]));
     project = loaded;
+    applyProjectChrome(Boolean(project.standalone), project.title);
     state = project.settings;
     const music = select("timelineMusic");
     for (const item of items)

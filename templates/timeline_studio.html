@@ -9,11 +9,12 @@
 <body data-work="{{ work }}">
   {% include "operator_navigation.html" %}
   <nav aria-label="Operator">
-    <a href="/operator/videos/{{ work }}">Video details</a>
-    <a href="/operator/videos/{{ work }}/editing">Trim and GIF</a>
+    <a id="videoDetailsLink" href="/operator/videos/{{ work }}">Video details</a>
+    <a id="trimGifLink" href="/operator/videos/{{ work }}/editing">Trim and GIF</a>
+    <a id="libraryNavLink" href="/operator/library" hidden>Library</a>
     <a href="/operator/record">Record Studio</a>
   </nav>
-  <h1>Timeline editor</h1>
+  <h1 id="timelineEditorHeading">Timeline editor</h1>
   <form id="timelineIdentity">
     <label>Operator credential <input id="timelineKey" type="password" autocomplete="current-password" required></label>
     <button type="submit">Open timeline</button>
