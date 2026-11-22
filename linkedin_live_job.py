@@ -6,7 +6,7 @@ from time import time
 
 from filelock import FileLock, Timeout
 from flask import abort
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, TooManyRequests
 
 from linkedin_live import LinkedInWriteUnconfirmed
 
@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS linkedin_live_ingest(
  PRIMARY KEY(event,opens,company));
 CREATE TABLE IF NOT EXISTS linkedin_live_auto(
  event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL, state TEXT NOT NULL,
+ retry_at INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(event,opens,company));
 CREATE TABLE IF NOT EXISTS linkedin_live_restart(
  replaces TEXT PRIMARY KEY, event TEXT NOT NULL, opens INTEGER NOT NULL, company TEXT NOT NULL,
@@ -45,9 +46,15 @@ def provider_for(owner_key):
     return "linkedin-member-live" if owner_key.startswith("member:") else "linkedin-live"
 
 
+def migrate(con):
+    cols = [r[1] for r in con.execute("PRAGMA table_info(linkedin_live_auto)")]
+    if "retry_at" not in cols:
+        con.execute("ALTER TABLE linkedin_live_auto ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0")
+
+
 def set_auto(con, key, enabled):
     if enabled:
-        con.execute("INSERT OR IGNORE INTO linkedin_live_auto VALUES(?,?,?,'queued')", key)
+        con.execute("INSERT OR IGNORE INTO linkedin_live_auto(event,opens,company,state) VALUES(?,?,?,'queued')", key)
     else:
         con.execute("DELETE FROM linkedin_live_auto" + SCOPE, key)
 
@@ -62,7 +69,8 @@ def due_auto(con, now):
         WHERE c.state='scheduled' AND a.state='queued' AND i.event IS NULL
         AND NOT EXISTS (SELECT 1 FROM live_destination_series_skip s
                         WHERE s.event=c.event AND s.opens=c.opens AND s.owner=c.company AND s.provider=g.provider)
-        AND c.opens BETWEEN ? AND ? ORDER BY c.opens""", (now - 7200, now)).fetchall()
+        AND c.opens BETWEEN ? AND ? AND a.retry_at<=? ORDER BY c.opens""",
+        (now - 7200, now, now)).fetchall()
 
 
 def claim_auto(con, key):
@@ -70,8 +78,9 @@ def claim_auto(con, key):
                         key[:2]).fetchone()
     if not ready or con.execute(INGEST, key).fetchone():
         return False
-    return con.execute("UPDATE linkedin_live_auto SET state='attempted'" + SCOPE + " AND state='queued'",
-                       key).rowcount == 1
+    return con.execute("UPDATE linkedin_live_auto SET state='attempted'" + SCOPE +
+                       " AND state='queued' AND retry_at<=?",
+                       key + (int(time()),)).rowcount == 1
 
 
 def provision(tx, check, create, announce, event, opens, company, event_revision, revision, auto_prepare=None):
@@ -157,7 +166,7 @@ def start_replacement(con, key, destination):
     return con.execute(RESTART, key).fetchone()
 
 
-def prepare_ingest(tx, check, send, save, key, revision):
+def prepare_ingest(tx, check, send, save, key, revision, *, automatic=False):
     with tx() as con:
         check(con)
         row = con.execute(INGEST, key).fetchone()
@@ -170,13 +179,23 @@ def prepare_ingest(tx, check, send, save, key, revision):
 
     try:
         target = send()
-    except AutomaticIngestDeferred:
+    except (AutomaticIngestDeferred, TooManyRequests) as error:
         with tx() as con:
             deleted = con.execute(
                 "DELETE FROM linkedin_live_ingest" + SCOPE + " AND phase='registering' AND asset IS NULL", key,
             ).rowcount
-            if deleted:
-                con.execute("UPDATE linkedin_live_auto SET state='queued'" + SCOPE + " AND state='attempted'", key)
+            if deleted and (automatic or isinstance(error, AutomaticIngestDeferred)):
+                retry_at = (
+                    0
+                    if isinstance(error, AutomaticIngestDeferred)
+                    else int(time()) + max(2, 60 if error.retry_after is None else error.retry_after)
+                )
+                con.execute(
+                    "UPDATE linkedin_live_auto SET state='queued', retry_at=?" + SCOPE + " AND state='attempted'",
+                    (retry_at, *key),
+                )
+        if not automatic and isinstance(error, TooManyRequests):
+            raise
         return {"state": "pending"}, 202
     except LinkedInWriteUnconfirmed:
         return {"state": "unconfirmed"}, 202
