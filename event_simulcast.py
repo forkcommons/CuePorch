@@ -769,11 +769,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if phase != start:
                     return youtube_live.find_created(connection, revision, collection, channel, marker)
                 if (field == "broadcast" and restart is None
-                        and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc)):
+                        and datetime.fromisoformat(slot["start"]) <= datetime.now(timezone.utc)
+                        and not late_series):
                     abort(409, "Choose a future occurrence to schedule a new YouTube broadcast.")
                 pending = field + "_pending"
                 with tx() as con:
                     check(con)
+                    if field == 'broadcast' and late_series and not live_destination_series.late_youtube_ready(con, series, opens):
+                        abort(409, "This occurrence is no longer ready to stream.")
                     advance(con, pending)
                 try:
                     return create()["id"]
@@ -786,10 +789,18 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     raise
 
             starts, ends = slot["start"], slot["end"]
-            if restart is not None:
-                earliest = datetime.now(timezone.utc) + timedelta(seconds=15)
+            now = datetime.now(timezone.utc)
+            earliest = now + live_destination_series.YOUTUBE_START_LEAD
+            parsed_starts = datetime.fromisoformat(starts)
+            parsed_ends = datetime.fromisoformat(ends) if ends is not None else None
+            late_series = (
+                series is not None
+                and parsed_ends is not None
+                and parsed_starts <= now < earliest < parsed_ends
+            )
+            if restart is not None or late_series:
                 starts = earliest.isoformat()
-                if datetime.fromisoformat(ends) <= earliest:
+                if parsed_ends is not None and parsed_ends <= earliest:
                     ends = None
             broadcast = inserted("broadcast", "liveBroadcasts", "new", lambda: youtube_live.insert_broadcast(
                 connection, revision, channel, title, starts, ends, privacy, marker, before_send))
