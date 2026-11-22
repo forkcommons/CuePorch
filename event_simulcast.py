@@ -622,6 +622,12 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
 
         return prepare_youtube(uid, opens, privacy, remember_series=remember_series)
 
+    def connected_destination_lease(uid, opens):
+        lease_dir = outputs.directory / "connected-destinations"
+        lease_dir.mkdir(parents=True, exist_ok=True)
+        lease_name = digest(b"CuePorch connected destination", f"{uid}:{opens}".encode(), "sha256").hex()
+        return FileLock(lease_dir / (lease_name + ".lock"), timeout=0)
+
     def youtube_lease(uid, opens):
         lease_dir = outputs.directory / "youtube-creation"
         lease_dir.mkdir(parents=True, exist_ok=True)
@@ -824,7 +830,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             return private(dict(state="complete", id=destination), 201)
 
         try:
-            with youtube_lease(uid, opens):
+            with connected_destination_lease(uid, opens), youtube_lease(uid, opens):
                 return provision()
         except Timeout:
             return private(dict(state="pending"), 202)
@@ -946,23 +952,26 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 abort(409, "Connect a single YouTube channel before setting up future broadcasts.")
         bound = youtube_live.bound_target(youtube_live_connection, revision, broadcast, channel)
         staff()
-        with tx() as con:
-            enforce_sharing(con, feature="outbound")
-            if not event_access(con, uid, opens):
-                abort(409, "This occurrence no longer allows simulcasting.")
-            latest = youtube_live_connection.connection(con)
-            if not latest or latest["revision"] != revision:
-                abort(409, "The YouTube Live connection changed. Reload destinations.")
-            if series:
-                live_destination_series.ensure_recurring(con, uid)
-                event_revision, _, _ = creation_access(con, uid, opens)
-                if bound["privacy"] not in youtube_live.PRIVACY:
-                    abort(502, "YouTube did not confirm broadcast privacy.")
-                live_destination_series.save(
-                    con, uid, "youtube-live", channel, revision, event_revision, opens,
-                    {"privacy": bound["privacy"]},
-                )
-            uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
+        try:
+            with connected_destination_lease(uid, opens), tx() as con:
+                enforce_sharing(con, feature="outbound")
+                if not event_access(con, uid, opens):
+                    abort(409, "This occurrence no longer allows simulcasting.")
+                latest = youtube_live_connection.connection(con)
+                if not latest or latest["revision"] != revision:
+                    abort(409, "The YouTube Live connection changed. Reload destinations.")
+                if series:
+                    live_destination_series.ensure_recurring(con, uid)
+                    event_revision, _, _ = creation_access(con, uid, opens)
+                    if bound["privacy"] not in youtube_live.PRIVACY:
+                        abort(502, "YouTube did not confirm broadcast privacy.")
+                    live_destination_series.save(
+                        con, uid, "youtube-live", channel, revision, event_revision, opens,
+                        {"privacy": bound["privacy"]},
+                    )
+                uid_destination = save_youtube_destination(con, uid, opens, revision, broadcast, bound)
+        except Timeout:
+            abort(409, "Another connected destination is being prepared. Try again shortly.")
         return private(dict(id=uid_destination), 201)
 
     def facebook_page(profile=False):
@@ -1174,7 +1183,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             return save_provider_destination(con, uid, opens, facebook_provider(page)[0].key, revision, target["id"], bound)
 
         try:
-            with facebook_lease(key):
+            with connected_destination_lease(uid, opens), facebook_lease(key):
                 if not live_now:
                     with tx() as con:
                         check(con)
@@ -1194,7 +1203,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     automatic=automatic,
                 )
         except Timeout:
-            return {"state": "unconfirmed"}, 202
+            if live_now:
+                return {"state": "queued"}, 202
+            abort(409, "Another connected destination is being prepared. Try again shortly.")
 
     app.extensions["stop_facebook_live"] = facebook_live_job.start(app, tx, prepare_facebook)
 
@@ -1428,13 +1439,14 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                                              record["video"], target | {"title": connection.config.name})
 
         try:
-            with FileLock(linkedin_lease(key), timeout=0):
+            with connected_destination_lease(uid, opens), FileLock(linkedin_lease(key), timeout=0):
                 actual_owner_key, owner = linked_owner(connection, record["revision"])
                 if actual_owner_key != owner_key:
                     abort(409, "The authorized LinkedIn Live account changed.")
                 if not interactive:
                     with tx() as con:
                         check(con)
+                        check_provider_capacity(con, uid, opens)
                         if not linkedin_live_job.claim_auto(con, key):
                             return {"state": "pending"}, 202
                 return linkedin_live_job.prepare_ingest(

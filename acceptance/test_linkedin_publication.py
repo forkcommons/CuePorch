@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import monotonic, sleep, time
 import unittest
 from unittest.mock import patch
@@ -665,18 +666,61 @@ class LinkedInPublication(unittest.TestCase):
                     db.commit()
 
                 self.assertEqual([asset], ingests)
+                scope = (item["id"], opens)
+                with closing(sqlite3.connect(database)) as db:
+                    count = db.execute(
+                        "SELECT count(*) FROM live_simulcast_destination "
+                        "WHERE event=? AND opens=? AND provider IS NOT NULL", scope,
+                    ).fetchone()[0]
+                    db.executemany(
+                        "INSERT INTO live_simulcast_destination "
+                        "(id,event,name,server,secret,enabled,opens,provider) VALUES(?,?,?,?,?,?,?,?)",
+                        [(f"li-capacity-fixture-{i}", item["id"], f"LinkedIn capacity fixture {i}",
+                          "rtmp://seed.invalid", b"", 0, opens, "youtube-live") for i in range(10 - count)],
+                    )
+                    db.commit()
+
+                due_auto = linkedin_live_job.due_auto
+                first_poll, second_poll, release = Event(), Event(), Event()
+
+                def observe_capacity_poll(con, now):
+                    if now == int(clock.timestamp()):
+                        if first_poll.is_set():
+                            second_poll.set()
+                            if not release.is_set():
+                                return []
+                        else:
+                            first_poll.set()
+                    return due_auto(con, now)
+
                 deliveries = []
-                with patch.object(event_simulcast, "datetime", OccurrenceClock), patch.object(
-                    linkedin_live_job, "time", lambda: clock.timestamp()
-                ):
-                    deadline = monotonic() + 8
-                    while monotonic() < deadline:
+                try:
+                    with (
+                        patch.object(event_simulcast, "datetime", OccurrenceClock),
+                        patch.object(linkedin_live_job, "time", lambda: clock.timestamp()),
+                        patch.object(linkedin_live_job, "due_auto", observe_capacity_poll),
+                    ):
+                        self.assertTrue(second_poll.wait(8), "LinkedIn did not advance while capacity was full.")
+                        self.assertEqual([asset], ingests)
                         with closing(sqlite3.connect(database)) as db:
-                            deliveries = db.execute("SELECT event, phase FROM linkedin_live_ingest WHERE opens=?",
-                                                    (opens,)).fetchall()
-                        if deliveries and all(phase != "registering" for _, phase in deliveries):
-                            break
-                        sleep(.05)
+                            self.assertEqual([("queued",)], db.execute(
+                                "SELECT state FROM linkedin_live_auto WHERE event=? AND opens=?", scope,
+                            ).fetchall())
+                            db.execute("DELETE FROM live_simulcast_destination WHERE id='li-capacity-fixture-0'")
+                            db.commit()
+                        release.set()
+                        deadline = monotonic() + 8
+                        while monotonic() < deadline:
+                            with closing(sqlite3.connect(database)) as db:
+                                deliveries = db.execute("SELECT event, phase FROM linkedin_live_ingest WHERE opens=?",
+                                                        (opens,)).fetchall()
+                            if deliveries and all(phase != "registering" for _, phase in deliveries):
+                                break
+                            sleep(.05)
+                finally:
+                    with closing(sqlite3.connect(database)) as db:
+                        db.execute("DELETE FROM live_simulcast_destination WHERE id LIKE 'li-capacity-fixture-%'")
+                        db.commit()
                 self.assertEqual([(item["id"], "registered")], deliveries)
                 self.assertEqual([asset, asset], ingests)
                 self.assertEqual([asset], links)

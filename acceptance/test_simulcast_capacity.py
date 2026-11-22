@@ -7,10 +7,12 @@ import shutil
 import subprocess
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -173,6 +175,63 @@ class SimulcastCapacity(unittest.TestCase):
             self.assertEqual(*rosters)
             event_ids.append(set(rosters[0]))
         self.assertTrue(event_ids[0].isdisjoint(event_ids[1]))
+
+    def test_last_connected_slot_is_held_during_provider_confirmation(self):
+        first_url, next_url = self.targets("connected-slot-race")
+
+        def bound(_connection, _revision, broadcast, _channel):
+            return dict(title=broadcast, stream=broadcast + "-stream",
+                        server="rtmps://a.rtmps.youtube.com:443/live2", key="fixture-private-" + broadcast)
+
+        revision = "fixture-live-revision"
+        held, release = Event(), Event()
+
+        def fake_create(_revision, _page, _title, _opens, before_send, **_options):
+            before_send()
+            held.set()
+            if not release.wait(10):
+                raise AssertionError("The fixture did not release provider confirmation.")
+            return {"id": "123456789", "server": "rtmps://live-api-s.facebook.com:443/rtmp",
+                    "key": "fixture-private-fb-key"}
+
+        with (
+            patch("youtube_live.WorkspaceConnection.connection", return_value={"revision": revision}),
+            patch("youtube_live.WorkspaceConnection.revision", return_value=revision),
+            patch("youtube_live.bound_target", side_effect=bound),
+            patch("facebook_live.PageLiveConnection.connection", return_value={"revision": "fb-rev"}),
+            patch("facebook_live.PageLiveConnection.tokens",
+                  return_value={"pages": {"123456": {"name": "Page One"}}}),
+            patch("facebook_live.PageLiveConnection.create_page_live", side_effect=fake_create),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            for i in range(9):
+                response = self.client.post(first_url + "/youtube", headers=self.auth,
+                                            json=dict(broadcast=f"broadcast-{i}", channel=f"channel-{i}"))
+                self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+
+            provider_client = self.client.application.test_client()
+            future = executor.submit(
+                provider_client.post, first_url + "/facebook", headers=self.auth, json={"page": "123456"}
+            )
+            try:
+                self.assertTrue(held.wait(timeout=10))
+                competing = self.client.post(first_url + "/youtube", headers=self.auth,
+                                             json=dict(broadcast="broadcast-9", channel="channel-9"))
+                separate = self.client.post(next_url + "/youtube", headers=self.auth,
+                                            json=dict(broadcast="broadcast-10", channel="channel-10"))
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+            self.assertEqual(
+                (409, 201, 201), (competing.status_code, separate.status_code, result.status_code),
+                [response.get_data(as_text=True) for response in (competing, separate, result)],
+            )
+            roster = self.client.get(first_url, headers=self.auth).get_json()["destinations"]
+            self.assertEqual(10, len(roster))
+            retry = self.client.post(first_url + "/youtube", headers=self.auth,
+                                     json=dict(broadcast="broadcast-9", channel="channel-9"))
+            self.assertEqual(409, retry.status_code, retry.get_data(as_text=True))
+            self.assertIn("up to 10 connected destinations", retry.get_data(as_text=True))
 
     def test_connected_limit_is_separate_from_custom(self):
         first_url, next_url = self.targets("connected-capacity")
