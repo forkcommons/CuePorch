@@ -105,6 +105,14 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     return self.send_error(400)
                 content_type = "application/x-subrip"
                 data = b"1\n00:00:00,100 --> 00:00:02,500\nEarlier cut English\n\n"
+            elif path == "/media/chapter.png":
+                if self.headers.get("Authorization"):
+                    return self.send_error(400)
+                import base64
+                content_type = "image/png"
+                data = base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPw4AAAAASUVORK5CYII="
+                )
             elif path.startswith("/media/"):
                 content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
@@ -511,9 +519,28 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                         else []
                     )
                 elif path.endswith("/chapters"):
-                    values = (
-                        [dict(title="Opening", timecode=0)] if "/71/" in path else []
-                    )
+                    if getattr(self.server, "chapter_picture_fixture", False) and path == "/videos/71/chapters":
+                        values = [
+                            dict(uri=path + "/18", title="Opening", timecode=0),
+                            dict(uri=path + "/19", title="Next chapter", timecode=2),
+                        ]
+                    else:
+                        values = (
+                            [dict(title="Opening", timecode=0)] if "/71/" in path else []
+                        )
+                elif path == "/videos/71/chapters/18/pictures":
+                    values = [
+                        dict(
+                            uri=path + "/fixture18",
+                            active=True,
+                            sizes=[dict(width=320, link=origin + "/media/chapter.png")],
+                        ),
+                        dict(
+                            uri=path + "/fixture19",
+                            active=False,
+                            sizes=[dict(width=640, link=origin + "/media/missing-chapter.png")],
+                        ),
+                    ]
                 elif path.endswith("/credits"):
                     values = [dict(name="Fixture station", role="Producer")]
                 elif path.endswith("/versions"):

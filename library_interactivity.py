@@ -20,13 +20,38 @@ CARD_SECONDS = 6
 
 
 def readable_chapters(work):
-    chapters = [
-        dict(title=entry["title"], timecode=int(entry["timecode"]))
-        for entry in cut_chapters(work)
-        if isinstance(entry, dict) and isinstance(entry.get("title"), str)
-        and type(entry.get("timecode")) in (float, int)
-        and 0 <= entry["timecode"] < 1_000_000_000
-    ]
+    import re
+
+    files = work.get("files", []) if isinstance(work, dict) else []
+    pictures = {}
+    for item in (files if isinstance(files, list) else []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("role") != "chapter_picture":
+            continue
+        uri = item.get("chapter_uri")
+        sha256 = item.get("sha256")
+        if (
+            isinstance(uri, str)
+            and isinstance(sha256, str)
+            and re.fullmatch(r"[0-9a-f]{64}", sha256)
+        ):
+            pictures.setdefault(uri, sha256)
+
+    chapters = []
+    for entry in cut_chapters(work):
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("title"), str)
+            and type(entry.get("timecode")) in (float, int)
+            and 0 <= entry["timecode"] < 1_000_000_000
+        ):
+            chapter = dict(title=entry["title"], timecode=int(entry["timecode"]))
+            uri = entry.get("uri")
+            if isinstance(uri, str) and uri in pictures:
+                chapter["picture"] = pictures[uri]
+            chapters.append(chapter)
+
     return sorted(chapters, key=lambda item: item["timecode"])
 
 

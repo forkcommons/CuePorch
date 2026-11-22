@@ -178,6 +178,69 @@ class VimeoVersionMigration(unittest.TestCase):
             self.assertNotEqual("#123456", embed["background"])
             self.assertTrue(embed["speed"])
 
+    def test_vimeo_chapter_picture_import(self):
+        self.source.chapter_picture_fixture = True
+        self.source.public_viewer_fixture = True
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+
+            page.get_by_role("button", name="Preview transfer", exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            self.assertEqual(0, self.requests["/media/chapter.png"])
+
+            page.get_by_role("button", name="Transfer privately", exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            self.assertEqual(1, self.requests["/media/chapter.png"])
+
+            uid = work_id("station", "vimeo", "71")
+            self.assertEqual(404, self.client.get(f"/watch/work/{uid}").status_code)
+            response = self.client.put(
+                f"/api/library/work/{uid}/source-privacy",
+                headers=self.auth,
+                json={},
+            )
+            self.assertEqual(200, response.status_code)
+
+            guest_context = browser.new_context()
+            guest_page = guest_context.new_page()
+            guest_page.goto(f"{self.base.rstrip('/')}/watch/work/{uid}")
+
+            picture = guest_page.locator("[data-chapter-picture]")
+            expect(picture).to_be_visible()
+            self.assertGreater(picture.evaluate("img => img.naturalWidth"), 0)
+
+            picture_src = picture.get_attribute("src")
+            picture_url = (
+                picture_src
+                if picture_src.startswith("http")
+                else f"{self.base.rstrip('/')}{picture_src}"
+            )
+            picture_response = guest_context.request.get(picture_url)
+            self.assertEqual("image/png", picture_response.headers["content-type"])
+
+            video = guest_page.locator("video")
+            expect(video).to_be_visible()
+            self.assertTrue(
+                video.evaluate(
+                    "async v => { v.muted = true; await v.play(); return v.videoWidth > 0; }"
+                )
+            )
+
+            digest_url = self.base + picture_src.rsplit('/', 1)[0] + '/' + '0' * 64
+            self.assertEqual(404, guest_page.request.get(digest_url).status)
+            self.denied.add('/videos/71/chapters/18/pictures')
+            page.get_by_role('button', name='Preview transfer', exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            page.get_by_role('button', name='Transfer privately', exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            self.assertEqual(1, self.requests['/media/chapter.png'])
+            guest_page.reload()
+            expect(picture).to_be_visible()
+            self.assertGreater(picture.evaluate('el => el.naturalWidth'), 0)
+
     def test_vimeo_chapters_survive_denied_repeat_transfer(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/chapters"

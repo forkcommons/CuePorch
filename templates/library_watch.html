@@ -81,9 +81,10 @@
       <label data-chapter-menu hidden>Chapters <select aria-label="Chapters">
         <option value="">Choose a chapter</option>
         {% for chapter in chapters %}
-        <option value="{{ chapter.timecode }}">{{ chapter.title }}</option>
+        <option value="{{ chapter.timecode }}"{% if chapter.picture %} data-picture="{{ url_for('shared_chapter_picture', token=token, digest=chapter.picture) }}"{% endif %}>{{ chapter.title }}</option>
         {% endfor %}
       </select></label>
+      <img alt="" width="160" data-chapter-picture hidden>
       <script type="module" src="/static/ui/video_chapters.js"></script>
     {% endif %}
     {% if appearance %}

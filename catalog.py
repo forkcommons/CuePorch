@@ -21,7 +21,11 @@ VERSION_FIELDS = (
 
 def video_version_key(work):
     # Text track classification is descriptive metadata. Keep existing cut IDs when it is imported.
-    files = [{field: value for field, value in item.items() if field != "text_kind"} for item in work["files"]]
+    files = [
+        {field: value for field, value in item.items() if field != "text_kind"}
+        for item in work["files"]
+        if item.get("role") != "chapter_picture"
+    ]
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 
@@ -254,14 +258,32 @@ def merge_collection(source, destination):
             if (
                 prior
                 and prior.get("provider") == work.get("provider") == "vimeo"
-                and work.get("unavailable_metadata", {}).get("/chapters") in (403, 404)
                 and any(f.get("role") in ("original", "playback") for f in prior["files"])
                 and video_version_key(prior) == video_version_key(work)
                 and not (prior.get("source_version") and work.get("source_version")
                          and prior["source_version"] != work["source_version"])
-                and "chapters" in prior
             ):
-                work["chapters"] = prior["chapters"]
+                unavailable = work.get("unavailable_metadata", {})
+                chapters_denied = unavailable.get("/chapters") in (403, 404)
+                if chapters_denied and "chapters" in prior:
+                    work["chapters"] = prior["chapters"]
+                eligible = {
+                    ch['uri'] for ch in work.get('chapters') or []
+                    if isinstance(ch, dict) and isinstance(ch.get('uri'), str)
+                    and (chapters_denied or unavailable.get(
+                        ch['uri'].removeprefix('/videos/' + work['source_id']) + '/pictures'
+                    ) in (403, 404))
+                }
+                existing = {
+                    f['chapter_uri'] for f in work.get('files') or []
+                    if f.get('role') == 'chapter_picture' and 'chapter_uri' in f
+                }
+                for prior_file in prior.get('files') or []:
+                    uri = prior_file.get('chapter_uri')
+                    if (prior_file.get('role') == 'chapter_picture'
+                            and uri in eligible and uri not in existing):
+                        work.setdefault('files', []).append(prior_file)
+                        existing.add(uri)
             if prior and "chapter_edits" in prior:
                 work["chapter_edits"] = prior["chapter_edits"]
             versions = list(prior.get("versions_history", [])) if prior else []
