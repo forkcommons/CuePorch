@@ -500,8 +500,8 @@ def create_app(root, database, operator, institution, simulation=None):
                     page = min(page, pages)
                     entries = entries[(page - 1) * size:page * size]
                     status.update(page=page, pages=pages)
-                status.update(works=entries, showcases=showcases,
-                              showcase_issue=data.get("showcase_issue"))
+                status.update(works=entries, showcases=showcases, showcase_issue=data.get("showcase_issue"),
+                              folders=data.get("folders", []), folder_issue=data.get("folder_issue"))
             except (ValueError, OSError, KeyError):
                 return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
         return status
@@ -567,6 +567,7 @@ def create_app(root, database, operator, institution, simulation=None):
                         works.update(merge_collection(transfer_directory, root))
                         with tx() as con:
                             library_showcases.import_showcases(con, data.get("showcases", []))
+                            library_folders.import_source_folders(con, data.get("folders", []), data["works"])
                         if os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
                             with tx() as con:
                                 for item in data["works"]:

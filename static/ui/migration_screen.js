@@ -5,6 +5,10 @@ const source = document.querySelector("input#source");
 const inventory = document.querySelector("button#inventory");
 const transfer = document.querySelector("button#transfer");
 const rows = document.querySelector("tbody#rows");
+const folderIssue = document.querySelector("#migrationFolderIssue");
+const folderDetails = document.querySelector("#migrationFolders");
+const folderSummary = document.querySelector("#migrationFolderSummary");
+const folderList = document.querySelector("#migrationFolderList");
 const showcases = document.querySelector("#showcaseInventory");
 const showcaseIssue = document.querySelector("#showcaseInventoryIssue");
 const showcaseRows = document.querySelector("#showcaseInventoryRows");
@@ -82,13 +86,25 @@ async function poll(page = currentPage) {
     rows.replaceChildren();
     for (const w of data.works || []) {
         const row = rows.insertRow();
-        for (const v of [w.title, w.source_id, w.disposition, w.source_privacy])
+        const folder = w.source_folder_path ?? (w.source_folder_unavailable ? "Folder unavailable" : "Unfiled");
+        for (const v of [w.title, w.source_id, folder, w.disposition, w.source_privacy])
             row.insertCell().textContent = v;
         const exceptions = [
             ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
             ...(w.transfer_issues || []).map((issue) => `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
         ];
         row.insertCell().textContent = exceptions.join(", ") || "None reported";
+    }
+    const folders = data.folders || [];
+    folderIssue.textContent = data.folder_issue || "";
+    folderIssue.hidden = !data.folder_issue;
+    folderDetails.hidden = !folders.length;
+    folderSummary.textContent = `${folders.length} source ${folders.length === 1 ? "folder" : "folders"}`;
+    folderList.replaceChildren();
+    for (const folder of folders) {
+        const item = document.createElement("li");
+        item.textContent = folder.path;
+        folderList.append(item);
     }
     const albums = data.showcases || [];
     showcases.hidden = !albums.length && !data.showcase_issue;
