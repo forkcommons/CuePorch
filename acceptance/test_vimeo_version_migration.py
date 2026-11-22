@@ -58,6 +58,98 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_viewer_discussions_keep_threads_and_privacy(self):
+        self.source.viewer_comments_fixture = True
+        self.source.public_viewer_fixture = True
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + '/operator/migration')
+
+            def transfer():
+                page.get_by_role('button', name='Preview transfer').click()
+                expect(page.locator('#status')).to_have_text('inventoried', timeout=20000)
+                page.get_by_role('button', name='Transfer privately').click()
+                expect(page.locator('#status')).to_have_text('transferred', timeout=20000)
+
+            transfer()
+            data = self.client.get('/api/migration', headers=self.auth).get_json()
+            works = {w['source_id']: w['source_viewer_comments'] for w in data['works']}
+            public_roots = works['71']['roots']
+            self.assertEqual(2, len(public_roots))
+            self.assertEqual(['Historic festival discussion', 'Matinee screening'], [r['body'] for r in public_roots])
+            self.assertEqual('Historic festival reply', public_roots[0]['replies'][0]['body'])
+            self.assertEqual('Guest Reviewer', public_roots[0]['replies'][0]['author'])
+            self.assertEqual('Restricted archive message', works['72']['roots'][0]['body'])
+            self.assertEqual(403, self.client.get('/api/migration').status_code)
+            self.assertEqual(4, self.requests['/videos/71/comments'])
+            page.get_by_text('2 viewer threads', exact=True).click()
+            expect(page.locator('details[open] > ol > li').filter(has_text='Festival Viewer: Historic festival discussion')).to_be_visible()
+            uid = work_id('station', 'vimeo', '71')
+            assert self.client.get('/api/viewer/comments/work/' + uid).status_code == 404
+            r = self.client.put(f'/api/library/work/{uid}/source-privacy', headers=self.auth, json={})
+            assert r.status_code == 200
+            viewer = browser.new_page()
+            viewer.goto(self.base + '/watch/work/' + uid)
+            expect(viewer.get_by_text('Historic festival discussion', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Historic festival reply', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Matinee screening', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Guest Reviewer', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Restricted archive message', exact=True)).to_have_count(0)
+            response = self.client.put(
+                '/api/policy/public_comments',
+                json={'required': True},
+                headers=self.auth,
+            )
+            assert response.status_code == 200
+
+            self.source.new_viewer_comment = True
+            transfer()
+            viewer.reload()
+            expect(viewer.get_by_text('Matinee screening', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Approval test viewer note', exact=True)).to_have_count(0)
+
+            response = self.client.get('/api/actions', headers=self.auth)
+            actions = response.get_json()
+            action = next(
+                a for a in actions
+                if a['comment_body'] == 'Approval test viewer note'
+            )
+            response = self.client.post(
+                f"/api/actions/{action['id']}/decision",
+                json={'decision': 'approve'},
+                headers=self.auth,
+            )
+            assert response.status_code == 204
+
+            viewer.reload()
+            expect(viewer.get_by_text('Approval test viewer note', exact=True)).to_be_visible()
+
+            response = self.client.put(
+                '/api/policy/public_comments',
+                json={'required': False},
+                headers=self.auth,
+            )
+            assert response.status_code == 200
+            self.source.viewer_comment_text = 'Updated historic festival discussion'
+            self.denied.add('/videos/71/comments/501/replies')
+            transfer()
+            viewer.reload()
+            expect(viewer.get_by_text('Updated historic festival discussion', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Historic festival reply', exact=True)).to_be_visible()
+            comments = self.client.get('/api/operator/public-comments', headers=self.auth).get_json()['comments']
+            primary = next(c for c in comments if c['body'] == self.source.viewer_comment_text)
+            self.assertEqual(('Festival Viewer', 'vimeo', False), (primary['author'], primary['origin'], primary['owned']))
+            self.assertNotIn('Restricted archive message', json.dumps(comments))
+            response = self.client.delete(f"/api/operator/public-comments/{primary['id']}", headers=self.auth)
+            self.assertEqual(204, response.status_code, response.text)
+            self.denied.clear()
+            transfer()
+            viewer.reload()
+            expect(viewer.get_by_text('Matinee screening', exact=True)).to_be_visible()
+            expect(viewer.get_by_text('Updated historic festival discussion', exact=True)).to_have_count(0)
+            expect(viewer.get_by_text('Historic festival reply', exact=True)).to_have_count(0)
+
     def test_vimeo_editorial_status_follows_source_cut(self):
         work_key = work_id('station', 'vimeo', '71')
         work_url = f'/api/library/work/{work_key}'

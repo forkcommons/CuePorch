@@ -27,6 +27,8 @@ export function setupWatchComments(section) {
         date.dateTime = created.toISOString();
         date.textContent = created.toLocaleString();
         byline.append(author, " · ", date);
+        if (entry.origin === 'vimeo')
+            byline.append(' · From Vimeo');
         const body = document.createElement("p");
         body.className = "watch-comment-body";
         body.textContent = entry.body;
@@ -61,6 +63,12 @@ export function setupWatchComments(section) {
                 }
             };
             item.append(remove);
+        }
+        if (entry.replies?.length) {
+            const repliesEl = document.createElement('ol');
+            repliesEl.setAttribute('aria-label', 'Replies');
+            repliesEl.append(...entry.replies.map(comment));
+            item.append(repliesEl);
         }
         return item;
     }

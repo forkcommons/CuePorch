@@ -585,6 +585,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             library_showcases.import_showcases(con, data.get("showcases", []))
                             library_folders.import_source_folders(con, data.get("folders", []), data["works"])
                             review_feedback.import_vimeo_editorial_status(con, data["works"], works)
+                            audience_comments.import_vimeo_viewer_comments(con, data["works"], action)
                         if os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
                             with tx() as con:
                                 for item in data["works"]:
@@ -908,10 +909,21 @@ def create_app(root, database, operator, institution, simulation=None):
             return [
                 {key: row[key] for key in row.keys() if row[key] is not None}
                 for row in con.execute(
-                    """SELECT action.id,step,payload,c.body AS comment_body,a.name AS comment_author
-                       FROM action LEFT JOIN audience_comment c ON c.approval=action.id
-                       LEFT JOIN audience_account a ON a.id=c.account
-                       WHERE action.status='waiting' ORDER BY action.created"""
+                    """SELECT action.id, step, payload, COALESCE(c.body, v.body) AS comment_body, COALESCE(a.name, v.author) AS comment_author
+                       FROM action
+                       LEFT JOIN audience_comment c ON c.approval = action.id
+                       LEFT JOIN audience_account a ON a.id = c.account
+                       LEFT JOIN vimeo_viewer_comment v ON v.approval = action.id
+                       WHERE action.status = 'waiting'
+                         AND (
+                           v.id IS NULL
+                           OR (
+                             COALESCE(v.removed, 0) <> 1
+                             AND COALESCE(v.source_listed, 1) <> 0
+                             AND COALESCE(v.source_public, 1) <> 0
+                           )
+                         )
+                       ORDER BY action.created"""
                 )
             ]
 

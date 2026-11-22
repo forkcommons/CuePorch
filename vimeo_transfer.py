@@ -197,6 +197,88 @@ def video_review_inventory(source, video_uri):
     return inventory | dict(state="available", links=list(by_id.values()))
 
 
+def vimeo_viewer_comment(row, endpoint):
+    if not isinstance(row, dict):
+        return None
+    uri = row.get('uri')
+    if not isinstance(uri, str) or not re.fullmatch(re.escape(endpoint) + r'/[0-9]+', uri):
+        return None
+    if row.get('type', 'video') != 'video' or row.get('deleted_on'):
+        return None
+    text = row.get('text')
+    if not isinstance(text, str) or not (1 <= len(text) <= 12000) or '\x00' in text:
+        return None
+    created_on = row.get('created_on')
+    if not isinstance(created_on, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(created_on.replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        created = dt.timestamp()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    author = 'Vimeo viewer'
+    metadata = row.get('metadata')
+    if isinstance(metadata, dict):
+        connections = metadata.get('connections')
+        if isinstance(connections, dict):
+            for key in ('user', 'guest_user'):
+                node = connections.get(key)
+                if isinstance(node, dict):
+                    name = node.get('name')
+                    if isinstance(name, str) and name.strip():
+                        author = name.strip()[:256]
+                        break
+    legacy_user = row.get("user")
+    if author == "Vimeo viewer" and isinstance(legacy_user, dict):
+        name = legacy_user.get("name")
+        if isinstance(name, str) and name.strip():
+            author = name.strip()[:256]
+    return {'id': hashlib.sha256(uri.encode()).hexdigest()[:32], 'author': author, 'body': text, 'created': created}
+
+
+def viewer_comment_inventory(source, video_uri):
+    fields = 'uri,type,text,created_on,deleted_on,metadata.connections.user.name,metadata.connections.guest_user.name'
+
+    def read(path, *, include_reply_count=False):
+        requested = fields
+        if include_reply_count:
+            requested += ',user.name,metadata.connections.replies.total'
+        try:
+            items = list(source.pages(path, fields=requested))
+        except SourceFailure as exc:
+            if exc.status in (403, 404):
+                return None
+            raise
+        seen, out = set(), []
+        for item in items:
+            comment = vimeo_viewer_comment(item, path)
+            if comment is None:
+                continue
+            key = comment["id"]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((item, comment))
+        return out
+    roots = read(video_uri + '/comments', include_reply_count=True)
+    if roots is None:
+        return dict(state="unavailable", roots=[])
+    inventory = []
+    for raw, root in roots:
+        data = raw
+        for key in ("metadata", "connections", "replies", "total"):
+            data = data.get(key) if isinstance(data, dict) else None
+        total = data
+        if type(total) is int and total == 0:
+            replies = []
+        else:
+            replies = read(raw["uri"] + "/replies")
+        inventory.append(root | dict(replies=[item for _, item in replies or []], replies_available=replies is not None))
+    return dict(state="available", roots=inventory)
+
+
 def assets(video, tracks):
     candidates = ((video.get("download") or []) + (video.get("files") or [])
                   + ((video.get("play") or {}).get("progressive") or []))
@@ -1126,6 +1208,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         attach_version_audio(root, source, record, versions, dry_run=dry_run, refresh=refresh)
         attach_previous_text_tracks(root, source, record, dry_run=dry_run, refresh=refresh)
         record["source_review"] = video_review_inventory(source, uri)
+        record["source_viewer_comments"] = viewer_comment_inventory(source, uri)
         works.append(record)
         if progress:
             progress(len(works), len(videos))
