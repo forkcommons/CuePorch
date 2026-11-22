@@ -41,6 +41,7 @@ export interface Series {
   publication: string;
   watch: string | null;
   has_password: boolean;
+  collection: string | null;
 }
 
 export interface EventChoice {
@@ -49,10 +50,17 @@ export interface EventChoice {
   visibility: Visibility;
 }
 
+export interface Collection {
+  id: string;
+  parent: string | null;
+  name: string;
+}
+
 export interface ListResponse {
   series: Series[];
   events: EventChoice[];
   recordings: Recording[];
+  collections: Collection[];
 }
 
 const byId = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -71,6 +79,11 @@ const seriesSearch = document.querySelector<HTMLInputElement>("#seriesSearch")!;
 const seriesSort = document.querySelector<HTMLSelectElement>("#seriesSort")!;
 const seriesView = document.querySelector<HTMLSelectElement>("#seriesView")!;
 const seriesEmpty = document.querySelector<HTMLElement>("#seriesEmpty")!;
+const seriesCollectionFilter = byId<HTMLSelectElement>("seriesCollectionFilter");
+const seriesCollectionDestination = byId<HTMLSelectElement>("seriesCollectionDestination");
+const seriesMoveCollection = byId<HTMLButtonElement>("seriesMoveCollection");
+
+let collections: Collection[] = [];
 const seriesCopyLink = document.querySelector<HTMLButtonElement>("#seriesCopyLink")!;
 
 let credential =
@@ -202,6 +215,7 @@ function renderEditor(entry: Series | null) {
   localization.populate(entry.settings.localization, entry.settings.presentation);
   translationJobs.populate(entry);
   editorHeading.textContent = entry.settings.title;
+  seriesCollectionDestination.value = entry.collection ?? "";
   (field("title") as HTMLInputElement).value = entry.settings.title;
   (field("description") as HTMLTextAreaElement).value =
     entry.settings.description;
@@ -257,10 +271,55 @@ function renderEditor(entry: Series | null) {
   };
 }
 
+function collectionPath(id: string | null, seen = new Set<string>()): string {
+  if (!id) return "Workspace root";
+  if (seen.has(id)) return "…";
+  seen.add(id);
+  const node = collections.find((c) => c.id === id);
+  if (!node) return "…";
+  const parent = collectionPath(node.parent, seen);
+  return parent === "Workspace root" ? node.name : `${parent} / ${node.name}`;
+}
+
+function renderCollectionChoices() {
+  const filterValue = seriesCollectionFilter.value;
+  const destValue = seriesCollectionDestination.value;
+  const sorted = collections
+    .slice()
+    .sort((a, b) => collectionPath(a.id).localeCompare(collectionPath(b.id)));
+
+  const filterOptions = [
+    new Option("All collections", ""),
+    new Option("Workspace root", "root"),
+    ...sorted.map((c) => new Option(collectionPath(c.id), c.id)),
+  ];
+  seriesCollectionFilter.replaceChildren(...filterOptions);
+  seriesCollectionFilter.value = filterOptions.some((o) => o.value === filterValue)
+    ? filterValue
+    : "";
+
+  const destOptions = [
+    new Option("Workspace root", ""),
+    ...sorted.map((c) => new Option(collectionPath(c.id), c.id)),
+  ];
+  seriesCollectionDestination.replaceChildren(...destOptions);
+  seriesCollectionDestination.value = destOptions.some((o) => o.value === destValue)
+    ? destValue
+    : "";
+}
+
+seriesCollectionFilter.addEventListener("change", renderList);
+
 function getVisibleEntries(): Series[] {
+  const filterValue = seriesCollectionFilter.value;
   const searchTerm = seriesSearch.value.trim().toLowerCase();
   const sortMode = seriesSort.value;
   let result = entries.filter(entry => {
+    if (filterValue === "root") {
+      if (entry.collection !== null) return false;
+    } else if (filterValue && entry.collection !== filterValue) {
+      return false;
+    }
     if (!searchTerm) return true;
     const title = entry.settings.title.toLowerCase();
     const slug = entry.slug.toLowerCase();
@@ -346,7 +405,9 @@ async function withBusy(fn: () => Promise<void>): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  const { series, events, recordings: rec } = await api<ListResponse>("");
+  const { series, events, recordings: rec, collections: folders } = await api<ListResponse>("");
+  collections = folders;
+  renderCollectionChoices();
   workspace.hidden = false;
   identify.hidden = true;
   entries = series;
@@ -411,9 +472,24 @@ form.addEventListener("submit", e => {
 
 seriesNew.addEventListener("click", () => {
   void withBusy(async () => {
-    current = await api<Series>("", "POST", {});
+    const filterValue = seriesCollectionFilter.value;
+    const folder =
+      filterValue && filterValue !== "root" ? filterValue : null;
+    current = await api<Series>("", "POST", { folder });
     setStatus("Private draft saved.");
     await load();
+  });
+});
+
+seriesMoveCollection.addEventListener("click", () => {
+  if (!current) return;
+  const target = current;
+  void withBusy(async () => {
+    await api(`/${target.id}/collection`, "PUT", {
+      folder: seriesCollectionDestination.value || null,
+    });
+    await load();
+    setStatus("Series moved.");
   });
 });
 

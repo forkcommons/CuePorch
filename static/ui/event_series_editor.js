@@ -16,6 +16,10 @@ const seriesSearch = document.querySelector("#seriesSearch");
 const seriesSort = document.querySelector("#seriesSort");
 const seriesView = document.querySelector("#seriesView");
 const seriesEmpty = document.querySelector("#seriesEmpty");
+const seriesCollectionFilter = byId("seriesCollectionFilter");
+const seriesCollectionDestination = byId("seriesCollectionDestination");
+const seriesMoveCollection = byId("seriesMoveCollection");
+let collections = [];
 const seriesCopyLink = document.querySelector("#seriesCopyLink");
 let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
 const localization = setupSeriesLocalization(byId("seriesLocalization"));
@@ -112,6 +116,7 @@ function renderEditor(entry) {
     localization.populate(entry.settings.localization, entry.settings.presentation);
     translationJobs.populate(entry);
     editorHeading.textContent = entry.settings.title;
+    seriesCollectionDestination.value = entry.collection ?? "";
     field("title").value = entry.settings.title;
     field("description").value =
         entry.settings.description;
@@ -167,10 +172,55 @@ function renderEditor(entry) {
         }
     };
 }
+function collectionPath(id, seen = new Set()) {
+    if (!id)
+        return "Workspace root";
+    if (seen.has(id))
+        return "…";
+    seen.add(id);
+    const node = collections.find((c) => c.id === id);
+    if (!node)
+        return "…";
+    const parent = collectionPath(node.parent, seen);
+    return parent === "Workspace root" ? node.name : `${parent} / ${node.name}`;
+}
+function renderCollectionChoices() {
+    const filterValue = seriesCollectionFilter.value;
+    const destValue = seriesCollectionDestination.value;
+    const sorted = collections
+        .slice()
+        .sort((a, b) => collectionPath(a.id).localeCompare(collectionPath(b.id)));
+    const filterOptions = [
+        new Option("All collections", ""),
+        new Option("Workspace root", "root"),
+        ...sorted.map((c) => new Option(collectionPath(c.id), c.id)),
+    ];
+    seriesCollectionFilter.replaceChildren(...filterOptions);
+    seriesCollectionFilter.value = filterOptions.some((o) => o.value === filterValue)
+        ? filterValue
+        : "";
+    const destOptions = [
+        new Option("Workspace root", ""),
+        ...sorted.map((c) => new Option(collectionPath(c.id), c.id)),
+    ];
+    seriesCollectionDestination.replaceChildren(...destOptions);
+    seriesCollectionDestination.value = destOptions.some((o) => o.value === destValue)
+        ? destValue
+        : "";
+}
+seriesCollectionFilter.addEventListener("change", renderList);
 function getVisibleEntries() {
+    const filterValue = seriesCollectionFilter.value;
     const searchTerm = seriesSearch.value.trim().toLowerCase();
     const sortMode = seriesSort.value;
     let result = entries.filter(entry => {
+        if (filterValue === "root") {
+            if (entry.collection !== null)
+                return false;
+        }
+        else if (filterValue && entry.collection !== filterValue) {
+            return false;
+        }
         if (!searchTerm)
             return true;
         const title = entry.settings.title.toLowerCase();
@@ -253,7 +303,9 @@ async function withBusy(fn) {
     }
 }
 async function load() {
-    const { series, events, recordings: rec } = await api("");
+    const { series, events, recordings: rec, collections: folders } = await api("");
+    collections = folders;
+    renderCollectionChoices();
     workspace.hidden = false;
     identify.hidden = true;
     entries = series;
@@ -311,9 +363,23 @@ form.addEventListener("submit", e => {
 });
 seriesNew.addEventListener("click", () => {
     void withBusy(async () => {
-        current = await api("", "POST", {});
+        const filterValue = seriesCollectionFilter.value;
+        const folder = filterValue && filterValue !== "root" ? filterValue : null;
+        current = await api("", "POST", { folder });
         setStatus("Private draft saved.");
         await load();
+    });
+});
+seriesMoveCollection.addEventListener("click", () => {
+    if (!current)
+        return;
+    const target = current;
+    void withBusy(async () => {
+        await api(`/${target.id}/collection`, "PUT", {
+            folder: seriesCollectionDestination.value || null,
+        });
+        await load();
+        setStatus("Series moved.");
     });
 });
 seriesDelete.addEventListener("click", e => {

@@ -843,6 +843,76 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertEqual(404, self.client.get("/event-series/synthetic-series").status_code)
             mobile.close()
 
+    def test_event_series_collection_move_flow(self):
+        parent = self.client.post(
+            "/api/library/folders",
+            headers=self.auth,
+            json=dict(name="Smoke parent collection", color="#3266aa", parent=None),
+        )
+        self.assertEqual(201, parent.status_code)
+        parent_id = parent.get_json()["id"]
+
+        nested = self.client.post(
+            "/api/library/folders",
+            headers=self.auth,
+            json=dict(name="Smoke nested collection", color="#3266aa", parent=parent_id),
+        )
+        self.assertEqual(201, nested.status_code)
+        nested_id = nested.get_json()["id"]
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(
+                f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/library")
+            page.get_by_role("button", name="Load library").click()
+            page.get_by_role("link", name="Event series", exact=True).click()
+            page.select_option("#seriesCollectionFilter", str(nested_id))
+            page.click("#seriesNew")
+            page.fill("#seriesTitle", "Synthetic collection series")
+            page.fill("#seriesSlug", "synthetic-collection-series")
+            page.select_option("#seriesVisibility", "public")
+            page.wait_for_selector("#seriesEdit:not([inert])")
+            with page.expect_response(
+                lambda resp: "/api/event-series/" in resp.url and resp.request.method == "PUT"
+            ) as info:
+                page.click("text=Save Event Series")
+            self.assertEqual(200, info.value.status)
+            series = info.value.json()
+            assert series["collection"] == nested_id
+            assert series["publication"] == "eligible"
+            resp = self.client.get(series["watch"])
+            assert resp.status_code == 200
+
+            page.select_option("#seriesCollectionDestination", parent_id)
+            page.get_by_role("button", name="Move series").click()
+            expect(page.locator("#seriesStatus")).to_have_text("Series moved.")
+
+            item = page.locator("#seriesList").get_by_role("button", name="Synthetic collection series", exact=True)
+            expect(item).to_have_count(0)
+            page.select_option("#seriesCollectionFilter", parent_id)
+            expect(item).to_be_visible()
+
+            after = self.client.get(f"/api/event-series/{series['id']}", headers=self.auth).get_json()
+            assert after["revision"] == series["revision"]
+            assert after["publication"] == series["publication"]
+            assert after["watch"] == series["watch"]
+            assert after["collection"] == parent_id
+            assert self.client.get(after["watch"]).status_code == 200
+
+            unauth = self.client.put(
+                f"/api/event-series/{series['id']}/collection",
+                json={"folder": parent_id},
+            )
+            assert unauth.status_code == 403
+
+            missing = self.client.put(
+                f"/api/event-series/{series['id']}/collection",
+                json={"folder": f"{parent_id}-missing"},
+                headers=self.auth,
+            )
+            assert missing.status_code == 404
+
     def test_timed_video_registration(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/registration"
