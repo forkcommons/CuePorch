@@ -554,7 +554,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
             ) else []
             presentation = library_interactivity.for_viewer(
-                con, work, lambda: library_interactivity.public_videos(con, read_works, title_for, permits, uid)
+                con, work, lambda: library_interactivity.public_videos(con, read_works, title_for, permits, uid), embed=embed
             ) if can_watch else None
             poster = bool(presentation and presentation["ending"]["mode"] == "thumbnail"
                           and selected_thumbnail(con, work))

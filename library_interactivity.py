@@ -116,10 +116,17 @@ def image_id(con, value):
     return value
 
 
-def presentation(con, work):
+def presentation(con, work, *, embed=False):
     row = con.execute("SELECT settings FROM video_presentation WHERE work=? AND version=?",
                       (work["id"], video_version_key(work))).fetchone()
-    return json.loads(row[0]) if row else dict(cards=[], ending={"mode": "default"})
+    if row:
+        return json.loads(row[0])
+    ending = {"mode": "default"}
+    if embed and work.get("provider") == "vimeo":
+        mode = work.get("source_embed_ending")
+        if mode in ("empty", "loop", "share", "thumbnail"):
+            ending = {"mode": mode}
+    return dict(cards=[], ending=ending)
 
 
 def public_videos(con, read_works, title_for, eligible, except_id):
@@ -196,8 +203,8 @@ def presentation_settings(con, work, body, videos):
     return dict(cards=sorted(windows, key=lambda card: card["start"]), ending=result)
 
 
-def for_viewer(con, work, public_options):
-    values = presentation(con, work)
+def for_viewer(con, work, public_options, *, embed=False):
+    values = presentation(con, work, embed=embed)
     for card in values["cards"]:
         card["end"] = card["start"] + CARD_SECONDS
     ending = values["ending"]

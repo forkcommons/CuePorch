@@ -237,7 +237,7 @@ def merge_collection(source, destination):
                     temporary.unlink(missing_ok=True)
             prior = works.get(work["id"])
             if prior and prior.get("provider") == work.get("provider") == "vimeo":
-                for field in ("source_embed_appearance", "source_watch_appearance"):
+                for field in ("source_embed_appearance", "source_embed_ending", "source_watch_appearance"):
                     if field not in work and field in prior:
                         work[field] = prior[field]
             source_incomplete = work.get("transfer_issues") or work.get("disposition") == "owner file needed"
