@@ -895,7 +895,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                 if provider == "youtube-live":
                     if con.execute("SELECT 1 FROM youtube_live_creation WHERE event=? AND opens=?",
                                    (uid, opens)).fetchone():
-                        return False
+                        if not live_destination_series.unfinished_youtube(con, series, opens):
+                            return False
                 elif provider in linkedin_connections:
                     key = (uid, opens, series["owner"])
                     if con.execute(linkedin_live_job.INGEST, key).fetchone():
