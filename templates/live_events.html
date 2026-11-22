@@ -207,6 +207,18 @@
               <div id="eventLandingTranslatedSpeakers"></div>
               <a id="eventLandingPreviewLink" href="#" target="_blank" rel="noopener" hidden>Preview</a>
             </div>
+            <fieldset id="eventLandingAiEditor" disabled>
+                <legend>Translation job</legend>
+                <label for="eventLandingAiAuto">
+                    <input type="checkbox" id="eventLandingAiAuto" checked>
+                    Publish when ready
+                </label>
+                <button type="button" id="eventLandingAiGenerate">Generate translation</button>
+                <button type="button" id="eventLandingAiRefresh">Refresh translation status</button>
+                <button type="button" id="eventLandingAiDraft" hidden>Load generated draft</button>
+                <button type="button" id="eventLandingAiReload" hidden>Reload saved translation</button>
+                <p id="eventLandingAiStatus" role="status" aria-live="polite"></p>
+            </fieldset>
           </fieldset>
           <p id="eventLandingStatus" role="status"></p>
           <button type="submit" id="saveEventLanding" disabled>Save landing page</button>

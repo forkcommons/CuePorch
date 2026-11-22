@@ -502,6 +502,8 @@ In **Event page languages**, choose the base language, select a translation lang
 
 For each language, enter translated roles and bios for the speakers on the lineup. Speaker names come from the shared profile. If an original role or bio changes, CuePorch flags the translation. Edit it or select **Mark current** to keep the existing wording, then save.
 
+With TextFlowKit configured, select a language and choose **Generate translation**. **Publish when ready** is on by default, subject to the workspace’s Translation approval setting. Clear it to generate a draft, then use **Refresh translation status** and **Load generated draft** to edit and save. Generation includes the selected speakers’ roles and bios.
+
 Add a **Player logo** and **Player byline** to identify the event during live playback and replay. **Show live badge** and **Show current viewer count** are optional and appear during the live broadcast. The count represents CuePorch players currently watching, with privacy opt-outs excluded. To remove the logo from open players and revoke its address, choose **Remove logo** and save.
 
 Turn on **Customize viewer controls** to choose the play button position, primary, accent and icon colors, and whether viewers see the event title, progress, volume, picture-in-picture and fullscreen controls. Viewers can seek through the available live DVR window or a replay when progress is shown. Browser support determines whether picture-in-picture and fullscreen appear. The same settings apply to the watch page and its embeds. Turn the switch off to restore the standard player.

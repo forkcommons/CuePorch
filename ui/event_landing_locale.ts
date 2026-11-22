@@ -170,5 +170,16 @@ export function setupLandingLocalization(profiles: () => SpeakerProfile[]) {
 
   const payload = (): LandingLocalization => structuredClone(state);
 
-  return { populate, reset, payload, refreshSpeakers };
+  const applyDraft = (language: string, translation: LandingTranslation) => {
+    if (language === state.base) return;
+    const changed = active() !== language;
+    state.translations[language] = { ...structuredClone(translation), published: false };
+    langEl.value = language;
+    syncFields();
+    syncBaseLock();
+    syncPreview();
+    if (changed) langEl.dispatchEvent(new Event("change"));
+  };
+
+  return { populate, reset, payload, refreshSpeakers, applyDraft };
 }

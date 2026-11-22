@@ -1,12 +1,12 @@
-export function setupSeriesTranslationJobs(root, api, applyDraft, reloadEntry) {
+export function setupTranslationJobs(root, api, applyDraft, reloadEntry, options) {
     const q = (selector) => root.querySelector(selector);
-    const languageSelect = q('#seriesTranslationLanguage');
-    const generateButton = q('#seriesAiGenerate');
-    const refreshButton = q('#seriesAiRefresh');
-    const draftButton = q('#seriesAiDraft');
-    const reloadButton = q('#seriesAiReload');
-    const automaticCheckbox = q('#seriesAiAuto');
-    const statusElement = q('#seriesAiStatus');
+    const { controlPrefix, languageSelect, jobPath } = options;
+    const generateButton = q(`#${controlPrefix}AiGenerate`);
+    const refreshButton = q(`#${controlPrefix}AiRefresh`);
+    const draftButton = q(`#${controlPrefix}AiDraft`);
+    const reloadButton = q(`#${controlPrefix}AiReload`);
+    const automaticCheckbox = q(`#${controlPrefix}AiAuto`);
+    const statusElement = q(`#${controlPrefix}AiStatus`);
     automaticCheckbox.checked = true;
     let entry = null;
     let jobs = [];
@@ -47,7 +47,7 @@ export function setupSeriesTranslationJobs(root, api, applyDraft, reloadEntry) {
             return;
         }
         try {
-            const response = await api(`/${target.id}/translation-jobs`, 'GET');
+            const response = await api(jobPath(target.id), 'GET');
             if (entry !== target)
                 return;
             available = response.available;
@@ -73,7 +73,7 @@ export function setupSeriesTranslationJobs(root, api, applyDraft, reloadEntry) {
         render();
         try {
             statusElement.textContent = 'Generating…';
-            const response = await api(`/${target.id}/translation-jobs`, 'POST', {
+            const response = await api(jobPath(target.id), 'POST', {
                 revision: target.revision,
                 language,
                 apply_now: automaticCheckbox.checked,
@@ -140,4 +140,12 @@ export function setupSeriesTranslationJobs(root, api, applyDraft, reloadEntry) {
             }
         },
     };
+}
+export function setupSeriesTranslationJobs(root, api, applyDraft, reloadEntry) {
+    const languageSelect = root.querySelector('#seriesTranslationLanguage');
+    return setupTranslationJobs(root, api, applyDraft, reloadEntry, {
+        controlPrefix: 'series',
+        languageSelect,
+        jobPath: (id) => `/${id}/translation-jobs`,
+    });
 }

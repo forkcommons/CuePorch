@@ -5,50 +5,51 @@ type Entry = {
   revision: string;
 };
 
-type Job = {
+type Job<T> = {
   id: string;
-  revision: string;
+  revision: string | null;
   language: string;
   state: string;
-  result: Translation | null;
+  result: T | null;
   error: string | null;
 };
 
-type JobsResponse = {
+type JobsResponse<T> = {
   available: boolean;
-  jobs: Job[];
+  jobs: Job<T>[];
 };
 
-type GenerateResponse = {
-  job: Job;
+type GenerateResponse<T> = {
+  job: Job<T>;
 };
 
-export function setupSeriesTranslationJobs(
+export function setupTranslationJobs<T>(
   root: HTMLElement,
-  api: <T>(suffix: string, method?: string, body?: object) => Promise<T>,
-  applyDraft: (language: string, translation: Translation) => void,
+  api: <R>(suffix: string, method?: string, body?: object) => Promise<R>,
+  applyDraft: (language: string, translation: T) => void,
   reloadEntry: () => Promise<void>,
+  options: { controlPrefix: string; languageSelect: HTMLSelectElement; jobPath: (id: string) => string },
 ) {
-  const q = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
+  const q = <E extends HTMLElement>(selector: string) => root.querySelector<E>(selector)!;
+  const { controlPrefix, languageSelect, jobPath } = options;
 
-  const languageSelect = q<HTMLSelectElement>('#seriesTranslationLanguage');
-  const generateButton = q<HTMLButtonElement>('#seriesAiGenerate');
-  const refreshButton = q<HTMLButtonElement>('#seriesAiRefresh');
-  const draftButton = q<HTMLButtonElement>('#seriesAiDraft');
-  const reloadButton = q<HTMLButtonElement>('#seriesAiReload');
-  const automaticCheckbox = q<HTMLInputElement>('#seriesAiAuto');
-  const statusElement = q<HTMLElement>('#seriesAiStatus');
+  const generateButton = q<HTMLButtonElement>(`#${controlPrefix}AiGenerate`);
+  const refreshButton  = q<HTMLButtonElement>(`#${controlPrefix}AiRefresh`);
+  const draftButton    = q<HTMLButtonElement>(`#${controlPrefix}AiDraft`);
+  const reloadButton   = q<HTMLButtonElement>(`#${controlPrefix}AiReload`);
+  const automaticCheckbox = q<HTMLInputElement>(`#${controlPrefix}AiAuto`);
+  const statusElement  = q<HTMLElement>(`#${controlPrefix}AiStatus`);
 
   automaticCheckbox.checked = true;
 
   let entry: Entry | null = null;
-  let jobs: Job[] = [];
+  let jobs: Job<T>[] = [];
   let available = false;
   let generating: Entry | null = null;
 
   const selectedLanguage = () => languageSelect.value;
 
-  const currentJob = (): Job | null => {
+  const currentJob = (): Job<T> | null => {
     return jobs.find((job) => job.language === selectedLanguage()) ?? null;
   };
 
@@ -91,8 +92,8 @@ export function setupSeriesTranslationJobs(
     }
 
     try {
-      const response = await api<JobsResponse>(
-        `/${target.id}/translation-jobs`,
+      const response = await api<JobsResponse<T>>(
+        jobPath(target.id),
         'GET',
       );
 
@@ -121,8 +122,8 @@ export function setupSeriesTranslationJobs(
     render();
     try {
       statusElement.textContent = 'Generating…';
-      const response = await api<GenerateResponse>(
-        `/${target.id}/translation-jobs`,
+      const response = await api<GenerateResponse<T>>(
+        jobPath(target.id),
         'POST',
         {
           revision: target.revision,
@@ -189,4 +190,18 @@ export function setupSeriesTranslationJobs(
       }
     },
   };
+}
+
+export function setupSeriesTranslationJobs(
+  root: HTMLElement,
+  api: <T>(suffix: string, method?: string, body?: object) => Promise<T>,
+  applyDraft: (language: string, translation: Translation) => void,
+  reloadEntry: () => Promise<void>,
+) {
+  const languageSelect = root.querySelector<HTMLSelectElement>('#seriesTranslationLanguage')!;
+  return setupTranslationJobs<Translation>(root, api, applyDraft, reloadEntry, {
+    controlPrefix: 'series',
+    languageSelect,
+    jobPath: (id) => `/${id}/translation-jobs`,
+  });
 }
