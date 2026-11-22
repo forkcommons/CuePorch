@@ -2979,11 +2979,15 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 joined = reporting[1] if len(reporting) > 1 else None
                 delivered(con, uid, revision, opens, form_revision, remote, replay, embed, joined)
                 sample = request.get_json()
-                event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, sample,
-                                       report_scope=reporting[0] if reporting else None, viewer_key=viewer_key)
+                updated = event_analytics.record(con, uid, opens, "replay" if replay else "live", nonce, sample,
+                                                report_scope=reporting[0] if reporting else None, viewer_key=viewer_key)
                 sharing = reporting[2] if len(reporting) > 2 else None
-                if sharing and sample["played"] and event_registrants.sharing_active(con, sharing, uid, opens):
+                if updated and sharing and sample["played"] and event_registrants.sharing_active(con, sharing, uid, opens):
                     event_registrants.link_sample(con, nonce, sharing)
+                    if replay and "replay_intervals" in sample and reporting:
+                        event_registrants.record_replay_coverage(
+                            con, nonce, sharing, remote, sample["sequence"], reporting[0][4], sample["replay_intervals"],
+                        )
         return "", 204
 
     @app.post("/api/event-playback/withdraw-sharing")

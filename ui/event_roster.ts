@@ -10,7 +10,7 @@ type Download = (path: string, filename: string) => Promise<void>;
 interface Roster {
   attendees: {email: string; registered: number | null; source: string;
     answers: {first_name?: string; last_name?: string};
-    watch_time: {live_seconds: number; replay_seconds: number; plays: number} | null}[];
+    watch_time: {live_seconds: number; replay_seconds: number; plays: number; replay_watched_fraction: number | null} | null}[];
   total: number;
   offset: number;
   page_size: number;
@@ -26,6 +26,11 @@ const sourceNames: Record<string, string> = {form: "Registration form", api: "AP
 function watchTime(seconds?: number) {
   if (seconds === undefined) return "—";
   return seconds.toLocaleString(undefined, {maximumFractionDigits: 1}) + " s";
+}
+
+const replayWatchedFormat = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
+function replayWatched(fraction?: number | null) {
+  return fraction == null ? "—" : replayWatchedFormat.format(fraction);
 }
 
 export function setupEventRoster(request: Request, download: Download) {
@@ -63,6 +68,7 @@ export function setupEventRoster(request: Request, download: Download) {
         row.insertCell().textContent = sourceNames[attendee.source] ?? attendee.source;
         row.insertCell().textContent = watchTime(attendee.watch_time?.live_seconds);
         row.insertCell().textContent = watchTime(attendee.watch_time?.replay_seconds);
+        row.insertCell().textContent = replayWatched(attendee.watch_time?.replay_watched_fraction);
       }
       prev.disabled = page === 0;
       next.disabled = page + pageSize >= result.total;

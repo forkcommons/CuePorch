@@ -1,5 +1,5 @@
 import { browserIdentity } from "./browser_analytics.js";
-export function eventObservation(token, tracks) {
+export function eventObservation(token, tracks, replayIntervals) {
     const viewer = browserIdentity();
     let sequence = 0;
     return (played, playing, completed, watched) => {
@@ -7,14 +7,18 @@ export function eventObservation(token, tracks) {
         const body = { sequence: ++sequence, played, playing, completed, watched: Math.round(watched * 1000), viewer };
         if (extra && extra.length)
             body.tracks = extra;
+        const replay = replayIntervals?.();
+        if (replay && replay.length)
+            body.replay_intervals = replay;
+        const payload = JSON.stringify(body);
         void fetch("/api/event-playback", {
-            method: "POST", keepalive: true,
+            method: "POST", keepalive: payload.length < 60_000,
             headers: { "Content-Type": "application/json", "X-CuePorch-Playback": token },
-            body: JSON.stringify(body),
+            body: payload,
         }).catch(() => { });
     };
 }
-export function measureEventPlayback(video, token, trackSelection) {
+export function measureEventPlayback(video, token, trackSelection, includeReplayCoverage) {
     if (!token)
         return undefined;
     let current = trackSelection?.() ?? ["", ""];
@@ -27,6 +31,24 @@ export function measureEventPlayback(video, token, trackSelection) {
             if (out.length >= 256)
                 break;
         }
+        return out.length ? out : undefined;
+    }, () => {
+        if (!played || !includeReplayCoverage?.())
+            return undefined;
+        const out = [];
+        try {
+            const ranges = video.played;
+            for (let i = 0; i < ranges.length && out.length < 512; i++) {
+                const start = Math.round(ranges.start(i) * 1000);
+                const end = Math.round(ranges.end(i) * 1000);
+                if (!Number.isFinite(start) || !Number.isFinite(end))
+                    continue;
+                if (!(end > start))
+                    continue;
+                out.push([start, end]);
+            }
+        }
+        catch { }
         return out.length ? out : undefined;
     });
     const listeners = new AbortController();

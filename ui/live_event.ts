@@ -164,7 +164,8 @@ function renderVideo(address: string, phase: string, analytics: string, transpor
     player.replaceChildren(video, branding);
   }
   let audioKey = "original:und";
-  stopMeasuring = measureEventPlayback(video, analytics, () => [audioKey, captions.selection()]);
+  stopMeasuring = measureEventPlayback(video, analytics, () => [audioKey, captions.selection()],
+    () => phase === "Replay" && Boolean(sharing && !sharing.hidden));
   const replay = phase === "Replay";
   const currentVideo = video;
   const onAudioSelection = (key: string) => {

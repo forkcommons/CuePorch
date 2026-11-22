@@ -2,7 +2,6 @@
 
 from collections import Counter, defaultdict
 import csv
-from heapq import merge
 from io import StringIO
 from itertools import chain, groupby
 import json
@@ -36,7 +35,7 @@ def _progress_metrics(rows):
         if duration > 0:
             clipped = [[start, min(duration, end)] for start, end in intervals if start < duration]
             coverage = sum(end - start for start, end in clipped)
-            net_ranges = _merge_coverage(net_ranges, clipped)
+            net_ranges = library_analytics.merge_coverage(net_ranges, clipped)
             coverage_ms += coverage
             measured_views += 1
             average_fraction_sum += coverage / duration
@@ -48,23 +47,6 @@ def _progress_metrics(rows):
     return dict(net_ms=sum(end - start for start, end in net_ranges), duration_ms=duration_ms,
                 coverage_ms=coverage_ms, average_fraction_sum=average_fraction_sum,
                 measured_views=measured_views, completions=completions, views=views, watched_ms=watched_ms)
-
-
-def _merge_coverage(left, right):
-    result = []
-    current = None
-    for start, end in merge(left, right):
-        if current is None:
-            current = [start, end]
-        elif start <= current[1]:
-            if end > current[1]:
-                current[1] = end
-        else:
-            result.append(current)
-            current = [start, end]
-    if current is not None:
-        result.append(current)
-    return result
 
 
 def report_progress(row):
