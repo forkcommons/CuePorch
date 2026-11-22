@@ -15,7 +15,7 @@ from werkzeug.security import generate_password_hash
 
 import content_rating
 from catalog import video_version_key
-from browser_account_security import is_loopback
+from browser_account_security import is_loopback, json_mutation, private, same_origin, secure_site
 import folder_slack_queue
 import library_analytics
 import library_details
@@ -26,6 +26,8 @@ import library_privacy as privacy
 import library_registration
 import library_video_questions
 import media_bandwidth
+import team_accounts
+import team_group_roles
 from library_appearance import brand_image, stored_image_blob
 from library_interactivity import image_id, selected_ids, text_field, web_link
 from library_languages import original_language, track_key, tracks_for
@@ -45,6 +47,9 @@ CREATE INDEX IF NOT EXISTS video_showcase_analytics_by_showcase ON video_showcas
 CREATE TABLE IF NOT EXISTS audience_channel_follow(
  account TEXT NOT NULL, channel TEXT NOT NULL, PRIMARY KEY(account, channel));
 CREATE INDEX IF NOT EXISTS audience_channel_follow_by_channel ON audience_channel_follow(channel);
+CREATE TABLE IF NOT EXISTS video_channel_moderator(
+ channel TEXT NOT NULL, member TEXT NOT NULL, PRIMARY KEY(channel, member));
+CREATE INDEX IF NOT EXISTS video_channel_moderator_by_member ON video_channel_moderator(member);
 """
 DEFAULTS = dict(
     title="Untitled showcase", description="", visibility="private", domains=[], videos=[],
@@ -248,7 +253,7 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
 
 
 def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url, questions_enabled,
-             viewing_preferences):
+             viewing_preferences, team_origin, operator_name, team_member, can_edit):
     access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-access")
     media = URLSafeTimedSerializer(operator, salt="cueporch-showcase-media")
     member_access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-member-access")
@@ -258,6 +263,122 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
 
     def library():
         return {work["id"]: work for work in read_works() if work.get("asset_type", "video") == "video"}
+
+    @app.get("/team/channels")
+    def team_channels_page():
+        return private(render_template("team_channels.html"))
+
+    @app.get("/api/team/channels")
+    def team_channels():
+        same_origin(secure_site(team_origin))
+        with tx() as con:
+            manager = bool(operator_name(con))
+            if manager:
+                rows = con.execute("SELECT * FROM video_showcase ORDER BY created DESC")
+            else:
+                member = team_member(con)
+                if not member:
+                    abort(401, "Sign in to your team account.")
+                rows = con.execute("""SELECT s.* FROM video_showcase s
+                    JOIN video_channel_moderator m ON m.channel=s.id
+                    WHERE m.member=? ORDER BY s.created DESC""", (member["id"],)) if (
+                        member["role"] in team_accounts.CONTRIBUTORS) else ()
+            channels = []
+            for row in rows:
+                values = state(row)
+                if values["channel_listed"] and (manager or channel_visible(values)):
+                    channels.append(dict(id=row["id"], title=values["title"], slug=row["slug"]))
+            return private(dict(channels=channels, manage=manager))
+
+    @app.route("/api/team/channels/<uid>/moderators", methods=["GET", "PUT"])
+    def channel_moderators(uid):
+        secure = secure_site(team_origin)
+        same_origin(secure)
+        with tx() as con:
+            if not operator_name(con):
+                abort(403)
+            row = get_showcase(con, uid)
+            if not state(row)["channel_listed"]:
+                abort(404)
+            eligible = con.execute(f"""SELECT m.id, m.name FROM team_member m
+                WHERE m.removed IS NULL AND ({team_group_roles.EFFECTIVE_ROLE}) IN (?,?)
+                ORDER BY m.name COLLATE NOCASE, m.id""", team_accounts.CONTRIBUTORS).fetchall()
+            assigned = {item[0] for item in con.execute(
+                "SELECT member FROM video_channel_moderator WHERE channel=?", (uid,))}
+            revision = row["revision"]
+            if request.method == "PUT":
+                request.max_content_length = 128 * 1024
+                body = json_mutation(secure, team_accounts.MUTATION_HEADER)
+                if body.get("revision") != revision:
+                    abort(409, "This channel changed. Reload it before saving.")
+                ids = body.get("members")
+                if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+                    abort(422, "Select active contributors.")
+                selected = set(ids)
+                if len(selected) != len(ids) or selected - {item["id"] for item in eligible}:
+                    abort(422, "Select active contributors.")
+                if selected != assigned:
+                    con.execute("DELETE FROM video_channel_moderator WHERE channel=?", (uid,))
+                    con.executemany("INSERT INTO video_channel_moderator VALUES(?,?)",
+                                    ((uid, item) for item in ids))
+                    revision = uuid.uuid4().hex
+                    con.execute("UPDATE video_showcase SET revision=? WHERE id=?", (revision, uid))
+                    assigned = selected
+            return private(dict(revision=revision, members=[dict(
+                id=item["id"], name=item["name"], assigned=item["id"] in assigned,
+            ) for item in eligible]))
+
+    @app.route("/api/team/channels/<uid>", methods=["GET", "PUT"])
+    def team_channel(uid):
+        secure = secure_site(team_origin)
+        same_origin(secure)
+        with tx() as con:
+            manager = bool(operator_name(con))
+            member = None if manager else team_member(con)
+            if not manager and (not member or member["role"] not in team_accounts.CONTRIBUTORS
+                    or not con.execute("SELECT 1 FROM video_channel_moderator WHERE channel=? AND member=?",
+                                       (uid, member["id"])).fetchone()):
+                abort(404)
+            row = get_showcase(con, uid)
+            values = state(row)
+            if not channel_visible(values):
+                abort(404)
+            available = {key: work for key, work in library().items()
+                         if content_policy(con, work, permits, values, False, "", False)}
+            choices = {key: work for key, work in available.items() if manager or can_edit(con, member, key)}
+            revision = row["revision"]
+            current = values["videos"]
+            if request.method == "PUT":
+                request.max_content_length = 512 * 1024
+                body = json_mutation(secure, team_accounts.MUTATION_HEADER)
+                if body.get("revision") != revision:
+                    abort(409, "This channel changed. Reload it before saving.")
+                videos = body.get("videos")
+                visible = {key for key in current if key in available}
+                if (not isinstance(videos, list)
+                        or any(not isinstance(key, str) or key not in visible and key not in choices for key in videos)
+                        or len(videos) != len(set(videos))):
+                    abort(422, "Choose videos available to publish in this channel.")
+                # Replace visible positions while retaining members the curator cannot see.
+                ordered = iter(videos)
+                updated = []
+                for key in current:
+                    replacement = next(ordered, None) if key in visible else key
+                    if replacement is not None:
+                        updated.append(replacement)
+                updated.extend(ordered)
+                if updated != current:
+                    revision = uuid.uuid4().hex
+                    values["videos"] = updated
+                    con.execute("UPDATE video_showcase SET revision=?,settings=? WHERE id=?",
+                                (revision, json.dumps(values), uid))
+                    for key in videos:
+                        if key not in visible:
+                            folder_slack_queue.enqueue(con, key, "showcase")
+            return private(dict(id=uid, title=values["title"], slug=row["slug"], revision=revision,
+                                videos=[dict(id=key, title=title_for(con, available[key]))
+                                        for key in values["videos"] if key in available],
+                                choices=[dict(id=key, title=title_for(con, work)) for key, work in choices.items()]))
 
     @app.get("/operator/showcases")
     def operator_showcases():
@@ -312,6 +433,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 return summary(con, row, public_url)
             if request.method == "DELETE":
                 con.execute("DELETE FROM audience_channel_follow WHERE channel=?", (uid,))
+                con.execute("DELETE FROM video_channel_moderator WHERE channel=?", (uid,))
                 con.execute("DELETE FROM video_showcase WHERE id=?", (uid,))
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
                 con.execute("DELETE FROM viewer_registrant WHERE kind='showcase' AND subject=?", (uid,))

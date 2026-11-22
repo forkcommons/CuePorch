@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/cueporch.css">
+<title>Channel curation · CuePorch</title>
+<main>
+  <nav aria-label="Team"><a href="/team">Team workspace</a> · <a href="/operator/showcases">Showcases</a></nav>
+  <h1>Channel curation</h1>
+  <form id="identify">
+    <label>Operator credential <input id="credential" type="password" required autocomplete="current-password"></label>
+    <button>Open channel curation</button>
+  </form>
+  <p id="status" role="status"></p>
+  <button id="reload" type="button">Reload channels</button>
+  <label>Channel <select id="channel"></select></label>
+  <fieldset id="curation" hidden>
+    <legend>Channel videos</legend>
+    <ol id="videos"></ol>
+    <label>Available video <select id="choices"></select></label>
+    <button id="addVideo" type="button">Add video</button>
+    <button id="saveVideos" type="button">Save channel videos</button>
+  </fieldset>
+  <fieldset id="moderation" hidden>
+    <legend>Channel moderators</legend>
+    <div id="members"></div>
+    <button id="saveModerators" type="button">Save moderators</button>
+  </fieldset>
+</main>
+<script type="module" src="/static/ui/team_channels.js"></script>
+</html>

@@ -1677,6 +1677,7 @@ def create_app(root, database, operator, institution, simulation=None):
     library_showcases.register(
         app, tx, staff, read_library_works, library_actions.title_for, root, operator,
         vimeo_privacy.permits, os.environ.get("CUEPORCH_PUBLIC_URL", ""), questions_enabled, viewing_preferences,
+        team_origin, operator_name, team_member, can_edit,
     )
     import_video = library_upload.register(
         app, tx, staff, team_contributor, action, root, database, institution, remember_work, enforce_sharing,

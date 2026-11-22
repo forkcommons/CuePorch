@@ -184,6 +184,77 @@ class ShowcaseDistribution(unittest.TestCase):
                     "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
                 ))
                 expect(guest.get_by_text("Private assembly", exact=True)).to_have_count(0)
+                curation = "/api/team/channels/" + showcase["id"]
+                roster_path = curation + "/moderators"
+                mutation = {"X-CuePorch-Team": "1"}
+                manager = auth | mutation
+                invitation = api.post("/api/team/invitations", headers=manager, base_url=base,
+                                      json=dict(email="curator@example.invalid", role="contributor"))
+                self.assertEqual(201, invitation.status_code, invitation.get_data(as_text=True))
+                team = mutation | {"Authorization": "Bearer team-session"}
+                original = send("GET", endpoint)
+                with browser.new_context() as curator:
+                    joined = curator.request.post(base + "/api/team/join", headers=mutation, data=dict(
+                        invitation=urlsplit(invitation.json["path"]).fragment,
+                        name="Guest curator", password="Synthetic team curator password!"))
+                    self.assertEqual(201, joined.status, joined.text())
+                    self.assertEqual(404, curator.request.get(base + curation, headers=team).status)
+                    self.assertEqual(403, curator.request.get(base + roster_path, headers=team).status)
+                    admin = browser.new_page()
+                    admin.goto(base + f"/team/channels?select={showcase['id']}")
+                    admin.get_by_label("Operator credential").fill(operator)
+                    admin.get_by_role("button", name="Open channel curation").click()
+                    admin.get_by_label("Guest curator").check()
+                    admin.get_by_role("button", name="Save moderators").click()
+                    expect(admin.get_by_role("status")).to_have_text("Moderators saved.")
+                    current_curation = curator.request.get(base + curation, headers=team)
+                    self.assertTrue(current_curation.ok)
+                    self.assertNotIn(hidden, current_curation.text())
+                    self.assertNotIn("Private assembly", current_curation.text())
+                    editor = current_curation.json()
+                    before = dict(revision=editor["revision"], videos=[row["id"] for row in editor["videos"]])
+                    self.assertEqual(422, curator.request.put(base + curation, headers=team,
+                                                              data=before | {"videos": before["videos"] + [hidden]}).status)
+                    self.assertEqual(403, curator.request.put(base + curation, data=before,
+                        headers=team | {"Origin": "https://another-workspace.example.invalid"}).status)
+                    curator_page = curator.new_page()
+                    curator_page.goto(base + "/team/channels")
+                    expect(curator_page.get_by_role("combobox", name="Channel", exact=True)).to_have_value(showcase["id"])
+                    curator_page.get_by_role("button", name="Move up Venue-only cut").click()
+                    curator_page.get_by_role("button", name="Save channel videos").click()
+                    expect(curator_page.get_by_role("status")).to_have_text("Channel videos saved.")
+                    self.assertEqual(409, curator.request.put(base + curation, headers=team, data=before).status)
+                    current = send("GET", endpoint)
+                    self.assertEqual([restricted, second, hidden, first, registered], current["settings"]["videos"])
+                    guest.goto(base + channel)
+                    expect(guest.locator("#nowPlaying")).to_have_text("Venue-only cut")
+                    self.assertEqual(320, guest.locator(".showcase-screen video").evaluate(
+                        "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+                    ))
+                    curator_page.get_by_role("button", name="Remove Venue-only cut").click()
+                    curator_page.get_by_role("button", name="Save channel videos").click()
+                    expect(curator_page.get_by_role("button", name="Remove Venue-only cut")).to_have_count(0)
+                    restricted_choice = curator_page.get_by_role("combobox", name="Available video", exact=True)
+                    expect(restricted_choice.locator("option")).to_have_count(0)
+                    grant = api.put(f"/api/team/members/{joined.json()['id']}/works/{restricted}",
+                                    headers=manager, base_url=base, json={"permission": "edit"})
+                    self.assertEqual(204, grant.status_code, grant.get_data(as_text=True))
+                    curator_page.get_by_role("button", name="Reload channels").click()
+                    restricted_choice.select_option(restricted)
+                    curator_page.get_by_role("button", name="Add video", exact=True).click()
+                    curator_page.get_by_role("button", name="Save channel videos").click()
+                    expect(curator_page.get_by_role("status")).to_have_text("Channel videos saved.")
+                    self.assertEqual(restricted, send("GET", endpoint)["settings"]["videos"][-1])
+                    admin.get_by_role("button", name="Reload channels").click()
+                    admin.get_by_label("Guest curator").uncheck()
+                    admin.get_by_role("button", name="Save moderators").click()
+                    expect(admin.get_by_role("status")).to_have_text("Moderators saved.")
+                    self.assertEqual(404, curator.request.get(base + curation, headers=team).status)
+                    self.assertEqual([], curator.request.get(base + "/api/team/channels", headers=team).json()["channels"])
+                    admin.close()
+                current = send("GET", endpoint)
+                send("PUT", endpoint, current | {"settings": original["settings"]})
+                guest.reload()
                 marker = {"X-CuePorch-Viewer": "1"}
                 guest.get_by_role("link", name="Sign in to follow this channel").click()
                 signup = guest.locator("#viewerSignUp")
