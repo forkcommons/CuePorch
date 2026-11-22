@@ -2,6 +2,7 @@ import { playbackObservation } from "./playback_analytics.js";
 import { setupVideoQuestions } from "./video_questions.js";
 import { setupVideoLikes } from "./video_community.js";
 import { setupWatchComments } from "./watch_comments.js";
+import { createShowcaseRegistration } from "./showcase_member_registration.js";
 function copyLink(id, makeLink, confirmation) {
     const button = document.querySelector("#" + id);
     if (!button)
@@ -28,6 +29,7 @@ function videoLink(id) {
 const contents = document.querySelector("#showcaseContents");
 if (contents) {
     const items = JSON.parse(contents.textContent);
+    const registration = createShowcaseRegistration();
     const cards = Array.from(document.querySelectorAll(".showcase-playlist [data-index]"));
     const clips = Array.from(document.querySelectorAll(".showcase-playlist video"));
     const video = document.querySelector(".showcase-screen video");
@@ -70,6 +72,7 @@ if (contents) {
     function setCurrent(index) {
         if (index === current)
             return;
+        registration.closeForSelection();
         cards[current].removeAttribute("aria-current");
         cards[index].setAttribute("aria-current", "true");
         current = index;
@@ -116,7 +119,13 @@ if (contents) {
             void player.play().catch(() => { });
         }
         cards.forEach((card, index) => { card.onclick = () => playItem(index, video); });
-        video.onended = () => advance((index) => playItem(index, video));
+        video.onplay = () => { registration.guardPlay(video); };
+        video.ontimeupdate = () => registration.onProgress(items[current], video);
+        video.onended = () => {
+            const advanceCurrent = () => advance((index) => playItem(index, video));
+            if (!registration.onEnd(items[current], video, advanceCurrent))
+                advanceCurrent();
+        };
     }
     else {
         const unsampled = new Map();
@@ -136,20 +145,29 @@ if (contents) {
                 visible.observe(clip);
             }
             clip.onplay = () => {
+                if (registration.guardPlay(clip))
+                    return;
                 unsampled.get(clip)?.();
                 for (const other of clips)
                     if (other !== clip)
                         other.pause();
                 setCurrent(index);
+                registration.onProgress(items[index], clip);
+            };
+            clip.ontimeupdate = () => {
+                if (current === index)
+                    registration.onProgress(items[index], clip);
             };
             clip.onended = () => {
                 if (current !== index)
                     return;
-                advance((next) => {
+                const advanceCurrent = () => advance((next) => {
                     clips[next].muted = clip.muted;
                     clips[next].currentTime = 0;
                     void clips[next].play().catch(() => { });
                 });
+                if (!registration.onEnd(items[index], clip, advanceCurrent))
+                    advanceCurrent();
             };
         });
     }
