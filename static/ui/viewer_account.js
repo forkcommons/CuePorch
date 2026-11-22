@@ -12,7 +12,8 @@ const remove = document.querySelector("#deleteViewerAccount");
 const signOut = document.querySelector("#viewerSignOut");
 const preferenceSection = document.querySelector("#viewerPreferences");
 const preferenceForm = preferenceSection.querySelector("form");
-const preferenceMode = preferenceForm.querySelector("select");
+const preferenceMode = preferenceForm.querySelector("select[name=mode]");
+const preferenceAutoplay = preferenceForm.querySelector("select[name=autoplay]");
 const preferenceChoices = preferenceForm.querySelector("fieldset");
 let busy = false;
 function show(account) {
@@ -54,6 +55,7 @@ const messages = { 400: "Check the fields and try again.", 429: "Too many attemp
 const values = (form) => Object.fromEntries(new FormData(form));
 function showPreferences(preferences) {
     preferenceMode.value = preferences.mode;
+    preferenceAutoplay.value = preferences.autoplay === true ? "on" : preferences.autoplay === false ? "off" : "default";
     for (const choice of preferenceChoices.querySelectorAll("input")) {
         choice.checked = preferences.excluded.includes(choice.value);
     }
@@ -76,6 +78,7 @@ preferenceForm.onsubmit = event => {
     void perform(async () => {
         const response = await viewerRequest("preferences", "PUT", {
             mode: preferenceMode.value, excluded: new FormData(preferenceForm).getAll("excluded"),
+            autoplay: preferenceAutoplay.value === "default" ? null : preferenceAutoplay.value === "on",
         });
         if (!response.ok)
             return failure(response, { ...messages, 401: "Sign in to save viewing preferences." });

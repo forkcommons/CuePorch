@@ -171,11 +171,25 @@ def register(app, tx, origin_url, operator, listing, action, staff):
     def viewer_preferences():
         secure = scheme()
         session = browser_session(secure)
-        settings = content_rating.validate_preference(mutation(secure)) if request.method == "PUT" else None
+        body = mutation(secure) if request.method == "PUT" else None
+        if isinstance(body, dict) and "autoplay" in body:
+            autoplay = body["autoplay"]
+            if autoplay is not None and type(autoplay) is not bool:
+                abort(400)
+        settings = content_rating.validate_preference(body) if request.method == "PUT" else None
         with tx() as con:
             account = current(con, session)["id"]
             if settings is None:
                 return private(account_preferences(con, account))
+            if isinstance(body, dict) and "autoplay" in body:
+                if body["autoplay"] is None:
+                    settings.pop("autoplay", None)
+                else:
+                    settings["autoplay"] = body["autoplay"]
+            else:
+                existing = account_preferences(con, account)
+                if isinstance(existing, dict) and existing.get("autoplay") is not None:
+                    settings["autoplay"] = existing["autoplay"]
             con.execute("""INSERT INTO audience_view_preferences VALUES(?,?) ON CONFLICT(account)
                            DO UPDATE SET maturity=excluded.maturity""", (account, json.dumps(settings)))
         return private(settings)
