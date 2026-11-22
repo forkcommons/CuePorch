@@ -247,6 +247,17 @@ def merge_collection(source, destination):
                 work["library_added_at"] = added_at
             elif "library_added_at" in prior:
                 work["library_added_at"] = prior["library_added_at"]
+            if (
+                prior
+                and prior.get("provider") == work.get("provider") == "vimeo"
+                and work.get("unavailable_metadata", {}).get("/chapters") in (403, 404)
+                and any(f.get("role") in ("original", "playback") for f in prior["files"])
+                and video_version_key(prior) == video_version_key(work)
+                and not (prior.get("source_version") and work.get("source_version")
+                         and prior["source_version"] != work["source_version"])
+                and "chapters" in prior
+            ):
+                work["chapters"] = prior["chapters"]
             if prior and "chapter_edits" in prior:
                 work["chapter_edits"] = prior["chapter_edits"]
             versions = list(prior.get("versions_history", [])) if prior else []
