@@ -59,7 +59,7 @@ def overlay_content(presentation_copy, content):
             presentation_copy[collection] = new_rows
 
 
-def validate(raw, prior):
+def validate_with(raw, prior, translate):
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
@@ -99,15 +99,21 @@ def validate(raw, prior):
             abort(422, "Base language cannot also be a translation.")
         if not isinstance(entry, dict):
             abort(422, "Invalid translation.")
-        if set(entry) - TRANSLATION_FIELDS:
-            abort(422, "Unknown translation field.")
 
         published = entry.get("published", False)
         if not isinstance(published, bool):
             abort(422, "Invalid published flag.")
 
-        result["translations"][lang] = {
-            "published": published,
+        result["translations"][lang] = {"published": published} | translate(entry)
+
+    return result
+
+
+def validate(raw, prior):
+    def translate(entry):
+        if set(entry) - TRANSLATION_FIELDS:
+            abort(422, "Unknown translation field.")
+        return {
             "title": text_field(entry.get("title", ""), "title", 128),
             "description": text_field(entry.get("description", ""), "description", 5000),
             "date_label": text_field(entry.get("date_label", ""), "date label", 100),
@@ -115,10 +121,10 @@ def validate(raw, prior):
             "content": validate_content(entry.get("content")),
         }
 
-    return result
+    return validate_with(raw, prior, translate)
 
 
-def resolve(localization, settings, presentation, preview=False):
+def choose_language(localization, preview=False):
     base = localization["base"]
     translations = localization["translations"]
 
@@ -152,12 +158,19 @@ def resolve(localization, settings, presentation, preview=False):
     if language is None:
         language = base
 
-    translated = translations.get(language, {})
-
     language_options = [
         {"code": code, "label": LANGUAGES[code]}
         for code in available
     ]
+
+    return language, language_options
+
+
+def resolve(localization, settings, presentation, preview=False):
+    translations = localization["translations"]
+
+    language, language_options = choose_language(localization, preview)
+    translated = translations.get(language, {})
 
     viewer_settings = {
         "title": translated.get("title") or settings.get("title"),

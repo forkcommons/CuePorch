@@ -1,17 +1,11 @@
-const lang = document.documentElement.lang || 'en';
+import { formatEventDisplayDate } from './event_display_date.js';
+
 const sel = 'time[data-event-opens][data-event-timezone]';
 for (const el of document.querySelectorAll<HTMLTimeElement>(sel)) {
   const raw = el.getAttribute('data-event-opens');
   const timeZone = el.getAttribute('data-event-timezone');
   const secs = raw == null ? NaN : Number(raw);
-  if (!Number.isFinite(secs) || !timeZone) continue;
   const d = new Date(secs * 1000);
-  if (Number.isNaN(d.getTime())) continue;
-  try {
-    const text = new Intl.DateTimeFormat(lang, {
-      year: 'numeric', month: 'short', day: 'numeric',
-      hour: 'numeric', minute: '2-digit', timeZoneName: 'short', timeZone,
-    }).format(d);
-    if (text) { el.dateTime = d.toISOString(); el.textContent = text; }
-  } catch { /* preserve existing text */ }
+  const text = formatEventDisplayDate(d, timeZone);
+  if (text) { el.dateTime = d.toISOString(); el.textContent = text; }
 }

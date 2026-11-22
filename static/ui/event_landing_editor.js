@@ -1,5 +1,6 @@
 import { setupSpeakerLineup } from './event_landing_speaker_lineup.js';
 import { setupSpeakerProfileEditor } from './event_landing_speaker_editor.js';
+import { setupLandingLocalization } from './event_landing_locale.js';
 export function setupEventLandingEditor(request) {
     const details = document.querySelector('#eventLanding');
     const form = document.querySelector('#eventLandingForm');
@@ -9,9 +10,11 @@ export function setupEventLandingEditor(request) {
         return () => { };
     const get = (n) => form.elements.namedItem(n);
     const speakerFields = document.querySelector("#eventLandingSpeakerFields");
+    const localeFields = document.querySelector("#eventLandingLocale");
     const lineup = setupSpeakerLineup((profile) => editor.open(profile));
     const editor = setupSpeakerProfileEditor(request, (profile) => lineup.upsert(profile));
     document.querySelector("#eventLandingSpeakerNew")?.addEventListener("click", () => editor.open());
+    const locale = setupLandingLocalization();
     let uid = null;
     let gen = 0;
     let cache = null;
@@ -22,15 +25,17 @@ export function setupEventLandingEditor(request) {
     const setSaveEnabled = () => {
         saveBtn.disabled = busy || !cache;
         speakerFields.disabled = saveBtn.disabled;
+        localeFields.disabled = saveBtn.disabled;
     };
-    const fill = (s, ps) => {
-        get('enabled').checked = s.enabled;
-        get('theme').value = s.theme;
-        get('layout').value = s.layout;
-        get('accent').value = s.accent;
-        get('show_logo').checked = s.show_logo;
-        get('show_poster').checked = s.show_poster;
-        lineup.populate(s.speaker_ids, ps);
+    const fill = (s) => {
+        get('enabled').checked = s.settings.enabled;
+        get('theme').value = s.settings.theme;
+        get('layout').value = s.settings.layout;
+        get('accent').value = s.settings.accent;
+        get('show_logo').checked = s.settings.show_logo;
+        get('show_poster').checked = s.settings.show_poster;
+        lineup.populate(s.settings.speaker_ids, s.profiles);
+        locale.populate(s.settings.localization, s.preview);
     };
     const read = () => ({
         enabled: get('enabled').checked,
@@ -40,6 +45,7 @@ export function setupEventLandingEditor(request) {
         show_logo: get('show_logo').checked,
         show_poster: get('show_poster').checked,
         speaker_ids: lineup.selected(),
+        localization: locale.payload(),
     });
     const url = (t) => '/api/live-events/' + encodeURIComponent(t) + '/landing';
     const reset = () => {
@@ -49,6 +55,7 @@ export function setupEventLandingEditor(request) {
         form.reset();
         editor.reset();
         lineup.populate([], []);
+        locale.reset();
         setStatus('');
         details.open = false;
     };
@@ -64,7 +71,7 @@ export function setupEventLandingEditor(request) {
             if (gen !== myGen || uid !== target)
                 return;
             cache = res;
-            fill(res.settings, res.profiles);
+            fill(res);
             setStatus('');
         }
         catch (e) {
@@ -98,7 +105,7 @@ export function setupEventLandingEditor(request) {
             if (gen !== myGen || uid !== target)
                 return;
             cache = res;
-            fill(res.settings, res.profiles);
+            fill(res);
             setStatus('Saved');
         }
         catch (e) {

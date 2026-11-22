@@ -49,6 +49,7 @@ import event_replay_spool
 import event_mail
 import event_player
 import event_landing
+import event_landing_locale
 import event_landing_speakers
 import event_playlist
 import event_program
@@ -633,13 +634,23 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     guests = URLSafeTimedSerializer(signing_key, salt="cueporch-event-viewer")
     files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-media")
     preview_files = URLSafeTimedSerializer(signing_key, salt="cueporch-event-encoder-preview")
+    landing_previews = URLSafeTimedSerializer(signing_key, salt="cueporch-event-landing-preview")
     measurement = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback")
     measurement_context = URLSafeTimedSerializer(signing_key, salt="cueporch-event-playback-context")
     analytics_proxies = library_analytics.configured_proxies()
     viewer_key = signing_key.encode("utf-8")
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
-    event_landing.register(app, tx, staff, read)
+    def preview_url(con, row, event, revision):
+        key = access_settings(con, row["id"])[0] if event["visibility"] == "unlisted" else None
+        return url_for(
+            "event_page",
+            slug=row["slug"],
+            key=key,
+            landing_preview=landing_previews.dumps([row["id"], row["revision"], revision]),
+        )
+
+    event_landing.register(app, tx, staff, read, preview_url)
     event_landing_speakers.register(app, tx, staff)
 
     def enforce_territories(event):
@@ -681,7 +692,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
 
     @app.get("/operator/live-events")
     def live_event_dashboard():
-        return render_template("live_events.html", public_url=public_url, rating_labels=content_rating.DESCRIPTORS)
+        return render_template("live_events.html", public_url=public_url, rating_labels=content_rating.DESCRIPTORS,
+                               landing_languages=event_landing_locale.LANGUAGES)
 
     @app.get("/operator/live-events/<uid>/<int:opens>/studio")
     def event_studio_page(uid, opens):
@@ -2449,6 +2461,8 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             return None, None, False
         key, password_hash = access_settings(con, row["id"])
         received = request.form.get("event_access") or request.headers.get("X-CuePorch-Event-Access", "")
+        if not received and mode == "password" and not embed:
+            received = request.cookies.get("cueporch_event_password_" + row["id"], "")
         allowed = audience_allowed(row, embed, received)
         if mode == "embed_only":
             if not embed or (not allowed and (json_status or request.method != "GET"
@@ -2672,6 +2686,22 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             artwork = event_player.settings(con, row["id"])
             appearance = event_player.appearance(artwork, event)
             landing = event_landing.viewer(con, row["id"], embed) if not json_status and not withdrawn else None
+            landing_locale = None
+            landing_preview_token = None
+            if landing:
+                preview_token = request.args.get("landing_preview", "")
+                if preview_token and valid_ticket(
+                    landing_previews, preview_token, [row["id"], row["revision"], landing["_revision"]], 600,
+                ):
+                    landing_preview_token = preview_token
+                landing_locale = event_landing_locale.resolve(landing["localization"], event, bool(landing_preview_token))
+                for option in landing_locale["language_options"]:
+                    option["href"] = url_for(
+                        "event_page", slug=slug,
+                        occurrence=shown["id"] if shown and "occurrence" in request.args else None,
+                        key=link_key if event["visibility"] == "unlisted" else None,
+                        lang=option["code"], landing_preview=landing_preview_token,
+                    )
             managed = private_delivery(con, event, row["id"], shown["id"]) if shown else False
             latest_managed = False
             if shown and not withdrawn and not joined and artwork["show_latest"] and (not form or grant):
@@ -2796,6 +2826,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      native_video=native_video, caption_endpoint=caption_endpoint, lobby_preview=pre_live,
                                      preview_replay=preview_replay, appearance=appearance, branding=branding,
                                      landing=landing, landing_logo=logo, landing_poster=poster,
+                                     landing_locale=landing_locale, landing_preview=bool(landing_preview_token),
                                      analytics_token=analytics_token, event_context=reporting_token, playlist=archives,
                                      viewer_grant=grant, registration=registration_view,
                                      offer_attendee_sharing=offer_sharing, attendee_sharing=bool(sharing),
@@ -2817,8 +2848,19 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                                      if can_participate else None,
                                      engagement_endpoint=url_for("audience_event_engagement", slug=slug, opens=shown["id"])
                                      if can_participate else None))
-        return audience_response(view, ancestors, 422 if form_error else 200,
-                                 bool(access) or event["visibility"] == "private")
+        response = audience_response(view, ancestors, 422 if form_error else 200,
+                                     bool(access) or event["visibility"] == "private" or bool(landing_preview_token))
+        if landing_locale is not None:
+            response.headers["Content-Language"] = landing_locale["language"]
+            response.vary.add("Accept-Language")
+        if (landing is not None and event["visibility"] == "password" and access
+                and request.method == "POST" and "password" in request.form):
+            response.set_cookie(
+                "cueporch_event_password_" + row["id"], access, max_age=12 * 3600,
+                path=url_for("event_page", slug=slug), secure=secure_site(mail_origin, required=False),
+                httponly=True, samesite="Lax",
+            )
+        return response
 
     def audience_response(view, ancestors, status, restricted):
         response = make_response(view, status)

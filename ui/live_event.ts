@@ -1,3 +1,4 @@
+import { formatEventDisplayDate } from './event_display_date.js';
 import {setupLiveCaptions} from "./live_caption_player.js";
 import {measureEventPlayback} from "./event_playback.js";
 import {measurePeerEventPlayback} from "./peer_event_playback.js";
@@ -19,6 +20,17 @@ const dateRow = document.querySelector<HTMLElement>("#eventOccurrenceTime")!;
 const eventTitle = document.querySelector<HTMLElement>("#eventHeader h1")!;
 const controls = eventControls(player, eventTitle, JSON.parse(document.querySelector("#eventAppearanceData")!.textContent || "{}"));
 const date = dateRow.querySelector("time")!;
+const localizedOccurrence = (value: Date): string | null => {
+  if (!document.body.classList.contains('event-custom-landing')) {
+    return null;
+  }
+  return formatEventDisplayDate(value, lobby.dataset.timezone) ?? null;
+};
+
+const localizedDateText = localizedOccurrence(new Date(date.dateTime));
+if (localizedDateText) {
+  date.textContent = localizedDateText;
+}
 const audiencePanels = document.querySelector<HTMLElement>("#eventAudiencePanels")!;
 const archiveNav = document.querySelector<HTMLElement>("#eventArchivePlaylist")!;
 const archiveChoice = document.querySelector<HTMLSelectElement>("#archiveChoice")!;
@@ -256,7 +268,8 @@ async function checkStatus() {
     dateRow.hidden = !occurrence;
     if (occurrence) {
       date.dateTime = occurrence.start;
-      date.textContent = `${occurrence.local.replace("T", " ")} (${lobby.dataset.timezone})`;
+      date.textContent = localizedOccurrence(new Date(occurrence.start)) ??
+        `${occurrence.local.replace("T", " ")} (${lobby.dataset.timezone})`;
     }
     audiencePanels.hidden = currentOccurrence !== openingOccurrence;
     showPlaylist(archives);
