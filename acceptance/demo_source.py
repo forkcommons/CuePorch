@@ -122,6 +122,46 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     self.end_headers()
                     self.wfile.write(data)
                     return
+                if version_fixture and path in ('/videos/71', '/videos/72'):
+                    entries = []
+                    if path == '/videos/71':
+                        first = dict(
+                            uri='/videos/71/review_links/7f4f9c2e-3b1a-4c8d-9e2f-6a5b4c3d2e1f',
+                            name='Panel feedback',
+                            is_enabled=True,
+                            expires_on='2036-12-24T19:30:00Z',
+                            password='fixture-sensitive-review-password',
+                            url='https://vimeo.com/fixture-sensitive-vimeo-access',
+                            is_dark=True,
+                            allow_comments=True,
+                            allow_downloads=False,
+                            allow_status_change=True,
+                            hide_end_cards=True,
+                            show_all_versions=True,
+                            show_resolved_comments=True,
+                            show_my_logo=True,
+                        )
+                        entries = [
+                            first,
+                            first | dict(
+                                uri='/videos/71/review_links/1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+                                name='Expired panel feedback',
+                                is_enabled=False,
+                                expires_on='2020-12-31T23:59:59Z',
+                            ),
+                            first | dict(
+                                uri='/videos/999/review_links/2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
+                                name='Wrong video',
+                                is_enabled=False,
+                                expires_on='2020-12-31T23:59:59Z',
+                            ),
+                        ]
+                    body = json.dumps(dict(review_status='needs_review', review_links=entries)).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if version_fixture and path in ("/videos/71/versions/200", "/videos/71/versions/202"):
                     extension, number, height = ("mp4", 2, 144) if path.endswith("/202") else ("webm", 1, 108)
                     data = json.dumps(dict(
