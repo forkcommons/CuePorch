@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 import uuid
 
 from flask import abort, make_response, render_template, request, url_for
@@ -31,6 +32,10 @@ CREATE TABLE IF NOT EXISTS audience_creator_follow_activity(
  videos INTEGER NOT NULL CHECK(videos IN (0,1)),
  appearances INTEGER NOT NULL CHECK(appearances IN (0,1)),
  PRIMARY KEY(account,member));
+CREATE TABLE IF NOT EXISTS creator_shared_likes(
+ member TEXT PRIMARY KEY, account TEXT UNIQUE NOT NULL, since REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS audience_creator_follow_likes(
+ account TEXT NOT NULL, member TEXT NOT NULL, PRIMARY KEY(account,member));
 CREATE TABLE IF NOT EXISTS audience_category_follow(
  account TEXT NOT NULL, key TEXT NOT NULL, label TEXT NOT NULL,
  PRIMARY KEY(account,key));
@@ -51,7 +56,38 @@ def follower_count(con, uid):
 
 
 def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered, page_size, account_preferences,
-                      followed_program):
+                      followed_program, current_team):
+    @app.route("/api/viewer/like-sharing", methods=("GET", "PUT"))
+    def viewer_like_sharing():
+        body = mutation() if request.method == "PUT" else None
+        if body is not None and not isinstance(body.get("enabled"), bool):
+            abort(400, "Choose whether to share new likes.")
+        with tx() as con:
+            account = viewer(con)["id"]
+            team = current_team(con)
+            candidate = con.execute(f"""SELECT p.member,p.handle,p.name FROM creator_profile p
+                JOIN team_member m ON m.id=p.member WHERE p.member=? AND {VISIBLE}""",
+                (team["id"],)).fetchone() if team else None
+            if body is not None:
+                if body["enabled"]:
+                    if candidate is None or candidate["handle"] != body.get("handle"):
+                        abort(409, "Sign in to the creator profile you want to use for sharing.")
+                    links = con.execute("""SELECT member,account FROM creator_shared_likes
+                        WHERE member=? OR account=?""", (candidate["member"], account)).fetchall()
+                    if any(tuple(link) != (candidate["member"], account) for link in links):
+                        abort(409, "An account is already linked for sharing likes.")
+                    con.execute("INSERT OR IGNORE INTO creator_shared_likes VALUES(?,?,?)",
+                                (candidate["member"], account, time.time()))
+                else:
+                    con.execute("DELETE FROM creator_shared_likes WHERE account=?", (account,))
+            linked = con.execute("""SELECT p.handle,p.name FROM creator_shared_likes s
+                JOIN creator_profile p ON p.member=s.member WHERE s.account=?""", (account,)).fetchone()
+            return private(dict(
+                enabled=linked is not None,
+                viewer=dict(linked) if linked else None,
+                candidate=dict(handle=candidate["handle"], name=candidate["name"]) if candidate else None,
+            ))
+
     @app.route("/api/viewer/follow/<handle>", methods=("GET", "PUT", "DELETE"))
     def viewer_follow_creator(handle):
         if not HANDLE.fullmatch(handle):
@@ -65,6 +101,8 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
             if request.method == "DELETE":
                 if profile:
                     con.execute("DELETE FROM audience_creator_follow_activity WHERE account=? AND member=?",
+                                (account, profile["member"]))
+                    con.execute("DELETE FROM audience_creator_follow_likes WHERE account=? AND member=?",
                                 (account, profile["member"]))
                     con.execute("DELETE FROM audience_creator_follow WHERE account=? AND member=?",
                                 (account, profile["member"]))
@@ -85,7 +123,8 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
             abort(404)
         body = mutation()
         videos, appearances = body.get("videos"), body.get("appearances")
-        if not isinstance(videos, bool) or not isinstance(appearances, bool):
+        if (not isinstance(videos, bool) or not isinstance(appearances, bool)
+                or ("likes" in body and not isinstance(body["likes"], bool))):
             abort(400, "Choose the creator activity to follow.")
         with tx() as con:
             account = viewer(con)["id"]
@@ -96,7 +135,10 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
             key = (account, profile["member"])
             if not con.execute("SELECT 1 FROM audience_creator_follow WHERE account=? AND member=?", key).fetchone():
                 abort(409, "Follow this creator before changing their Feed activity.")
-            following = videos or appearances
+            previous_likes = con.execute("SELECT 1 FROM audience_creator_follow_likes WHERE account=? AND member=?",
+                                         key).fetchone() is not None
+            likes = body.get("likes", previous_likes)
+            following = videos or appearances or likes
             if following:
                 con.execute("""INSERT INTO audience_creator_follow_activity VALUES(?,?,?,?)
                     ON CONFLICT(account,member) DO UPDATE
@@ -104,7 +146,11 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
             else:
                 con.execute("DELETE FROM audience_creator_follow_activity WHERE account=? AND member=?", key)
                 con.execute("DELETE FROM audience_creator_follow WHERE account=? AND member=?", key)
-        return private(dict(following=following, videos=videos, appearances=appearances))
+            if likes:
+                con.execute("INSERT OR IGNORE INTO audience_creator_follow_likes VALUES(?,?)", key)
+            else:
+                con.execute("DELETE FROM audience_creator_follow_likes WHERE account=? AND member=?", key)
+        return private(dict(following=following, videos=videos, appearances=appearances, likes=likes))
 
     @app.route("/api/viewer/feed/category", methods=("GET", "PUT", "DELETE"))
     def viewer_feed_category():
@@ -220,10 +266,12 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                 category_follows = category_rows
                 creator_follows = con.execute(f"""
                     SELECT p.handle,p.name,COALESCE(a.videos,1) AS videos,
-                           COALESCE(a.appearances,0) AS appearances FROM audience_creator_follow f
+                           COALESCE(a.appearances,0) AS appearances, fl.member IS NOT NULL AS likes
+                    FROM audience_creator_follow f
                     JOIN creator_profile p ON p.member=f.member
                     JOIN team_member m ON m.id=p.member
                     LEFT JOIN audience_creator_follow_activity a ON a.account=f.account AND a.member=f.member
+                    LEFT JOIN audience_creator_follow_likes fl ON fl.account=f.account AND fl.member=f.member
                     WHERE f.account=? AND {VISIBLE}
                     ORDER BY p.name COLLATE NOCASE,p.handle
                 """, (account["id"],)).fetchall()
@@ -234,6 +282,16 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                     JOIN team_member m ON m.id=p.member
                     JOIN audience_creator_follow_activity a ON a.account=f.account AND a.member=f.member
                     WHERE f.account=? AND a.appearances=1 AND {VISIBLE}
+                """, (account["id"],))}
+                liked_works = {(row["kind"], row["slug"]): row["ts"] for row in con.execute(f"""
+                    SELECT l.kind,l.slug,MAX(l.liked) AS ts
+                    FROM audience_creator_follow_likes fl
+                    JOIN creator_shared_likes s ON s.member=fl.member
+                    JOIN audience_like l ON l.account=s.account
+                    JOIN creator_profile p ON p.member=fl.member
+                    JOIN team_member m ON m.id=p.member
+                    WHERE fl.account=? AND l.liked>=s.since AND {VISIBLE}
+                    GROUP BY l.kind,l.slug
                 """, (account["id"],))}
                 channel_works = set()
                 for row in con.execute("SELECT s.* FROM audience_channel_follow f JOIN video_showcase s ON s.id=f.channel WHERE f.account=?", (account["id"],)):
@@ -246,21 +304,22 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                         channel_works.update(values["videos"])
                 channel_follows.sort(key=lambda item: (item["title"].casefold(), item["slug"]))
                 group_follows, group_works = followed_program(con, account["id"])
-                if owned or category_keys or channel_works or group_works or appearance_works:
+                if owned or category_keys or channel_works or group_works or appearance_works or liked_works:
                     preference = account_preferences(con, account["id"])
                     entries = ordered(
                         entry for (kind, slug), entry in listing(con).items()
-                        if ((kind, slug) in group_works or (
+                        if ((kind, slug) in group_works or (kind, slug) in liked_works or (
                             kind == "work" and (slug in owned or slug in channel_works or slug in appearance_works
                             or any(name.casefold() in category_keys for name in entry["categories"]))
                         ))
                         and not content_rating.filtered(preference, entry)
                     )
-                    if category_keys or channel_works or group_works or appearance_works:
+                    if category_keys or channel_works or group_works or appearance_works or liked_works:
                         publication_times = {row["work"]: row["published_at"] for row in con.execute("SELECT work,published_at FROM library_publication_time").fetchall()}
                         entries.sort(key=lambda entry: max(
                             publication_times.get(entry["slug"]) or 0,
                             group_works.get((entry["kind"], entry["slug"]), 0),
+                            liked_works.get((entry["kind"], entry["slug"]), 0),
                         ), reverse=True)
                     else:
                         entries.sort(key=lambda entry: owned[entry["slug"]]["published_at"] or 0, reverse=True)

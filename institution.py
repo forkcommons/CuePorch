@@ -1582,6 +1582,7 @@ def create_app(root, database, operator, institution, simulation=None):
 
     viewing_preferences = audience_accounts.register(
         app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
+        team_accounts.current,
     )
     library_discovery.register(app, tx, staff, public_listing, root, institution, viewing_preferences)
     authorize_editor, team_works, can_edit = team_accounts.register(
