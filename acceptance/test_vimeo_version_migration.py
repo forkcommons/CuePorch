@@ -58,6 +58,88 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_history_transfer_import_and_preview(self):
+        import io
+
+        endpoint = "/api/analytics/vimeo-history"
+        first, last = "2024-01-01", "2024-01-02"
+        csv_bytes = (
+            b"Video ID,Video,Date,Views,Unique Viewers,Impressions,Source URL,Viewer Email\n"
+            b"71,Station meeting,2024-01-01,100,50,1000,"
+            b"https://archive.example/screening?key=fixture-secret,viewer@example.test\n"
+            b"/videos/71,Station meeting,2024-01-02,120,60,1100,,\n"
+            b"999,Station meeting,2024-01-01,10,0,,,\n"
+            b",Report Total,,230,70,2100,,\n"
+        )
+
+        def upload(payload, headers):
+            return self.client.post(endpoint, data={
+                "first": first, "last": last, "file": (io.BytesIO(payload), "vimeo-history.csv"),
+            }, headers=headers)
+
+        def live_report():
+            response = self.client.post("/api/analytics/video-report", headers=self.auth,
+                                        json={"from": first, "to": last})
+            self.assertEqual(200, response.status_code, response.text)
+            return response.json["totals"]
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer", exact=True).click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+            page.get_by_role("button", name="Transfer privately", exact=True).click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+
+            before = live_report()
+            page.goto(self.base + "/operator/analytics")
+            page.get_by_text("Vimeo analytics history", exact=True).click()
+            page.get_by_label("From (UTC)", exact=True).last.fill(first)
+            page.get_by_label("To (UTC)", exact=True).last.fill(last)
+            page.get_by_label("Vimeo Video report CSV").set_input_files(
+                {"name": "vimeo-history.csv", "mimeType": "text/csv", "buffer": csv_bytes},
+            )
+            with page.expect_response(lambda reply: reply.url.endswith(endpoint + "?preview=1")) as preview:
+                page.get_by_role("button", name="Preview report", exact=True).click()
+            self.assertEqual(200, preview.value.status)
+            expect(page.locator("#vimeoHistoryStatus")).to_contain_text("Preview: 3 rows")
+            self.assertEqual({"reports": []}, self.client.get(endpoint, headers=self.auth).json)
+
+            with page.expect_response(lambda reply: reply.request.method == "POST" and reply.url.endswith(endpoint)) as imported:
+                page.get_by_role("button", name="Import report", exact=True).click()
+            self.assertEqual(201, imported.value.status)
+            expect(page.locator("#vimeoHistoryTable").get_by_role("cell", name="71", exact=True)).to_have_count(2)
+            expect(page.locator("#vimeoHistoryTable").get_by_role("cell", name="Unmatched", exact=True)).to_be_visible()
+            expect(page.locator("#vimeoHistorySummary")).to_contain_text("Unique viewers 70")
+
+        reports = self.client.get(endpoint, headers=self.auth).json["reports"]
+        self.assertEqual(1, len(reports))
+        report_path = endpoint + "/" + reports[0]["id"]
+        response = self.client.get(report_path, headers=self.auth)
+        self.assertIn("no-store", response.headers["Cache-Control"].split(", "))
+        self.assertNotIn("fixture-secret", response.text)
+        self.assertNotIn("viewer@example.test", response.text)
+        data = response.json
+        self.assertEqual((first, last, 2, 1), (data["first"], data["last"], data["matched"], data["unmatched"]))
+        self.assertEqual(70, data["total"]["unique_viewers"])
+        known = data["rows"][:2]
+        self.assertEqual([50, 60], [row["metrics"]["unique_viewers"] for row in known])
+        self.assertTrue(all(row["work"] == work_id("station", "vimeo", "71") for row in known))
+        self.assertEqual("archive.example", known[0]["dimensions"]["source"])
+        unknown = data["rows"][2]
+        self.assertIsNone(unknown["work"])
+        self.assertEqual(0, unknown["metrics"]["unique_viewers"])
+        self.assertNotIn("impressions", unknown["metrics"])
+
+        self.assertEqual(200, upload(csv_bytes, self.auth).status_code)
+        invalid = upload(csv_bytes.replace(b"2024-01-02", b"2024-01-03"), self.auth)
+        self.assertEqual(400, invalid.status_code)
+        self.assertEqual(reports, self.client.get(endpoint, headers=self.auth).json["reports"])
+        self.assertEqual(403, upload(csv_bytes, {}).status_code)
+        self.assertEqual(403, self.client.get(report_path).status_code)
+        self.assertEqual(before, live_report())
+
     def test_vimeo_review_csv_import_for_earlier_cut(self):
         import csv
         import io
