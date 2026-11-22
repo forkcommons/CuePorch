@@ -107,6 +107,7 @@ import social_publication
 import library_worker
 import media_bandwidth
 import registration_return
+import review_feedback
 import review_links
 import review_push
 import subtitle_translation_batches
@@ -583,6 +584,7 @@ def create_app(root, database, operator, institution, simulation=None):
                         with tx() as con:
                             library_showcases.import_showcases(con, data.get("showcases", []))
                             library_folders.import_source_folders(con, data.get("folders", []), data["works"])
+                            review_feedback.import_vimeo_editorial_status(con, data["works"], works)
                         if os.environ.get("CUEPORCH_PEERTUBE_ORIGIN"):
                             with tx() as con:
                                 for item in data["works"]:

@@ -29,6 +29,7 @@ class VimeoVersionMigration(unittest.TestCase):
             json.dumps(dict(institution="station", schema=1, works=[])), encoding="utf8",
         )
         source = self.enterContext(build_server(self.temp / "vimeo", version_fixture=True, audio_fixture=True))
+        self.source = source
         self.requests = Counter()
         self.denied = set()
         handler = source.RequestHandlerClass
@@ -56,6 +57,61 @@ class VimeoVersionMigration(unittest.TestCase):
         self.enterContext(service_worker(server))
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
+
+    def test_vimeo_editorial_status_follows_source_cut(self):
+        work_key = work_id('station', 'vimeo', '71')
+        work_url = f'/api/library/work/{work_key}'
+        editorial_url = f'{work_url}/editorial-status'
+
+        def transfer(page):
+            page.get_by_role('button', name='Preview transfer').click()
+            expect(page.locator('#status')).to_have_text('inventoried', timeout=20000)
+            page.get_by_role('button', name='Transfer privately').click()
+            expect(page.locator('#status')).to_have_text('transferred', timeout=20000)
+
+        def editorial_status():
+            response = self.client.get(editorial_url, headers=self.auth)
+            self.assertEqual(200, response.status_code, response.text)
+            return response.get_json()
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(
+                f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})"
+            )
+            page.goto(self.base + '/operator/migration')
+
+            transfer(page)
+            self.assertEqual(editorial_status()['status'], 'Needs review')
+
+            self.source.review_status = 'approved'
+            with patch('review_feedback.folder_slack_queue.enqueue') as notice:
+                transfer(page)
+                notice.assert_not_called()
+            self.assertEqual('Approved', editorial_status()['status'])
+
+            details = browser.new_page()
+            details.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            details.goto(self.base + '/operator/videos/' + work_key)
+            expect(details.locator('#editorialState')).to_have_value('Approved')
+            details.select_option('#editorialState', label='In progress')
+            expect(details.locator('#detailsStatus')).to_contain_text('Editorial status saved.')
+            self.assertEqual('In progress', editorial_status()['status'])
+
+            self.source.review_status = 'needs_review'
+            transfer(page)
+            self.assertEqual(editorial_status()['status'], 'In progress')
+
+            response = self.client.get(work_url + '/versions', headers=self.auth)
+            versions = response.get_json()
+            older_key = next(v['key'] for v in versions if v.get('source_version') == '/videos/71/versions/202')
+            current_key = editorial_status()['version']
+            response = self.client.post(work_url + '/versions/restore', json={'current': current_key, 'restore': older_key}, headers=self.auth)
+            self.assertEqual(200, response.status_code, response.text)
+            self.assertEqual({'status': 'In progress', 'version': older_key}, editorial_status())
+            self.source.review_status = 'approved'
+            transfer(page)
+            self.assertEqual({'status': 'In progress', 'version': older_key}, editorial_status())
 
     def test_migration_replaces_vimeo_review_links(self):
         from installed_cards import select_action
