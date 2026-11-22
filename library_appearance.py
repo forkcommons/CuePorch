@@ -42,6 +42,21 @@ def read_settings(con, uid, surface):
     return surface_defaults(surface) | json.loads(row[0]) if row else None
 
 
+def imported_settings(work, surface):
+    appearance = work.get("source_embed_appearance")
+    if (surface != "embed" or work.get("provider") != "vimeo"
+            or not isinstance(appearance, dict) or not appearance):
+        return None
+    return surface_defaults(surface) | appearance
+
+
+def resolve_settings(con, work, surface):
+    existing = read_settings(con, work["id"], surface)
+    if existing is not None:
+        return existing
+    return imported_settings(work, surface)
+
+
 def brand_image(con, digest):
     if not digest:
         return None
@@ -130,7 +145,7 @@ def register(app, tx, staff, get_work, read_works, title_for):
                     (surface,),
                 )
             }
-            settings = current or surface_defaults(surface)
+            settings = current or imported_settings(work, surface) or surface_defaults(surface)
             logos = {values["logo"] for values in [settings, *presets.values()] if values["logo"]}
             images = {digest: brand_image(con, digest) for digest in logos}
             title = title_for(con, work)

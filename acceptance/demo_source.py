@@ -242,6 +242,11 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                             duration=4,
                             user=dict(name="Station team"),
                             modified_time="2026-11-03",
+                            **(
+                                {"embed": self.server.video_embed_fixture}
+                                if isinstance(getattr(self.server, "video_embed_fixture", None), dict)
+                                else {}
+                            ),
                             download=[
                                 dict(
                                     quality="source",
