@@ -4,15 +4,17 @@ import io
 import json
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from time import monotonic, sleep
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -125,8 +127,9 @@ class SimulcastCapacity(unittest.TestCase):
         (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
         operator = secrets.token_urlsafe(32)
         cleanup.enter_context(patch("event_peer.host_available", return_value=True))
+        self.database = root / "workspace.sqlite"
         with patch("institution.library_worker.start", return_value=lambda: None):
-            app = create_app(root, root / "workspace.sqlite", operator, "station")
+            app = create_app(root, self.database, operator, "station")
         for name, stop in app.extensions.items():
             if name.startswith("stop_"):
                 cleanup.callback(stop)
@@ -232,6 +235,51 @@ class SimulcastCapacity(unittest.TestCase):
                                      json=dict(broadcast="broadcast-9", channel="channel-9"))
             self.assertEqual(409, retry.status_code, retry.get_data(as_text=True))
             self.assertIn("up to 10 connected destinations", retry.get_data(as_text=True))
+
+    def test_facebook_profile_confirms_after_stopping_future_starts(self):
+        first, current = self.targets("facebook-profile-ack")
+        _, _, _, event_id, opening, _ = current.split("/")
+        opens = int(opening)
+        with closing(sqlite3.connect(self.database)) as con:
+            con.execute("INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')", (event_id, opens))
+            con.execute("INSERT INTO workspace_integration_connection VALUES ('facebook-profile-live','fb-fixture',X'')")
+            con.commit()
+
+        profile = {"page": "707", "series": True}
+        stopped = []
+
+        def provider_create(_revision, _owner, _title, _opens, before_send, **options):
+            before_send()
+            response = self.client.application.test_client().delete(
+                first + "/facebook-profile/auto", headers=self.auth, json=profile,
+            )
+            stopped.append((response.status_code, options["privacy"]))
+            return {"id": "123456789", "server": "rtmps://live-api-s.facebook.com:443/rtmp", "key": "fixture-key"}
+
+        with (
+            patch("facebook_live.ProfileLiveConnection.connection", return_value={"revision": "fb-fixture"}),
+            patch("facebook_live.ProfileLiveConnection.tokens",
+                  return_value={"profile": {"id": "707", "name": "Profile fixture"}}),
+            patch("facebook_live.ProfileLiveConnection.create_profile_live", side_effect=provider_create),
+            patch("facebook_live_job.time", return_value=opens + 1),
+        ):
+            response = self.client.put(first + "/facebook-profile/auto", headers=self.auth,
+                                       json=profile | {"privacy": "SELF"})
+            self.assertEqual(202, response.status_code, response.get_data(as_text=True))
+            deadline = monotonic() + 7
+            while monotonic() < deadline:
+                response = self.client.get(current + "/facebook-profile/auto?page=707", headers=self.auth)
+                self.assertEqual(200, response.status_code, response.get_data(as_text=True))
+                status = response.get_json()
+                if status["state"] == "prepared":
+                    break
+                sleep(.05)
+            self.assertEqual([(200, "SELF")], stopped)
+            self.assertEqual({"state": "prepared", "series": False, "privacy": "SELF"}, status)
+            roster = self.client.get(current, headers=self.auth).get_json()["destinations"]
+            self.assertEqual([("facebook-profile-live", True)],
+                             [(row["provider"], row["enabled"]) for row in roster])
+            self.assertNotIn("fixture-key", json.dumps(roster))
 
     def test_connected_limit_is_separate_from_custom(self):
         first_url, next_url = self.targets("connected-capacity")

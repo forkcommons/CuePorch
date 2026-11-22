@@ -109,7 +109,8 @@ def start(app, tx, prepare):
     return stop
 
 
-def provision(tx, check, create, save, event, opens, page, revision, *, automatic=None, replace=None):
+def provision(tx, check, create, save, event, opens, page, revision, *,
+              automatic=None, replace=None, final_check=None):
     key = (event, opens, page)
     replacing = False
     with tx() as con:
@@ -175,7 +176,7 @@ def provision(tx, check, create, save, event, opens, page, revision, *, automati
         raise
 
     with tx() as con:
-        check(con)
+        (final_check or check)(con)
         if replacing:
             con.execute("DELETE FROM live_simulcast_destination WHERE id=? AND enabled=0", (replace,))
         destination = save(con, target)
