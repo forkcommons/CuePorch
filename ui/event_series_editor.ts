@@ -2,7 +2,7 @@ import { checked, sessionMarker } from "./team_api.js";
 import { setupSeriesPresentation } from "./event_series_presentation.js";
 import type { Presentation } from "./event_series_presentation.js";
 
-export type Visibility = "private" | "public";
+export type Visibility = "private" | "team" | "public" | "password";
 
 export interface Settings {
   title: string;
@@ -19,6 +19,7 @@ export interface Series {
   settings: Settings;
   publication: string;
   watch: string | null;
+  has_password: boolean;
 }
 
 export interface EventChoice {
@@ -100,7 +101,15 @@ function renderEditor(entry: Series | null) {
   (field("description") as HTMLTextAreaElement).value =
     entry.settings.description;
   field("slug").value = entry.slug;
-  (field("visibility") as HTMLSelectElement).value = entry.settings.visibility;
+  const visibilitySelect = field("visibility") as HTMLSelectElement;
+  visibilitySelect.value = entry.settings.visibility;
+
+  const passwordRow = byId("seriesPasswordRow");
+  const passwordInput = field("view_password") as HTMLInputElement;
+  passwordInput.value = "";
+  passwordInput.required =
+    entry.settings.visibility === "password" && !entry.has_password;
+  passwordRow.hidden = entry.settings.visibility !== "password";
 
   const selected = new Set(entry.settings.events);
   const ordered = [
@@ -160,6 +169,18 @@ const seriesNew = document.querySelector<HTMLButtonElement>("#seriesNew")!;
 const seriesDelete = document.querySelector<HTMLButtonElement>("#seriesDelete")!;
 const seriesPreview = document.querySelector<HTMLButtonElement>("#seriesPreview")!;
 
+{
+  const visibilitySelect = field("visibility") as HTMLSelectElement;
+  const passwordRow = byId("seriesPasswordRow");
+  const passwordInput = field("view_password") as HTMLInputElement;
+  visibilitySelect.addEventListener("change", () => {
+    passwordInput.value = "";
+    passwordRow.hidden = visibilitySelect.value !== "password";
+    passwordInput.required =
+      visibilitySelect.value === "password" && !current?.has_password;
+  });
+}
+
 const setBusy = (v: boolean) => {
   busy = v;
   form.inert = v;
@@ -211,6 +232,8 @@ form.addEventListener("submit", e => {
   void withBusy(async () => {
     const payload = {
       slug: (field("slug") as HTMLInputElement).value,
+      view_password:
+        (field("view_password") as HTMLInputElement).value || undefined,
       settings: {
         title: (field("title") as HTMLInputElement).value.trim(),
         description: (field("description") as HTMLTextAreaElement).value.trim(),
