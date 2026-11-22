@@ -16,12 +16,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS vimeo_analytics_snapshot (
   id TEXT PRIMARY KEY, first TEXT NOT NULL, last TEXT NOT NULL, created INTEGER NOT NULL,
   columns_json TEXT NOT NULL, total_json TEXT NOT NULL, sources_json TEXT NOT NULL, rows_json TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'csv' CHECK(source IN ('csv','api'))
+  source TEXT NOT NULL DEFAULT 'csv' CHECK(source IN ('csv','api')),
+  report_kind TEXT NOT NULL DEFAULT 'video'
 );
 """
 MAX_BYTES = 2 * 1024 * 1024
 PAGE_SIZE = 100
-FIELDS = "id,first,last,columns_json,total_json,sources_json,source"
+FIELDS = "id,first,last,columns_json,total_json,sources_json,source,report_kind"
 
 
 def initialize(con):
@@ -30,6 +31,11 @@ def initialize(con):
         con.execute(
             "ALTER TABLE vimeo_analytics_snapshot "
             "ADD COLUMN source TEXT NOT NULL DEFAULT 'csv'"
+        )
+    if "report_kind" not in existing:
+        con.execute(
+            "ALTER TABLE vimeo_analytics_snapshot "
+            "ADD COLUMN report_kind TEXT NOT NULL DEFAULT 'video'"
         )
 
 
@@ -52,12 +58,12 @@ def bad_token(token):
     return any(ord(c) < 0x20 or ord(c) == 0x7F for c in token)
 
 
-def save_snapshot(con, record_id, first, last, columns, total, sources, rows, source):
+def save_snapshot(con, record_id, first, last, columns, total, sources, rows, source, report_kind="video"):
     return con.execute(
         """INSERT INTO vimeo_analytics_snapshot
-           (id,first,last,created,columns_json,total_json,sources_json,rows_json,source)
-           VALUES (?,?,?,unixepoch(),?,?,?,?,?) ON CONFLICT(id) DO NOTHING""",
-        (record_id, first, last, columns, total, sources, rows, source),
+           (id,first,last,created,columns_json,total_json,sources_json,rows_json,source,report_kind)
+           VALUES (?,?,?,unixepoch(),?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING""",
+        (record_id, first, last, columns, total, sources, rows, source, report_kind),
     )
 
 
@@ -76,9 +82,11 @@ def summary(row, works):
     counts = json.loads(row["sources_json"])
     count = sum(counts.values())
     matched = sum(size for source, size in counts.items() if source in works)
+    report_kind = row["report_kind"]
+    aggregate = counts.get("", 0) if report_kind != "video" else 0
     return dict(id=row["id"], first=row["first"], last=row["last"], source=row["source"],
-                columns=json.loads(row["columns_json"]), total=json.loads(row["total_json"]),
-                count=count, matched=matched, unmatched=count - matched)
+                report_kind=report_kind, columns=json.loads(row["columns_json"]), total=json.loads(row["total_json"]),
+                count=count, matched=matched, aggregate=aggregate, unmatched=count - matched - aggregate)
 
 
 def private(value, status=200):
@@ -110,23 +118,27 @@ def register(app, tx, staff, read_works, simulation):
             return private({"error": "The report exceeds 2 MiB."}, 413)
         first = request.form.get("first", "")
         last = request.form.get("last", "")
+        report_kind = request.form.get("report_kind", "video")
         try:
-            report = parse(raw, first, last)
+            report = parse(raw, first, last, report_kind=report_kind)
         except ValueError as error:
             return private({"error": str(error)}, 400)
-        digest = hashlib.sha256(first.encode() + last.encode() + raw).hexdigest()
+        hash_bytes = first.encode() + last.encode() + raw
+        if report_kind != "video":
+            hash_bytes = report_kind.encode("ascii") + b"\0" + hash_bytes
+        digest = hashlib.sha256(hash_bytes).hexdigest()
         columns = json.dumps(report["columns"])
         total = json.dumps(report["total"])
         sources = json.dumps(Counter(row["source_id"] for row in report["rows"]))
         record = dict(id=digest, first=first, last=last, columns_json=columns,
-                      total_json=total, sources_json=sources, source="csv")
+                      total_json=total, sources_json=sources, source="csv", report_kind=report_kind)
         preview = request.args.get("preview") == "1"
         with tx() as con:
             works = present_works(con, read_works())
             if preview:
                 return private(summary(record, works) | {"id": None})
             result = save_snapshot(con, digest, first, last, columns, total, sources,
-                                   json.dumps(report["rows"]), "csv")
+                                   json.dumps(report["rows"]), "csv", report_kind)
             return private(summary(record, works), 201 if result.rowcount else 200)
 
     @app.post("/api/analytics/vimeo-history/import-source")
@@ -165,7 +177,7 @@ def register(app, tx, staff, read_works, simulation):
         total = json.dumps(normalized["total"])
         sources = json.dumps(Counter(row["source_id"] for row in normalized["rows"]))
         record = dict(id=digest, first=first, last=last, columns_json=columns,
-                      total_json=total, sources_json=sources, source="api")
+                      total_json=total, sources_json=sources, source="api", report_kind="video")
         with tx() as con:
             works = present_works(con, read_works())
             result = save_snapshot(con, digest, first, last, columns, total, sources,

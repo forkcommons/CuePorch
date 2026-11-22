@@ -16,7 +16,19 @@ const labels = {
     video_title: "Vimeo title", average_percent_watched: "Average watched (%)",
     average_seconds_watched: "Average watched (seconds)", total_seconds_watched: "Total watched (seconds)",
 };
+const reportKindLabels = {
+    video: 'Video', date: 'Date', region: 'Region', source: 'Source URL', device: 'Device',
+};
 const label = (key) => labels[key] ?? key[0].toUpperCase() + key.slice(1).replaceAll("_", " ");
+function rowCounts(report) {
+    const counts = [`${report.count} rows`];
+    if (report.report_kind === 'video' || report.matched + report.unmatched > 0) {
+        counts.push(`${report.matched} matched`, `${report.unmatched} unmatched`);
+    }
+    if (report.aggregate > 0)
+        counts.push(`${report.aggregate} aggregate rows`);
+    return counts.join(' · ');
+}
 const setStatus = (m) => { statusEl.textContent = m; };
 function headers() {
     const k = $('reportKey')?.value.trim();
@@ -30,8 +42,11 @@ async function refreshReports() {
     selectEl.replaceChildren();
     const opt = new Option('— select —', '');
     selectEl.appendChild(opt);
-    for (const r of data.reports)
-        selectEl.appendChild(new Option(`${r.first} to ${r.last} · ${r.source === "api" ? "Vimeo API" : "CSV"} · ${r.count} rows · ${r.id.slice(0, 8)}`, r.id));
+    for (const r of data.reports) {
+        const kind = reportKindLabels[r.report_kind];
+        const source = r.source === "api" ? "Vimeo API" : "CSV";
+        selectEl.appendChild(new Option(`${r.first} to ${r.last} · ${kind} ${source} · ${r.count} rows · ${r.id.slice(0, 8)}`, r.id));
+    }
 }
 async function loadReport(id, page) {
     const selected = ++selection;
@@ -47,7 +62,7 @@ async function loadReport(id, page) {
         state.reportId = data.id;
         state.page = data.page;
         state.pageCount = Math.max(1, Math.ceil(data.count / pageSize));
-        setStatus(`${data.count} rows · ${data.matched} matched · ${data.unmatched} unmatched`);
+        setStatus(rowCounts(data));
         renderSummary();
         renderTable(data.rows);
         renderPager();
@@ -62,7 +77,7 @@ function renderSummary() {
     if (!s)
         return;
     const info = document.createElement('p');
-    info.textContent = `First ${s.first} · Last ${s.last} · Rows ${s.count} · Matched ${s.matched} · Unmatched ${s.unmatched} · Columns ${s.columns.map(label).join(', ') || '—'}`;
+    info.textContent = `${reportKindLabels[s.report_kind]} report · ${s.first} to ${s.last} · ${rowCounts(s)}`;
     summaryEl.appendChild(info);
     const tot = document.createElement('p');
     if (s.total) {
@@ -81,7 +96,11 @@ function renderTable(rows) {
         return;
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
-    for (const h of ['Vimeo video ID', 'CuePorch video', ...s.columns.map(label)]) {
+    const showVideoCols = s.report_kind === 'video' || s.matched + s.unmatched > 0;
+    const columns = showVideoCols
+        ? ['Vimeo video ID', 'CuePorch video', ...s.columns.map(label)]
+        : s.columns.map(label);
+    for (const h of columns) {
         const th = document.createElement('th');
         th.scope = 'col';
         th.textContent = h;
@@ -92,8 +111,10 @@ function renderTable(rows) {
     for (const row of rows) {
         const tr = document.createElement('tr');
         const add = (v) => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); };
-        add(row.source_id ?? '');
-        add(row.title ?? 'Unmatched');
+        if (showVideoCols) {
+            add(row.source_id ?? '');
+            add(row.title ?? (row.source_id || s.report_kind === 'video' ? 'Unmatched' : ''));
+        }
         for (const c of s.columns) {
             if (Object.prototype.hasOwnProperty.call(row.metrics, c))
                 add(String(row.metrics[c]));
@@ -141,7 +162,7 @@ form.addEventListener('submit', async (e) => {
             state.reportId = null;
             state.page = 1;
             state.pageCount = 1;
-            setStatus(`Preview: ${summary.count} rows · ${summary.matched} matched · ${summary.unmatched} unmatched`);
+            setStatus(`Preview: ${rowCounts(summary)}`);
             renderSummary();
             renderTable([]);
             renderPager();

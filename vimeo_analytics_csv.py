@@ -91,7 +91,9 @@ def _metric(key, value):
     raise ValueError("A value in a metric column is invalid.")
 
 
-def parse(data, first, last):
+def parse(data, first, last, report_kind="video"):
+    if report_kind not in ("video", "date", "region", "source", "device"):
+        raise ValueError("Choose a supported Vimeo report type.")
     if not valid_utc_date(first) or not valid_utc_date(last) or first > last:
         raise ValueError("Enter the UTC date range used for the Vimeo export.")
     try:
@@ -110,8 +112,11 @@ def parse(data, first, last):
                 recognized[key] = index
         identity_keys = set(_IDENTITIES.values())
         metric_keys = _COUNT_KEYS | set(_DECIMALS.values())
-        if not identity_keys.intersection(recognized) or not metric_keys.intersection(recognized):
-            raise ValueError("The report needs a video column and at least one supported Vimeo metric.")
+        if report_kind == "video":
+            if not identity_keys.intersection(recognized) or not metric_keys.intersection(recognized):
+                raise ValueError("The report needs a video column and at least one supported Vimeo metric.")
+        elif report_kind not in recognized or not metric_keys.intersection(recognized):
+            raise ValueError("The report needs its matching dimension and at least one supported Vimeo metric.")
         columns = [key for key in recognized if key not in identity_keys or key == "video_title"]
         rows = []
         total = None
@@ -125,10 +130,15 @@ def parse(data, first, last):
                 metrics = {key: _metric(key, value) for key, value in values.items()
                            if key in metric_keys and value.casefold() not in ("", "—", "-", "n/a")}
                 ids = {key: values[key] for key in identity_keys if values.get(key)}
-                if any(value.casefold() in _TOTAL_LABELS for value in ids.values()) and not any(
-                    value for key, value in ids.items()
-                    if key != "video_title" and value.casefold() not in _TOTAL_LABELS
-                ):
+                identity_total = (
+                    any(value.casefold() in _TOTAL_LABELS for value in ids.values())
+                    and not any(value for key, value in ids.items()
+                                if key != "video_title" and value.casefold() not in _TOTAL_LABELS)
+                )
+                primary_total = (
+                    report_kind != "video" and values.get(report_kind, "").casefold() in _TOTAL_LABELS
+                )
+                if identity_total or primary_total:
                     if total is not None:
                         raise ValueError("The report repeats its total row.")
                     total = metrics
