@@ -533,10 +533,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             group_scope = None
             if group_slug is not None:
                 group = con.execute("SELECT id FROM audience_group WHERE slug=?", (group_slug,)).fetchone()
-                viewer = current_viewer(con, required=False)
-                if not group or not viewer:
+                if not group:
                     abort(404)
-                group_scope = group_protected.scope(con, group["id"], uid, viewer["id"])
+                viewer = current_viewer(con, required=False)
+                group_scope = group_protected.scope(con, group["id"], uid, viewer["id"] if viewer else None)
                 if group_scope is None:
                     abort(404)
             settings = json.loads(row["settings"])
@@ -732,7 +732,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if "group" in extra:
             scope = extra["group"]
             account = current_viewer(con, required=False)
-            if not account or group_protected.scope(con, scope[0], uid, account["id"]) != scope:
+            if group_protected.scope(con, scope[0], uid, account["id"] if account else None) != scope:
                 abort(404)
         if alias and not library_share.current(con, uid, alias[0]):
             abort(404)

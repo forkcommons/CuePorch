@@ -146,10 +146,7 @@ def delete(con, uid):
     con.execute("DELETE FROM audience_group_member WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_moderator WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_video WHERE group_id=?", (uid,))
-    con.execute("""UPDATE action SET status='rejected',decision='superseded' WHERE status='waiting' AND id IN (
-        SELECT approval FROM audience_group_playback_grant WHERE group_id=?
-    )""", (uid,))
-    con.execute("DELETE FROM audience_group_playback_grant WHERE group_id=?", (uid,))
+    group_protected.clear_group_grants(con, uid)
     con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission_policy WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (uid,))
@@ -174,7 +171,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
 
     def protected_entries(con, group, uid=None):
         provider = app.extensions.get("protected_group_entries")
-        if group["access"] != "members" or not provider:
+        if group["access"] not in ("members", "public") or not provider:
             return {}
         return provider(con, group, uid)
 
@@ -240,7 +237,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             moderator = can_moderate(con, row, aid)
             settings = submission_settings(con, row["id"])
             contributes = moderator or (joined and settings["allow_members"])
-            restricted = protected_entries(con, row) if joined else {}
+            restricted = protected_entries(con, row) if joined or row["access"] == "public" else {}
             source = listing(con) | restricted
             prefs = watch_preferences(con)
             library = {
@@ -349,6 +346,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             ).fetchone()
             if hit:
                 abort(409, "A group already uses this link name.")
+            if access != row["access"]:
+                group_protected.clear_group_grants(con, row["id"])
             con.execute(
                 "UPDATE audience_group SET slug=?, title=?, description=?, access=?, revision=? WHERE id=?",
                 (newslug, title, description, access, uuid.uuid4().hex, row["id"]),

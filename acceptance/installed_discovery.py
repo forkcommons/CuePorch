@@ -383,6 +383,35 @@ def check_discovery(page, browser, base, auth, sample):
             assert member.request.get(new_media).status == 404
             send("PUT", "/api/policy/publication", json={"required": False})
 
+            send("POST", gp, json=payload)
+            assert member.request.get(base+protected).ok
+            viewer.get_by_label('Group access').select_option('public')
+            viewer.get_by_role('button', name='Save group').click()
+            expect(viewer.locator('#groupAccess')).to_have_attribute('data-access', 'public')
+            assert public(protected).status_code == 404
+            assert title not in public(group_path).text
+            assert requests.post(base + gp, headers=auth, json=payload, timeout=15).status_code == 403
+            page.reload()
+            page.locator("#key").fill(auth["Authorization"].removeprefix("Bearer "))
+            page.get_by_role('button', name='Load library').click()
+            page.get_by_role('button', name='Change privacy for ' + title).click()
+            page.get_by_label('Group slug').fill('arts-screenings')
+            page.get_by_label('Allow anyone in this public group to play the video').check()
+            page.get_by_role('button', name='Add access').click()
+            page.get_by_text('Access granted').wait_for()
+            anon = browser.new_page()
+            anon.goto(base + group_path)
+            anon.get_by_role('link', name=title).click()
+            assert anon.locator('video').evaluate(decode) > 0
+            public_media = anon.locator('video').evaluate('v => v.currentSrc')
+            assert 'Video password' in public('/watch/work/'+uid).text
+            anon.close()
+            viewer.get_by_label('Group access').select_option('members')
+            viewer.get_by_role('button', name='Save group').click()
+            expect(viewer.locator('#groupAccess')).to_have_attribute('data-access', 'members')
+            assert requests.get(public_media, timeout=15).status_code == 404
+            assert not send('GET',gp)['grants']
+
             member_page.goto(base + group_path)
             member_page.get_by_role("button", name="Leave group", exact=True).click()
             expect(member_page.get_by_role("heading", name="Not Found")).to_be_visible()

@@ -20,7 +20,7 @@ CREATE INDEX IF NOT EXISTS audience_group_playback_grant_work
 
 ACTIVE = (
     "FROM audience_group_playback_grant r "
-    "JOIN audience_group g ON g.id=r.group_id AND g.access='members' "
+    "JOIN audience_group g ON g.id=r.group_id "
     "JOIN library_privacy p ON p.work=r.work AND p.revision=r.privacy_revision "
     "    AND json_extract(p.settings,'$.visibility')='password' "
     "JOIN action a ON a.id=r.approval AND a.status='eligible'"
@@ -34,10 +34,13 @@ def available(con, group_id):
 
 def scope(con, group_id, work, account):
     row = con.execute(
-        "SELECT g.id,g.revision,r.revision,?,v.added,m.joined " + ACTIVE
+        "SELECT g.id,g.revision,r.revision,"
+        "CASE WHEN g.access='public' THEN NULL ELSE ? END,"
+        "v.added,"
+        "CASE WHEN g.access='public' THEN NULL ELSE m.joined END " + ACTIVE
         + """ JOIN audience_group_video v ON v.group_id=r.group_id AND v.kind='work' AND v.slug=r.work
               LEFT JOIN audience_group_member m ON m.group_id=g.id AND m.account=?
-              WHERE r.group_id=? AND r.work=? AND (g.owner=? OR m.account IS NOT NULL)""",
+              WHERE r.group_id=? AND r.work=? AND (g.access='public' OR g.owner=? OR m.account IS NOT NULL)""",
         (account, account, group_id, work, account),
     ).fetchone()
     return list(row) if row else None
@@ -61,12 +64,12 @@ def group_grants_state(con, uid, privacy, can_grant):
         expired = (
             privacy is None
             or privacy_revision != current_revision
-            or access != "members"
             or not can_grant
         )
         grants.append(
             dict(
                 slug=slug,
+                access=access,
                 revision=revision,
                 state="expired" if expired else status,
             )
@@ -97,8 +100,9 @@ def update_grant(con, uid, row, body, action):
             abort(409)
     elif existing is None or existing[1] != expected:
         abort(409)
-    if body['allowed'] and access != 'members':
-        abort(403)
+    if body['allowed']:
+        if body.get('public_group', False) is not (access == 'public'):
+            abort(403)
     if existing and existing[2]:
         cur.execute("UPDATE action SET status='rejected', decision='superseded' WHERE id=? AND status='waiting'", (existing[2],))
     if not body['allowed']:
@@ -106,5 +110,12 @@ def update_grant(con, uid, row, body, action):
     else:
         rev = uuid.uuid4().hex
         action_id = 'group-playback-' + rev
-        action(con, action_id, 'publication', dict(work=uid, group=gid, visibility='group_password'))
+        action(con, action_id, 'publication', dict(work=uid, group=gid, visibility='group_password', public_group=access == 'public'))
         cur.execute("INSERT INTO audience_group_playback_grant(group_id, work, privacy_revision, revision, approval) VALUES(?,?,?,?,?) ON CONFLICT(group_id, work) DO UPDATE SET privacy_revision=excluded.privacy_revision, revision=excluded.revision, approval=excluded.approval", (gid, uid, privacy_revision, rev, action_id))
+
+
+def clear_group_grants(con, group_id):
+    con.execute("""UPDATE action SET status='rejected',decision='superseded' WHERE status='waiting' AND id IN (
+        SELECT approval FROM audience_group_playback_grant WHERE group_id=?
+    )""", (group_id,))
+    con.execute("DELETE FROM audience_group_playback_grant WHERE group_id=?", (group_id,))
