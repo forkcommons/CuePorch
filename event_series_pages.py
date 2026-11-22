@@ -7,7 +7,7 @@ import uuid
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from flask import abort, make_response, render_template, request, url_for
+from flask import abort, make_response, redirect, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -15,11 +15,14 @@ import event_schedule
 import event_series_hosts
 import event_series_locale
 import event_series_presentation
+import event_series_team_access
 import library_events
 import library_privacy
-from browser_account_security import private, secure_site
+from browser_account_security import private, secure_site, workspace_session
+from library_analytics import source_origin
 from library_interactivity import text_field
 from team_accounts import current as current_team_member
+from team_accounts import current_digest as current_team_digest
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_series_page (
@@ -34,7 +37,7 @@ CREATE TABLE IF NOT EXISTS live_series_access (
     series TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL
 );
-"""
+""" + event_series_team_access.SCHEMA + "\n"
 
 DEFAULTS = dict(
     title="Untitled event series",
@@ -178,7 +181,7 @@ def validate(con, body, prior, allowed_hosts):
         abort(422, "Choose private draft, public, team only, or password protected.")
     previous_host = prior["custom_host"] if prior["custom_host"] in allowed_hosts else ""
     custom_host = event_series_hosts.requested_host(
-        body.get("custom_host", previous_host), allowed_hosts, visibility
+        body.get("custom_host", previous_host), allowed_hosts
     )
     events = body.get("events", DEFAULTS["events"])
     if not isinstance(events, list) or any(not isinstance(item, str) for item in events):
@@ -277,7 +280,7 @@ def watch_url(row, settings, status, allowed_hosts):
         return None
     host = settings.get("custom_host") if settings else None
     visibility = settings.get("visibility") if settings else None
-    if host and host in allowed_hosts and visibility in ("public", "password"):
+    if host and host in allowed_hosts and visibility in ("public", "password", "team"):
         return f"https://{host}/"
     return url_for("event_series_view", slug=row["slug"])
 
@@ -377,6 +380,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
         signing_key, salt="cueporch-event-series-preview"
     )
     series_passwords = URLSafeTimedSerializer(signing_key, salt="cueporch-event-series-access")
+    team_challenges = URLSafeTimedSerializer(signing_key, salt="cueporch-event-series-team")
     allowed_hosts = event_series_hosts.configured_hosts(
         team_origin, os.environ.get("CUEPORCH_EVENT_SERIES_HOSTS", "")
     )
@@ -463,6 +467,55 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             store_password(con, uid, digest)
             return summary(con, updated, allowed_hosts)
 
+    @app.get("/team/event-series/connect")
+    def event_series_team_connect():
+        if source_origin("https://" + request.host) != team_origin or not secure_site(team_origin):
+            abort(404)
+        access = event_series_team_access
+        value = request.args.get("challenge", "")
+        scope = access.read_challenge(team_challenges, value)
+        alias, uid, revision, _binding_digest = scope
+        if alias not in allowed_hosts:
+            abort(404)
+
+        with tx() as con:
+            row = read_alias(con, alias)
+            settings = DEFAULTS | json.loads(row["settings"])
+            if (
+                series_status(con, row, settings) != "eligible"
+                or settings["visibility"] != "team"
+                or row["id"] != uid
+                or row["revision"] != revision
+            ):
+                abort(404)
+            digest = workspace_session("team", True)
+            code = access.issue(con, digest, scope) if current_team_digest(con, digest) else None
+
+        if code is None:
+            response = private(redirect(url_for("team_sign_in_page"), code=303))
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.set_cookie(
+                access.CONTINUE_COOKIE,
+                value,
+                max_age=access.CHALLENGE_TTL,
+                secure=True,
+                httponly=True,
+                samesite="Lax",
+                path="/",
+            )
+            return response
+
+        response = private(render_template(
+            "event_series_team_continue.html",
+            language="en",
+            action_url=f"https://{alias}/",
+            code=code,
+        ))
+        response.headers["Referrer-Policy"] = "origin"
+        response.headers["Content-Security-Policy"] = f"frame-ancestors 'none'; form-action https://{alias}"
+        response.delete_cookie(access.CONTINUE_COOKIE, path="/", secure=True, httponly=True, samesite="Lax")
+        return response
+
     @app.route("/event-series/<slug>", methods=["GET", "POST"])
     def event_series_view(slug):
         ticket = None
@@ -473,7 +526,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             row = read_alias(con, alias) if alias else series_row(con, slug, by_slug=True)
             settings = DEFAULTS | json.loads(row["settings"])
             token = request.args.get("preview")
-            if alias and (token is not None or settings["visibility"] not in ("public", "password")):
+            if alias and token is not None:
                 abort(404)
             internal = False
 
@@ -504,9 +557,76 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
 
             audience = "public" if internal else settings["visibility"]
             if audience == "team":
-                secure = secure_site(team_origin, required=False)
-                if secure is None or not current_team_member(con, secure):
-                    abort(404)
+                if alias:
+                    alias_origin = f"https://{alias}"
+                    secure = secure_site(alias_origin, required=False)
+                    if source_origin("https://" + request.host) != alias_origin or secure is not True:
+                        abort(404)
+                    if request.method == "POST":
+                        if request.headers.get("Origin") != team_origin:
+                            abort(403)
+                        request.max_content_length = 4096
+                        raw_code, digest = event_series_team_access.redeem(
+                            con,
+                            alias,
+                            row,
+                            request.form.get("team_code", ""),
+                        )
+                        if not current_team_digest(con, digest):
+                            abort(404)
+                        response = private(redirect("/", code=303))
+                        response.headers["Referrer-Policy"] = "no-referrer"
+                        response.set_cookie(
+                            event_series_team_access.ACCESS_COOKIE,
+                            raw_code,
+                            max_age=event_series_team_access.ACCESS_TTL,
+                            secure=True,
+                            httponly=True,
+                            samesite="Lax",
+                            path="/",
+                        )
+                        response.delete_cookie(
+                            event_series_team_access.BIND_COOKIE,
+                            path="/",
+                            secure=True,
+                            httponly=True,
+                            samesite="None",
+                        )
+                        return response
+                    digest = event_series_team_access.session_digest(con, alias, row)
+                    if not digest or not current_team_digest(con, digest):
+                        binding = event_series_team_access.browser_binding()
+                        token = event_series_team_access.challenge(
+                            team_challenges,
+                            alias,
+                            row,
+                            binding,
+                        )
+                        response = private(
+                            render_template(
+                                "event_series_team_locked.html",
+                                connect_url=team_origin + url_for(
+                                    "event_series_team_connect",
+                                    challenge=token,
+                                ),
+                                language="en",
+                            )
+                        )
+                        response.headers["Referrer-Policy"] = "no-referrer"
+                        response.set_cookie(
+                            event_series_team_access.BIND_COOKIE,
+                            binding,
+                            max_age=event_series_team_access.CHALLENGE_TTL,
+                            secure=True,
+                            httponly=True,
+                            samesite="None",
+                            path="/",
+                        )
+                        return response
+                else:
+                    secure = secure_site(team_origin, required=False)
+                    if secure is None or not current_team_member(con, secure):
+                        abort(404)
             elif audience == "password":
                 digest = password_hash(con, row["id"])
                 if not digest:

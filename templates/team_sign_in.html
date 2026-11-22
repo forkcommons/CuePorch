@@ -25,6 +25,7 @@
   </form>
   <section id="teamLibrary" hidden>
     <h2 id="teamIdentity"></h2>
+    {% if series_continue %}<a id="returnToEventSeries" href="{{ url_for('event_series_team_connect', challenge=series_continue) }}">Return to Event Series</a>{% endif %}
     {% with activity_team=true %}{% include "workspace_activity.html" %}{% endwith %}
     <a href="{{ url_for('help_center', team=1) }}">Help center</a>
     <a href="{{ url_for('whats_new', team=1) }}">What's New</a>

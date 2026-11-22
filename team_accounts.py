@@ -21,6 +21,7 @@ import team_sessions
 import account_recovery
 import account_totp
 import creator_profiles
+import event_series_team_access
 import library_analytics
 import mail_relay
 import team_analytics
@@ -95,7 +96,10 @@ def permission_from(body):
 
 
 def current(con, secure):
-    digest = workspace_session("team", secure)
+    return current_digest(con, workspace_session("team", secure))
+
+
+def current_digest(con, digest):
     if not digest:
         return None
     now = team_sessions.clock()
@@ -392,8 +396,17 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
     @app.get("/team")
     def team_sign_in_page():
         secure_site(origin)
-        return private(render_template("team_sign_in.html", brand=workspace_brand(), joining=False,
-                                       can_recover=bool(email_security.config), saml_available=saml_available()))
+        series_continue = event_series_team_access.continuation()
+        return private(
+            render_template(
+                "team_sign_in.html",
+                brand=workspace_brand(),
+                joining=False,
+                can_recover=bool(email_security.config),
+                saml_available=saml_available(),
+                series_continue=series_continue,
+            )
+        )
 
     @app.get("/team/members")
     def team_members_page():

@@ -36,13 +36,11 @@ def configured_hosts(canonical, raw):
     return tuple(sorted(hosts))
 
 
-def requested_host(value, allowed, visibility):
+def requested_host(value, allowed):
     if value == '':
         return ''
     if not isinstance(value, str):
         abort(422, 'Event Series hostname must be a string.')
-    if visibility == 'team':
-        abort(422, 'Event Series hostnames cannot be configured for team-only series.')
     try:
         host = _clean_alias(normalize_domain(value))
     except (ValueError, UnicodeError):

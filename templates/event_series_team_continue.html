@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="{{ language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Continue to Event Series · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="live-event-page">
+  <main id="eventLobby">
+    <h1>Continue to Event Series</h1>
+    <p>Continue to the event series on this device.</p>
+    <form method="post" action="{{ action_url }}">
+      <input type="hidden" name="team_code" value="{{ code }}">
+      <button type="submit">Continue to Event Series</button>
+    </form>
+  </main>
+</body>
+</html>
