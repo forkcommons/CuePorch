@@ -369,7 +369,54 @@ def assets(video, tracks):
         )
 
 
-def store(root, source, link, expected, source_md5):
+def chapter_picture_items(chapters, related, video_uri):
+    if isinstance(chapters, dict):
+        chapter_iter = chapters.values()
+    else:
+        chapter_iter = chapters or []
+    chapter_re = re.compile(re.escape(video_uri) + r'/chapters/[0-9]+')
+    for chapter in chapter_iter:
+        if not isinstance(chapter, dict):
+            continue
+        uri = chapter.get('uri')
+        if not isinstance(uri, str) or not chapter_re.fullmatch(uri):
+            continue
+        pictures = related(uri.removeprefix(video_uri) + '/pictures')
+        if not pictures:
+            continue
+        pic_re = re.compile(re.escape(uri) + r'/pictures/[A-Za-z0-9_-]+')
+        chosen = None
+        for picture in pictures:
+            if not isinstance(picture, dict):
+                continue
+            if picture.get('active') is not True:
+                continue
+            puri = picture.get('uri')
+            if not isinstance(puri, str) or not pic_re.fullmatch(puri):
+                continue
+            best_w = -1
+            best_link = None
+            for size in picture.get('sizes') or []:
+                if not isinstance(size, dict):
+                    continue
+                w = size.get('width')
+                if type(w) is not int or w <= 0 or w > 1280:
+                    continue
+                link = size.get('link')
+                if not isinstance(link, str) or not link:
+                    continue
+                if w > best_w:
+                    best_w = w
+                    best_link = link
+            if best_link is not None:
+                chosen = (best_link, puri)
+                break
+        if chosen is None:
+            continue
+        yield (chosen[0], dict(role='chapter_picture', format='image', chapter_uri=uri, source_picture=chosen[1]), None, None)
+
+
+def store(root, source, link, expected, source_md5, *, max_bytes=None, check_image=False):
     digest = hashlib.sha256()
     if source_md5 and (not isinstance(source_md5, str) or not re.fullmatch("[a-fA-F0-9]{32}", source_md5)):
         raise MediaFailure("invalid_source_checksum")
@@ -383,6 +430,8 @@ def store(root, source, link, expected, source_md5):
             raise MediaFailure("media_connection_interrupted") from None
         with response, temporary.open("wb") as target:
             announced = response.headers.get("Content-Length")
+            if max_bytes is not None and announced is not None and str(announced).isdigit() and int(announced) > max_bytes:
+                raise MediaFailure("image_too_large")
             while True:
                 try:
                     block = response.read(1024 * 1024)
@@ -390,6 +439,8 @@ def store(root, source, link, expected, source_md5):
                     raise MediaFailure("media_connection_interrupted") from None
                 if not block:
                     break
+                if max_bytes is not None and target.tell() + len(block) > max_bytes:
+                    raise MediaFailure("image_too_large")
                 target.write(block)
                 digest.update(block)
                 if source_digest:
@@ -401,6 +452,10 @@ def store(root, source, link, expected, source_md5):
             raise MediaFailure("incomplete_media")
         if source_digest and source_digest.hexdigest() != source_md5.lower():
             raise MediaFailure("source_checksum_mismatch")
+        if check_image:
+            from library_thumbnail import thumbnail_type
+            if not thumbnail_type(temporary):
+                raise MediaFailure("invalid_image_type")
         key = digest.hexdigest()
         temporary.replace(root / "objects" / key)
         return dict(sha256=key, bytes=size)
@@ -1135,6 +1190,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         if isinstance(spatial, dict) and isinstance(spatial.get("projection"), str):
             record["source_projection"] = spatial["projection"]
         items = list(assets(video, tracks))
+        items.extend(chapter_picture_items(record['chapters'], related, uri))
         checkpoint = root / "checkpoints" / (vid + ".json")
         revision = video.get("modified_time")
         signature = []
@@ -1163,22 +1219,43 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
                         record["caption_status"] = saved["caption_status"]
         if not dry_run and not record["files"]:
             for link, meta, size, source_md5 in items:
+                role = meta["role"]
                 try:
-                    record["files"].append(
-                        dict(meta, **store(root, source, link, size, source_md5))
-                    )
+                    if role == "chapter_picture":
+                        stored = store(
+                            root,
+                            source,
+                            link,
+                            size,
+                            source_md5,
+                            max_bytes=5*1024**2,
+                            check_image=True,
+                        )
+                    else:
+                        stored = store(root, source, link, size, source_md5)
+                    record["files"].append(dict(meta, **stored))
                 except MediaFailure as exc:
-                    record.setdefault("transfer_issues", []).append(
-                        dict(role=meta["role"], reason=exc.reason)
-                    )
+                    if role == "chapter_picture":
+                        record.setdefault("chapter_picture_issues", []).append(
+                            dict(chapter_uri=meta.get("chapter_uri"), reason=exc.reason)
+                        )
+                    else:
+                        record.setdefault("transfer_issues", []).append(
+                            dict(role=role, reason=exc.reason)
+                        )
                 except SourceFailure as exc:
                     if exc.status == 429:
                         raise
                     if refresh and exc.status in (401, 403, 410):
                         raise RefreshLinks() from None
-                    record.setdefault("transfer_issues", []).append(
-                        dict(role=meta["role"], http_status=exc.status)
-                    )
+                    if role == "chapter_picture":
+                        record.setdefault("chapter_picture_issues", []).append(
+                            dict(chapter_uri=meta.get("chapter_uri"), http_status=exc.status)
+                        )
+                    else:
+                        record.setdefault("transfer_issues", []).append(
+                            dict(role=role, http_status=exc.status)
+                        )
         roles = (
             {meta["role"] for _, meta, _, _ in items}
             if dry_run
@@ -1201,7 +1278,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             from caption_adapter import caption_work
 
             caption_work(record, root)
-            if record.get("transfer_issues"):
+            if record.get("transfer_issues") or record.get("chapter_picture_issues"):
                 checkpoint.unlink(missing_ok=True)
             else:
                 dump(

@@ -700,6 +700,26 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
     def shared_poster(token):
         return shared_video(token, poster=True)
 
+    @app.get('/shared-video/<token>/chapter-picture/<digest>')
+    def shared_chapter_picture(token, digest):
+        with tx() as con:
+            work, video, settings, grant = authorized_playback(con, token)
+            if not any(
+                chapter.get('picture') == digest
+                for chapter in library_interactivity.readable_chapters(work)
+            ):
+                abort(404)
+        path = root / 'objects' / digest
+        if not path.is_file():
+            abort(404)
+        kind = thumbnail_type(path)
+        if not kind:
+            abort(415)
+        response = send_file(path, mimetype=kind)
+        response.cache_control.no_store = True
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        return response
+
     @app.get("/shared-video/<token>/artwork/<digest>")
     def shared_artwork(token, digest):
         return shared_video(token, artwork=digest)

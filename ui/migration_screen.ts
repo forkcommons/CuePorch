@@ -28,6 +28,8 @@ const mediaIssueLabels: Record<string, string> = {
   invalid_source_checksum: "Invalid Vimeo checksum",
   source_checksum_mismatch: "Download did not match the Vimeo checksum",
   media_connection_interrupted: "Media connection interrupted",
+  image_too_large: "Image exceeds the transfer limit",
+  invalid_image_type: "Unsupported image format",
 };
 const headers = () => ({
   Authorization: "Bearer " + key.value,
@@ -206,6 +208,10 @@ async function poll(page = currentPage) {
       ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
       ...(w.transfer_issues || []).map((issue: {role: string; http_status?: number; reason?: string}) =>
         `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
+      ...(w.chapter_picture_issues || [])
+        .filter((issue: {http_status?: number; reason?: string}) => issue.reason || issue.http_status)
+        .map((issue: {http_status?: number; reason?: string}) =>
+          `Chapter thumbnail (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
     ];
     row.insertCell().textContent = exceptions.join(", ") || "None reported";
   }
