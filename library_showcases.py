@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS video_showcase_migration(
 CREATE TABLE IF NOT EXISTS video_showcase_analytics(
  session TEXT PRIMARY KEY, showcase TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS video_showcase_analytics_by_showcase ON video_showcase_analytics(showcase);
+CREATE TABLE IF NOT EXISTS audience_channel_follow(
+ account TEXT NOT NULL, channel TEXT NOT NULL, PRIMARY KEY(account, channel));
+CREATE INDEX IF NOT EXISTS audience_channel_follow_by_channel ON audience_channel_follow(channel);
 """
 DEFAULTS = dict(
     title="Untitled showcase", description="", visibility="private", domains=[], videos=[],
@@ -289,6 +292,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if request.method == "GET":
                 return summary(con, row, public_url)
             if request.method == "DELETE":
+                con.execute("DELETE FROM audience_channel_follow WHERE channel=?", (uid,))
                 con.execute("DELETE FROM video_showcase WHERE id=?", (uid,))
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
                 con.execute("DELETE FROM viewer_registrant WHERE kind='showcase' AND subject=?", (uid,))
@@ -322,6 +326,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if values != state(row) or slug != row["slug"] or hashed != row["password"]:
                 con.execute("UPDATE video_showcase SET slug=?,revision=?,settings=?,password=? WHERE id=?",
                             (slug, uuid.uuid4().hex, json.dumps(values), hashed, uid))
+                if not channel_visible(values):
+                    con.execute("DELETE FROM audience_channel_follow WHERE channel=?", (uid,))
                 previous = set(state(row)["videos"])
                 for work in values["videos"]:
                     if work not in previous:
@@ -520,6 +526,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                                 feature_image=feature_image,
                                                 locked=locked, wrong=locked and request.method == "POST",
                                                 unlock_token=frame, embed=embed, internal=internal,
+                                                channel_slug=row["slug"] if channel and not internal else None,
                                                 registration=registration_view, enrollment=form_token,
                                                 registration_error=form_error),
                                  401 if locked and request.method == "POST" else 422 if form_error else 200)

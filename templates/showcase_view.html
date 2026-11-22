@@ -38,6 +38,14 @@
       {% if settings.product_brand %}<p class="showcase-note">Hosted on CuePorch</p>{% endif %}
       {% if logo %}<img src="{{ logo }}" alt="Publisher logo">{% endif %}
       <h1>{{ settings.title }}</h1>
+      {% if channel_slug %}
+      <div data-follow-channel="{{ channel_slug }}">
+        <button type="button" hidden aria-pressed="false">Follow channel</button>
+        <a href="{{ url_for('viewer_account_page', next=url_for('showcase_channel', slug=channel_slug)) }}" hidden>Sign in to follow this channel</a>
+        <span role="status" aria-live="polite"></span>
+      </div>
+      <script type="module" src="/static/ui/follow_category.js"></script>
+      {% endif %}
       {% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
     </header>
     {% if enrollment %}

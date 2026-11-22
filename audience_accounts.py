@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS audience_view_preferences(
  account TEXT PRIMARY KEY, maturity TEXT NOT NULL);
 """ + audience_library.SCHEMA + audience_comments.SCHEMA + community_analytics.SCHEMA
 SESSION_SECONDS = 30 * 24 * 3600
-VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|watch/feed)")
+VIEWER_RETURN_PATH = re.compile(r"/(?:watch/(?:work|meeting)/[A-Za-z0-9_-]{1,128}|creators/[a-z0-9-]{3,40}|channels/[a-z0-9-]{1,64}|watch/feed)")
 KEY = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
@@ -212,6 +212,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_channel_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 authenticator.forget(con, row["id"])
                 email_factor.forget(con, row["id"])

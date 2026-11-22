@@ -1,9 +1,10 @@
 import { viewerRequest } from "./audience_api.js";
-for (const widget of document.querySelectorAll("[data-follow-category]")) {
+for (const widget of document.querySelectorAll("[data-follow-category], [data-follow-channel]")) {
     const button = widget.querySelector("button");
     const signIn = widget.querySelector("a");
     const status = widget.querySelector("[role=status]");
-    const name = widget.dataset.followCategory || "";
+    const kind = widget.dataset.followChannel !== undefined ? "channel" : "category";
+    const name = (kind === "channel" ? widget.dataset.followChannel : widget.dataset.followCategory) || "";
     const isPresetRemove = widget.dataset.feedRemove === "true";
     async function update(method) {
         status.textContent = "";
@@ -12,10 +13,10 @@ for (const widget of document.querySelectorAll("[data-follow-category]")) {
             let response;
             if (method === "GET") {
                 const params = new URLSearchParams({ name });
-                response = await viewerRequest(`feed/category?${params.toString()}`, "GET");
+                response = await viewerRequest(`feed/${kind}?${params.toString()}`, "GET");
             }
             else {
-                response = await viewerRequest("feed/category", method, { name });
+                response = await viewerRequest(`feed/${kind}`, method, { name });
             }
             if (response.status === 401) {
                 button.hidden = true;
@@ -35,7 +36,7 @@ for (const widget of document.querySelectorAll("[data-follow-category]")) {
             }
             const state = await response.json();
             button.setAttribute("aria-pressed", String(state.following));
-            button.textContent = state.following ? "Unfollow category" : "Follow category";
+            button.textContent = state.following ? `Unfollow ${kind}` : `Follow ${kind}`;
             button.hidden = false;
             signIn.hidden = true;
         }

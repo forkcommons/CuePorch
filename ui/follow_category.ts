@@ -4,11 +4,12 @@ interface FollowCategoryState {
   following: boolean;
 }
 
-for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-category]")) {
+for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-category], [data-follow-channel]")) {
   const button = widget.querySelector<HTMLButtonElement>("button")!;
   const signIn = widget.querySelector<HTMLAnchorElement>("a")!;
   const status = widget.querySelector<HTMLElement>("[role=status]")!;
-  const name = widget.dataset.followCategory || "";
+  const kind = widget.dataset.followChannel !== undefined ? "channel" : "category";
+  const name = (kind === "channel" ? widget.dataset.followChannel : widget.dataset.followCategory) || "";
   const isPresetRemove = widget.dataset.feedRemove === "true";
 
   async function update(method: "GET" | "PUT" | "DELETE") {
@@ -18,9 +19,9 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
       let response: Response;
       if (method === "GET") {
         const params = new URLSearchParams({ name });
-        response = await viewerRequest(`feed/category?${params.toString()}`, "GET");
+        response = await viewerRequest(`feed/${kind}?${params.toString()}`, "GET");
       } else {
-        response = await viewerRequest("feed/category", method, { name });
+        response = await viewerRequest(`feed/${kind}`, method, { name });
       }
 
       if (response.status === 401) {
@@ -43,7 +44,7 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
 
       const state: FollowCategoryState = await response.json();
       button.setAttribute("aria-pressed", String(state.following));
-      button.textContent = state.following ? "Unfollow category" : "Follow category";
+      button.textContent = state.following ? `Unfollow ${kind}` : `Follow ${kind}`;
       button.hidden = false;
       signIn.hidden = true;
     } catch {
