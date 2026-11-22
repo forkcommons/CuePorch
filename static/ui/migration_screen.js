@@ -12,6 +12,9 @@ const folderList = document.querySelector("#migrationFolderList");
 const showcases = document.querySelector("#showcaseInventory");
 const showcaseIssue = document.querySelector("#showcaseInventoryIssue");
 const showcaseRows = document.querySelector("#showcaseInventoryRows");
+const liveEvents = document.querySelector("#liveEventInventory");
+const liveEventIssue = document.querySelector("#liveEventInventoryIssue");
+const liveEventList = document.querySelector("#liveEventInventoryList");
 const cutover = document.querySelector("#migrationCutover");
 const exportMap = document.querySelector("#migrationExportMap");
 const cutoverStatus = document.querySelector("#migrationCutoverStatus");
@@ -248,6 +251,42 @@ async function poll(page = currentPage) {
         }
         if (album.issues.length)
             target.append(" " + album.issues.join(" "));
+    }
+    const archives = data.live_event_archives || [];
+    liveEvents.hidden = !archives.length && !data.live_event_archives_issue;
+    liveEventIssue.textContent = data.live_event_archives_issue || "";
+    liveEventList.replaceChildren();
+    for (const event of archives) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `${event.title} · Vimeo event ${event.source_id} · ${event.source_visibility}`;
+        details.append(summary);
+        if (event.issues.length || !event.recordings.length) {
+            const issue = document.createElement("p");
+            issue.textContent = event.issues.length ? event.issues.join(" ") : "No recordings reported.";
+            details.append(issue);
+        }
+        if (event.recordings.length) {
+            const list = document.createElement("ul");
+            for (const recording of event.recordings) {
+                const item = document.createElement("li");
+                const name = recording.title ? `${recording.title} · ` : "";
+                item.append(`${name}Vimeo video ${recording.source_id} · `);
+                if (recording.target) {
+                    const link = document.createElement("a");
+                    link.href = "/operator/videos/" + encodeURIComponent(recording.target);
+                    link.textContent = "Open in Library";
+                    item.append(link);
+                }
+                else {
+                    item.append(data.state !== "transferred" && recording.work ?
+                        "In source inventory" : "Owner file or video access needed");
+                }
+                list.append(item);
+            }
+            details.append(list);
+        }
+        liveEventList.append(details);
     }
     if (active)
         setTimeout(() => void poll().catch(failed), 750);

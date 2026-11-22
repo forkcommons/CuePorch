@@ -493,6 +493,17 @@ def create_app(root, database, operator, institution, simulation=None):
                         targets = library_showcases.imported_targets(con)
                     for showcase in showcases:
                         showcase["target"] = targets.get(showcase["uri"])
+                live_events = data.get("live_event_archives", [])
+                if state == "transferred" and live_events:
+                    with tx() as con:
+                        for event in live_events:
+                            for recording in event["recordings"]:
+                                uid = recording["work"]
+                                local = works.get(uid)
+                                if local and library_privacy.playback(local) and not library_trash.hidden(con, "work", uid):
+                                    recording["target"] = uid
+                status.update(live_event_archives=live_events,
+                              live_event_archives_issue=data.get("live_event_archives_issue"))
                 entries = data["works"]
                 counts = Counter(work["disposition"] for work in entries)
                 status.update(total=len(entries), counts=dict(counts),
