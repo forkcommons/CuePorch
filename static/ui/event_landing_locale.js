@@ -1,10 +1,12 @@
+import { renderSpeakerTranslations } from "./event_landing_speaker_translations.js";
 const byId = (id) => {
     const node = document.getElementById(id);
     if (!node)
         throw new Error(`Missing element #${id}`);
     return node;
 };
-export function setupLandingLocalization() {
+export function setupLandingLocalization(profiles) {
+    const speakerContainer = document.querySelector("#eventLandingTranslatedSpeakers");
     const baseEl = byId("eventLandingBase");
     const langEl = byId("eventLandingLanguage");
     const fieldsEl = byId("eventLandingTranslationFields");
@@ -32,7 +34,22 @@ export function setupLandingLocalization() {
     const syncBaseLock = () => {
         baseEl.disabled = hasAnyTranslations(persisted) || hasAnyTranslations(state);
     };
+    function refreshSpeakers() {
+        if (!speakerContainer)
+            return;
+        const lang = active();
+        if (!lang) {
+            speakerContainer.replaceChildren();
+            return;
+        }
+        renderSpeakerTranslations(speakerContainer, profiles(), state.translations[lang], () => {
+            const translation = ensureEntry(lang);
+            syncBaseLock();
+            return translation;
+        });
+    }
     const syncFields = () => {
+        refreshSpeakers();
         const lang = active();
         fieldsEl.hidden = !lang;
         if (!lang) {
@@ -117,5 +134,5 @@ export function setupLandingLocalization() {
         populate({ base: "en", translations: {} }, null);
     };
     const payload = () => structuredClone(state);
-    return { populate, reset, payload };
+    return { populate, reset, payload, refreshSpeakers };
 }
