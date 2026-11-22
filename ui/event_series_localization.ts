@@ -1,9 +1,13 @@
+import type { Presentation } from "./event_series_presentation.js";
+import { setupSeriesContentTranslation, type ContentTranslation } from "./event_series_content_translation.js";
+
 export interface Translation {
   published: boolean;
   title: string;
   description: string;
   date_label: string;
   timezone_label: string;
+  content?: ContentTranslation;
 }
 
 export interface Localization {
@@ -22,6 +26,9 @@ export function setupSeriesLocalization(root: HTMLElement) {
   const timezoneLabelInput = root.querySelector<HTMLInputElement>('[name="translatedTimezoneLabel"]')!;
   const publishedInput = root.querySelector<HTMLInputElement>('[name="translationPublished"]')!;
 
+  const contentFields = setupSeriesContentTranslation(root.querySelector<HTMLElement>("#seriesContentTranslation")!, () => handleEdit());
+  let savedPresentation: Presentation | null = null;
+
   let state: Localization = { base: '', translations: {} };
   let active: string | null = null;
   let hadPersistedTranslations = false;
@@ -33,6 +40,7 @@ export function setupSeriesLocalization(root: HTMLElement) {
       description: translation.description ?? '',
       date_label: translation.date_label ?? '',
       timezone_label: translation.timezone_label ?? '',
+      content: translation.content ? structuredClone(translation.content) : undefined,
     };
   };
 
@@ -57,6 +65,7 @@ export function setupSeriesLocalization(root: HTMLElement) {
       description: descriptionInput.value,
       date_label: dateLabelInput.value,
       timezone_label: timezoneLabelInput.value,
+      content: contentFields.payload(),
     };
   };
 
@@ -67,6 +76,7 @@ export function setupSeriesLocalization(root: HTMLElement) {
     dateLabelInput.value = translation?.date_label ?? '';
     timezoneLabelInput.value = translation?.timezone_label ?? '';
     publishedInput.checked = translation?.published ?? false;
+    contentFields.render(active ? savedPresentation : null, translation?.content);
   };
 
   const updateBaseLocked = () => {
@@ -143,7 +153,8 @@ export function setupSeriesLocalization(root: HTMLElement) {
   });
 
   return {
-    populate(loc: Localization) {
+    populate(loc: Localization, presentation: Presentation) {
+      savedPresentation = presentation;
       state = {
         base: loc.base,
         translations: copyTranslations(loc.translations),

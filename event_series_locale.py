@@ -7,7 +7,56 @@ from library_interactivity import text_field
 
 LANGUAGES = {k: v for k, v in registration_locale.LANGUAGES.items() if k != "zh-Hans"}
 DEFAULTS = {"base": "en", "translations": {}}
-TRANSLATION_FIELDS = {"published", "title", "description", "date_label", "timezone_label"}
+TRANSLATION_FIELDS = {"published", "title", "description", "date_label", "timezone_label", "content"}
+
+CONTENT_FIELDS = {
+    "navigation_labels": ("navigation", "label", 100),
+    "faq_questions": ("faq", "question", 200),
+    "faq_answers": ("faq", "answer", 1500),
+}
+
+
+def validate_content(raw):
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or any(k not in CONTENT_FIELDS for k in raw):
+        abort(422)
+
+    result = {}
+    for group, (_, _, limit) in CONTENT_FIELDS.items():
+        if group not in raw:
+            continue
+        rows = raw[group]
+        if not isinstance(rows, list):
+            abort(422)
+
+        dedup = {}
+        for row in rows:
+            if not isinstance(row, dict) or set(row.keys()) != {"source", "text"}:
+                abort(422)
+
+            source = text_field(row["source"], "a translation source", limit, required=True)
+            text = text_field(row["text"], "a translation", limit)
+            if not text:
+                continue
+            dedup[source] = text
+
+        result[group] = [{"source": source, "text": text} for source, text in dedup.items()]
+
+    return result
+
+
+def overlay_content(presentation_copy, content):
+    for group, (collection, key, _) in CONTENT_FIELDS.items():
+        lookup = {row["source"]: row["text"] for row in content.get(group, [])}
+        if lookup:
+            rows = presentation_copy.get(collection, [])
+            new_rows = []
+            for item in rows:
+                new_item = dict(item)
+                new_item[key] = lookup.get(item[key], item[key])
+                new_rows.append(new_item)
+            presentation_copy[collection] = new_rows
 
 
 def validate(raw, prior):
@@ -63,6 +112,7 @@ def validate(raw, prior):
             "description": text_field(entry.get("description", ""), "description", 5000),
             "date_label": text_field(entry.get("date_label", ""), "date label", 100),
             "timezone_label": text_field(entry.get("timezone_label", ""), "timezone label", 100),
+            "content": validate_content(entry.get("content")),
         }
 
     return result
@@ -122,6 +172,7 @@ def resolve(localization, settings, presentation, preview=False):
         translated.get("timezone_label") or presentation.get("timezone_label")
     )
 
+    overlay_content(presentation_copy, translated.get("content") or {})
     return language, language_options, viewer_settings, presentation_copy
 
 

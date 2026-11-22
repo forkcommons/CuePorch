@@ -1,3 +1,4 @@
+import { setupSeriesContentTranslation } from "./event_series_content_translation.js";
 export function setupSeriesLocalization(root) {
     const baseLanguageSelect = root.querySelector('#seriesBaseLanguage');
     const translationLanguageSelect = root.querySelector('#seriesTranslationLanguage');
@@ -8,6 +9,8 @@ export function setupSeriesLocalization(root) {
     const dateLabelInput = root.querySelector('[name="translatedDateLabel"]');
     const timezoneLabelInput = root.querySelector('[name="translatedTimezoneLabel"]');
     const publishedInput = root.querySelector('[name="translationPublished"]');
+    const contentFields = setupSeriesContentTranslation(root.querySelector("#seriesContentTranslation"), () => handleEdit());
+    let savedPresentation = null;
     let state = { base: '', translations: {} };
     let active = null;
     let hadPersistedTranslations = false;
@@ -18,6 +21,7 @@ export function setupSeriesLocalization(root) {
             description: translation.description ?? '',
             date_label: translation.date_label ?? '',
             timezone_label: translation.timezone_label ?? '',
+            content: translation.content ? structuredClone(translation.content) : undefined,
         };
     };
     const copyTranslations = (translations) => {
@@ -40,6 +44,7 @@ export function setupSeriesLocalization(root) {
             description: descriptionInput.value,
             date_label: dateLabelInput.value,
             timezone_label: timezoneLabelInput.value,
+            content: contentFields.payload(),
         };
     };
     const loadActiveTranslation = () => {
@@ -49,6 +54,7 @@ export function setupSeriesLocalization(root) {
         dateLabelInput.value = translation?.date_label ?? '';
         timezoneLabelInput.value = translation?.timezone_label ?? '';
         publishedInput.checked = translation?.published ?? false;
+        contentFields.render(active ? savedPresentation : null, translation?.content);
     };
     const updateBaseLocked = () => {
         const hasCurrentTranslations = Object.keys(state.translations).length > 0;
@@ -112,7 +118,8 @@ export function setupSeriesLocalization(root) {
         refresh();
     });
     return {
-        populate(loc) {
+        populate(loc, presentation) {
+            savedPresentation = presentation;
             state = {
                 base: loc.base,
                 translations: copyTranslations(loc.translations),
