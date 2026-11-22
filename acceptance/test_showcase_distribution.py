@@ -9,6 +9,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlsplit
 import uuid
 
@@ -30,7 +31,8 @@ class ShowcaseDistribution(unittest.TestCase):
             (root / "objects").mkdir()
             (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
             operator = secrets.token_urlsafe(32)
-            app = create_app(root, root / "workspace.sqlite", operator, "station")
+            with patch("institution.library_worker.start", return_value=lambda: None):
+                app = create_app(root, root / "workspace.sqlite", operator, "station")
             for name, stop in app.extensions.items():
                 if name.startswith("stop_"):
                     cleanup.callback(stop)
@@ -177,7 +179,13 @@ class ShowcaseDistribution(unittest.TestCase):
                 expect(preview.get_by_role("link", name="Browse Watch")).to_have_attribute("href", "/watch")
                 guest.goto(watch)
                 guest.locator(".showcase-playlist video").first.wait_for()
-                expect(guest.locator(".showcase-playlist video")).to_have_count(3)
+                expect(guest.locator(".showcase-playlist video[src]")).to_have_count(3)
+                registration_card = guest.locator(".showcase-playlist li", has_text="Registrants-only screening")
+                expect(registration_card.locator("video")).to_have_count(1)
+                self.assertIsNone(registration_card.locator("video").get_attribute("src"))
+                expect(registration_card.locator("video")).to_be_hidden()
+                expect(registration_card.get_by_role("button", name="Register to watch")).to_be_visible()
+                expect(guest.locator(".showcase-playlist")).not_to_contain_text("Private assembly")
                 expect(guest.locator(".showcase-screen video")).to_have_count(0)
                 guest.get_by_label("Search videos").fill("stage")
                 expect(guest.locator(".showcase-playlist li:visible")).to_have_count(1)
@@ -203,9 +211,14 @@ class ShowcaseDistribution(unittest.TestCase):
                 expect(chosen.locator("#nowPlaying")).to_have_text("Stage recording")
                 chosen.close()
                 stage.evaluate("async node => {node.currentTime = node.duration - .1; await node.play()}")
-                expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
+                expect(guest.locator("#nowPlaying")).to_have_text("Registrants-only screening")
+                expect(guest.get_by_role("region", name="Video registration")).to_be_visible()
                 expect(attachment).to_be_hidden()
-                second_player = guest.locator(".showcase-playlist video").first
+                expect(registration_card.locator("video[src]")).to_have_count(0)
+                guest.get_by_role("button", name="Dismiss registration").click()
+                second_player = guest.locator(".showcase-playlist video[src]").first
+                second_player.evaluate("async node => {node.muted = true; await node.play()}")
+                expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
                 disallowed = requests.get(base + second_player.get_attribute("src") + "?download=1", timeout=10)
                 self.assertEqual(403, disallowed.status_code)
 
