@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Group invitation · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body data-group-slug="{{ group.slug }}">
+  {% include "viewer_watch_nav.html" %}
+  <main>
+    <h1>Group invitation</h1>
+    <p>You have an invitation to {{ group.title }}.</p>
+    <button id="groupMembership" type="button" data-membership="join">Accept group invitation</button>
+    <p id="groupStatus" role="status"></p>
+  </main>
+  <script type="module" src="{{ url_for('static', filename='ui/community_groups.js') }}"></script>
+</body>
+</html>

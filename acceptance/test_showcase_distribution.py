@@ -377,6 +377,61 @@ class ShowcaseDistribution(unittest.TestCase):
                 self.assertEqual(404, guest.request.get(media_url).status)
                 self.assertEqual(403, guest.request.get(base + channel).status)
 
+                with browser.new_context() as community_owner:
+                    signup = community_owner.request.post(base + "/api/viewer/signup", headers=marker, data={
+                        "name": "Group owner", "email": "group-owner@example.invalid",
+                        "password": "Community owner fixture password!",
+                    })
+                    self.assertEqual(201, signup.status, signup.text())
+                    owner_page = community_owner.new_page()
+                    group_url = base + "/groups/private-screening"
+                    owner_page.goto(base + "/watch/groups")
+                    owner_page.get_by_label("Name", exact=True).fill("Private screening")
+                    owner_page.get_by_label("Link name").fill("private-screening")
+                    owner_page.get_by_label("Group access").select_option("members")
+                    owner_page.get_by_role("button", name="Create group", exact=True).click()
+                    expect(owner_page).to_have_url(group_url)
+                    owner_page.get_by_label("Video to add").select_option("work/" + first)
+                    owner_page.get_by_role("button", name="Add video", exact=True).click()
+                    expect(owner_page.locator("#groupVideoList").get_by_role(
+                        "link", name="Stage recording", exact=True)).to_be_visible()
+                    self.assertEqual(404, guest.request.get(group_url).status)
+
+                    membership = owner_page.get_by_text("Manage group membership", exact=True)
+                    invite = guest.get_by_role("button", name="Accept group invitation", exact=True)
+                    for attempt in range(2):
+                        membership.click()
+                        owner_page.get_by_label("Invite email", exact=True).fill(address)
+                        owner_page.get_by_role("button", name="Invite", exact=True).click()
+                        expect(owner_page.locator("#groupStatus")).to_have_text("Invitation saved.")
+                        self.assertEqual(404, requests.get(group_url, timeout=10).status_code)
+                        self.assertEqual(200, guest.goto(group_url).status)
+                        expect(invite).to_be_visible()
+                        expect(guest.get_by_role("link", name="Stage recording", exact=True)).to_have_count(0)
+                        if attempt == 0:
+                            membership.click()
+                            owner_page.get_by_role("button", name="Revoke invitation to " + address,
+                                                   exact=True).click()
+                            expect(owner_page.locator("[data-revoke-invite]")).to_have_count(0)
+                            self.assertEqual(404, guest.request.get(group_url).status)
+                    invite.click()
+                    guest.get_by_role("link", name="Stage recording", exact=True).click()
+                    self.assertEqual(320, guest.locator("video").evaluate(
+                        "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+                    ))
+
+                    owner_page.reload()
+                    membership.click()
+                    owner_page.get_by_label("Transfer to").select_option(label="Channel viewer")
+                    owner_page.get_by_role("button", name="Transfer ownership", exact=True).click()
+                    expect(owner_page.get_by_role("button", name="Leave group", exact=True)).to_be_visible()
+                    expect(owner_page.locator("#groupSettings")).to_have_count(0)
+                    guest.goto(group_url)
+                    guest.get_by_text("Manage group membership", exact=True).click()
+                    guest.get_by_role("button", name="Remove Group owner", exact=True).click()
+                    expect(guest.locator("[data-remove-group-member]")).to_have_count(0)
+                    self.assertEqual(404, community_owner.request.get(group_url).status)
+
                 current = send("GET", endpoint)
                 send("PUT", endpoint, current | {"settings": current["settings"] | {
                     "visibility": "public", "channel_access": "public",

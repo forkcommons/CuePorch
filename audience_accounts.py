@@ -347,7 +347,8 @@ def register(app, tx, origin_url, operator, listing, action, staff):
         return current(con, browser_session(scheme()), required)
 
     audience_library.register(app, tx, viewer, lambda: mutation(scheme()), listing, private)
-    audience_groups.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, viewing_preferences)
+    audience_groups.register(app, tx, viewer, lambda: mutation(scheme()), listing, private,
+                             viewing_preferences, public_origin)
     audience_comments.register(app, tx, viewer, lambda: mutation(scheme()), listing, private, limit, action, staff)
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
                                        ordered, PAGE_SIZE, account_preferences)

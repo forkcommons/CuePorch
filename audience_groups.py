@@ -6,8 +6,10 @@ import uuid
 
 from flask import abort, render_template, request, url_for
 
+from browser_account_security import email_key
 import content_rating
 from library_discovery import PAGE_SIZE, entry_payload, ordered
+import mail_relay
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS audience_group(
@@ -22,9 +24,13 @@ CREATE INDEX IF NOT EXISTS audience_group_member_account
 CREATE TABLE IF NOT EXISTS audience_group_video(
  group_id TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL,
  added REAL NOT NULL, PRIMARY KEY(group_id,kind,slug));
+CREATE TABLE IF NOT EXISTS audience_group_invite(
+ group_id TEXT NOT NULL, address TEXT NOT NULL, expires REAL NOT NULL,
+ PRIMARY KEY(group_id,address));
 """
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 ACCESS = ("public", "members")
+INVITE_SECONDS = 7 * 86400
 
 
 def fields(body):
@@ -65,19 +71,34 @@ def payload(row):
                 url=url_for("community_group_page", slug=row["slug"]))
 
 
+def invitation_for(con, group, account):
+    if account is None:
+        return False
+    return con.execute("""SELECT 1 FROM audience_group_invite i
+        JOIN account_verified_email e ON e.scope='viewer' AND e.address=i.address AND e.account=?
+        WHERE i.group_id=? AND i.address=? AND i.expires>?""",
+        (account["id"], group["id"], account["email"], time.time()),
+    ).fetchone() is not None
+
+
 def delete(con, uid):
     con.execute("DELETE FROM audience_group_member WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_video WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group WHERE id=?", (uid,))
 
 
 def remove_account(con, uid):
+    con.execute("DELETE FROM audience_group_invite WHERE address=(SELECT email FROM audience_account WHERE id=?)",
+                (uid,))
     for row in con.execute("SELECT id FROM audience_group WHERE owner=?", (uid,)).fetchall():
         delete(con, row["id"])
     con.execute("DELETE FROM audience_group_member WHERE account=?", (uid,))
 
 
-def register(app, tx, viewer, mutation, listing, private, watch_preferences):
+def register(app, tx, viewer, mutation, listing, private, watch_preferences, public_origin):
+    invite_mail = mail_relay.configured(public_origin)
+
     @app.get("/watch/groups")
     def community_groups_page():
         with tx() as con:
@@ -110,7 +131,9 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences):
             row = get_group(con, slug)
             joined = member_of(con, row, aid)
             if row["access"] == "members" and not joined:
-                abort(404)
+                if not invitation_for(con, row, account):
+                    abort(404)
+                return private(render_template("community_group_invited.html", group=payload(row)))
             owner = row["owner"] == aid
             source = listing(con)
             prefs = watch_preferences(con)
@@ -133,6 +156,11 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences):
             choices = [entry_payload(entry) for entry in ordered(library.values())
                        if entry["kind"] in ("work", "meeting")
                        and (entry["kind"], entry["slug"]) not in included] if owner else []
+            manage_members = con.execute("""SELECT a.id, a.name FROM audience_group_member m
+                JOIN audience_account a ON a.id=m.account WHERE m.group_id=?
+                ORDER BY a.name COLLATE NOCASE, a.id""", (row["id"],)).fetchall() if owner else []
+            group_invites = [item["address"] for item in con.execute("""SELECT address FROM audience_group_invite
+                WHERE group_id=? AND expires>? ORDER BY address""", (row["id"], time.time()))] if owner else []
             return private(render_template(
                 "community_group.html",
                 group=payload(row),
@@ -141,6 +169,9 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences):
                 owner=owner,
                 videos=videos,
                 choices=choices,
+                manage_members=manage_members,
+                group_invites=group_invites,
+                invite_mail_available=bool(invite_mail),
             ))
 
     @app.post("/api/viewer/groups")
@@ -187,10 +218,12 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences):
     def modify_membership(slug):
         mutation()
         with tx() as con:
-            aid = viewer(con)["id"]
+            account = viewer(con)
+            aid = account["id"]
             row = get_group(con, slug)
             joined = member_of(con, row, aid)
-            if row["access"] == "members" and not joined:
+            invited = request.method == "PUT" and invitation_for(con, row, account)
+            if row["access"] == "members" and not joined and not invited:
                 abort(404)
             if request.method == "DELETE":
                 if row["owner"] == aid:
@@ -206,6 +239,83 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences):
                     "(group_id,account,joined) VALUES(?,?,?)",
                     (row["id"], aid, time.time()),
                 )
+                if invited:
+                    con.execute("DELETE FROM audience_group_invite WHERE group_id=? AND address=?",
+                                (row["id"], account["email"]))
+        return private("", 204)
+
+    @app.route("/api/viewer/groups/<slug>/invite", methods=("POST", "DELETE"))
+    def viewer_group_invite(slug):
+        body = mutation()
+        address = email_key(body.get("email"))
+        send_email = body.get("send_email", False)
+        if type(send_email) is not bool:
+            abort(400, "Choose whether to email this invitation.")
+        with tx() as con:
+            row = get_group(con, slug)
+            if row["owner"] != viewer(con)["id"]:
+                abort(404)
+            if body.get("revision") != row["revision"]:
+                abort(409, "This group changed. Reload it before saving.")
+            if request.method == "DELETE":
+                con.execute("DELETE FROM audience_group_invite WHERE group_id=? AND address=?",
+                            (row["id"], address))
+            else:
+                if send_email and not invite_mail:
+                    abort(409, "Invitation email needs a configured relay and public HTTPS address.")
+                now = time.time()
+                con.execute("""INSERT INTO audience_group_invite(group_id,address,expires) VALUES(?,?,?)
+                    ON CONFLICT(group_id,address) DO UPDATE SET expires=excluded.expires""",
+                    (row["id"], address, now + INVITE_SECONDS))
+                con.execute("DELETE FROM audience_group_invite WHERE group_id=? AND expires<=?",
+                            (row["id"], now))
+            con.execute("UPDATE audience_group SET revision=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
+        if request.method == "DELETE":
+            return private("", 204)
+        path = url_for("community_group_page", slug=slug)
+        delivery = None
+        if send_email:
+            accepted = mail_relay.deliver(invite_mail, address, "CuePorch group invitation",
+                f"You were invited to {row['title']}. Sign in to CuePorch and verify your viewer email address, "
+                f"then open {public_origin}{path} to accept the invitation.")
+            delivery = "accepted" if accepted else "failed"
+        return private(dict(url=path, delivery=delivery))
+
+    @app.post("/api/viewer/groups/<slug>/ownership")
+    def transfer_ownership(slug):
+        body = mutation()
+        with tx() as con:
+            aid = viewer(con)["id"]
+            row = get_group(con, slug)
+            if row["owner"] != aid:
+                abort(404)
+            if body.get("revision") != row["revision"]:
+                abort(409, "This group changed. Reload it before saving.")
+            new_owner = body.get("member")
+            if not isinstance(new_owner, str) or not con.execute("""SELECT 1 FROM audience_group_member m
+                    JOIN audience_account a ON a.id=m.account WHERE m.group_id=? AND m.account=?""",
+                    (row["id"], new_owner)).fetchone():
+                abort(422, "Choose a current group member.")
+            con.execute("INSERT OR IGNORE INTO audience_group_member(group_id,account,joined) VALUES(?,?,?)",
+                        (row["id"], aid, time.time()))
+            con.execute("DELETE FROM audience_group_member WHERE group_id=? AND account=?", (row["id"], new_owner))
+            con.execute("UPDATE audience_group SET owner=?,revision=? WHERE id=?",
+                        (new_owner, uuid.uuid4().hex, row["id"]))
+            return private(payload(get_group(con, slug)))
+
+    @app.delete("/api/viewer/groups/<slug>/members/<member>")
+    def remove_member(slug, member):
+        body = mutation()
+        with tx() as con:
+            row = get_group(con, slug)
+            if row["owner"] != viewer(con)["id"]:
+                abort(404)
+            if body.get("revision") != row["revision"]:
+                abort(409, "This group changed. Reload it before saving.")
+            result = con.execute("DELETE FROM audience_group_member WHERE group_id=? AND account=?",
+                                 (row["id"], member))
+            if result.rowcount:
+                con.execute("UPDATE audience_group SET revision=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
         return private("", 204)
 
     @app.route("/api/viewer/groups/<slug>/videos/<any(work,meeting):kind>/<video>", methods=("PUT", "DELETE"))
