@@ -21,6 +21,11 @@
       <h2>Your event series</h2>
 
       <div class="series-controls">
+        <label for="seriesCollectionFilter">Collection</label>
+        <select id="seriesCollectionFilter" name="seriesCollectionFilter">
+          <option value="">All collections</option>
+          <option value="root">Workspace root</option>
+        </select>
         <label for="seriesSearch">Search event series</label>
         <input type="search" id="seriesSearch" name="seriesSearch" autocomplete="off">
 
@@ -47,6 +52,11 @@
 
     <form id="seriesEdit" hidden>
       <h2 id="seriesEditHeading">New event series</h2>
+      <label for="seriesCollectionDestination">Destination</label>
+      <select id="seriesCollectionDestination" name="seriesCollectionDestination">
+        <option value="" selected>Workspace root</option>
+      </select>
+      <button id="seriesMoveCollection" type="button">Move series</button>
 
       <label for="seriesTitle">Public title
         <input id="seriesTitle" name="title" type="text" required maxlength="128">

@@ -408,6 +408,8 @@ Under **TV apps**, enable the Roku catalog and enter the channel provider, langu
 
 From **Live events**, select **Event series** and create a private draft. Enter the title, description, and link name, then select the events to include.
 
+You can also open **Event series** from the Library. Select a collection or **Workspace root** to filter the list. New series are placed in the selected folder. To move a series, choose a destination and select **Move series**. Its address and audience settings stay in effect.
+
 In **Your event series**, search by title or link name, sort by title or creation date, and switch between list and grid. Open a series to edit, preview, or delete it. Once published, use **Copy link** to share its viewer address.
 
 Under **Presentation**, choose a theme and accent color, upload a logo or hero image, and add the date and time zone text you want viewers to see. Enable and reorder the blocks you need. Add navigation links and FAQ entries in their lists. Choose **Save Event Series**, then **Preview** and **Open preview** to review the page.

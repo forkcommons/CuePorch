@@ -12,6 +12,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import event_schedule
+import event_series_collections
 import event_series_hosts
 import event_series_locale
 import event_series_presentation
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS live_series_access (
     series TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL
 );
-""" + event_series_team_access.SCHEMA + "\n"
+""" + event_series_team_access.SCHEMA + "\n" + event_series_collections.SCHEMA
 
 DEFAULTS = dict(
     title="Untitled event series",
@@ -295,6 +296,7 @@ def summary(con, row, allowed_hosts):
         settings=settings,
         publication=status,
         has_password=bool(password_hash(con, row["id"])),
+        collection=event_series_collections.active_folder(con, row["id"]),
         created=row["created"],
         watch=watch_url(row, settings, status, allowed_hosts),
     )
@@ -403,12 +405,30 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                             for row in con.execute("SELECT * FROM live_series_page ORDER BY created DESC")],
                     events=choice_list(con),
                     recordings=replay_choices(con),
+                    collections=event_series_collections.folders(con),
                 )
             uid = uuid.uuid4().hex
             con.execute("INSERT INTO live_series_page VALUES(?,?,?,?,NULL,?)",
                         (uid, uid, uuid.uuid4().hex, json.dumps(DEFAULTS), datetime.now(timezone.utc).isoformat()))
+            body = request.get_json(silent=True)
+            folder = body.get("folder") if isinstance(body, dict) else None
+            event_series_collections.set_folder(con, uid, folder)
             row = series_row(con, uid)
             return summary(con, row, allowed_hosts), 201
+
+    @app.put("/api/event-series/<uid>/collection")
+    def event_series_collection(uid):
+        staff()
+        with tx() as con:
+            row = series_row(con, uid)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict) or set(body) != {"folder"}:
+                abort(400)
+            folder = body["folder"]
+            if folder is not None and not isinstance(folder, str):
+                abort(400)
+            event_series_collections.set_folder(con, uid, folder)
+            return summary(con, row, allowed_hosts)
 
     @app.post("/api/event-series/<uid>/preview")
     def preview_event_series(uid):
@@ -432,6 +452,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             if request.method == "DELETE":
                 library_events.supersede_publication(con, row["publication"])
                 store_password(con, uid, None)
+                event_series_collections.set_folder(con, uid, None)
                 con.execute("DELETE FROM live_series_page WHERE id=?", (row["id"],))
                 return ("", 204)
             prior = DEFAULTS | json.loads(row["settings"])
