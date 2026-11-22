@@ -404,6 +404,12 @@ Under **TV apps**, enable the Roku catalog and enter the channel provider, langu
 
 **Move from Vimeo** lists showcases and their source visibility during inventory. The transfer creates private galleries with ordered members found in the account inventory and reports the source video IDs that were unavailable. Repeated transfers keep the gallery and operator edits. Set the appropriate visibility, password and embed domains in CuePorch when the transferred gallery is ready. The transfer preserves names, descriptions, available video order, supported layout and theme, compatible accent, playback and sharing switches, and search preview text. A new private showcase also receives a validated logo when Vimeo uses the same logo on its page and embedded playlist. Review the imported settings and add any remaining artwork before publishing. Choose embed permissions, set any new password, and recreate registration in CuePorch. [Vimeo showcase fields](https://developer.vimeo.com/api/reference/response/album)
 
+### Event series
+
+From **Live events**, select **Event series** and create a private draft. Enter the title, description, and link name. Select events to include, choose **Save Event Series**, then open **Preview**.
+
+To publish, choose **Public** and save. The existing optional **Publication** approval applies. **Upcoming events** shows the public schedule, and **On demand** lists released recordings from the selected public events. Viewers open the original event page, where the event’s registration and access rules still apply.
+
 ### Live events
 
 Open **Live events** from the library and choose **New event**. Set up from scratch, choose an event type for editable defaults, or reuse an earlier event's settings. Live broadcast starts with an external encoder, chat and captions. Webinar starts with the browser, registration, chat, captions and Q&A. Team event starts with the browser, low latency, chat and captions. Online learning starts with the browser, registration, captions and Q&A. Custom starts with audience options off. All start private. Set the preferred production method and change any of the suggested options before saving.

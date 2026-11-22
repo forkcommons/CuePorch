@@ -161,6 +161,130 @@ class VimeoFolderMigration(unittest.TestCase):
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
 
+    def test_event_series_publication_gate(self):
+        start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+        end = start + timedelta(hours=1)
+        schedule = dict(timezone="UTC", repeat="none",
+                        start=start.strftime("%Y-%m-%dT%H:%M"), end=end.strftime("%Y-%m-%dT%H:%M"))
+        events = {}
+        for visibility, title in (("public", "Public program"), ("private", "Private program")):
+            response = self.client.post("/api/live-events", headers=self.auth, json=dict(
+                title=title, slug=title.lower().replace(" ", "-"), visibility=visibility,
+                type="live", latency="standard", save_replay=False, schedule=schedule))
+            self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+            events[visibility] = response.get_json()["id"]
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            admin = browser.new_page()
+            admin.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            admin.goto(f"{self.base}/operator/live-events")
+            admin.get_by_role("link", name="Event series").click()
+            admin.click("#seriesNew")
+            admin.fill("#seriesTitle", "Council program")
+            admin.fill("#seriesSlug", "council-program")
+            for event_id in events.values():
+                admin.check(f'input[name=events][value="{event_id}"]')
+            admin.click("text=Save Event Series")
+            admin.wait_for_selector('#seriesStatus:has-text("Private draft saved.")')
+            self.assertEqual(404, self.client.get("/event-series/council-program").status_code)
+
+            admin.click("#seriesPreview")
+            admin.wait_for_selector("#seriesPreviewLink", state="visible")
+            preview = admin.get_attribute("#seriesPreviewLink", "href")
+            preview_response = self.client.get(preview)
+            self.assertEqual(200, preview_response.status_code)
+            preview_text = preview_response.get_data(as_text=True)
+            self.assertIn("Public program", preview_text)
+            self.assertIn("Private program", preview_text)
+            self.assertEqual(404, self.client.get(preview + "invalid").status_code)
+
+            self.assertEqual(200, self.client.put("/api/policy/publication", headers=self.auth,
+                                                   json={"required": True}).status_code)
+
+            admin.select_option("#seriesVisibility", "public")
+            admin.click("text=Save Event Series")
+            admin.wait_for_selector('#seriesStatus:has-text("Waiting for publication approval.")')
+            self.assertEqual(404, self.client.get("/event-series/council-program").status_code)
+
+            actions = self.client.get("/api/actions", headers=self.auth).get_json()
+            waiting = [action for action in actions if action["step"] == "publication"]
+            self.assertEqual(1, len(waiting))
+            action_id = waiting[0]["id"]
+            self.assertEqual(204, self.client.post(
+                f"/api/actions/{action_id}/decision", headers=self.auth,
+                json={"decision": "approve"}).status_code)
+
+            guest = browser.new_page()
+            guest.goto(f"{self.base}/event-series/council-program")
+            guest.wait_for_selector('a:has-text("View Public program")')
+            guest.wait_for_selector('h1:has-text("Council program")')
+            expect(guest.get_by_text("Private program", exact=True)).to_have_count(0)
+
+    def test_event_series_released_replay(self):
+        start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(second=0, microsecond=0)
+        opens = int(start.timestamp())
+        end = start + timedelta(minutes=30)
+        first_day, last_day = start.date().isoformat(), (start + timedelta(days=2)).date().isoformat()
+        council = work_id("station", "vimeo", "71")
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=15000)
+
+            pub = self.client.post("/api/migration/public-catalog", headers=self.auth, json=dict(works=[council]))
+            self.assertEqual(200, pub.status_code, pub.get_data(as_text=True))
+
+            created = self.client.post(f"/api/live-events?from={first_day}&to={last_day}",
+                headers=self.auth, json=dict(
+                    title="Migrated replay", slug="migrated-replay", visibility="public",
+                    type="live", latency="standard", save_replay=True,
+                    schedule=dict(timezone="UTC", repeat="none",
+                        start=start.strftime("%Y-%m-%dT%H:%M"),
+                        end=end.strftime("%Y-%m-%dT%H:%M"))))
+            self.assertEqual(201, created.status_code, created.get_data(as_text=True))
+            event = created.get_json()
+            replay_path = f"/api/live-events/{event['id']}/{opens}/imported-replay"
+            choices = self.client.get(replay_path, headers=self.auth).get_json()["choices"]
+            chosen = next(item for item in choices if item["work"] == council)
+            attached = self.client.put(replay_path, headers=self.auth,
+                                       json={"work": chosen["work"], "digest": chosen["digest"]})
+            self.assertEqual(200, attached.status_code, attached.get_data(as_text=True))
+
+            created_series = self.client.post("/api/event-series", headers=self.auth, json={})
+            self.assertEqual(201, created_series.status_code, created_series.get_data(as_text=True))
+            series = created_series.get_json()
+            updated_series = self.client.put(f"/api/event-series/{series['id']}", headers=self.auth,
+                json=dict(revision=series["revision"], slug="test-series",
+                    settings=series["settings"] | dict(title="Test series", visibility="public", events=[event["id"]])))
+            self.assertEqual(200, updated_series.status_code, updated_series.get_data(as_text=True))
+            self.assertEqual("eligible", updated_series.get_json()["publication"])
+
+            index = self.client.get("/event-series/test-series")
+            self.assertEqual(200, index.status_code)
+            self.assertNotIn(b"/event-media/", index.data)
+
+            viewer = browser.new_page()
+            viewer.goto(self.base + "/event-series/test-series")
+            viewer.get_by_role("link", name="Watch Migrated replay").click()
+            expect(viewer).to_have_url(self.base + f"/events/migrated-replay?occurrence={opens}")
+            video = viewer.locator("#eventPlayer video")
+            expect(video).to_be_visible()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function(
+                "v => v.videoWidth === 320 && v.currentTime > 0.15", arg=video.element_handle(),
+            )
+
+            withdrawn = self.client.delete(f"/api/live-events/{event['id']}/{opens}/delivery", headers=self.auth)
+            self.assertEqual(204, withdrawn.status_code, withdrawn.get_data(as_text=True))
+
+            viewer.goto(self.base + "/event-series/test-series")
+            expect(viewer.get_by_role("link", name="Watch Migrated replay")).to_have_count(0)
+
     def test_timed_video_registration(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/registration"

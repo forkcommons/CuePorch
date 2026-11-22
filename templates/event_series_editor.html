@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Event series · CuePorch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="live-events">
+  {% include "operator_navigation.html" %}
+  <h1>Event series</h1>
+
+  <form id="seriesIdentify">
+    <label>Operator credential <input name="credential" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Open Event Series</button>
+  </form>
+  <p role="status" id="seriesStatus"></p>
+
+  <main id="seriesWorkspace" class="live-events" hidden>
+    <section id="seriesBrowser">
+      <h2>Your event series</h2>
+      <ul id="seriesList"></ul>
+      <button type="button" id="seriesNew">New Event Series</button>
+    </section>
+
+    <form id="seriesEdit" hidden>
+      <h2 id="seriesEditHeading">New event series</h2>
+
+      <label for="seriesTitle">Public title
+        <input id="seriesTitle" name="title" type="text" required maxlength="128">
+      </label>
+
+      <label for="seriesDescription">Description
+        <textarea id="seriesDescription" name="description" rows="4" maxlength="5000"></textarea>
+      </label>
+
+      <label for="seriesSlug">Slug
+        <input id="seriesSlug" name="slug" type="text" required pattern="[a-z0-9-]+">
+      </label>
+      <small>Used in the public address for this series.</small>
+
+      <label for="seriesVisibility">Visibility</label>
+      <select id="seriesVisibility" name="visibility">
+        <option value="private" selected>Private draft</option>
+        <option value="public">Public</option>
+      </select>
+
+      <fieldset id="seriesEventChoices">
+        <legend>Events in this series</legend>
+      </fieldset>
+
+      <button type="submit">Save Event Series</button>
+      <button type="button" id="seriesPreview">Preview</button>
+      <button type="button" id="seriesDelete">Delete Event Series</button>
+      <p><a id="seriesPreviewLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Open preview</a></p>
+      <p><a id="seriesWatchLink" href="#" target="_blank" rel="noopener noreferrer" hidden>Open public watch page</a></p>
+    </form>
+  </main>
+
+  <script type="module" src="{{ url_for('static', filename='ui/event_series_editor.js') }}"></script>
+</body>
+</html>
