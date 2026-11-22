@@ -220,6 +220,7 @@ def content_policy(con, work, permits, showcase, embed, ancestor, internal):
 def register(app, tx, staff, read_works, title_for, root, operator, permits, public_url, questions_enabled):
     access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-access")
     media = URLSafeTimedSerializer(operator, salt="cueporch-showcase-media")
+    member_access = URLSafeTimedSerializer(operator, salt="cueporch-showcase-member-access")
     registration = URLSafeTimedSerializer(operator, salt="cueporch-showcase-registration")
     telemetry = URLSafeTimedSerializer(operator, salt="cueporch-showcase-analytics")
     trusted_proxies = library_analytics.configured_proxies()
@@ -372,6 +373,29 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         with tx() as con:
             return privacy.try_password(con, operator, row["id"], request.form.get("password", ""), row["password"])
 
+    def entry(con, work, token, sharing, values, internal, embed, context=None, member_registration=None):
+        uid = work["id"]
+        details = library_details.details_for(con, work)
+        sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
+        questions = (question_session(con, work, token, "embed" if embed else "watch")
+                     if not internal and values["questions"] else None)
+        community = not embed and not internal and sharing["visibility"] == "public"
+        return dict(id=uid, title=title_for(con, work),
+                    description=details.get("description", ""),
+                    media=url_for("showcase_file", token=token),
+                    download=url_for("showcase_file", token=token, download=1)
+                    if not internal and values["download"] and sharing.get("download") else None,
+                    analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
+                    questions=questions,
+                    registration=member_registration,
+                    likes=community and values["likes"],
+                    comments=community and values["comments"],
+                    poster=url_for("showcase_file", token=token, poster=1)
+                    if selected_thumbnail(con, work) else None,
+                    captions=[dict(language=track.get("language") or "und", key=track_key(track),
+                                   url=url_for("showcase_file", token=token, track=index))
+                              for index, track in enumerate(tracks_for(work))])
+
     def viewer(slug, embed):
         with tx() as con:
             row = get_showcase(con, slug, by_slug=True)
@@ -450,41 +474,31 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                         if not work:
                             continue
                         member_form = None if internal else library_registration.active(con, "video", uid)
-                        if member_form and member_form["timing"] == "before":
-                            continue
                         member_revision = member_form["revision"] if member_form else None
                         allowed = content_policy(con, work, permits, values, embed, origin, internal)
                         if not allowed:
                             continue
                         _, sharing = allowed
                         policy = privacy.get_privacy(con, uid)
-                        token = media.dumps([row["id"], row["revision"], uid, video_version_key(work),
-                                             policy["revision"] if policy else None, internal, embed, origin, form_revision, member_revision])
+                        claims = [row["id"], row["revision"], uid, video_version_key(work),
+                                  policy["revision"] if policy else None, internal, embed, origin, form_revision, member_revision]
+                        if member_form and member_form["timing"] == "before":
+                            token = member_access.dumps(claims)
+                            entries.append(dict(id=uid, title=title_for(con, work),
+                                                description=library_details.details_for(con, work).get("description", ""),
+                                                registration=dict(timing="before", time_seconds=0,
+                                                                  url=url_for("showcase_member_registration", token=token, before=1)),
+                                                media=None, download=None, analytics=None, questions=None,
+                                                likes=False, comments=False, poster=None, captions=[]))
+                            continue
+                        token = media.dumps(claims)
                         member_registration = (
                             dict(timing=member_form["timing"], time_seconds=member_form["time_seconds"],
                                  url=url_for("showcase_member_registration", token=token))
                             if member_form else None
                         )
-                        details = library_details.details_for(con, work)
-                        sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
-                        questions = (question_session(con, work, token, "embed" if embed else "watch")
-                                     if not internal and values["questions"] else None)
-                        community = not embed and not internal and sharing["visibility"] == "public"
-                        entries.append(dict(id=uid, title=title_for(con, work),
-                                            description=details.get("description", ""),
-                                            media=url_for("showcase_file", token=token),
-                                            download=url_for("showcase_file", token=token, download=1)
-                                            if not internal and values["download"] and sharing.get("download") else None,
-                                            analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
-                                            questions=questions,
-                                            registration=member_registration,
-                                            likes=community and values["likes"],
-                                            comments=community and values["comments"],
-                                            poster=url_for("showcase_file", token=token, poster=1)
-                                            if selected_thumbnail(con, work) else None,
-                                            captions=[dict(language=track.get("language") or "und", key=track_key(track),
-                                                           url=url_for("showcase_file", token=token, track=index))
-                                                      for index, track in enumerate(tracks_for(work))]))
+                        entries.append(entry(con, work, token, sharing, values, internal, embed,
+                                             context=context, member_registration=member_registration))
         selection = request.args.get("video")
         playing = next((index for index, entry in enumerate(entries) if entry["id"] == selection), 0)
         response = make_response(render_template("showcase_view.html", settings=values, entries=entries, logo=logo,
@@ -511,14 +525,15 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     def showcase_frame(slug):
         return viewer(slug, True)
 
-    def authorized_media(con, token):
+    def resolve_grant(con, token, signer, max_age):
         try:
-            uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision, *member_tail = media.loads(token, max_age=3600)
+            claims = signer.loads(token, max_age=max_age)
+            uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision, *member_tail = claims
             if len(member_tail) > 1:
                 raise ValueError
             member_revision = member_tail[0] if member_tail else None
             if internal:
-                media.loads(token, max_age=600)
+                signer.loads(token, max_age=600)
         except (BadSignature, ValueError):
             abort(404)
         row = get_showcase(con, uid)
@@ -530,8 +545,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             abort(404)
         member_form = None if internal else library_registration.active(con, "video", work_id)
         current_member_revision = member_form["revision"] if member_form else None
-        if (member_revision != current_member_revision
-                or (member_form and member_form["timing"] == "before")):
+        if member_revision != current_member_revision:
             abort(404)
         form = None if internal else library_registration.active(con, "showcase", uid)
         if (form["revision"] if form else None) != form_revision:
@@ -539,23 +553,30 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         allowed = content_policy(con, work, permits, values, embed, origin, internal)
         if not allowed:
             abort(404)
-        return uid, work, values, allowed, internal, embed
+        return uid, work, values, allowed, internal, embed, claims, member_form
+
+
+    def authorized_media(con, token):
+        return resolve_grant(con, token, media, 3600)[:6]
 
     @app.route("/showcase-registration/<token>", methods=["GET", "POST"])
     def showcase_member_registration(token):
         if request.headers.get("Sec-Fetch-Dest") not in ("iframe", "frame"):
             abort(404)
         with tx() as con:
-            _, work, values, _, internal, embed = authorized_media(con, token)
-            if internal:
-                abort(404)
-            form = library_registration.active(con, "video", work["id"])
-            if not form or form["timing"] not in ("during", "after"):
+            before = request.args.get("before") == "1"
+            signer = member_access if before else media
+            max_age = 1200 if before else 3600
+            _, work, values, allowed, internal, embed, claims, form = resolve_grant(
+                con, token, signer, max_age
+            )
+            if internal or not form or ((form["timing"] == "before") != before):
                 abort(404)
             scope = ["showcase-member", token, form["revision"]]
             admitted = False
             sign_on = None
             error = None
+            release = None
             if request.method == "POST":
                 try:
                     enrollment_payload = registration.loads(
@@ -568,6 +589,9 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 admitted, sign_on, error = library_registration.admit(
                     con, "video", work["id"], form, scope
                 )
+                if admitted and before:
+                    context = library_analytics.request_context(trusted_proxies) if library_analytics.permitted() else None
+                    release = entry(con, work, media.dumps(claims), allowed[1], values, internal, embed, context=context)
             registration_view = None
             if not admitted:
                 registration_view = library_registration.presentation(
@@ -582,6 +606,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 registration=registration_view,
                 enrollment=registration.dumps(scope),
                 registration_error=error,
+                release=release,
             )
             response = make_response(html, 422 if error else 200)
             response.headers["Cache-Control"] = "private, no-store"

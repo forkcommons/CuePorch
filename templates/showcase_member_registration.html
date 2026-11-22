@@ -9,6 +9,7 @@
 <body>
   {% if complete %}
     <p role="status">Registration received</p>
+    {% if release %}<script type="application/json" id="showcaseMemberRelease">{{ release | tojson }}</script>{% endif %}
     <script type="module" src="/static/ui/showcase_member_registered.js"></script>
   {% else %}
     {% include "viewer_registration.html" %}

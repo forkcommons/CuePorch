@@ -324,8 +324,46 @@ class VimeoFolderMigration(unittest.TestCase):
             timing.select_option("before")
             editor.get_by_role("button", name="Save registration").click()
             expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+            reg_url = f"/api/showcases/{saved['id']}/registration"
+            registration = self.client.get(reg_url, headers=self.auth).get_json()
+            put_resp = self.client.put(reg_url, headers=self.auth, json=dict(
+                revision=registration["revision"],
+                settings=registration["settings"] | dict(enabled=True, heading="Gallery guest register"),
+            ))
+            self.assertEqual(put_resp.status_code, 200)
             viewer.goto(self.base + watch)
-            expect(viewer.locator("video")).to_have_count(0)
+            gallery = viewer.locator(".showcase-playlist")
+            expect(gallery.locator("video")).to_have_count(0)
+            expect(viewer.locator("#showcaseMemberRegistration")).to_have_count(0)
+            viewer.get_by_label("Email", exact=True).fill("gallery@example.com")
+            viewer.get_by_role("button", name="Register and watch", exact=True).click()
+            video = gallery.locator("video")
+            expect(video).to_be_hidden()
+            self.assertIsNone(video.get_attribute("src"))
+            self.assertEqual(video.evaluate("v => v.currentSrc || v.src || ''"), "")
+            expect(gallery.locator("video[src]")).to_have_count(0)
+            panel = viewer.locator("#showcaseMemberRegistration")
+            expect(panel).to_be_hidden()
+            viewer.get_by_role("button", name="Register to watch", exact=True).click()
+            expect(panel).to_be_visible()
+            iframe = panel.locator("iframe")
+            iframe_url = iframe.get_attribute("src")
+            self.assertEqual(self.client.get(iframe_url).status_code, 404)
+            frame = viewer.frame_locator("#showcaseMemberRegistration iframe")
+            pending = iframe_url.split('?')[0].rsplit('/', 1)[-1]
+            base_asset = f"/showcase-media/{pending}"
+            for suffix in ("", "?download=1", "?poster=1", "?track=0"):
+                self.assertEqual(self.client.get(base_asset + suffix).status_code, 404)
+            frame.get_by_label("Email").fill("viewer@example.test")
+            frame.get_by_role("button", name="Register and watch", exact=True).click()
+            expect(panel).to_be_hidden()
+            expect(video).to_be_visible()
+            viewer.wait_for_function(
+                "v => v.readyState >= 2 && v.videoWidth > 0", arg=video.element_handle())
+            self.assertGreaterEqual(video.evaluate("v => v.readyState"), 2)
+            self.assertGreater(video.evaluate("v => v.videoWidth"), 0)
+            video.evaluate("async v => { v.muted = true; await v.play(); }")
+            expect(video).to_have_js_property("paused", False)
 
     def test_showcase_style_migration_roundtrip(self):
         self.source.showcase_logo_fixture = "valid"

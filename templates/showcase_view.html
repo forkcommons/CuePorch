@@ -1,8 +1,7 @@
 {% macro player(item, label, preload) -%}
-<video controls playsinline preload="{{ preload }}" controlslist="nodownload" aria-labelledby="{{ label }}"
-       src="{{ item.media }}" {% if item.poster %}poster="{{ item.poster }}"{% endif %}>
-  {% for track in item.captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}"
-         src="{{ track.url }}" data-analytics-track="{{ track.key }}">{% endfor %}
+<video controls playsinline preload="{{ preload }}" controlslist="nodownload" aria-labelledby="{{ label }}"{% if not item.media %} hidden{% endif %}{% if item.media %} src="{{ item.media }}"{% endif %}{% if item.poster and item.media %} poster="{{ item.poster }}"{% endif %}>
+  {% if item.media %}{% for track in item.captions %}<track kind="captions" srclang="{{ track.language }}" label="{{ track.language }}"
+         src="{{ track.url }}" data-analytics-track="{{ track.key }}">{% endfor %}{% endif %}
 </video>
 {%- endmacro %}
 <!doctype html>
@@ -66,14 +65,18 @@
           <button type="button" id="showcaseCopyVideo">Copy link to this video</button>
           <span id="showcaseCopyVideoStatus" role="status"></span>
           {% endif %}
-          {% if not grid_players %}{{ player(active, 'nowPlaying', 'metadata') }}{% endif %}
+          {% if not grid_players %}
+            {{ player(active, 'nowPlaying', 'metadata') }}
+            <button type="button" id="showcaseBeforeRegistration"{% if active.media %} hidden{% endif %}>Register to watch</button>
+          {% endif %}
           {% if entries | selectattr('registration') | list %}
             <section id="showcaseMemberRegistration" aria-label="Video registration" hidden>
               <iframe title="Video registration"></iframe>
               <button type="button" data-member-registration-dismiss>Dismiss registration</button>
             </section>
           {% endif %}
-          {% if entries | selectattr("questions") | list %}
+          {% if (entries | selectattr("questions") | list)
+      or (settings.questions and not internal and (entries | rejectattr('media') | list)) %}
             {% with question_id="showcaseQuestions", question_path=url_for("viewer_showcase_questions"),
                     question_label="Ask AI about this video", questions=active.questions %}
               {% include "video_questions.html" %}
@@ -88,6 +91,7 @@
             <li data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
               <p id="showcaseCardTitle{{ loop.index0 }}">{{ item.title }}</p>
               {{ player(item, 'showcaseCardTitle' ~ loop.index0, 'none') }}
+              {% if not item.media %}<button type="button" data-showcase-before="{{ loop.index0 }}">Register to watch</button>{% endif %}
             </li>
             {% else %}
             <li><button type="button" data-index="{{ loop.index0 }}"{% if loop.index0 == playing %} aria-current="true"{% endif %}>
@@ -100,7 +104,7 @@
           <p id="showcaseNoMatches" hidden>No videos match your search.</p>
         </section>
       </div>
-      {% if entries | selectattr("comments") | list or entries | selectattr("likes") | list %}
+      {% if entries | selectattr("comments") | list or entries | selectattr("likes") | list or (not internal and not embed and (settings.likes or settings.comments) and (entries | rejectattr("media") | list)) %}
       <div id="showcaseCommunity"></div>
       <template id="showcaseCommunityTemplate">
         {% if settings.likes %}

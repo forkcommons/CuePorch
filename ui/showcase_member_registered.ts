@@ -1,3 +1,10 @@
 if (window.parent !== window) {
-  window.parent.postMessage("cueporch:member-registered", window.location.origin);
+  const releaseEl = document.getElementById("showcaseMemberRelease");
+  const entry = releaseEl ? JSON.parse((releaseEl?.textContent || "")) : null;
+  window.parent.postMessage(
+    entry
+      ? { type: "cueporch:member-registered", entry }
+      : "cueporch:member-registered",
+    window.location.origin
+  );
 }
