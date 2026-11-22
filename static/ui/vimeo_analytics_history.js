@@ -13,11 +13,13 @@ const pageSize = 100;
 const state = { reportId: null, page: 1, pageCount: 1, summary: null };
 let selection = 0;
 const labels = {
-    video_title: "Vimeo title", average_percent_watched: "Average watched (%)",
+    video_title: "Vimeo title", average_percent_watched: "Average watched (%)", completion_percent: "Average completion (%)",
+    views_at_1_percent: "Views at 1%", views_at_25_percent: "Views at 25%", views_at_50_percent: "Views at 50%",
+    views_at_75_percent: "Views at 75%", views_at_100_percent: "Views at 100%",
     average_seconds_watched: "Average watched (seconds)", total_seconds_watched: "Total watched (seconds)",
 };
 const reportKindLabels = {
-    video: 'Video', date: 'Date', region: 'Region', source: 'Source URL', device: 'Device',
+    video: 'Video', engagement: 'Engagement', date: 'Date', region: 'Region', source: 'Source URL', device: 'Device',
 };
 const label = (key) => labels[key] ?? key[0].toUpperCase() + key.slice(1).replaceAll("_", " ");
 function rowCounts(report) {

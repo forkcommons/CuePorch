@@ -8,7 +8,7 @@ from flask import jsonify, request
 
 from vimeo_analytics_api import fetch_video_reports
 from vimeo_analytics_api_fields import normalize
-from vimeo_analytics_csv import parse, valid_utc_date
+from vimeo_analytics_csv import VIDEO_REPORTS, parse, valid_utc_date
 from vimeo_transfer import INTERRUPTED, Source, SourceFailure
 
 
@@ -83,7 +83,7 @@ def summary(row, works):
     count = sum(counts.values())
     matched = sum(size for source, size in counts.items() if source in works)
     report_kind = row["report_kind"]
-    aggregate = counts.get("", 0) if report_kind != "video" else 0
+    aggregate = counts.get("", 0) if report_kind not in VIDEO_REPORTS else 0
     return dict(id=row["id"], first=row["first"], last=row["last"], source=row["source"],
                 report_kind=report_kind, columns=json.loads(row["columns_json"]), total=json.loads(row["total_json"]),
                 count=count, matched=matched, aggregate=aggregate, unmatched=count - matched - aggregate)

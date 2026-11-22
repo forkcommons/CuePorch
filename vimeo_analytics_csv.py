@@ -1,4 +1,4 @@
-"""Read aggregate metrics from a Vimeo Video report CSV."""
+"""Read aggregate metrics from Vimeo analytics CSV reports."""
 
 import csv
 import io
@@ -15,9 +15,13 @@ _COUNTS = {
     "views": "views", "impressions": "impressions", "finishes": "finishes",
     "downloads": "downloads", "likes": "likes", "comments": "comments",
     "unique viewers": "unique_viewers", "unique impressions": "unique_impressions",
+    "views at 1": "views_at_1_percent", "views at 25": "views_at_25_percent",
+    "views at 50": "views_at_50_percent", "views at 75": "views_at_75_percent",
+    "views at 100": "views_at_100_percent",
 }
 _DECIMALS = {
-    "average percent watched": "average_percent_watched",
+    "average percent watched": "average_percent_watched", "average watched": "average_percent_watched",
+    "average completion rate": "completion_percent", "completion rate": "completion_percent",
     "average seconds watched": "average_seconds_watched",
     "total time watched": "total_seconds_watched",
     "total seconds watched": "total_seconds_watched",
@@ -30,6 +34,11 @@ _IDENTITIES = {
 _HEADERS = _DIMENSIONS | _COUNTS | _DECIMALS | _IDENTITIES
 _TOTAL_LABELS = {"report total", "total"}
 _COUNT_KEYS = set(_COUNTS.values())
+VIDEO_REPORTS = ("video", "engagement")
+_ENGAGEMENT_KEYS = {
+    "average_percent_watched", "completion_percent", "views_at_1_percent", "views_at_25_percent",
+    "views_at_50_percent", "views_at_75_percent", "views_at_100_percent",
+}
 _DURATION_KEYS = {"average_seconds_watched", "total_seconds_watched"}
 _NUMBER = r"(?:[0-9]{1,15}|[0-9]{1,3}(?:,[0-9]{3}){1,4})"
 _SOURCE_ID = r"([0-9]{1,20})"
@@ -79,7 +88,7 @@ def _metric(key, value):
         if re.fullmatch(_NUMBER, value):
             return int(value.replace(",", ""))
     else:
-        if key == "average_percent_watched":
+        if key in ("average_percent_watched", "completion_percent"):
             value = value.removesuffix("%").rstrip()
         if re.fullmatch(_NUMBER + r"(?:\.[0-9]{1,9})?", value):
             return float(value.replace(",", ""))
@@ -92,7 +101,7 @@ def _metric(key, value):
 
 
 def parse(data, first, last, report_kind="video"):
-    if report_kind not in ("video", "date", "region", "source", "device"):
+    if report_kind not in (*VIDEO_REPORTS, "date", "region", "source", "device"):
         raise ValueError("Choose a supported Vimeo report type.")
     if not valid_utc_date(first) or not valid_utc_date(last) or first > last:
         raise ValueError("Enter the UTC date range used for the Vimeo export.")
@@ -112,11 +121,13 @@ def parse(data, first, last, report_kind="video"):
                 recognized[key] = index
         identity_keys = set(_IDENTITIES.values())
         metric_keys = _COUNT_KEYS | set(_DECIMALS.values())
-        if report_kind == "video":
+        if report_kind in VIDEO_REPORTS:
             if not identity_keys.intersection(recognized) or not metric_keys.intersection(recognized):
                 raise ValueError("The report needs a video column and at least one supported Vimeo metric.")
         elif report_kind not in recognized or not metric_keys.intersection(recognized):
             raise ValueError("The report needs its matching dimension and at least one supported Vimeo metric.")
+        if report_kind == "engagement" and not _ENGAGEMENT_KEYS.intersection(recognized):
+            raise ValueError("The report needs at least one engagement metric.")
         columns = [key for key in recognized if key not in identity_keys or key == "video_title"]
         rows = []
         total = None
@@ -136,7 +147,7 @@ def parse(data, first, last, report_kind="video"):
                                 if key != "video_title" and value.casefold() not in _TOTAL_LABELS)
                 )
                 primary_total = (
-                    report_kind != "video" and values.get(report_kind, "").casefold() in _TOTAL_LABELS
+                    report_kind not in VIDEO_REPORTS and values.get(report_kind, "").casefold() in _TOTAL_LABELS
                 )
                 if identity_total or primary_total:
                     if total is not None:

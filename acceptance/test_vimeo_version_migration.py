@@ -530,6 +530,23 @@ class VimeoVersionMigration(unittest.TestCase):
                 saved = self.client.get(f"{endpoint}/{summary['id']}", headers=self.auth).get_json()
                 self.assertEqual({kind: value}, saved["rows"][0]["dimensions"])
 
+        engagement = (
+            b"Video ID,Video,Views,Average % watched,Average completion rate,Views at 25%\n"
+            b"71,Station film,100,78.5%,44%,107\n"
+            b",Report Total,100,78.5%,44%,107\n"
+        )
+        imported = upload("engagement", engagement)
+        self.assertEqual(201, imported.status_code)
+        summary = imported.get_json()
+        self.assertEqual(("engagement", 107), (summary["report_kind"], summary["total"]["views_at_25_percent"]))
+        detail = self.client.get(endpoint + "/" + summary["id"], headers=self.auth).get_json()
+        self.assertEqual(1, len(detail["rows"]))
+        row = detail["rows"][0]
+        self.assertEqual("71", row["source_id"])
+        self.assertEqual({"views": 100, "views_at_25_percent": 107,
+                          "average_percent_watched": 78.5, "completion_percent": 44}, row["metrics"])
+        self.assertEqual(200, upload("engagement", engagement).status_code)
+
     def test_vimeo_history_transfer_import_and_preview(self):
         import io
 
