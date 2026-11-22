@@ -160,7 +160,16 @@
       <form id="vimeoHistoryForm">
         <label>From (UTC) <input type="date" name="first" required></label>
         <label>To (UTC) <input type="date" name="last" required></label>
-        <label>Vimeo Video report CSV <input type="file" name="file" accept=".csv" required></label>
+        <label>Vimeo CSV type
+          <select name="report_kind">
+            <option value="video">Video</option>
+            <option value="date">Date</option>
+            <option value="region">Region</option>
+            <option value="source">Source URL</option>
+            <option value="device">Device</option>
+          </select>
+        </label>
+        <label>Vimeo report CSV <input type="file" name="file" accept=".csv" required></label>
         <button type="submit" name="action" value="import">Import report</button>
         <button type="submit" name="action" value="preview">Preview report</button>
       </form>

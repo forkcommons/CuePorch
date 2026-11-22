@@ -476,6 +476,60 @@ class VimeoVersionMigration(unittest.TestCase):
             source_denied.clear()
         self.assertEqual([body], self.client.get(history, headers=self.auth).json["reports"])
 
+    def test_vimeo_source_csv_import_and_api(self):
+        import io
+        first, last = "2024-01-01", "2024-01-31"
+        csv = b"Source URL,Views,Unique Viewers\nhttps://archive.example/show?token=private,3,3\nReport Total,4,3\n"
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/analytics")
+            page.get_by_text("Vimeo analytics history", exact=True).click()
+            form = page.locator("#vimeoHistoryForm")
+            form.get_by_label("Vimeo CSV type").select_option("source")
+            form.get_by_label("From (UTC)").fill(first)
+            form.get_by_label("To (UTC)").fill(last)
+            form.get_by_label("Vimeo report CSV").set_input_files({"name": "vimeo.csv", "mimeType": "text/csv", "buffer": csv})
+            form.get_by_role("button", name="Preview report", exact=True).click()
+            expect(page.locator("#vimeoHistoryStatus")).to_have_text("Preview: 1 rows · 1 aggregate rows")
+            form.get_by_role("button", name="Import report", exact=True).click()
+            table = page.locator("#vimeoHistoryTable")
+            expect(table.get_by_role("cell", name="archive.example", exact=True)).to_be_visible()
+            expect(page.locator("#vimeoHistorySummary")).to_contain_text("Views 4")
+            expect(table).not_to_contain_text("token=private")
+            expect(table.get_by_role("columnheader", name="Vimeo video ID")).to_have_count(0)
+        endpoint = "/api/analytics/vimeo-history"
+
+        def upload(kind, data):
+            return self.client.post(endpoint, headers=self.auth, data={
+                "report_kind": kind, "first": first, "last": last, "file": (io.BytesIO(data), "vimeo.csv"),
+            })
+
+        self.assertEqual(200, upload("source", csv).status_code)
+        self.assertEqual(400, upload("device", csv).status_code)
+        reports = self.client.get(endpoint, headers=self.auth).get_json()["reports"]
+        self.assertEqual(1, len(reports))
+        summary = reports[0]
+        self.assertEqual(("source", 1, 0), (summary["report_kind"], summary["aggregate"], summary["unmatched"]))
+        saved = self.client.get(f"{endpoint}/{summary['id']}", headers=self.auth)
+        self.assertNotIn("token=private", saved.get_data(as_text=True))
+        self.assertEqual(3, saved.get_json()["rows"][0]["metrics"]["views"])
+
+        outside = upload("date", b"Date,Views\n2023-12-31,9\nReport Total,9\n")
+        self.assertEqual(400, outside.status_code)
+        self.assertIn("outside the selected UTC window", outside.get_json()["error"])
+        for kind, value in (("date", "2024-01-05"), ("region", "US"), ("device", "Desktop")):
+            with self.subTest(report=kind):
+                data = f"{kind.capitalize()},Views\n{value},9\nReport Total,9\n".encode()
+                imported = upload(kind, data)
+                self.assertEqual(201, imported.status_code, imported.get_data(as_text=True))
+                summary = imported.get_json()
+                self.assertEqual((kind, 1, 1, 0), (summary["report_kind"], summary["count"],
+                                                  summary["aggregate"], summary["unmatched"]))
+                self.assertEqual({"views": 9}, summary["total"])
+                saved = self.client.get(f"{endpoint}/{summary['id']}", headers=self.auth).get_json()
+                self.assertEqual({kind: value}, saved["rows"][0]["dimensions"])
+
     def test_vimeo_history_transfer_import_and_preview(self):
         import io
 
@@ -515,7 +569,7 @@ class VimeoVersionMigration(unittest.TestCase):
             page.get_by_text("Vimeo analytics history", exact=True).click()
             page.get_by_label("From (UTC)", exact=True).last.fill(first)
             page.get_by_label("To (UTC)", exact=True).last.fill(last)
-            page.get_by_label("Vimeo Video report CSV").set_input_files(
+            page.get_by_label("Vimeo report CSV").set_input_files(
                 {"name": "vimeo-history.csv", "mimeType": "text/csv", "buffer": csv_bytes},
             )
             with page.expect_response(lambda reply: reply.url.endswith(endpoint + "?preview=1")) as preview:
