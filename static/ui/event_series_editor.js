@@ -1,5 +1,6 @@
 import { checked, sessionMarker } from "./team_api.js";
 import { setupSeriesPresentation } from "./event_series_presentation.js";
+import { setupSeriesLocalization } from "./event_series_localization.js";
 const byId = (id) => document.getElementById(id);
 const identify = byId("seriesIdentify");
 const workspace = byId("seriesWorkspace");
@@ -16,6 +17,7 @@ const seriesView = document.querySelector("#seriesView");
 const seriesEmpty = document.querySelector("#seriesEmpty");
 const seriesCopyLink = document.querySelector("#seriesCopyLink");
 let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
+const localization = setupSeriesLocalization(byId("seriesLocalization"));
 const presentation = setupSeriesPresentation(document.querySelector("#seriesPresentation"), async (file) => {
     const data = new FormData();
     data.set("logo", file);
@@ -103,6 +105,7 @@ function renderEditor(entry) {
     if (!entry)
         return;
     presentation.populate(entry.settings.presentation);
+    localization.populate(entry.settings.localization);
     editorHeading.textContent = entry.settings.title;
     field("title").value = entry.settings.title;
     field("description").value =
@@ -283,6 +286,7 @@ form.addEventListener("submit", e => {
                 upcoming_mode: field("upcoming_mode").value,
                 events: Array.from(eventChoices.querySelectorAll('input[name="events"]:checked')).map(el => el.value),
                 hidden_recordings: collectHiddenRecordings(target),
+                localization: localization.payload(),
                 presentation: await presentation.payload(),
             },
         };

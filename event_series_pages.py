@@ -10,6 +10,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import event_schedule
+import event_series_locale
 import event_series_presentation
 import library_events
 import library_privacy
@@ -37,6 +38,7 @@ DEFAULTS = dict(
     description="",
     visibility="private",
     upcoming_mode="all",
+    localization=event_series_locale.DEFAULTS,
     events=[],
     hidden_recordings=[],
     presentation=event_series_presentation.DEFAULTS,
@@ -163,11 +165,15 @@ def validate(con, body, prior):
     presentation = event_series_presentation.validate(
         con, body.get("presentation", prior["presentation"])
     )
+    localization = event_series_locale.validate(
+        body.get("localization", prior["localization"]), prior["localization"]
+    )
     return dict(
         title=title,
         description=description,
         visibility=visibility,
         upcoming_mode=upcoming_mode,
+        localization=localization,
         events=events,
         hidden_recordings=hidden_recordings,
         presentation=presentation,
@@ -262,6 +268,7 @@ def page_events(con, settings, preview=False, audience="public"):
             upcoming.append(dict(
                 slug=row["slug"], title=title, href=href,
                 opens=occ["id"],
+                timezone=tzname,
                 label=occ["local"].replace("T", " ") + " " + tzname,
             ))
         for opens in sorted(
@@ -274,6 +281,7 @@ def page_events(con, settings, preview=False, audience="public"):
             local = datetime.fromtimestamp(opens, timezone.utc).astimezone(zone)
             recordings.append(dict(
                 slug=row["slug"], title=title, href=href, opens=opens,
+                timezone=tzname,
                 label=local.strftime("%Y-%m-%d %H:%M %Z"),
             ))
     upcoming.sort(key=lambda x: (x["opens"], x["title"], x["slug"]))
@@ -296,10 +304,11 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
     preview_serializer = URLSafeTimedSerializer(
         signing_key, salt="cueporch-event-series-preview"
     )
+    series_passwords = URLSafeTimedSerializer(signing_key, salt="cueporch-event-series-access")
 
     @app.get("/operator/event-series")
     def event_series_editor():
-        return render_template("event_series_editor.html")
+        return render_template("event_series_editor.html", languages=event_series_locale.LANGUAGES)
 
     @app.route("/api/event-series", methods=["GET", "POST"])
     def all_event_series():
@@ -391,6 +400,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
 
     @app.route("/event-series/<slug>", methods=["GET", "POST"])
     def event_series_view(slug):
+        ticket = None
         with tx() as con:
             row = series_row(con, slug, by_slug=True)
             settings = DEFAULTS | json.loads(row["settings"])
@@ -411,6 +421,17 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
             elif series_status(con, row, settings) != "eligible":
                 abort(404)
 
+            def locked_series(incorrect):
+                language = event_series_locale.resolve(
+                    settings["localization"], settings, {}, preview=False)[0]
+                response = private(render_template(
+                    "event_series_password.html", incorrect=incorrect,
+                    language=language, labels=event_series_locale.labels(language)),
+                    403 if incorrect else 200)
+                response.headers["Content-Language"] = language
+                response.headers["Referrer-Policy"] = "no-referrer"
+                return response
+
             audience = "public" if internal else settings["visibility"]
             if audience == "team":
                 secure = secure_site(team_origin, required=False)
@@ -420,32 +441,64 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                 digest = password_hash(con, row["id"])
                 if not digest:
                     abort(404)
-                if request.method != "POST":
-                    return private(render_template("event_series_password.html", incorrect=False))
-                request.max_content_length = 4096
-                if not library_privacy.try_password(
-                    con, signing_key, "series:" + row["id"], request.form.get("password", ""), digest
+                secure = secure_site(team_origin, required=False)
+                scope = [row["id"], row["revision"]]
+                if request.method == "POST":
+                    request.max_content_length = 4096
+                    if not library_privacy.try_password(
+                        con, signing_key, "series:" + row["id"], request.form.get("password", ""), digest
+                    ):
+                        return locked_series(True)
+                    if secure is not None:
+                        ticket = (series_passwords.dumps(scope), secure)
+                elif secure is None or not library_events.valid_ticket(
+                    series_passwords, request.cookies.get("cueporch_series_access", ""), scope, 12 * 3600
                 ):
-                    return private(render_template("event_series_password.html", incorrect=True), 403)
+                    return locked_series(False)
 
             payload = page_events(con, settings, preview=internal, audience=audience)
-            payload["presentation"] = event_series_presentation.render(
-                con, settings["presentation"]
+            language, options, viewer_settings, payload["presentation"] = event_series_locale.resolve(
+                settings["localization"],
+                settings,
+                event_series_presentation.render(con, settings["presentation"]),
+                preview=internal,
             )
+            viewer_settings["upcoming_mode"] = settings["upcoming_mode"]
+            language_links = [
+                choice | {"href": url_for(
+                    "event_series_view", slug=slug, lang=choice["code"], preview=token if internal else None
+                )}
+                for choice in options
+            ]
 
         resp = make_response(
             render_template(
                 "event_series_view.html",
-                settings=settings,
+                settings=viewer_settings,
                 preview=internal,
+                language=language,
+                labels=event_series_locale.labels(language),
+                language_links=language_links,
                 **payload,
             )
         )
+        resp.headers["Content-Language"] = language
         resp.headers["Cache-Control"] = "private, no-store"
         resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
 
         if internal or audience != "public":
             resp.headers["X-Robots-Tag"] = "noindex"
             resp.headers["Referrer-Policy"] = "no-referrer"
+
+        if ticket is not None:
+            resp.set_cookie(
+                "cueporch_series_access",
+                ticket[0],
+                path=request.path,
+                samesite="Lax",
+                httponly=True,
+                secure=ticket[1],
+                max_age=43200,
+            )
 
         return resp

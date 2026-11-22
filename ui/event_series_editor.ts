@@ -1,5 +1,7 @@
 import { checked, sessionMarker } from "./team_api.js";
 import { setupSeriesPresentation } from "./event_series_presentation.js";
+import { setupSeriesLocalization } from "./event_series_localization.js";
+import type { Localization } from "./event_series_localization.js";
 import type { Presentation } from "./event_series_presentation.js";
 
 export type Visibility = "private" | "team" | "public" | "password";
@@ -23,6 +25,7 @@ export interface Settings {
   description: string;
   visibility: Visibility;
   upcoming_mode: UpcomingMode;
+  localization: Localization;
   events: string[];
   hidden_recordings: HiddenRecording[];
   presentation: Presentation;
@@ -70,6 +73,8 @@ const seriesCopyLink = document.querySelector<HTMLButtonElement>("#seriesCopyLin
 
 let credential =
   sessionStorage.getItem("cueporchOperator") || sessionMarker;
+
+const localization = setupSeriesLocalization(byId("seriesLocalization"));
 
 const presentation = setupSeriesPresentation(
   document.querySelector<HTMLElement>("#seriesPresentation")!,
@@ -183,6 +188,7 @@ function renderEditor(entry: Series | null) {
   if (!entry) return;
 
   presentation.populate(entry.settings.presentation);
+  localization.populate(entry.settings.localization);
   editorHeading.textContent = entry.settings.title;
   (field("title") as HTMLInputElement).value = entry.settings.title;
   (field("description") as HTMLTextAreaElement).value =
@@ -370,6 +376,7 @@ form.addEventListener("submit", e => {
           eventChoices.querySelectorAll<HTMLInputElement>('input[name="events"]:checked'),
         ).map(el => el.value),
         hidden_recordings: collectHiddenRecordings(target),
+        localization: localization.payload(),
         presentation: await presentation.payload(),
       },
     };

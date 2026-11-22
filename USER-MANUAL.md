@@ -418,6 +418,8 @@ To publish, choose **Public**, **Team only**, or **Password protected**, then sa
 
 Choose **All scheduled dates**, **Next date per event**, or **Group dates by event** for **Upcoming events**. **Agenda** always shows the full schedule. Use **Hide recording** beside an entry under **Hidden recordings** to remove it from this series. The original event page and other series keep their existing access and playback.
 
+Under **Localization**, choose the series’ base language and add up to six translations. Enter translated titles, descriptions, and date labels. Blank fields use the base text. Save without publishing a translation to see it only through a signed preview. Select **Publish this translation** and save to make it available from the viewer’s language menu. Viewers can switch languages within a password-protected series after unlocking it.
+
 ### Live events
 
 Open **Live events** from the library and choose **New event**. Set up from scratch, choose an event type for editable defaults, or reuse an earlier event's settings. Live broadcast starts with an external encoder, chat and captions. Webinar starts with the browser, registration, chat, captions and Q&A. Team event starts with the browser, low latency, chat and captions. Online learning starts with the browser, registration, captions and Q&A. Custom starts with audience options off. All start private. Set the preferred production method and change any of the suggested options before saving.

@@ -93,6 +93,33 @@
         <div id="seriesHiddenRecordings"></div>
       </fieldset>
 
+      <fieldset id="seriesLocalization" class="series-localization">
+        <legend>Localization</legend>
+        <label for="seriesBaseLanguage">Base language</label>
+        <select id="seriesBaseLanguage" name="baseLanguage">
+          {% for code, label in languages.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        </select>
+        <label for="seriesTranslationLanguage">Translation language</label>
+        <select id="seriesTranslationLanguage" name="translationLanguage">
+          <option value="">Choose language</option>
+          {% for code, label in languages.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        </select>
+        <div id="seriesTranslationFields" hidden>
+          <label for="translatedTitle">Translated title</label>
+          <input id="translatedTitle" name="translatedTitle" type="text" maxlength="128">
+          <label for="translatedDescription">Translated description</label>
+          <textarea id="translatedDescription" name="translatedDescription" maxlength="5000"></textarea>
+          <label for="translatedDateLabel">Translated date label</label>
+          <input id="translatedDateLabel" name="translatedDateLabel" type="text" maxlength="100">
+          <label for="translatedTimezoneLabel">Translated timezone label</label>
+          <input id="translatedTimezoneLabel" name="translatedTimezoneLabel" type="text" maxlength="100">
+          <label for="translationPublished">Publish this translation</label>
+          <input id="translationPublished" name="translationPublished" type="checkbox">
+          <small>Leave a field blank to use the base language.</small>
+          <button id="seriesTranslationRemove" type="button">Remove translation</button>
+        </div>
+      </fieldset>
+
       <fieldset id="seriesPresentation">
         <legend>Presentation</legend>
         <label>Accent color

@@ -237,7 +237,15 @@ class VimeoFolderMigration(unittest.TestCase):
         series_payload = dict(
             revision=draft["revision"],
             slug="outer-password-series",
-            settings=dict(title="Locked series", visibility="password", events=[event_id]),
+            settings=dict(
+                title="Locked series",
+                visibility="password",
+                events=[event_id],
+                localization=dict(
+                    base="en",
+                    translations={"fr": dict(published=True, title="Série protégée")},
+                ),
+            ),
             view_password="outer-series-pass",
         )
         response = self.client.put(f"/api/event-series/{draft_id}", headers=self.auth, json=series_payload)
@@ -277,6 +285,16 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertIn("Locked series", guest.content())
 
             with guest.expect_navigation():
+                guest.get_by_role("link", name="Français", exact=True).click()
+            guest.wait_for_selector("h1")
+            self.assertIn("Série protégée", guest.locator("h1").inner_text())
+
+            with guest.expect_navigation():
+                guest.get_by_role("link", name="English", exact=True).click()
+            guest.wait_for_selector("h1")
+            self.assertIn("Locked series", guest.locator("h1").inner_text())
+
+            with guest.expect_navigation():
                 guest.get_by_role("link", name="Locked program").click()
             guest.wait_for_selector('input[name="password"]')
             child_html = guest.content()
@@ -291,10 +309,9 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertNotIn("Locked program", guest.content())
 
             guest.goto(f"{self.base}/event-series/outer-password-series")
-            guest.wait_for_selector('input[name="password"]')
-            guest.fill('input[name="password"]', "outer-series-pass")
-            with guest.expect_navigation():
-                guest.get_by_role("button", name="Open event series").click()
+            guest.wait_for_selector("h1")
+            self.assertTrue(guest.locator("h1").is_visible())
+            self.assertIn("Locked series", guest.locator("h1").inner_text())
             with guest.expect_navigation():
                 guest.get_by_role("link", name="Locked program").click()
             guest.wait_for_selector('input[name="password"]')
@@ -454,6 +471,8 @@ class VimeoFolderMigration(unittest.TestCase):
             section = viewer.locator('section[aria-labelledby="upcoming-heading"]')
             initial_links = section.get_by_role("link", name="View Daily program")
             expect(initial_links).to_have_count(3)
+            time = section.locator('time').first
+            expect(time).to_have_attribute('datetime', start.isoformat(timespec='milliseconds').replace('+00:00', 'Z'))
             for i in range(3):
                 href = initial_links.nth(i).get_attribute("href") or ""
                 self.assertIn("occurrence=", href)
@@ -600,6 +619,108 @@ class VimeoFolderMigration(unittest.TestCase):
 
             viewer.goto(self.base + "/event-series/test-series")
             expect(viewer.get_by_role("link", name="Watch Migrated replay")).to_have_count(0)
+
+    def test_bilingual_event_series_translation_preview_and_publish(self):
+        create_resp = self.client.post("/api/event-series", json={}, headers=self.auth)
+        self.assertEqual(create_resp.status_code, 201)
+        entry = create_resp.get_json()
+
+        update_resp = self.client.put(
+            f"/api/event-series/{entry['id']}",
+            json={
+                "revision": entry.get("revision"),
+                "slug": "bilingual-series",
+                "settings": {
+                    "title": "Festival program",
+                    "description": "Original description",
+                    "visibility": "public",
+                },
+            },
+            headers=self.auth,
+        )
+        self.assertEqual(update_resp.status_code, 200)
+
+        def is_series_put(response):
+            return (
+                response.request.method == "PUT"
+                and f"/api/event-series/{entry['id']}" in response.url
+            )
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            operator_context = browser.new_context()
+            guest_context = browser.new_context()
+            operator_context.add_init_script(
+                script=f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})"
+            )
+
+            operator_page = operator_context.new_page()
+            guest_page = guest_context.new_page()
+
+            operator_page.goto(self.base + "/operator/event-series")
+            operator_page.get_by_role("button", name="Festival program", exact=True).click()
+            operator_page.locator("#seriesTranslationLanguage").select_option("fr")
+            operator_page.locator("#translatedTitle").fill("Programme du festival")
+
+            with operator_page.expect_response(is_series_put) as first_save_info:
+                operator_page.get_by_role("button", name="Save Event Series", exact=True).click()
+            self.assertEqual(first_save_info.value.status, 200)
+            operator_page.wait_for_function("!document.getElementById('seriesEdit').inert")
+
+            preview_resp = self.client.post(
+                f"/api/event-series/{entry['id']}/preview",
+                headers=self.auth,
+            )
+            self.assertEqual(preview_resp.status_code, 200)
+            preview = preview_resp.get_json()["preview"]
+
+            guest_page.goto(self.base + preview + "&lang=fr")
+            expect(
+                guest_page.get_by_role(
+                    "heading", level=1, name="Programme du festival", exact=True
+                )
+            ).to_be_visible()
+
+            guest_page.goto(self.base + "/event-series/bilingual-series?lang=fr")
+            expect(
+                guest_page.get_by_role(
+                    "heading", level=1, name="Festival program", exact=True
+                )
+            ).to_be_visible()
+            expect(
+                guest_page.get_by_role(
+                    "heading", level=1, name="Programme du festival", exact=True
+                )
+            ).not_to_be_visible()
+
+            operator_page.locator("#seriesTranslationLanguage").select_option("fr")
+            operator_page.locator("#translationPublished").check()
+            with operator_page.expect_response(
+                lambda response: is_series_put(response) and response.status == 200
+            ) as publish_save_info:
+                operator_page.get_by_role("button", name="Save Event Series", exact=True).click()
+            self.assertEqual(publish_save_info.value.status, 200)
+
+            guest_page.goto(self.base + "/event-series/bilingual-series")
+            francais_link = guest_page.get_by_role("link", name="Français", exact=True)
+            expect(francais_link).to_be_visible()
+            with guest_page.expect_navigation() as french_navigation:
+                francais_link.click()
+            french_response = french_navigation.value
+            self.assertEqual(french_response.headers.get("content-language"), "fr")
+
+            expect(
+                guest_page.get_by_role(
+                    "heading", level=1, name="Programme du festival", exact=True
+                )
+            ).to_be_visible()
+            expect(guest_page.get_by_text("Original description", exact=True)).to_be_visible()
+            expect(guest_page.locator("html")).to_have_attribute("lang", "fr")
+            negotiated = self.client.get(
+                '/event-series/bilingual-series',
+                headers={'Accept-Language': 'fr-CA, en;q=0.8'},
+            )
+            self.assertEqual('fr', negotiated.headers.get('Content-Language'))
+            self.assertIn('Programme du festival', negotiated.get_data(as_text=True))
 
     def test_operator_event_series_sort_filter_grid_copy_link(self):
         for slug, title in (("gallery-night", "Gallery night"), ("community-brief", "Community brief")):
