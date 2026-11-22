@@ -1054,6 +1054,41 @@ def folder_inventory(institution, source, account, profile, videos):
     return ordered, by_video, " ".join(dict.fromkeys(warnings)) or None
 
 
+def showcase_style(album):
+    style = {}
+    theme = album.get("theme")
+    if theme in ("dark", "standard"):
+        style["dark"] = theme == "dark"
+
+    layout = album.get("layout")
+    if layout in ("grid", "player"):
+        style["layout"] = "featured" if layout == "player" else "grid"
+
+    web_brand, embed_brand = album.get("web_brand_color"), album.get("embed_brand_color")
+    if (web_brand is True or embed_brand is True) and not (web_brand is False or embed_brand is False):
+        color = album.get("brand_color")
+        if isinstance(color, str) and (match := re.fullmatch(r"#?([0-9a-fA-F]{6})", color.strip())):
+            style["accent"] = "#" + match.group(1).lower()
+
+    for source, target in (
+        ("autoplay", "next_video"),
+        ("loop", "loop"),
+        ("allow_share", "copy_link"),
+        ("allow_downloads", "download"),
+    ):
+        value = album.get(source)
+        if type(value) is bool:
+            style[target] = value
+    if type(hide_nav := album.get("hide_nav")) is bool:
+        style["navigation"] = not hide_nav
+
+    for key, limit in (("seo_title", 140), ("seo_description", 200), ("seo_keywords", 500)):
+        value = album.get(key)
+        if isinstance(value, str) and value.strip():
+            style[key] = value.strip()[:limit]
+    return style
+
+
 def showcase_inventory(institution, source, account, video_ids):
     path = account + "/albums"
     try:
@@ -1092,14 +1127,18 @@ def showcase_inventory(institution, source, account, video_ids):
         visibility = item.get("privacy", "")
         if isinstance(visibility, dict):
             visibility = visibility.get("view", "")
-        if visibility not in ("anybody", "public", "nobody", "private", "password", "embed_only"):
+        if visibility not in ("anybody", "public", "nobody", "private", "password", "embed_only", "team", "unlisted"):
             visibility = "unknown"
+        web_brand, embed_brand = item.get("web_brand_color"), item.get("embed_brand_color")
+        if type(web_brand) is bool and type(embed_brand) is bool and web_brand != embed_brand:
+            issues.append("The Vimeo web and embed accent preferences differ. Choose the accent in CuePorch.")
         title, description = item.get("name"), item.get("description")
         result.append(dict(id=work_id(institution, "vimeo-showcase", canonical),
                            uri=canonical, source_id=identifier, source_url=f"https://vimeo.com/showcase/{identifier}",
                            title=(title.strip()[:128] if isinstance(title, str) else "") or "Untitled showcase",
                            description=description.strip()[:5000] if isinstance(description, str) else "",
-                           source_visibility=visibility, members=list(dict.fromkeys(recovered)),
+                           source_visibility=visibility, source_style=showcase_style(item),
+                           members=list(dict.fromkeys(recovered)),
                            missing=list(dict.fromkeys(missing)), issues=issues))
     return result, None
 
