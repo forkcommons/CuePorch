@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ settings.title }} · CuePorch</title>
+  {% if settings.description %}<meta name="description" content="{{ settings.description }}">{% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
+</head>
+<body class="showcase-page" data-theme="light">
+  <main>
+    <header class="showcase-header">
+      {% if preview %}<p class="showcase-note">Private operator preview</p>{% endif %}
+      <h1>{{ settings.title }}</h1>
+      {% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
+    </header>
+
+    <section aria-labelledby="upcoming-heading">
+      <h2 id="upcoming-heading">Upcoming events</h2>
+      {% if upcoming %}
+      <ul>
+        {% for item in upcoming %}
+        <li>
+          <div>{{ item.title }}</div>
+          {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
+          {% if item.href %}
+          <a href="{{ item.href }}">View {{ item.title }}</a>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>No upcoming events scheduled.</p>
+      {% endif %}
+    </section>
+
+    <section aria-labelledby="ondemand-heading">
+      <h2 id="ondemand-heading">On demand</h2>
+      {% if recordings %}
+      <ul>
+        {% for item in recordings %}
+        <li>
+          <div>{{ item.title }}</div>
+          {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
+          {% if item.href %}
+          <a href="{{ item.href }}">Watch {{ item.title }}</a>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p>No recordings available yet.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

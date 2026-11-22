@@ -48,6 +48,7 @@ import audience_accounts
 import audience_comments
 import content_rating
 import event_api
+import event_series_pages
 import event_registrants
 import event_simulcast
 import facebook_live
@@ -229,6 +230,7 @@ def create_app(root, database, operator, institution, simulation=None):
             + library_salesforce_video_engagement.SCHEMA
             + registration_return.SCHEMA
             + library_events.SCHEMA
+            + event_series_pages.SCHEMA
             + library_hubspot_bridge.SCHEMA
             + library_hubspot_folders.SCHEMA
             + library_hubspot_media_events.SCHEMA
@@ -1654,6 +1656,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             facebook_profile_live_connection=facebook_profile_live_connection,
                             linkedin_live_connection=linkedin_live_connection,
                             linkedin_member_live_connection=linkedin_member_live_connection)
+    event_series_pages.register(app, tx, staff, action, operator, enforce_sharing)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 
