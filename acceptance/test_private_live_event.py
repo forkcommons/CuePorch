@@ -186,6 +186,52 @@ class PrivateLiveEventTest(unittest.TestCase):
             self.assertIn("noindex", authenticated.headers["x-robots-tag"])
             self.assertIn("no-store", authenticated.headers["cache-control"])
             self.assertEqual(team.request.get(base + "/events/missing-publication").status, 404)
+            landing = f"/api/live-events/{event}/landing"
+            landing_payload = {
+                "revision": None,
+                "settings": {
+                    "enabled": True,
+                    "theme": "dark",
+                    "layout": "split",
+                    "accent": "#3266aa",
+                    "show_logo": True,
+                    "show_poster": True,
+                },
+            }
+            enabled = self.client.put(landing, headers=self.auth, json=landing_payload)
+            self.assertEqual(enabled.status_code, 200, enabled.get_data(as_text=True))
+            self.assertEqual(self.client.get(landing).status_code, 403)
+            stale = self.client.put(landing, headers=self.auth, json=landing_payload)
+            self.assertEqual(stale.status_code, 409, stale.get_data(as_text=True))
+            from PIL import Image
+
+            poster = BytesIO()
+            Image.new("RGB", (160, 90), "#3266aa").save(poster, "PNG")
+            poster.seek(0)
+            uploaded = self.client.post(
+                "/api/review-logos", headers=self.auth, data={"logo": (poster, "poster.png")},
+            )
+            self.assertEqual(uploaded.status_code, 201, uploaded.get_data(as_text=True))
+            digest = uploaded.get_json()["logo"]
+            artwork = self.client.put(
+                f"/api/live-events/{event}/player", headers=self.auth, json={"poster": digest, "logo": digest},
+            )
+            self.assertEqual(artwork.status_code, 200, artwork.get_data(as_text=True))
+
+            operator = browser.new_page()
+            operator_token = self.auth["Authorization"].removeprefix("Bearer ")
+            operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator_token)})")
+            operator.goto(base + "/operator/live-events")
+            production = operator.get_by_role("row").filter(
+                has=operator.get_by_role("cell", name="ready", exact=True)
+            )
+            production.get_by_role("button", name="Open production for Private rehearsal").click()
+            panel = operator.locator("#eventLanding")
+            panel.get_by_text("Event landing page", exact=True).click()
+            expect(panel.get_by_role("combobox", name="Theme", exact=True)).to_have_value("dark")
+            panel.get_by_role("combobox", name="Layout", exact=True).select_option("stacked")
+            panel.get_by_role("button", name="Save landing page", exact=True).click()
+            expect(panel.locator("#eventLandingStatus")).to_have_text("Saved")
             self.assertEqual(created["watch"], WATCH)
             self.assertEqual(created["embed"], WATCH + "/embed")
             self.make_media()
@@ -202,6 +248,13 @@ class PrivateLiveEventTest(unittest.TestCase):
                 page = team.new_page()
                 playlist, width, _ = play_event(page, stable, "Live")
                 self.assertEqual(width, 320)
+                expect(page.locator("body")).to_have_attribute("data-landing-theme", "dark")
+                expect(page.locator("body")).to_have_attribute("data-landing-layout", "stacked")
+                hero_poster = page.locator(".event-landing-poster img")
+                expect(hero_poster).to_be_visible()
+                self.assertEqual(hero_poster.evaluate("async i => { await i.decode(); return i.naturalWidth }"), 160)
+                self.assertEqual(anon.request.get(base + hero_poster.get_attribute("src")).status, 404)
+                expect(page.locator(".event-landing-logo")).to_be_visible()
                 expect(page.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
                 segment = playlist.rsplit("/", 1)[0] + "/0-0.ts"
                 self.assertEqual(team.request.get(segment).status, 200)
@@ -213,6 +266,7 @@ class PrivateLiveEventTest(unittest.TestCase):
                 page.goto(base + "/embed-fixture")
                 frame = page.frame_locator("iframe")
                 expect(frame.locator("#eventStatus")).to_have_text("Live")
+                expect(frame.locator(".event-custom-landing")).to_have_count(0)
                 frame.locator("video").evaluate("""video => {
                     if (video.readyState >= 2) return;
                     return new Promise(resolve => video.addEventListener("loadeddata", resolve, {once: true}));
@@ -223,6 +277,8 @@ class PrivateLiveEventTest(unittest.TestCase):
                 metadata["isLive"] = False
                 replay, width, _ = play_event(page, stable, "Replay")
                 self.assertEqual(width, 320)
+                expect(page.locator("body")).to_have_attribute("data-landing-theme", "dark")
+                expect(page.locator("body")).to_have_attribute("data-landing-layout", "stacked")
                 self.assertEqual(anon.request.get(replay).status, 404)
                 logout = team.request.delete(base + "/api/team/session", headers=TEAM, data={})
                 self.assertEqual(logout.status, 204)

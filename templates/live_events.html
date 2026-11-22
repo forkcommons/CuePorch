@@ -129,6 +129,44 @@
       <p id="productionPreference"></p>
       <button type="button" id="editEvent">Edit event</button>
       <button type="button" id="configureEventRegistration">Registration</button>
+      <details id="eventLanding">
+        <summary>Event landing page</summary>
+        <form id="eventLandingForm">
+          <label>
+            <input type="checkbox" name="enabled">
+            Enable branded event page
+          </label>
+          <label>
+            Accent color
+            <input type="color" name="accent" value="#2b7e7d">
+          </label>
+          <label>
+            Theme
+            <select name="theme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label>
+            Layout
+            <select name="layout">
+              <option value="stacked">Stacked</option>
+              <option value="split">Split</option>
+            </select>
+          </label>
+          <label>
+            <input type="checkbox" name="show_logo" checked>
+            Show logo
+          </label>
+          <label>
+            <input type="checkbox" name="show_poster">
+            Show poster
+          </label>
+          <small>Use Event player to choose the logo and poster.</small>
+          <p id="eventLandingStatus" role="status"></p>
+          <button type="submit" id="saveEventLanding" disabled>Save landing page</button>
+        </form>
+      </details>
       <a id="eventStudio">Open browser studio</a>
       <a id="eventRecordOnly">Recording only</a>
       <label><input type="checkbox" id="privateEncoderPreview"> Preview external encoder privately</label>

@@ -6,7 +6,9 @@
   <title>{{ event.title }} · CuePorch</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
-<body class="live-event-page">
+{% set landing_has_poster = landing and landing.show_poster and landing_poster %}
+<body class="live-event-page{% if landing %} event-custom-landing{% endif %}"
+      {% if landing %}data-landing-theme="{{ landing.theme }}" data-landing-layout="{{ landing.layout }}" data-landing-poster="{{ 'yes' if landing_has_poster else 'no' }}" style="--landing-accent: {{ landing.accent }};"{% endif %}>
   <main id="eventLobby" data-viewer-grant="{{ viewer_grant or '' }}" data-protected="{{ 'yes' if protected else 'no' }}"
         data-analytics-context="{{ event_context or '' }}"
         data-frame-grant="{{ unlock_token or '' }}"
@@ -16,13 +18,22 @@
         data-playing="{{ occurrence.id if occurrence else '' }}" data-preview-replay="{{ 'yes' if preview_replay else 'no' }}"
         data-timezone="{{ event.schedule.timezone }}">
     <header id="eventHeader">
-      <h1>{{ event.title }}</h1>
-      {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
-      {% include 'content_warnings.html' %}
-      <p id="eventOccurrenceTime" {% if not occurrence %}hidden{% endif %}><time {% if occurrence %}datetime="{{ occurrence.start }}"{% endif %}>
-        {% if occurrence %}{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }}){% endif %}
-      </time></p>
-      <p role="status" id="eventStatus">{{ status }}</p>
+      {% if landing %}<div class="event-landing-header">{% endif %}
+        {% if landing_has_poster %}
+        <figure class="event-landing-poster"><img src="{{ landing_poster }}" alt="" /></figure>
+        {% endif %}
+        {% if landing %}<div class="event-landing-copy">{% endif %}
+          {% if landing and landing.show_logo and landing_logo %}
+          <img class="event-landing-logo" src="{{ landing_logo }}" alt="Event logo" />
+          {% endif %}
+          <h1>{{ event.title }}</h1>
+          {% if event.description %}<p class="event-description">{{ event.description }}</p>{% endif %}
+          {% include 'content_warnings.html' %}
+          <p id="eventOccurrenceTime" {% if not occurrence %}hidden{% endif %}><time {% if occurrence %}datetime="{{ occurrence.start }}"{% endif %}>
+            {% if occurrence %}{{ occurrence.local | replace('T',' ') }} ({{ event.schedule.timezone }}){% endif %}
+          </time></p>
+          <p role="status" id="eventStatus">{{ status }}</p>
+        {% if landing %}</div></div>{% endif %}
     </header>
     {% if registration %}
       {% include 'viewer_registration.html' %}

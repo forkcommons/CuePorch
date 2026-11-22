@@ -5,6 +5,7 @@ import { relaySummary } from "./event_health.js";
 import { waitingPlayer } from "./event_waiting.js";
 import { playerColors, playerSwitches } from "./event_controls.js";
 import { setupLiveApi } from "./live_api.js";
+import { setupEventLandingEditor } from "./event_landing_editor.js";
 import { setupEventMail } from "./event_mail.js";
 import { setupAttendeeCsv } from "./attendee_csv.js";
 import { setupEventRoster } from "./event_roster.js";
@@ -210,6 +211,7 @@ async function request(path, method = "GET", body, integration = false) {
     return result.status === 204 ? undefined : result.json();
 }
 setupLiveApi(request);
+const chooseLandingEvent = setupEventLandingEditor(request);
 const chooseEmailEvent = setupEventMail(request);
 const chooseCsvOccurrence = setupAttendeeCsv(request);
 const chooseRosterOccurrence = setupEventRoster(request, downloadEventFile);
@@ -319,6 +321,7 @@ function choose(event, instance) {
         registrationEvent = undefined;
     }
     active = { event, instance };
+    chooseLandingEvent(event.id);
     chooseEmailEvent(event.id);
     chooseCsvOccurrence(event.id, instance.id);
     chooseRosterOccurrence(event.id, instance.id);
