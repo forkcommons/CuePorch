@@ -38,6 +38,9 @@ const chosen = new Set();
 let catalog = [];
 const eventIds = new Set();
 let overview = [];
+let activeComparison;
+let comparisonRequest = 0;
+let compared = [];
 let requestNumber = 0;
 key.value = sessionStorage.getItem("cueporchOperator") || "";
 const folderPicker = setupAnalyticsFolders(panel, videoOptions, (ids) => {
@@ -142,23 +145,297 @@ breakdownOptions();
 for (const name of parts)
     metric.add(new Option(metricNames[name], name));
 metric.value = "views";
-function renderTrend() {
-    const name = metric.value;
-    const maximum = overview.reduce((max, row) => Math.max(max, row[name] ?? 0), 1);
-    const table = document.querySelector("#reportTrend");
-    table.replaceChildren();
-    for (const bucket of overview) {
-        const row = table.insertRow();
-        row.insertCell().textContent = bucket.period;
-        const cell = row.insertCell();
-        const bar = document.createElement("meter");
-        bar.max = maximum;
-        bar.value = bucket[name] ?? 0;
-        bar.setAttribute("aria-hidden", "true");
-        cell.append(bar, " ", formatted(name, bucket[name]));
+function compareCheckbox(entry) {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.setAttribute("aria-label", `Compare ${entry.category}${entry.breakdown ? ` ${entry.breakdown}` : ""}`);
+    const key = JSON.stringify(entry.key);
+    const active = activeComparison;
+    if (!active)
+        return checkbox;
+    checkbox.checked = active.selected.has(key);
+    checkbox.addEventListener("change", () => {
+        const current = activeComparison;
+        if (!current)
+            return;
+        if (checkbox.checked) {
+            if (current.selected.size >= 10) {
+                checkbox.checked = false;
+                message.textContent = "You can compare up to 10 entries.";
+                return;
+            }
+            current.selected.set(key, entry);
+        }
+        else {
+            current.selected.delete(key);
+        }
+        void refreshComparison();
+    });
+    return checkbox;
+}
+async function refreshComparison() {
+    const requestId = ++comparisonRequest;
+    const active = activeComparison;
+    compared = [];
+    renderTrend();
+    if (!active)
+        return;
+    const keys = [...active.selected.values()].map(entry => entry.key);
+    if (!keys.length)
+        return;
+    message.textContent = "";
+    try {
+        const response = await call(`${active.kind}-report`, {
+            ...active.options,
+            compare: keys,
+        });
+        const payload = await response.json();
+        if (requestId !== comparisonRequest ||
+            activeComparison !== active) {
+            return;
+        }
+        compared = payload.comparison ?? [];
+        renderTrend();
+    }
+    catch (error) {
+        if (requestId !== comparisonRequest ||
+            activeComparison !== active) {
+            return;
+        }
+        showError(error);
     }
 }
+function drawReportTrend(canvas, periods, series, maximum, formatValue) {
+    const chart = canvas.getContext("2d");
+    if (!chart)
+        return;
+    const margin = 52;
+    const top = 18;
+    const width = canvas.width - margin - 25;
+    const max = Number.isFinite(maximum) && maximum > 0 ? maximum : 1;
+    const styles = [
+        { color: "#166273", dash: [] },
+        { color: "#c05621", dash: [] },
+        { color: "#2f855a", dash: [] },
+        { color: "#6b46c1", dash: [] },
+        { color: "#b83280", dash: [] },
+        { color: "#2c5282", dash: [] },
+        { color: "#975a16", dash: [] },
+        { color: "#4a5568", dash: [] },
+        { color: "#166273", dash: [6, 4] },
+        { color: "#c05621", dash: [6, 4] },
+        { color: "#2f855a", dash: [6, 4] },
+    ];
+    const columns = series.length > 6 ? 3 : 2;
+    const legendRows = Math.ceil(series.length / columns);
+    const legendItemHeight = 16;
+    const legendHeight = legendRows * legendItemHeight;
+    const legendBottom = canvas.height - 4;
+    const legendTop = legendBottom - legendHeight;
+    const dateY = legendTop - 6;
+    const bottom = Math.max(top + 20, dateY - 20);
+    chart.clearRect(0, 0, canvas.width, canvas.height);
+    chart.fillStyle = "#ffffff";
+    chart.fillRect(0, 0, canvas.width, canvas.height);
+    const toUtc = (s) => s.length === 10 ? Date.parse(s + "T00:00:00Z") : Date.parse(s);
+    const points = periods
+        .map((key) => ({ key, t: toUtc(key) }))
+        .filter((p) => Number.isFinite(p.t));
+    if (points.length === 0)
+        return;
+    points.sort((a, b) => a.t - b.t);
+    const minT = points[0].t;
+    const maxT = points[points.length - 1].t;
+    const span = maxT - minT;
+    const xFor = (t) => span === 0 ? margin + width / 2 : margin + (width * (t - minT)) / span;
+    const yFor = (value) => {
+        const clamped = Math.max(0, Math.min(max, value));
+        return bottom - ((bottom - top) * clamped) / max;
+    };
+    const fitText = (text, maxWidth) => {
+        if (chart.measureText(text).width <= maxWidth)
+            return text;
+        let lo = 0;
+        let hi = text.length;
+        while (lo < hi) {
+            const mid = Math.ceil((lo + hi) / 2);
+            const t = text.slice(0, mid) + "…";
+            if (chart.measureText(t).width <= maxWidth)
+                lo = mid;
+            else
+                hi = mid - 1;
+        }
+        return text.slice(0, lo) + "…";
+    };
+    chart.strokeStyle = "#a5b6bb";
+    chart.lineWidth = 1;
+    chart.fillStyle = "#152e33";
+    chart.font = "13px sans-serif";
+    chart.beginPath();
+    chart.moveTo(margin, bottom);
+    chart.lineTo(margin + width, bottom);
+    chart.moveTo(margin, top);
+    chart.lineTo(margin + width, top);
+    chart.stroke();
+    chart.textAlign = "right";
+    chart.fillText(fitText(formatValue(0), margin - 10), margin - 8, bottom + 3);
+    chart.fillText(fitText(formatValue(max), margin - 10), margin - 8, top + 5);
+    chart.strokeStyle = "#e2e8f0";
+    chart.beginPath();
+    chart.moveTo(xFor(minT), top);
+    chart.lineTo(xFor(minT), bottom);
+    if (span !== 0) {
+        chart.moveTo(xFor(maxT), top);
+        chart.lineTo(xFor(maxT), bottom);
+    }
+    chart.stroke();
+    series.forEach((s, index) => {
+        const style = styles[index % styles.length];
+        chart.strokeStyle = style.color;
+        chart.setLineDash(style.dash);
+        chart.lineWidth = 2.5;
+        chart.beginPath();
+        let started = false;
+        for (const p of points) {
+            const value = s.values.get(p.key);
+            if (value === null || value === undefined || !Number.isFinite(value)) {
+                started = false;
+                continue;
+            }
+            const x = xFor(p.t);
+            const y = yFor(value);
+            if (started)
+                chart.lineTo(x, y);
+            else
+                chart.moveTo(x, y);
+            started = true;
+        }
+        chart.stroke();
+        chart.setLineDash([]);
+        chart.fillStyle = style.color;
+        for (const p of points) {
+            const value = s.values.get(p.key);
+            if (value === null || value === undefined || !Number.isFinite(value))
+                continue;
+            const x = xFor(p.t);
+            const y = yFor(value);
+            chart.beginPath();
+            chart.arc(x, y, 3, 0, Math.PI * 2);
+            chart.fill();
+        }
+    });
+    const formatDate = (t) => new Date(t).toISOString().slice(0, 10);
+    chart.fillStyle = "#152e33";
+    chart.font = "12px sans-serif";
+    chart.textAlign = "center";
+    const minLabel = formatDate(minT);
+    const maxLabel = formatDate(maxT);
+    const minW = chart.measureText(minLabel).width;
+    const maxW = chart.measureText(maxLabel).width;
+    const minX = xFor(minT);
+    const maxX = xFor(maxT);
+    const minLabelX = Math.max(minW / 2 + 2, Math.min(canvas.width - minW / 2 - 2, minX));
+    const maxLabelX = Math.max(maxW / 2 + 2, Math.min(canvas.width - maxW / 2 - 2, maxX));
+    chart.fillText(minLabel, minLabelX, dateY);
+    if (span !== 0) {
+        chart.fillText(maxLabel, maxLabelX, dateY);
+    }
+    if (series.length > 0) {
+        const legendX = margin;
+        const legendWidth = width;
+        const columnWidth = legendWidth / columns;
+        chart.font = "12px sans-serif";
+        chart.textAlign = "left";
+        chart.textBaseline = "middle";
+        for (let i = 0; i < series.length; i++) {
+            const col = i % columns;
+            const row = Math.floor(i / columns);
+            const x = legendX + col * columnWidth;
+            const y = legendTop + row * legendItemHeight + legendItemHeight / 2;
+            const style = styles[i % styles.length];
+            chart.strokeStyle = style.color;
+            chart.setLineDash(style.dash);
+            chart.lineWidth = 2.5;
+            chart.beginPath();
+            chart.moveTo(x, y);
+            chart.lineTo(x + 16, y);
+            chart.stroke();
+            chart.setLineDash([]);
+            const maxLabelWidth = columnWidth - 24;
+            const label = fitText(series[i].label, maxLabelWidth);
+            chart.fillStyle = "#152e33";
+            chart.fillText(label, x + 22, y);
+        }
+        chart.textBaseline = "alphabetic";
+    }
+}
+function renderTrend() {
+    const name = metric.value;
+    const series = [];
+    if (document.querySelector("#trendTotal").checked) {
+        series.push({
+            label: "Total",
+            values: new Map(overview.map((bucket) => [bucket.period, bucket[name]])),
+        });
+    }
+    for (const item of compared) {
+        const entry = activeComparison?.selected.get(JSON.stringify(item.key));
+        if (!entry)
+            continue;
+        const label = entry.breakdown
+            ? `${entry.category} ${entry.breakdown}`
+            : entry.category;
+        series.push({ label, values: new Map(item.overview.map(bucket => [bucket.period, bucket[name]])) });
+    }
+    const periodSet = new Set();
+    for (const s of series) {
+        for (const key of s.values.keys())
+            periodSet.add(key);
+    }
+    const periods = [...periodSet].sort();
+    let maximum = 1;
+    for (const s of series) {
+        for (const v of s.values.values()) {
+            if (v !== null && v > maximum)
+                maximum = v;
+        }
+    }
+    const columnsRow = document.querySelector("#trendColumns");
+    columnsRow.replaceChildren();
+    const dateTh = document.createElement("th");
+    dateTh.scope = "col";
+    dateTh.textContent = "UTC date";
+    columnsRow.append(dateTh);
+    for (const s of series) {
+        const th = document.createElement("th");
+        th.scope = "col";
+        th.textContent = s.label;
+        columnsRow.append(th);
+    }
+    const tbody = document.querySelector("#reportTrend");
+    tbody.replaceChildren();
+    for (const period of periods) {
+        const row = tbody.insertRow();
+        row.insertCell().textContent = period;
+        for (const s of series) {
+            const cell = row.insertCell();
+            const v = s.values.get(period) ?? null;
+            if (v !== null) {
+                const bar = document.createElement("meter");
+                bar.max = maximum;
+                bar.value = v;
+                bar.setAttribute("aria-hidden", "true");
+                cell.append(bar, " ", formatted(name, v));
+            }
+            else {
+                cell.textContent = formatted(name, null);
+            }
+        }
+    }
+    drawReportTrend(document.querySelector("#reportChart"), periods, series, maximum, value => formatted(name, value));
+}
 metric.onchange = renderTrend;
+document.querySelector("#trendTotal").onchange = renderTrend;
 function formatted(name, value) {
     if (value === null)
         return "—";
@@ -214,7 +491,8 @@ function renderVideo(report) {
     renderTop(report.top);
     const columns = document.querySelector("#reportColumns");
     columns.replaceChildren();
-    const labels = [dimensionNames[group], ...(breakdown ? [dimensionNames[breakdown]] : []),
+    const labels = [...(activeComparison ? ["Compare"] : []), dimensionNames[group],
+        ...(breakdown ? [dimensionNames[breakdown]] : []),
         ...parts.map(name => metricNames[name])];
     for (const label of labels) {
         const header = document.createElement("th");
@@ -225,6 +503,8 @@ function renderVideo(report) {
     body.replaceChildren();
     for (const entry of report.rows) {
         const row = body.insertRow();
+        if (activeComparison)
+            row.insertCell().append(compareCheckbox(entry));
         videoLink(row.insertCell(), entry.category, group === "video" ? entry.video : null);
         if (breakdown)
             videoLink(row.insertCell(), entry.breakdown, breakdown === "video" ? entry.video : null);
@@ -346,9 +626,12 @@ async function apply() {
     if (!controls.reportValidity())
         return;
     message.textContent = "";
-    const report = await (await call(`${kind}-report`, filters())).json();
+    const submitted = filters();
+    const report = await (await call(`${kind}-report`, submitted)).json();
     if (request !== requestNumber)
         return;
+    compared = [];
+    activeComparison = usesVideoMetrics(kind) && report.filters.group !== "date" ? { kind, options: submitted, selected: new Map() } : undefined;
     if (usesVideoMetrics(kind))
         renderVideo(report);
     else if (kind === "engagement")

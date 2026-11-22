@@ -239,10 +239,55 @@ def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=
             category=catalog.get(category, category) if primary == "video" else category,
             video=category if primary == "video" else value if secondary == "video" else None,
             breakdown=catalog.get(value, value) if secondary == "video" else value,
+            key=[category, value],
             **row_metrics(row, community_rows),
         ))
     result = dict(filters=filters, totals=row_metrics(totals, community), overview=overview, rows=items,
                   community_breakdown=community_rows)
+
+    compare = options.get("compare", [])
+    if compare is None or not isinstance(compare, list):
+        abort(422, "Invalid comparison list")
+    if len(compare) > 10:
+        abort(422, "Too many comparison keys")
+    seen = set()
+    for pair in compare:
+        if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(s, str) and len(s) <= 270 for s in pair)):
+            abort(422, "Invalid comparison key")
+        t = tuple(pair)
+        if t in seen:
+            abort(422, "Duplicate comparison key")
+        seen.add(t)
+    if compare:
+        available = {tuple(item["key"]) for item in items}
+        for t in seen:
+            if t not in available:
+                abort(422, "Comparison key not in current report items")
+        pairs_json = json.dumps(compare)
+        sql = f"""
+            SELECT {period} AS period, {group} AS category, {detail} AS value, {breakdown_counts}
+            {breakdown_scope} AND ({group}, {detail}) IN (
+                SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]')
+                FROM json_each(?)
+            )
+            GROUP BY 1, 2, 3
+            ORDER BY 1
+        """
+        params = breakdown_params + (pairs_json,)
+        cur = con.execute(sql, params)
+        rows = cur.fetchall()
+        comp_data = {t: [] for t in seen}
+        for row in rows:
+            cat = row['category']
+            val = row['value']
+            per = row['period']
+            metrics = row_metrics(row, community_rows)
+            comp_data[(cat, val)].append({'period': per, **metrics})
+        comparison = []
+        for pair in compare:
+            key = tuple(pair)
+            comparison.append({'key': pair, 'overview': comp_data.get(key, [])})
+        result['comparison'] = comparison
     if include_top:
         result["top"] = {}
         for dimension in TOP_DIMENSIONS:

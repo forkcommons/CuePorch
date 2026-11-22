@@ -374,6 +374,88 @@ class AnalyticsPicker(unittest.TestCase):
         self.assertEqual(200, report.status_code)
         self.assertEqual({"live_bytes": 0, "vod_bytes": 80, "total_bytes": 80}, report.get_json()["totals"])
 
+    def test_report_comparison(self):
+        first, second = self.ids[:2]
+        title = "Shared fixture title"
+        self.manifest.write_text(json.dumps({"institution": "station", "schema": 1, "works": [
+            {"id": uid, "title": title} for uid in (first, second)
+        ]}), encoding="utf-8")
+        sessions = [
+            ("cmp-first-jan1", first, 1, "Phone", "US-CO"),
+            ("cmp-first-jan2", first, 2, "Desktop", "US-NY"),
+            ("cmp-second-jan2", second, 2, "Phone", "US-CO"),
+        ]
+        with closing(sqlite3.connect(self.db)) as con, con:
+            con.executemany(
+                "INSERT INTO video_analytics_session VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [(sid, uid, "fixture-cut", "watch", datetime(2026, 1, day, 12, tzinfo=timezone.utc).timestamp(),
+                  1, 1, 0, 1000, "[]") for sid, uid, day, _, _ in sessions],
+            )
+            con.executemany("INSERT INTO video_analytics_context VALUES(?,?,?)", [
+                (sid, "https://arts.example" if device == "Phone" else "https://station.example", device)
+                for sid, _, _, device, _ in sessions
+            ])
+            con.executemany("INSERT INTO video_analytics_region VALUES(?,?)",
+                            [(sid, region) for sid, _, _, _, region in sessions])
+
+        dates = {"from": "2026-01-01", "to": "2026-01-02"}
+        for kind, key, expected in (
+            ("video", [first, ""], [("2026-01-01", 1), ("2026-01-02", 1)]),
+            ("video", [second, ""], [("2026-01-02", 1)]),
+            ("device", ["Phone", ""], [("2026-01-01", 1), ("2026-01-02", 1)]),
+            ("region", ["US-NY", ""], [("2026-01-02", 1)]),
+            ("source", ["https://arts.example", ""], [("2026-01-01", 1), ("2026-01-02", 1)]),
+        ):
+            with self.subTest(kind=kind, key=key):
+                response = self.client.post(f"/api/analytics/{kind}-report", json=dates | {"compare": [key]},
+                                            headers=self.auth)
+                self.assertEqual(200, response.status_code, response.get_data(as_text=True))
+                data = response.get_json()
+                self.assertEqual(3, data["totals"]["views"])
+                self.assertEqual(key, data["comparison"][0]["key"])
+                self.assertEqual(expected, [(row["period"], row["views"]) for row in data["comparison"][0]["overview"]])
+        path = "/api/analytics/video-report"
+        self.assertEqual(403, self.client.post(path, json=dates | {"compare": [[first, ""]]}).status_code)
+        for invalid in (None, [[first, ""]] * 2, [[first, ""]] * 11, [[self.ids[2], ""]]):
+            self.assertEqual(422, self.client.post(path, json=dates | {"compare": invalid},
+                                                   headers=self.auth).status_code)
+        filtered = self.client.post(path, headers=self.auth,
+                                    json=dates | {"videos": [first], "compare": [[second, ""]]})
+        self.assertEqual(422, filtered.status_code)
+        paired = self.client.post(path, headers=self.auth, json=dates | {
+            "breakdown": "device", "compare": [[first, "Desktop"], [first, "Phone"]],
+        }).get_json()
+        self.assertEqual([["2026-01-02"], ["2026-01-01"]], [
+            [bucket["period"] for bucket in item["overview"]] for item in paired["comparison"]
+        ])
+
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        self.enterContext(service_worker(server))
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"http://127.0.0.1:{server.server_port}/operator/analytics")
+            page.fill("[name=from]", dates["from"])
+            page.fill("[name=to]", dates["to"])
+            page.get_by_role("button", name="Apply filters", exact=True).click()
+            rows = page.locator("#reportRows input[type=checkbox]")
+            rows.nth(0).check()
+            rows.nth(1).check()
+
+            expect(page.locator("#trendColumns th")).to_have_text(["UTC date", "Total", title, title])
+            expect(page.locator("#reportTrend tr").nth(0).locator("td")).to_have_text(["2026-01-01", "1", "1", "—"])
+            expect(page.locator("#reportTrend tr").nth(1).locator("td")).to_have_text(["2026-01-02", "2", "1", "1"])
+
+            page.locator("#trendTotal").uncheck()
+            expect(page.locator("#trendColumns th")).to_have_text(["UTC date", title, title])
+
+            rows.nth(0).uncheck()
+            rows.nth(1).uncheck()
+            expect(page.locator("#reportTrend tr")).to_have_count(0)
+
+            page.locator("#trendTotal").check()
+            expect(page.locator("#reportTrend tr")).to_have_count(2)
+
     def test_operator_analytics_report_folder_limit(self):
         server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
         self.enterContext(service_worker(server))
