@@ -1,4 +1,5 @@
 import { checked, sessionMarker } from "./team_api.js";
+import { setupSeriesPresentation } from "./event_series_presentation.js";
 const byId = (id) => document.getElementById(id);
 const identify = byId("seriesIdentify");
 const workspace = byId("seriesWorkspace");
@@ -10,6 +11,16 @@ const editorHeading = byId("seriesEditHeading");
 const previewLink = byId("seriesPreviewLink");
 const watchLink = byId("seriesWatchLink");
 let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
+const presentation = setupSeriesPresentation(document.querySelector("#seriesPresentation"), async (file) => {
+    const data = new FormData();
+    data.set("logo", file);
+    const response = await checked(await fetch("/api/review-logos", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + credential },
+        body: data,
+    }));
+    return (await response.json()).logo;
+});
 async function api(path, method = "GET", body) {
     const headers = {};
     if (credential)
@@ -37,6 +48,7 @@ function renderEditor(entry) {
     form.hidden = !entry;
     if (!entry)
         return;
+    presentation.populate(entry.settings.presentation);
     editorHeading.textContent = entry.settings.title;
     field("title").value = entry.settings.title;
     field("description").value =
@@ -99,7 +111,7 @@ const seriesDelete = document.querySelector("#seriesDelete");
 const seriesPreview = document.querySelector("#seriesPreview");
 const setBusy = (v) => {
     busy = v;
-    form.querySelectorAll("button,input,select,textarea").forEach(el => (el.disabled = v));
+    form.inert = v;
     seriesNew.disabled = v;
     list.inert = identify.inert = v;
 };
@@ -153,6 +165,7 @@ form.addEventListener("submit", e => {
                 description: field("description").value.trim(),
                 visibility: field("visibility").value,
                 events: Array.from(eventChoices.querySelectorAll('input[type="checkbox"]:checked')).map(el => el.value),
+                presentation: await presentation.payload(),
             },
         };
         current = await api(`/${target.id}`, "PUT", {

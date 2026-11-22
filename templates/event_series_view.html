@@ -1,3 +1,21 @@
+{% macro list_entries(title, id, items, prefix, empty) %}
+<section aria-labelledby="{{ id }}">
+  <h2 id="{{ id }}">{{ title }}</h2>
+  {% if items %}
+  <ul>
+    {% for item in items %}
+    <li>
+      <div>{{ item.title }}</div>
+      {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
+      {% if item.href %}<a href="{{ item.href }}">{{ prefix }} {{ item.title }}</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>{{ empty }}</p>
+  {% endif %}
+</section>
+{% endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -7,51 +25,33 @@
   {% if settings.description %}<meta name="description" content="{{ settings.description }}">{% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
-<body class="showcase-page" data-theme="light">
-  <main>
-    <header class="showcase-header">
-      {% if preview %}<p class="showcase-note">Private operator preview</p>{% endif %}
-      <h1>{{ settings.title }}</h1>
-      {% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
-    </header>
-
-    <section aria-labelledby="upcoming-heading">
-      <h2 id="upcoming-heading">Upcoming events</h2>
-      {% if upcoming %}
-      <ul>
-        {% for item in upcoming %}
-        <li>
-          <div>{{ item.title }}</div>
-          {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
-          {% if item.href %}
-          <a href="{{ item.href }}">View {{ item.title }}</a>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p>No upcoming events scheduled.</p>
-      {% endif %}
-    </section>
-
-    <section aria-labelledby="ondemand-heading">
-      <h2 id="ondemand-heading">On demand</h2>
-      {% if recordings %}
-      <ul>
-        {% for item in recordings %}
-        <li>
-          <div>{{ item.title }}</div>
-          {% if item.label %}<div><time>{{ item.label }}</time></div>{% endif %}
-          {% if item.href %}
-          <a href="{{ item.href }}">Watch {{ item.title }}</a>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p>No recordings available yet.</p>
-      {% endif %}
-    </section>
-  </main>
+<body class="showcase-page event-series-page" data-theme="{{ 'dark' if presentation.dark else 'light' }}" style="--showcase-accent:{{ presentation.accent }}">
+{% if presentation.logo_src %}<header><img class="event-series-logo" src="{{ presentation.logo_src }}" alt="{{ settings.title }}"></header>{% endif %}
+<main>
+  {% if preview %}<p class="showcase-note">Private operator preview</p>{% endif %}
+{% set blocks = presentation.blocks %}
+{% if "hero" not in blocks %}<h1>{{ settings.title }}</h1>{% endif %}
+{% for block in blocks %}
+{% if block == "hero" %}
+<header class="showcase-header">
+{% if presentation.hero_src %}<img class="event-series-hero" src="{{ presentation.hero_src }}" alt="">{% endif %}
+<h1>{{ settings.title }}</h1>
+{% if settings.description %}<p>{{ settings.description }}</p>{% endif %}
+{% if presentation.date_label %}<p class="date">{{ presentation.date_label }}</p>{% endif %}
+{% if presentation.timezone_label %}<p class="timezone">{{ presentation.timezone_label }}</p>{% endif %}
+</header>
+{% elif block == "navigation" %}
+{% if presentation.navigation %}<nav class="event-series-nav" aria-label="Event series">{% for link in presentation.navigation %}<a href="{{ link.href }}">{{ link.label }}</a>{% endfor %}</nav>{% endif %}
+{% elif block == "upcoming" %}
+{{ list_entries("Upcoming events", "upcoming-heading", upcoming, "View", "No upcoming events.") }}
+{% elif block == "on_demand" %}
+{{ list_entries("On demand", "ondemand-heading", recordings, "Watch", "No recordings yet.") }}
+{% elif block == "agenda" %}
+{{ list_entries("Agenda", "agenda-heading", upcoming, "View", "No agenda items.") }}
+{% elif block == "faq" %}
+{% if presentation.faq %}<section aria-labelledby="series-faq-heading"><h2 id="series-faq-heading">FAQ</h2>{% for item in presentation.faq %}<details><summary>{{ item.question }}</summary><div>{{ item.answer }}</div></details>{% endfor %}</section>{% endif %}
+{% endif %}
+{% endfor %}
+</main>
 </body>
 </html>

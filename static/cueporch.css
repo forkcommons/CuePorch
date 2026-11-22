@@ -469,6 +469,8 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 }
 .showcase-header h1 { margin: .15em 0; }
 .showcase-header img { max-width: 9rem; max-height: 4rem; object-fit: contain; object-position: left; }
+.event-series-page img.event-series-logo { max-width: 9rem; max-height: 4rem; height: auto; object-fit: contain }
+.event-series-page img.event-series-hero { width: 100%; max-width: 100%; height: auto; max-height: none; max-block-size: min(26rem,60vh); object-fit: cover }
 .showcase-header p, .showcase-feature p { white-space: pre-wrap; max-width: 65ch; }
 .showcase-note { font-weight: 700; font-size: .9rem; }
 .showcase-access { max-width: 30rem; }

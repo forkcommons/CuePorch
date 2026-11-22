@@ -406,7 +406,9 @@ Under **TV apps**, enable the Roku catalog and enter the channel provider, langu
 
 ### Event series
 
-From **Live events**, select **Event series** and create a private draft. Enter the title, description, and link name. Select events to include, choose **Save Event Series**, then open **Preview**.
+From **Live events**, select **Event series** and create a private draft. Enter the title, description, and link name, then select the events to include.
+
+Under **Presentation**, choose a theme and accent color, upload a logo or hero image, and add the date and time zone text you want viewers to see. Enable and reorder the blocks you need. Add navigation links and FAQ entries in their lists. Choose **Save Event Series**, then **Preview** and **Open preview** to review the page.
 
 To publish, choose **Public** and save. The existing optional **Publication** approval applies. **Upcoming events** shows the public schedule, and **On demand** lists released recordings from the selected public events. Viewers open the original event page, where the event’s registration and access rules still apply.
 

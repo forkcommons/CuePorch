@@ -9,6 +9,7 @@ from flask import abort, make_response, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 import event_schedule
+import event_series_presentation
 import library_events
 from library_interactivity import text_field
 
@@ -28,6 +29,7 @@ DEFAULTS = dict(
     description="",
     visibility="private",
     events=[],
+    presentation=event_series_presentation.DEFAULTS,
 )
 
 VISIBILITIES = ("private", "public")
@@ -50,7 +52,7 @@ def series_status(con, row, settings):
     return status["status"] if status else "private"
 
 
-def validate(con, body):
+def validate(con, body, prior_presentation=None):
     if not isinstance(body, dict) or set(body) - set(DEFAULTS):
         abort(422, "Invalid event series settings.")
     title = text_field(body.get("title", DEFAULTS["title"]), "a title", 128, required=True)
@@ -69,7 +71,16 @@ def validate(con, body):
         ).fetchall()}
         if known != set(events):
             abort(422, "Select known events.")
-    return dict(title=title, description=description, visibility=visibility, events=events)
+    presentation = event_series_presentation.validate(
+        con, body.get("presentation", prior_presentation)
+    )
+    return dict(
+        title=title,
+        description=description,
+        visibility=visibility,
+        events=events,
+        presentation=presentation,
+    )
 
 
 def choice_list(con):
@@ -82,7 +93,7 @@ def choice_list(con):
 
 
 def summary(con, row):
-    settings = json.loads(row["settings"])
+    settings = DEFAULTS | json.loads(row["settings"])
     status = series_status(con, row, settings)
     return dict(
         id=row["id"],
@@ -198,8 +209,8 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
                 library_events.supersede_publication(con, row["publication"])
                 con.execute("DELETE FROM live_series_page WHERE id=?", (row["id"],))
                 return ("", 204)
-            values = validate(con, body.get("settings"))
-            prior = json.loads(row["settings"] or "{}")
+            prior = DEFAULTS | json.loads(row["settings"])
+            values = validate(con, body.get("settings"), prior["presentation"])
             enforce_sharing(
                 con,
                 settings=dict(visibility=values["visibility"], embed="disabled", domains=[]),
@@ -258,6 +269,9 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
                 abort(404)
 
             payload = page_events(con, settings, preview=internal)
+            payload["presentation"] = event_series_presentation.render(
+                con, settings["presentation"]
+            )
 
         resp = make_response(
             render_template(

@@ -285,6 +285,78 @@ class VimeoFolderMigration(unittest.TestCase):
             viewer.goto(self.base + "/event-series/test-series")
             expect(viewer.get_by_role("link", name="Watch Migrated replay")).to_have_count(0)
 
+    def test_event_series_builder_publication_flow(self):
+        import base64
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(
+                f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/event-series")
+            page.click("#seriesNew")
+            page.fill("#seriesTitle", "Synthetic series")
+            page.fill("#seriesSlug", "synthetic-series")
+            page.check("#es-block-faq")
+            page.click("text=Add FAQ")
+            page.get_by_label("Question").fill("What is this?")
+            page.get_by_label("Answer").fill("A synthetic series.")
+            for _ in range(3):
+                page.get_by_role("button", name="Move FAQ up").click()
+            page.check("#es-block-navigation")
+            page.check("#es-block-agenda")
+            page.get_by_role("button", name="Add navigation link").click()
+            page.get_by_label("Link label").fill("Program information")
+            page.get_by_label("Link URL").fill("https://example.org/program")
+            page.check('input[name="seriesDark"]')
+            png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aPw4AAAAASUVORK5CYII=")
+            fixture = dict(name="fixture.png", mimeType="image/png", buffer=png)
+            page.locator('input[data-series-image="logo"]').set_input_files(fixture)
+            page.locator('input[data-series-image="hero_image"]').set_input_files(fixture)
+            page.wait_for_selector("#seriesEdit:not([inert])")
+            with page.expect_response(lambda resp: "/api/event-series/" in resp.url and resp.request.method == "PUT") as info:
+                page.click("text=Save Event Series")
+            resp = info.value
+            self.assertEqual(200, resp.status)
+            saved = resp.json()["settings"]["presentation"]
+            self.assertTrue(saved["logo"] and saved["hero_image"])
+            page.wait_for_selector("#seriesPreview", state="visible")
+            page.wait_for_selector("#seriesEdit:not([inert])")
+            page.click("#seriesPreview")
+            page.wait_for_selector("#seriesPreviewLink", state="visible")
+            href = page.get_attribute("#seriesPreviewLink", "href")
+            mobile = browser.new_context(viewport={"width": 390, "height": 844})
+            preview = mobile.new_page()
+            preview.goto(self.base + href)
+            expect(preview.locator("body")).to_have_attribute("data-theme", "dark")
+            heads = preview.eval_on_selector_all("main h1, main h2", "els => els.slice(0, 2).map(e => e.tagName)")
+            self.assertEqual(["H2", "H1"], heads)
+            preview.locator("summary", has_text="What is this?").click()
+            expect(preview.get_by_text("A synthetic series.")).to_be_visible()
+            expect(preview.get_by_role("heading", name="Agenda")).to_be_visible()
+            expect(preview.get_by_role("link", name="Program information")).to_have_attribute(
+                "href", "https://example.org/program",
+            )
+            expect(preview.locator("img.event-series-logo")).to_have_js_property("naturalWidth", 1)
+            expect(preview.locator("img.event-series-hero")).to_have_js_property("naturalWidth", 1)
+            self.assertEqual(404, self.client.get("/event-series/synthetic-series").status_code)
+            page.fill("#seriesDescription", "Updated synthetic series.")
+            page.wait_for_selector("#seriesEdit:not([inert])")
+            with page.expect_response(lambda resp: "/api/event-series/" in resp.url and resp.request.method == "PUT") as info:
+                page.click("text=Save Event Series")
+            resp = info.value
+            self.assertEqual(200, resp.status)
+            saved2 = resp.json()["settings"]["presentation"]
+            self.assertTrue(saved2["logo"] and saved2["hero_image"])
+            self.assertEqual((saved["logo"], saved["hero_image"]), (saved2["logo"], saved2["hero_image"]))
+            page.wait_for_selector("#seriesPreview", state="visible")
+            page.wait_for_selector("#seriesEdit:not([inert])")
+            page.click("#seriesPreview")
+            page.wait_for_selector("#seriesPreviewLink", state="visible")
+            preview.goto(self.base + page.get_attribute("#seriesPreviewLink", "href"))
+            expect(preview.locator("img.event-series-logo")).to_have_js_property("naturalWidth", 1)
+            expect(preview.locator("img.event-series-hero")).to_have_js_property("naturalWidth", 1)
+            self.assertEqual(404, self.client.get("/event-series/synthetic-series").status_code)
+            mobile.close()
+
     def test_timed_video_registration(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/registration"
