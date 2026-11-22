@@ -129,6 +129,37 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
         return work
 
 
+def merge_imported_audio(work, prior):
+    incoming = work.get("language_edits", {})
+    previous = (prior or {}).get("language_edits", {})
+    merged = dict(previous)
+    cuts = {video_version_key(cut) for cut in [work, *work.get("versions_history", [])]}
+    for key, edited in incoming.items():
+        if key not in cuts:
+            continue
+        local = previous.get(key)
+        if local is None:
+            merged[key] = edited
+            continue
+        if not edited.get("audio"):
+            merged[key] = edited | local
+            continue
+        audio = list(local.get("audio", []))
+        saved_slots = {tuple(pair) for pair in local.get("vimeo_audio_slots", [])}
+        existing = {(track["language"], track["kind"]) for track in audio} | saved_slots
+        for track in edited["audio"]:
+            slot = (track["language"], track["kind"])
+            if slot not in existing:
+                audio.append(track)
+                existing.add(slot)
+        saved_slots.update(tuple(pair) for pair in edited.get("vimeo_audio_slots", []))
+        merged[key] = edited | local | {"audio": audio, "vimeo_audio_slots": [list(pair) for pair in sorted(saved_slots)]}
+    if merged:
+        work["language_edits"] = merged
+    elif incoming and "language_edits" in work:
+        del work["language_edits"]
+
+
 def merge_collection(source, destination):
     """Commit the source works atomically; readers always see a complete manifest."""
     with FileLock(str(destination / ".catalog.lock"), timeout=30):
@@ -141,7 +172,13 @@ def merge_collection(source, destination):
         for work in incoming["works"]:
             incoming_versions = work.get("versions_history", [])
             history_files = [file for version in incoming_versions for file in version["files"]]
-            for item in work["files"] + history_files:
+            audio_files = [
+                track[field]
+                for edit in work.get("language_edits", {}).values()
+                for track in edit.get("audio", [])
+                for field in ("source", "rendition")
+            ]
+            for item in work["files"] + history_files + audio_files:
                 digest = item["sha256"]
                 target = destination / "objects" / digest
                 if target.exists() and checksum(target) == digest:
@@ -173,9 +210,8 @@ def merge_collection(source, destination):
                 work["library_added_at"] = added_at
             elif "library_added_at" in prior:
                 work["library_added_at"] = prior["library_added_at"]
-            for field in ("language_edits", "chapter_edits"):
-                if prior and field in prior:
-                    work[field] = prior[field]
+            if prior and "chapter_edits" in prior:
+                work["chapter_edits"] = prior["chapter_edits"]
             versions = list(prior.get("versions_history", [])) if prior else []
             active_key = video_version_key(work)
             if prior and video_version_key(prior) != active_key:
@@ -194,6 +230,7 @@ def merge_collection(source, destination):
                         seen_sources.add(identity)
                     history.append(version)
                 work["versions_history"] = history
+            merge_imported_audio(work, prior)
             works[work["id"]] = work
         current["works"] = list(works.values())
         dump(destination / "manifest.json", current)
