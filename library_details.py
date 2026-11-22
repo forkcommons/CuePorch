@@ -165,6 +165,23 @@ def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
                     embed_pages = parse_embed_pages(body["embed_pages"])
                     con.execute("""INSERT INTO library_embed_pages VALUES(?,?)
                         ON CONFLICT(work) DO UPDATE SET pages=excluded.pages""", (uid, json.dumps(embed_pages)))
+                if "appearances" in body:
+                    handles = body["appearances"]
+                    if not isinstance(handles, list) or len(handles) > 100 or any(
+                        not isinstance(handle, str) or not 3 <= len(handle) <= 40 for handle in handles
+                    ) or len(handles) != len(set(handles)):
+                        abort(400, "Enter up to 100 distinct creator handles.")
+                    allowed = dict(con.execute("""SELECT p.handle,p.member FROM creator_profile p
+                        JOIN team_member m ON m.id=p.member
+                        WHERE (p.visible=1 AND m.removed IS NULL
+                            AND m.role IN ('owner','admin','contributor','contributor_plus'))
+                        OR EXISTS (SELECT 1 FROM creator_video_appearance a WHERE a.work=? AND a.member=p.member)
+                    """, (uid,)))
+                    if any(handle not in allowed for handle in handles):
+                        abort(422, "Use the handle of an existing public creator profile.")
+                    con.execute("DELETE FROM creator_video_appearance WHERE work=?", (uid,))
+                    con.executemany("INSERT INTO creator_video_appearance VALUES(?,?)",
+                                    [(uid, allowed[handle]) for handle in handles])
                 save_title(con, work, body.get("title"))
                 con.execute(
                     """INSERT INTO library_video_details VALUES(?,?) ON CONFLICT(work) DO UPDATE SET
@@ -172,6 +189,10 @@ def register(app, tx, authorize_editor, root, get_work, title_for, save_title):
                 )
             else:
                 state = details_for(con, work)
+            state["appearances"] = [row[0] for row in con.execute(
+                """SELECT p.handle FROM creator_video_appearance a JOIN creator_profile p ON p.member=a.member
+                   WHERE a.work=? ORDER BY p.handle""", (uid,),
+            )]
             title = title_for(con, work)
         media = next((item for item in work["files"] if item["role"] == "original"), None) or playback(work)
         measured = video_properties(root / "objects" / media["sha256"]) if media else {}

@@ -32,6 +32,12 @@
                 <span>{{ item.name }} (@{{ item.handle }})</span>
                 <button type="button" data-feed-unfollow-creator="{{ item.handle }}" aria-label="Unfollow {{ item.name }}">Unfollow {{ item.name }}</button>
                 <span role="status" aria-live="polite"></span>
+                <form method="post" data-creator-activity="{{ item.handle }}">
+                  <label><input type="checkbox" name="videos"{% if item.videos %} checked{% endif %}> Videos</label>
+                  <label><input type="checkbox" name="appearances"{% if item.appearances %} checked{% endif %}> Appearances</label>
+                  <button type="submit">Save activity preferences</button>
+                  <span role="status" aria-live="polite"></span>
+                </form>
               </li>
             {% endfor %}
           </ul>

@@ -10,6 +10,7 @@ interface VideoDetails {
   tags: string[];
   categories: string[];
   credits: {name: string; role: string}[];
+  appearances?: string[];
   license: string | null;
   rating: string;
   content: string[];
@@ -122,6 +123,7 @@ function show(details: VideoDetails) {
   for (const name of ["tags", "categories"] as const) input(name).value = details[name].join("\n");
   input("embed_pages").value = details.embed_pages.join("\n");
   input("credits").value = details.credits.map(({ name, role }) => role ? `${name} | ${role}` : name).join("\n");
+  input("appearances").value = (details.appearances ?? []).join("\n");
   input("realistic_ai").checked = details.realistic_ai;
   input("advertisement").checked = details.advertisement;
   input("allow_viewer_collections").checked = details.allow_viewer_collections ?? true;
@@ -299,6 +301,7 @@ form.onsubmit = async (event) => {
       advertisement: input("advertisement").checked,
       allow_viewer_collections: input("allow_viewer_collections").checked,
       panorama: input("panorama").value,
+      appearances: lines("appearances"),
     };
     show(await call<VideoDetails>("/details", "PUT", body));
     status.textContent = "Video details saved.";

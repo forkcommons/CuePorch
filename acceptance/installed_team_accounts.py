@@ -574,6 +574,29 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             feed.reload()
             expect(feed.locator(".watch-card")).to_have_text([draft_name, second_title])
             requests.put(maturity, headers=auth, timeout=15, json=metadata.json()).raise_for_status()
+            details = metadata.json()
+            requests.put(maturity, headers=auth, timeout=15,
+                         json=details | {"appearances": [handle]}).raise_for_status()
+            legacy = {key: value for key, value in details.items() if key != "appearances"}
+            readback = requests.put(maturity, headers=auth, timeout=15, json=legacy)
+            readback.raise_for_status()
+            assert readback.json()["appearances"] == [handle]
+            for videos, appearances, expected in (
+                (False, True, [second_title]), (True, False, [draft_name, second_title]),
+            ):
+                feed.get_by_text("Manage your feed", exact=True).click()
+                activity = feed.locator("[data-creator-activity]")
+                activity.get_by_label("Videos", exact=True).set_checked(videos)
+                activity.get_by_label("Appearances", exact=True).set_checked(appearances)
+                activity.get_by_role("button", name="Save activity preferences", exact=True).click()
+                expect(feed.locator(".watch-card")).to_have_text(expected)
+                if appearances:
+                    feed.get_by_role("link", name=second_title, exact=True).click()
+                    assert feed.locator("video").evaluate(
+                        "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+                    ) > 0
+                    feed.goto(base + "/watch/feed")
+
             independent_feed = viewer.new_page()
             independent_feed.goto(base + "/watch/feed")
             expect(independent_feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
