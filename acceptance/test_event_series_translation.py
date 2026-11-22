@@ -1,5 +1,6 @@
 """Verify Event Series translation policies with a deterministic local runtime double."""
 
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -48,11 +49,11 @@ class EventSeriesTranslation(unittest.TestCase):
         self.app = app
         self.client = app.test_client()
 
-    def wait_for_job(self, uid, job_id, state):
+    def wait_for_job(self, uid, job_id, state, path=None):
         deadline = time.monotonic() + 6
         last_state = None
         while time.monotonic() < deadline:
-            response = self.client.get(f'/api/event-series/{uid}/translation-jobs', headers=self.auth)
+            response = self.client.get(path or f'/api/event-series/{uid}/translation-jobs', headers=self.auth)
             self.assertEqual(response.status_code, 200)
             for job in response.get_json()['jobs']:
                 if job['id'] == job_id:
@@ -61,6 +62,166 @@ class EventSeriesTranslation(unittest.TestCase):
                         return job
             time.sleep(0.05)
         self.fail(f"Job {job_id} did not reach state {state}; last state was {last_state}")
+
+    def create_translation_event(self):
+        opens = datetime.now(timezone.utc) + timedelta(hours=1)
+        response = self.client.post(
+            "/api/live-events",
+            headers=self.auth,
+            json={
+                "title": "Localized gathering",
+                "description": "A community program.",
+                "schedule": {
+                    "start": opens.strftime("%Y-%m-%dT%H:%M"),
+                    "end": (opens + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+                    "repeat": "none",
+                    "timezone": "UTC",
+                },
+                "visibility": "public",
+                "type": "live",
+                "latency": "standard",
+                "save_replay": True,
+                "slug": "localized-gathering",
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        event = response.get_json()
+
+        response = self.client.post(
+            "/api/live-event-speaker-profiles",
+            headers=self.auth,
+            json={
+                "name": "Mina Reed",
+                "role": "Curator",
+                "bio": "Introduces the films.",
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        speaker = response.get_json()
+
+        response = self.client.put(
+            f"/api/live-events/{event['id']}/landing",
+            headers=self.auth,
+            json={
+                "revision": None,
+                "settings": {
+                    "enabled": True,
+                    "theme": "light",
+                    "layout": "stacked",
+                    "accent": "#3266aa",
+                    "show_logo": True,
+                    "show_poster": False,
+                    "speaker_ids": [speaker["id"]],
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            f"/api/live-events/{event['id']}/landing",
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        landing = response.get_json()
+
+        return event, landing, speaker
+
+    def test_landing_translation_job_flow(self):
+        event, landing, speaker = self.create_translation_event()
+        uid = event["id"]
+        path = f'/api/live-events/{uid}/landing/translation-jobs'
+        response = self.client.post(
+            path,
+            headers=self.auth,
+            json=dict(revision=landing["revision"], language='es'),
+        )
+        assert response.status_code == 202
+        jobid = response.get_json()['job']['id']
+        response = self.client.get(path)
+        assert response.status_code == 403
+        self.wait_for_job(uid, jobid, 'saved', path=path)
+        response = self.client.get(event['watch'] + '?lang=es')
+        html = response.get_data(as_text=True)
+        assert "es: Localized gathering" in html
+        assert "es: Curator" in html
+        assert "Mina Reed" in html
+
+        resp = self.client.put(
+            "/api/policy/translation",
+            headers=self.auth,
+            json={"required": True},
+        )
+        assert resp.status_code == 200
+
+        resp = self.client.get(f"/api/live-events/{uid}/landing", headers=self.auth)
+        current_revision = resp.get_json()["revision"]
+
+        resp = self.client.post(
+            path,
+            headers=self.auth,
+            json={"revision": current_revision, "language": "fr"},
+        )
+        assert resp.status_code == 202
+        job = resp.get_json()["job"]
+        assert job["state"] == "waiting"
+
+        resp = self.client.put(
+            f"/api/live-event-speaker-profiles/{speaker['id']}",
+            headers=self.auth,
+            json=dict(
+                revision=speaker["revision"],
+                name=speaker["name"],
+                role="New host",
+                bio=speaker["bio"],
+            ),
+        )
+        assert resp.status_code == 200
+
+        calls_before = self.model.call_count
+
+        resp = self.client.post(
+            f"/api/actions/{job['id']}/decision",
+            headers=self.auth,
+            json={"decision": "approve"},
+        )
+        assert resp.status_code == 204
+
+        self.wait_for_job(uid, job["id"], "superseded", path=path)
+        assert self.model.call_count == calls_before
+
+    def test_landing_generated_draft_in_browser(self):
+        event, _, _ = self.create_translation_event()
+        uid = event["id"]
+        path = f"/api/live-events/{uid}/landing/translation-jobs"
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        self.enterContext(service_worker(server))
+        base = f"http://127.0.0.1:{server.server_port}"
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(base + "/operator/live-events")
+            page.get_by_role("button", name="Open production for Localized gathering").first.click()
+            page.locator("#eventLanding").get_by_text("Event landing page", exact=True).click()
+            page.select_option("#eventLandingLanguage", "es")
+            page.uncheck("#eventLandingAiAuto")
+            with page.expect_response(lambda r: r.request.method == "POST" and r.url.endswith("/translation-jobs")) as info:
+                page.click("#eventLandingAiGenerate")
+            assert info.value.status == 202
+            job_id = info.value.json()["job"]["id"]
+            self.wait_for_job(uid, job_id, "draft", path=path)
+            page.click("#eventLandingAiRefresh")
+            page.click("#eventLandingAiDraft")
+            assert page.input_value("#eventLandingTitle") == "es: Localized gathering"
+            assert page.locator("#eventLandingTranslatedSpeakers").get_by_role("group", name="Mina Reed").locator("input").first.input_value() == "es: Curator"
+            page.fill("#eventLandingTitle", "Programa local")
+            page.check("#eventLandingTranslationPublished")
+            with page.expect_response(lambda r: r.request.method == "PUT" and r.url.endswith("/landing")) as resp:
+                page.get_by_role("button", name="Save landing page", exact=True).click()
+            assert resp.value.status == 200
+            viewer = browser.new_page()
+            viewer.goto(base + event["watch"] + "?lang=es")
+            assert viewer.locator("h1").inner_text() == "Programa local"
+            assert viewer.get_by_text("es: Curator", exact=True).first.is_visible()
 
     def test_series_translation_waits_and_then_publishes(self):
         create = self.client.post(

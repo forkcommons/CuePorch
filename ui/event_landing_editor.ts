@@ -1,6 +1,7 @@
 import { setupSpeakerLineup, type SpeakerProfile } from './event_landing_speaker_lineup.js';
 import { setupSpeakerProfileEditor } from './event_landing_speaker_editor.js';
-import { setupLandingLocalization, type LandingLocalization } from './event_landing_locale.js';
+import { setupTranslationJobs } from './event_series_translation_jobs.js';
+import { setupLandingLocalization, type LandingLocalization, type LandingTranslation } from './event_landing_locale.js';
 
 type Settings = {
   enabled: boolean; theme: 'light' | 'dark'; layout: 'stacked' | 'split';
@@ -27,6 +28,7 @@ export function setupEventLandingEditor(request: Request) {
 
   const speakerFields = document.querySelector<HTMLFieldSetElement>("#eventLandingSpeakerFields")!;
   const localeFields = document.querySelector<HTMLFieldSetElement>("#eventLandingLocale")!;
+  const aiFields = document.querySelector<HTMLFieldSetElement>("#eventLandingAiEditor")!;
   const lineup = setupSpeakerLineup((profile) => editor.open(profile), () => locale.refreshSpeakers());
   const editor = setupSpeakerProfileEditor(request, (profile) => lineup.upsert(profile));
   document.querySelector("#eventLandingSpeakerNew")?.addEventListener("click", () => editor.open());
@@ -45,6 +47,7 @@ export function setupEventLandingEditor(request: Request) {
     saveBtn.disabled = busy || !cache;
     speakerFields.disabled = saveBtn.disabled;
     localeFields.disabled = saveBtn.disabled;
+    aiFields.disabled = saveBtn.disabled || !cache?.settings.enabled;
   };
 
   const fill = (s: ServerState) => {
@@ -56,6 +59,7 @@ export function setupEventLandingEditor(request: Request) {
     get<HTMLInputElement>('show_poster').checked = s.settings.show_poster;
     lineup.populate(s.settings.speaker_ids, s.profiles);
     locale.populate(s.settings.localization, s.preview);
+    jobs.populate(s.settings.enabled && s.revision && uid ? { id: uid, revision: s.revision } : null);
   };
 
   const read = (): Settings => ({
@@ -80,6 +84,7 @@ export function setupEventLandingEditor(request: Request) {
     editor.reset();
     lineup.populate([], []);
     locale.reset();
+    jobs.populate(null);
     setStatus('');
     details.open = false;
   };
@@ -109,6 +114,20 @@ export function setupEventLandingEditor(request: Request) {
       }
     }
   };
+
+  const jobs = setupTranslationJobs<LandingTranslation>(
+    form,
+    request,
+    locale.applyDraft,
+    async () => {
+      if (uid) await load(uid, gen);
+    },
+    {
+      controlPrefix: "eventLanding",
+      languageSelect: form.querySelector("#eventLandingLanguage")!,
+      jobPath: (id) => url(id) + "/translation-jobs",
+    },
+  );
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
