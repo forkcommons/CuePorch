@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS audience_group_invite(
 CREATE TABLE IF NOT EXISTS audience_group_moderator(
  group_id TEXT NOT NULL, account TEXT NOT NULL,
  PRIMARY KEY(group_id,account));
+CREATE TABLE IF NOT EXISTS audience_group_submission_policy(
+ group_id TEXT PRIMARY KEY, allow_members INTEGER NOT NULL,
+ require_review INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS audience_group_submission(
+ group_id TEXT NOT NULL, kind TEXT NOT NULL, slug TEXT NOT NULL,
+ account TEXT NOT NULL, added REAL NOT NULL,
+ PRIMARY KEY(group_id,kind,slug));
+CREATE INDEX IF NOT EXISTS audience_group_submission_account
+ ON audience_group_submission(account);
 """
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 ACCESS = ("public", "members")
@@ -85,6 +94,17 @@ def can_moderate(con, row, account_id):
         (row["id"], account_id)).fetchone() is not None
 
 
+def submission_settings(con, group_id):
+    row = con.execute(
+        "SELECT allow_members,require_review"
+        " FROM audience_group_submission_policy WHERE group_id=?",
+        (group_id,)).fetchone()
+    if row is None:
+        return {"allow_members": True, "require_review": False}
+    return {"allow_members": bool(row["allow_members"]),
+            "require_review": bool(row["require_review"])}
+
+
 def invitation_for(con, group, account):
     if account is None:
         return False
@@ -100,6 +120,8 @@ def delete(con, uid):
     con.execute("DELETE FROM audience_group_moderator WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_video WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_submission_policy WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group WHERE id=?", (uid,))
 
 
@@ -110,6 +132,7 @@ def remove_account(con, uid):
         delete(con, row["id"])
     con.execute("DELETE FROM audience_group_member WHERE account=?", (uid,))
     con.execute("DELETE FROM audience_group_moderator WHERE account=?", (uid,))
+    con.execute("DELETE FROM audience_group_submission WHERE account=?", (uid,))
 
 
 def register(app, tx, viewer, mutation, listing, private, watch_preferences, public_origin):
@@ -152,6 +175,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 return private(render_template("community_group_invited.html", group=payload(row)))
             owner = row["owner"] == aid
             moderator = can_moderate(con, row, aid)
+            settings = submission_settings(con, row["id"])
+            contributes = moderator or (joined and settings["allow_members"])
             source = listing(con)
             prefs = watch_preferences(con)
             library = {
@@ -170,10 +195,24 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 if key in library
             ]
             included = set(selected_keys)
+            pending_rows = con.execute("""SELECT kind,slug,account FROM audience_group_submission
+                WHERE group_id=? AND (? OR account=?) ORDER BY added,kind,slug""",
+                (row["id"], moderator, aid)).fetchall() if joined else []
+            pending = []
+            pending_keys = set()
+            for item in pending_rows:
+                key = (item["kind"], item["slug"])
+                entry = library.get(key)
+                pending.append(dict(
+                    kind=key[0], slug=key[1], title=entry["title"] if entry else "Video no longer available",
+                    can_approve=bool(entry and entry.get("allow_viewer_collections", True)),
+                ))
+                pending_keys.add(key)
             choices = [entry_payload(entry) for entry in ordered(library.values())
                        if entry["kind"] in ("work", "meeting")
                        and (entry["kind"], entry["slug"]) not in included
-                       and entry.get("allow_viewer_collections", True)] if moderator else []
+                       and (entry["kind"], entry["slug"]) not in pending_keys
+                       and entry.get("allow_viewer_collections", True)] if contributes else []
             manage_members = con.execute("""SELECT a.id, a.name,
                 EXISTS (SELECT 1 FROM audience_group_moderator g
                     WHERE g.group_id=m.group_id AND g.account=m.account) AS is_moderator
@@ -189,6 +228,9 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 joined=joined,
                 owner=owner,
                 moderator=moderator,
+                contributes=contributes,
+                pending=pending,
+                **settings,
                 videos=videos,
                 choices=choices,
                 manage_members=manage_members,
@@ -224,6 +266,14 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 delete(con, row["id"])
                 return private("", 204)
             newslug, title, description, access = fields(body)
+            explicit = {}
+            for key in ("allow_members", "require_review"):
+                if key in body:
+                    if not isinstance(body[key], bool):
+                        abort(400, "Submission settings must be true or false.")
+                    explicit[key] = body[key]
+            before = submission_settings(con, row["id"])
+            after = before | explicit
             hit = con.execute(
                 "SELECT 1 FROM audience_group WHERE slug=? AND id<>?",
                 (newslug, row["id"]),
@@ -234,6 +284,26 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 "UPDATE audience_group SET slug=?, title=?, description=?, access=?, revision=? WHERE id=?",
                 (newslug, title, description, access, uuid.uuid4().hex, row["id"]),
             )
+            if explicit:
+                con.execute(
+                    "INSERT INTO audience_group_submission_policy"
+                    "(group_id,allow_members,require_review) VALUES(?,?,?)"
+                    " ON CONFLICT(group_id) DO UPDATE SET"
+                    " allow_members=excluded.allow_members,"
+                    " require_review=excluded.require_review",
+                    (row["id"], after["allow_members"], after["require_review"]),
+                )
+            if (after["allow_members"] and not after["require_review"]
+                    and (before["require_review"] or not before["allow_members"])):
+                for kind, slug, account, added in con.execute(
+                    "SELECT kind,slug,account,added FROM audience_group_submission WHERE group_id=?",
+                    (row["id"],),
+                ).fetchall():
+                    entry = listing(con, (kind, slug)).get((kind, slug))
+                    if entry and entry.get("allow_viewer_collections", True) and member_of(con, row, account):
+                        con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)",
+                                    (row["id"], kind, slug, added))
+                con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (row["id"],))
             return private(payload(get_group(con, newslug)))
 
     @app.route("/api/viewer/groups/<slug>/membership", methods=("PUT", "DELETE"))
@@ -256,6 +326,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                     (row["id"], aid),
                 )
                 con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account=?",
+                            (row["id"], aid))
+                con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND account=?",
                             (row["id"], aid))
             elif row["owner"] != aid:
                 con.execute(
@@ -343,6 +415,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             if result.rowcount:
                 con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account=?",
                             (row["id"], member))
+                con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND account=?",
+                            (row["id"], member))
                 con.execute("UPDATE audience_group SET revision=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
         return private("", 204)
 
@@ -377,17 +451,61 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
         with tx() as con:
             account = viewer(con)
             group = get_group(con, slug)
-            if not can_moderate(con, group, account["id"]):
+            aid = account["id"]
+            moderator = can_moderate(con, group, aid)
+            if not (moderator or member_of(con, group, aid)):
                 abort(404)
+            key = (group["id"], kind, video)
             if request.method == "DELETE":
-                con.execute("DELETE FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?",
-                            (group["id"], kind, video))
+                if moderator:
+                    con.execute("DELETE FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?", key)
+                    con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND kind=? AND slug=?", key)
+                elif not con.execute("""DELETE FROM audience_group_submission
+                        WHERE group_id=? AND kind=? AND slug=? AND account=?""", (*key, aid)).rowcount:
+                    abort(404)
                 return private("", 204)
+            settings = submission_settings(con, group["id"])
+            if not moderator and not settings["allow_members"]:
+                abort(403, "Member submissions are disabled.")
             entry = listing(con, (kind, video)).get((kind, video))
             if entry is None:
                 abort(404)
             if not entry.get("allow_viewer_collections", True):
                 abort(403)
-            con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)",
-                        (group["id"], kind, video, time.time()))
+            if not moderator and settings["require_review"]:
+                published = con.execute(
+                    "SELECT 1 FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?", key,
+                ).fetchone()
+                if published is not None:
+                    return private("", 204)
+                con.execute("INSERT OR IGNORE INTO audience_group_submission VALUES(?,?,?,?,?)",
+                            (*key, aid, time.time()))
+                return private("", 202)
+            con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)", (*key, time.time()))
+            con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND kind=? AND slug=?", key)
             return private("", 204)
+
+    @app.post("/api/viewer/groups/<slug>/submissions/<any(work,meeting):kind>/<video>")
+    def viewer_group_submission_decision(slug, kind, video):
+        body = mutation()
+        approve = body.get("approve")
+        if not isinstance(approve, bool):
+            abort(400, "Choose whether to approve the submission.")
+        with tx() as con:
+            aid = viewer(con)["id"]
+            group = get_group(con, slug)
+            if not can_moderate(con, group, aid):
+                abort(404)
+            key = (group["id"], kind, video)
+            row = con.execute("""SELECT account FROM audience_group_submission
+                WHERE group_id=? AND kind=? AND slug=?""", key).fetchone()
+            if row is None:
+                abort(404)
+            if approve:
+                entry = listing(con, (kind, video)).get((kind, video))
+                if (not member_of(con, group, row["account"]) or entry is None
+                        or not entry.get("allow_viewer_collections", True)):
+                    abort(409, "This video or its contributor is no longer eligible.")
+                con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)", (*key, time.time()))
+            con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND kind=? AND slug=?", key)
+        return private("", 204)
