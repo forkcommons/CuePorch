@@ -12,6 +12,7 @@ from werkzeug.exceptions import HTTPException
 import event_schedule
 
 SCAN_INTERVAL = 60
+YOUTUBE_START_LEAD = timedelta(seconds=15)
 
 
 SCHEMA = """
@@ -114,6 +115,22 @@ def unfinished_youtube(con, row, opens):
     ).fetchone() is not None
 
 
+def late_youtube_ready(con, row, opens):
+    if row["provider"] != "youtube-live":
+        return False
+    cur = con.execute(
+        "SELECT 1 FROM live_occurrence o "
+        "WHERE o.event=? AND o.opens=? AND o.delivery='ready' "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM youtube_live_creation c "
+        "WHERE c.event=o.event AND c.opens=o.opens "
+        "AND (c.phase!='new' OR c.destination IS NOT NULL)"
+        ")",
+        (row["event"], opens),
+    )
+    return bool(cur.fetchone())
+
+
 def due(con, now):
     rows = con.execute("""
         SELECT s.*, e.settings FROM live_destination_series s
@@ -127,8 +144,16 @@ def due(con, now):
         sched = json.loads(row['settings'])['schedule']
         for slot in event_schedule.occurrences(sched, now, end):
             opens = slot['id']
-            # After the scheduled start, resume only a broadcast creation already sent to YouTube.
-            if opens <= row['after_opens'] or (opens <= cutoff and not unfinished_youtube(con, row, opens)):
+            if opens <= row["after_opens"]:
+                continue
+            if (
+                opens <= cutoff
+                and not unfinished_youtube(con, row, opens)
+                and not (
+                    datetime.fromisoformat(slot["end"]) > now + YOUTUBE_START_LEAD
+                    and late_youtube_ready(con, row, opens)
+                )
+            ):
                 continue
             q = "SELECT 1 FROM live_destination_series_skip WHERE event=? AND provider=? AND owner=? AND opens=?"
             if con.execute(q, (row['event'], row['provider'], row['owner'], opens)).fetchone():

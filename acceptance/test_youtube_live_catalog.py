@@ -243,6 +243,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 if observed.get("restart"):
                     assert datetime.fromisoformat(body["snippet"]["scheduledStartTime"]).timestamp() > second + 10
                     broadcast_id = "restart-broadcast"
+                elif observed.get("late"):
+                    broadcast_id = "late-broadcast"
                 created_broadcast.clear()
                 created_broadcast.update(body, id=broadcast_id)
                 created_broadcast["snippet"]["channelId"] = "UC-live-1"
@@ -262,6 +264,8 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 stream_key = "fixture-series-key" if observed.get("recurring_id") else "fixture-created-stream-key"
                 if observed.get("restart"):
                     stream_id, stream_key = "restart-stream", "fixture-restart-key"
+                elif observed.get("late"):
+                    stream_id, stream_key = "late-stream", "fixture-late-key"
                 created_stream.update(body, id=stream_id)
                 created_stream["snippet"]["channelId"] = "UC-live-1"
                 created_stream["cdn"]["ingestionInfo"] = {
@@ -685,6 +689,43 @@ class YouTubeLiveCatalog(unittest.TestCase):
                 self.assertTrue(api.delete(later_targets + series_suffix, headers=operator_headers, data={"date": True}).ok)
                 self.assertFalse(api.get(later_targets + series_suffix, headers=operator_headers).json()["restorable"])
                 self.assertEqual(409, api.put(later_targets + series_suffix, headers=operator_headers).status)
+                clock_at = datetime.fromtimestamp(fourth+10, tz=timezone.utc)
+                with closing(sqlite3.connect(database)) as con:
+                    con.row_factory = sqlite3.Row
+                    self.assertEqual([], list(real_due(con, clock_at)))
+                    con.execute(
+                        "INSERT INTO live_occurrence VALUES (?,?,'fixture','fixture','ready')",
+                        (series_event["id"], fourth),
+                    )
+                    con.commit()
+                    self.assertEqual([fourth], [opens for _, opens in real_due(con, clock_at)])
+
+                observed["restart"] = False
+                observed["late"] = True
+                late_targets = f"{event_base}/{fourth}/destinations"
+                expected_writes = list(observed["writes"]) + ["broadcast", "stream", "bind"]
+                stop_app()
+
+                with (patch.object(live_destination_series, "due", side_effect=lambda con, _: real_due(con, clock_at)),
+                      patch.object(event_simulcast, "datetime", SeriesClock),
+                      patch("institution.library_worker.start", return_value=lambda: None)):
+                    service.app = create_app(root, database, operator, "station")
+                    stops.extend(stop for name, stop in service.app.extensions.items() if name.startswith("stop_"))
+                    wait_until(lambda: bool(destination_rows(api.get(late_targets, headers=operator_headers))),
+                               12, "The restarted scheduler did not create the eligible late YouTube broadcast.")
+                    with closing(sqlite3.connect(database)) as con:
+                        con.row_factory = sqlite3.Row
+                        self.assertEqual([], list(real_due(con, clock_at)))
+
+                self.assertEqual(expected_writes, observed["writes"])
+                self.assertEqual("late-broadcast", created_broadcast["id"])
+                self.assertEqual(fourth + 25, int(datetime.fromisoformat(
+                    created_broadcast["snippet"]["scheduledStartTime"]).timestamp()))
+                late = destination_rows(api.get(late_targets, headers=operator_headers))
+                self.assertEqual(1, len(late))
+                self.assertTrue(late[0]["enabled"])
+                check_destination_rtmps(root, database, late[0]["id"], operator, late[0]["server"], "fixture-late-key")
+
                 self.assertTrue(api.delete(last_series, headers=operator_headers, data={"date": False}).ok)
                 self.assertEqual(dict(active=False, inherited=False, skipped=False),
                                  api.get(last_series, headers=operator_headers).json())
