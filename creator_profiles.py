@@ -448,6 +448,16 @@ def register(app, tx, origin, member, mutation, listing, entry_payload, read_wor
                     WHERE o.member=? AND c.account=? AND c.kind='work'""", (uid, account)).fetchall()
                 for comment in comments:
                     audience_comments.remove(con, comment, actor)
+                con.execute("""DELETE FROM audience_collection_video WHERE kind='work'
+                    AND slug IN (SELECT work FROM team_owned_work WHERE member=?)
+                    AND collection IN (SELECT id FROM audience_collection WHERE account=?)""", (uid, account))
+                con.execute("""DELETE FROM audience_group_submission WHERE kind='work'
+                    AND slug IN (SELECT work FROM team_owned_work WHERE member=?)
+                    AND (account=? OR group_id IN (SELECT id FROM audience_group WHERE owner=?))""",
+                    (uid, account, account))
+                con.execute("""DELETE FROM audience_group_video WHERE kind='work'
+                    AND slug IN (SELECT work FROM team_owned_work WHERE member=?)
+                    AND group_id IN (SELECT id FROM audience_group WHERE owner=?)""", (uid, account))
                 note(con, actor, "creator_blocked", account, "")
             return private(dict(blocked=True))
 

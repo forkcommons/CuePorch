@@ -9,6 +9,7 @@ from flask import abort, render_template, request, url_for
 
 from browser_account_security import email_key
 import content_rating
+import creator_blocks
 import group_albums
 from library_discovery import PAGE_SIZE, entry_payload, ordered
 import mail_relay
@@ -249,6 +250,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             pending_rows = con.execute("""SELECT kind,slug,account FROM audience_group_submission
                 WHERE group_id=? AND (? OR account=?) ORDER BY added,kind,slug""",
                 (row["id"], moderator, aid)).fetchall() if joined else []
+            blocked_choices = creator_blocks.group_blocked_works(con, row["owner"], aid) if contributes else set()
             pending = []
             pending_keys = set()
             for item in pending_rows:
@@ -256,13 +258,15 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 entry = library.get(key)
                 pending.append(dict(
                     kind=key[0], slug=key[1], title=entry["title"] if entry else "Video no longer available",
-                    can_approve=bool(entry and entry.get("allow_viewer_collections", True)),
+                    can_approve=bool(entry and entry.get("allow_viewer_collections", True)
+                                     and (key[0] != "work" or key[1] not in blocked_choices)),
                 ))
                 pending_keys.add(key)
             choices = [entry_payload(entry) for entry in ordered(library.values())
                        if entry["kind"] in ("work", "meeting")
                        and (entry["kind"], entry["slug"]) not in included
                        and (entry["kind"], entry["slug"]) not in pending_keys
+                       and (entry["kind"] != "work" or entry["slug"] not in blocked_choices)
                        and entry.get("allow_viewer_collections", True)] if contributes else []
             manage_members = con.execute("""SELECT a.id, a.name,
                 EXISTS (SELECT 1 FROM audience_group_moderator g
@@ -352,7 +356,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                     (row["id"],),
                 ).fetchall():
                     entry = listing(con, (kind, slug)).get((kind, slug))
-                    if entry and entry.get("allow_viewer_collections", True) and member_of(con, row, account):
+                    if (entry and entry.get("allow_viewer_collections", True) and member_of(con, row, account)
+                            and not creator_blocks.video_blocked_for_group(con, row["owner"], account, kind, slug)):
                         con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)",
                                     (row["id"], kind, slug, added))
                 con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (row["id"],))
@@ -451,6 +456,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                         (row["id"], aid, new_owner))
             con.execute("UPDATE audience_group SET owner=?,revision=? WHERE id=?",
                         (new_owner, uuid.uuid4().hex, row["id"]))
+            creator_blocks.remove_group_entries_for_account(con, row["id"], new_owner)
             return private(payload(get_group(con, slug)))
 
     @app.delete("/api/viewer/groups/<slug>/members/<member>")
@@ -524,6 +530,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 abort(404)
             if not entry.get("allow_viewer_collections", True):
                 abort(403)
+            if creator_blocks.video_blocked_for_group(con, group["owner"], aid, kind, video):
+                abort(403, "You cannot add this video to the group.")
             if not moderator and settings["require_review"]:
                 published = con.execute(
                     "SELECT 1 FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?", key,
@@ -556,7 +564,9 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             if approve:
                 entry = listing(con, (kind, video)).get((kind, video))
                 if (not member_of(con, group, row["account"]) or entry is None
-                        or not entry.get("allow_viewer_collections", True)):
+                        or not entry.get("allow_viewer_collections", True)
+                        or creator_blocks.video_blocked_for_group(con, group["owner"], row["account"], kind, video)
+                        or creator_blocks.video_blocked(con, aid, kind, video)):
                     abort(409, "This video or its contributor is no longer eligible.")
                 con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)", (*key, time.time()))
             con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND kind=? AND slug=?", key)
