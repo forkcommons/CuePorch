@@ -89,3 +89,29 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-feed-un
     }
   };
 }
+
+for (const form of document.querySelectorAll<HTMLFormElement>("[data-creator-activity]")) {
+  const handle = form.dataset.creatorActivity || "";
+  const status = form.querySelector<HTMLElement>("[role=status]")!;
+  const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    status.textContent = "";
+    save.disabled = true;
+    try {
+      const fields = new FormData(form);
+      const response = await viewerRequest("feed/creator/" + encodeURIComponent(handle), "PUT", {
+        videos: fields.has("videos"), appearances: fields.has("appearances"),
+      });
+      if (!response.ok) {
+        status.textContent = "Could not save preferences.";
+        return;
+      }
+      window.location.reload();
+    } catch {
+      status.textContent = "Could not save preferences.";
+    } finally {
+      save.disabled = false;
+    }
+  };
+}

@@ -215,6 +215,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 audience_library.remove_account(con, row["id"])
                 audience_groups.remove_account(con, row["id"])
                 con.execute("DELETE FROM audience_creator_follow WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_creator_follow_activity WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_channel_follow WHERE account=?", (row["id"],))

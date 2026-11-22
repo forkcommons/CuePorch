@@ -88,6 +88,8 @@ Use **Edit creator profile** in your team workspace to save a creator name, hand
 
 Sign in with a viewer account to **Follow creator** from a public profile or one of the creator's public videos. Open **Feed** in Watch to see their new public videos. **Unfollow creator** removes that creator's videos from your feed. Private videos and unpublished profiles stay out of the feed.
 
+Under **Manage your feed**, choose **Videos**, **Appearances**, or both for each followed creator and select **Save activity preferences**. In the Library, an editor can link a creator to a video through **Creator appearances** in the video details. Enter one public creator profile handle per line. Appearances respect the video's current visibility.
+
 In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.
 
 Set a **Default group role** to apply that role to group members. CuePorch uses the highest assigned group role when a member belongs to several groups. Use **Use this member's direct role** on an individual roster entry to keep their assigned role instead. Folder permissions remain available separately in the group editor.
