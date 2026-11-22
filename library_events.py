@@ -17,6 +17,7 @@ import requests
 from werkzeug.exceptions import Conflict, UnprocessableEntity
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from analytics_reports import csv_download
 from browser_account_security import private, same_origin, secure_site
 from event_media import Gateway, HLS_PREFIXES, LIVE_FILE, dash_hls, local_hls, root_path
 from event_capture import BusyError, CHUNK_BYTES, Studio, ingest_address, srt_endpoint
@@ -2278,7 +2279,14 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             selected_open(event, opens)
             target = occurrence(con, uid, opens)
             phase = {"ready": "live", "replay": "replay"}.get(target["delivery"]) if target else None
-            return event_analytics.summarize(con, uid, opens, phase)
+            data = event_analytics.summarize(con, uid, opens, phase)
+        if request.args.get("format") == "csv":
+            columns = ("current", "peak", "loads", "plays", "watched_seconds", "average_seconds_per_load",
+                       "unique_viewers", "identified_plays", "finishes", "average_watched_fraction")
+            return csv_download("event-audience", ("phase", *columns), (
+                (name, *(metrics[column] for column in columns)) for name, metrics in data.items()
+            ))
+        return private(data)
 
     def hls_manifest(delivery, raw, host_private):
         manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)

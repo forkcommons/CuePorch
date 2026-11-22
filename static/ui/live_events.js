@@ -1717,6 +1717,7 @@ async function refreshAnalytics() {
         if (selection !== active)
             return;
         analyticsRows.replaceChildren();
+        const percent = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
         for (const phase of ["live", "replay"]) {
             const metrics = stats[phase];
             const row = analyticsRows.insertRow();
@@ -1730,6 +1731,11 @@ async function refreshAnalytics() {
             for (const seconds of [metrics.watched_seconds, metrics.average_seconds_per_load]) {
                 row.insertCell().textContent = `${seconds.toLocaleString(undefined, { maximumFractionDigits: 1 })} s`;
             }
+            row.insertCell().textContent = metrics.unique_viewers?.toLocaleString() ?? "—";
+            row.insertCell().textContent = metrics.identified_plays.toLocaleString();
+            row.insertCell().textContent = metrics.finishes?.toLocaleString() ?? "—";
+            row.insertCell().textContent = metrics.average_watched_fraction === null
+                ? "—" : percent.format(metrics.average_watched_fraction);
         }
         analyticsStatus.textContent = "";
     }
@@ -1744,6 +1750,10 @@ async function refreshAnalytics() {
 analytics.ontoggle = () => { if (analytics.open)
     void refreshAnalytics(); };
 button("refreshEventAnalytics").onclick = () => void refreshAnalytics();
+button("downloadEventAnalytics").onclick = () => void action(async () => {
+    if (active)
+        await downloadEventFile(mediaPath("analytics") + "?format=csv", "cueporch-event-audience-report.csv");
+});
 window.setInterval(() => { if (analytics.open && !document.hidden)
     void refreshAnalytics(); }, 5000);
 async function updateCaptionSettings(update = false) {

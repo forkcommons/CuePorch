@@ -1,3 +1,4 @@
+import csv
 import json
 import secrets
 import sqlite3
@@ -6,7 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from time import monotonic
 from unittest.mock import Mock, patch
@@ -299,9 +300,25 @@ class PrivateLiveEventTest(unittest.TestCase):
                 Gateway, "media",
                 side_effect=lambda origin, remote, gateway, filename, byte_range: local_hls(self.root, filename),
             ):
+                def played(response):
+                    return (
+                        response.url.endswith("/api/event-playback")
+                        and response.request.method == "POST"
+                        and response.request.post_data_json.get("played") is True
+                    )
+
                 page = team.new_page()
-                playlist, width, _ = play_event(page, stable, "Live")
+                with page.expect_response(played, timeout=15000) as live_sample:
+                    playlist, width, _ = play_event(page, stable, "Live")
+                self.assertEqual(204, live_sample.value.status)
                 self.assertEqual(width, 320)
+                duplicate = team.new_page()
+                try:
+                    with duplicate.expect_response(played, timeout=15000) as duplicate_sample:
+                        _, duplicate_width, _ = play_event(duplicate, stable, "Live")
+                    self.assertEqual((204, 320), (duplicate_sample.value.status, duplicate_width))
+                finally:
+                    duplicate.close()
                 expect(page.locator("body")).to_have_attribute("data-landing-theme", "dark")
                 expect(page.locator("body")).to_have_attribute("data-landing-layout", "stacked")
                 hero_poster = page.locator(".event-landing-poster img")
@@ -335,9 +352,35 @@ class PrivateLiveEventTest(unittest.TestCase):
                 self.assertEqual(frame.locator("video").evaluate("video => video.videoWidth"), 320)
 
                 self.release_replay(event, opens)
-                metadata["isLive"] = False
-                replay, width, _ = play_event(page, stable, "Replay")
+                metadata.update(isLive=False, duration=4)
+                with page.expect_response(
+                    lambda response: played(response) and response.request.post_data_json.get("completed") is True,
+                    timeout=15000,
+                ) as replay_sample:
+                    replay, width, _ = play_event(page, stable, "Replay")
+                self.assertEqual(204, replay_sample.value.status)
                 self.assertEqual(width, 320)
+                endpoint = f"/api/live-events/{event}/{opens}/analytics"
+                self.assertEqual(403, self.client.get(endpoint).status_code)
+                counts = self.client.get(endpoint, headers=self.auth).get_json()
+                self.assertEqual((2, 2, 1), tuple(counts["live"][key] for key in (
+                    "plays", "identified_plays", "unique_viewers",
+                )))
+                self.assertEqual((1, 1, 1), tuple(counts["replay"][key] for key in (
+                    "plays", "unique_viewers", "finishes",
+                )))
+                self.assertGreater(counts["replay"]["average_watched_fraction"], 0)
+                self.assertIsNone(counts["live"]["average_watched_fraction"])
+                operator.get_by_text("Audience analytics", exact=True).click()
+                expect(operator.get_by_role("columnheader", name="Unique viewers")).to_be_visible()
+                with operator.expect_download() as exported:
+                    operator.get_by_role("button", name="Download audience analytics CSV", exact=True).click()
+                contents = exported.value.path().read_text(encoding="utf-8")
+                rows = list(csv.DictReader(StringIO(contents)))
+                self.assertEqual([("live", "2", "1"), ("replay", "1", "1")], [
+                    (row["phase"], row["plays"], row["unique_viewers"]) for row in rows
+                ])
+                self.assertNotIn("viewer@example.com", contents)
                 expect(page.locator("body")).to_have_attribute("data-landing-theme", "dark")
                 expect(page.locator("body")).to_have_attribute("data-landing-layout", "stacked")
                 self.assertEqual(anon.request.get(replay).status, 404)

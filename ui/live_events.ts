@@ -58,6 +58,8 @@ interface EventHealth extends RelayHealth {
 interface AudienceMetrics {
   current: number; peak: number; loads: number; plays: number;
   watched_seconds: number; average_seconds_per_load: number;
+  unique_viewers: number | null; identified_plays: number;
+  finishes: number | null; average_watched_fraction: number | null;
 }
 interface ProductionCaptions {enabled: boolean; language: string; status: string; cue_count: number;}
 interface ReplayCaptions {state: string; language: string; revision: string; has_track: boolean; published: boolean; archived: boolean;}
@@ -1703,6 +1705,7 @@ async function refreshAnalytics() {
     const stats = await request<Record<"live" | "replay", AudienceMetrics>>(mediaPath("analytics"));
     if (selection !== active) return;
     analyticsRows.replaceChildren();
+    const percent = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
     for (const phase of ["live", "replay"] as const) {
       const metrics = stats[phase];
       const row = analyticsRows.insertRow();
@@ -1716,6 +1719,11 @@ async function refreshAnalytics() {
       for (const seconds of [metrics.watched_seconds, metrics.average_seconds_per_load]) {
         row.insertCell().textContent = `${seconds.toLocaleString(undefined, {maximumFractionDigits: 1})} s`;
       }
+      row.insertCell().textContent = metrics.unique_viewers?.toLocaleString() ?? "—";
+      row.insertCell().textContent = metrics.identified_plays.toLocaleString();
+      row.insertCell().textContent = metrics.finishes?.toLocaleString() ?? "—";
+      row.insertCell().textContent = metrics.average_watched_fraction === null
+        ? "—" : percent.format(metrics.average_watched_fraction);
     }
     analyticsStatus.textContent = "";
   } catch (error) {
@@ -1726,6 +1734,9 @@ async function refreshAnalytics() {
 }
 analytics.ontoggle = () => { if (analytics.open) void refreshAnalytics(); };
 button("refreshEventAnalytics").onclick = () => void refreshAnalytics();
+button("downloadEventAnalytics").onclick = () => void action(async () => {
+  if (active) await downloadEventFile(mediaPath("analytics") + "?format=csv", "cueporch-event-audience-report.csv");
+});
 window.setInterval(() => { if (analytics.open && !document.hidden) void refreshAnalytics(); }, 5000);
 
 async function updateCaptionSettings(update = false) {
