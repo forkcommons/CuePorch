@@ -2,11 +2,13 @@ import csv
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import re
 import secrets
 import sqlite3
 import unittest
 import uuid
 from contextlib import closing
+from html import unescape
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -16,6 +18,7 @@ from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
 from browser import chromium
+from catalog import video_version_key
 from installed_versions import generate_replacement
 from institution import create_app
 from library_analytics import record
@@ -373,6 +376,119 @@ class AnalyticsPicker(unittest.TestCase):
         })
         self.assertEqual(200, report.status_code)
         self.assertEqual({"live_bytes": 0, "vod_bytes": 80, "total_bytes": 80}, report.get_json()["totals"])
+
+    def _bandwidth_clip(self):
+        self.manifest.write_text(json.dumps({"institution": "station", "schema": 1, "works": []}), encoding="utf-8")
+        clip = generate_replacement(self.root / "bandwidth.mp4", width=320)
+        with open(clip, "rb") as stream:
+            response = self.client.post(
+                "/api/library/uploads",
+                headers=self.auth,
+                data={
+                    "file": (stream, "fixture.mp4"),
+                    "upload_id": uuid.uuid4().hex,
+                    "privacy": json.dumps({"visibility": "public", "embed": "anywhere", "domains": [], "download": True}),
+                },
+            )
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        work = response.get_json()["id"]
+        detail = self.client.get(f"/api/library/work/{work}", headers=self.auth)
+        self.assertEqual(200, detail.status_code, detail.get_data(as_text=True))
+        files = detail.get_json()["files"]
+        playback = next((item for item in files if item.get("role") == "playback" and item.get("format", "").lower() == "mp4"), None)
+        if playback is None:
+            playback = next(item for item in files if item.get("role") == "original" and item.get("format", "").lower() == "mp4")
+        expected = (self.root / "objects" / playback["sha256"]).read_bytes()
+        return work, expected
+
+    def test_bandwidth_counts_review_showcase_and_watch_download_ranges(self):
+        work, source = self._bandwidth_clip()
+        viewer = self.app.test_client()
+
+        def check_range(viewer, path, first, last):
+            with viewer.get(path, headers={"Range": f"bytes={first}-{last}"}, buffered=True) as response:
+                self.assertEqual(response.status_code, 206)
+                self.assertEqual(response.get_data(), source[first:last + 1])
+                self.assertEqual(
+                    response.headers["Content-Range"],
+                    f"bytes {first}-{last}/{len(source)}",
+                )
+                self.assertTrue(
+                    response.headers["Content-Disposition"].startswith("attachment")
+                )
+
+            with viewer.head(path, buffered=True) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_data(), b"")
+
+            with viewer.get(path, headers={"Range": f"bytes={len(source)}-"}, buffered=True) as response:
+                self.assertEqual(response.status_code, 416)
+
+        resp = self.client.post(
+            f"/api/library/work/{work}/review-links",
+            json={"name": "Meter review", "password": "fixture-pass", "allow_download": True},
+            headers=self.auth,
+        )
+        assert resp.status_code == 201
+        review = resp.get_json()
+
+        version = video_version_key(
+            self.client.get(f"/api/library/work/{work}", headers=self.auth).get_json()
+        )
+        review_media = f"{review['path']}/media/{version}"
+        assert viewer.get(review_media).status_code == 403
+
+        unlock_resp = viewer.post(
+            review["path"] + "/unlock",
+            data={"password": "fixture-pass"},
+        )
+        assert unlock_resp.status_code in (302, 303)
+
+        download_path = review_media + "?download=1"
+        check_range(viewer, download_path, 20, 49)
+
+        delete_resp = self.client.delete(
+            f"/api/library/work/{work}/review-links/{review['id']}",
+            headers=self.auth,
+        )
+        assert delete_resp.status_code == 204
+        assert viewer.get(review_media).status_code == 404
+
+        r = self.client.post("/api/showcases", headers=self.auth)
+        assert r.status_code == 201
+        showcase = r.get_json()
+        r = self.client.put(f"/api/showcases/{showcase['id']}", headers=self.auth, json={
+            "slug": "bandwidth-fixture",
+            "revision": showcase["revision"],
+            "settings": showcase["settings"] | dict(title="Meter showcase", visibility="public",
+                                                     videos=[work], download=True),
+        })
+        assert r.status_code == 200
+        output = r.get_json()
+        watch = output["watch"]
+        r = viewer.get(watch)
+        assert r.status_code == 200
+        m = re.search(rb'<script type="application/json" id="showcaseContents">(.*?)</script>', r.data, re.S)
+        contents = json.loads(m.group(1))
+        download = contents[0]["download"]
+        check_range(viewer, download, 50, 89)
+        r = self.client.delete(f"/api/showcases/{showcase['id']}", headers=self.auth)
+        assert r.status_code == 204
+        assert viewer.get(download).status_code == 404
+
+        response = viewer.get(f"/watch/work/{work}")
+        self.assertEqual(response.status_code, 200)
+        match = re.search(rb'data-audio-download href="([^"]+)"', response.data)
+        self.assertIsNotNone(match)
+        path = unescape(match.group(1).decode())
+        check_range(viewer, path, 90, 149)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        report = self.client.post("/api/analytics/bandwidth-report", headers=self.auth, json={
+            "videos": [work], "bandwidth_group": "video", "from": today, "to": today,
+        }).get_json()
+        self.assertEqual(report["totals"]["live_bytes"], 0)
+        self.assertEqual(report["totals"]["total_bytes"], 130)
 
     def test_report_comparison(self):
         first, second = self.ids[:2]
