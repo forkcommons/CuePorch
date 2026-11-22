@@ -271,27 +271,28 @@ async function poll(page = currentPage) {
     item.textContent = folder.path;
     folderList.append(item);
   }
-  const albums = data.showcases || [];
-  showcases.hidden = !albums.length && !data.showcase_issue;
-  showcaseIssue.textContent = data.showcase_issue || "";
+  const collections = [...(data.showcases || []), ...(data.channels || [])];
+  const issue = [data.showcase_issue, data.channel_issue].filter(Boolean).join(" ");
+  showcases.hidden = !collections.length && !issue;
+  showcaseIssue.textContent = issue;
   showcaseRows.replaceChildren();
-  for (const album of albums) {
+  for (const collection of collections) {
     const row = showcaseRows.insertRow();
-    for (const value of [album.title, album.source_visibility, String(album.members.length), album.missing.join(", ")]) {
+    for (const value of [collection.kind === "channel" ? "Channel · " + collection.title : collection.title, collection.source_visibility, String(collection.members.length), collection.missing.join(", ")]) {
       row.insertCell().textContent = value;
     }
     const target = row.insertCell();
-    if (album.target) {
+    if (collection.target) {
       const link = document.createElement("a");
-      link.href = "/operator/showcases?select=" + encodeURIComponent(album.target);
-      link.textContent = "Open showcase";
+      link.href = "/operator/showcases?select=" + encodeURIComponent(collection.target);
+      link.textContent = collection.kind === "channel" ? "Open channel" : "Open showcase";
       target.append(link);
     } else {
       target.textContent = data.state === "transferred" ? "Removed locally" : "Private on transfer";
     }
-    if (album.source_logo_available) target.append(" Logo available to transfer.");
-    else if (album.source_logo) target.append(" Logo recovered.");
-    if (album.issues.length) target.append(" " + album.issues.join(" "));
+    if (collection.source_logo_available) target.append(" Logo available to transfer.");
+    else if (collection.source_logo) target.append(" Logo recovered.");
+    if (collection.issues.length) target.append(" " + collection.issues.join(" "));
   }
   const archives = data.live_event_archives || [];
   liveEvents.hidden = !archives.length && !data.live_event_archives_issue;

@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -116,13 +116,36 @@ class Source:
             raise MediaFailure("logo_redirect_limit")
         raise ValueError("Media redirect limit exceeded")
 
-    def pages(self, path, *, fields=None):
-        url = self.base + path + "?" + urlencode({"per_page": 100, "fields": fields} if fields else {"per_page": 100})
+    def pages(self, path, *, fields=None, params=None):
+        original = dict(params) if params else {}
+        query = {"per_page": 100}
+        if fields:
+            query["fields"] = fields
+        query.update(original)
+        url = self.base + path + "?" + urlencode(query)
         visited = set()
         count = 0
         total = None
         while url:
-            if url in visited or urlsplit(url).path != path:
+            parts = urlsplit(url)
+            if parts.path != path:
+                raise ValueError("Invalid source pagination")
+            if original:
+                pairs = parse_qsl(parts.query, keep_blank_values=True)
+                modified = False
+                for key, expected in original.items():
+                    matches = [value for name, value in pairs if name == key]
+                    if len(matches) > 1:
+                        raise ValueError(f"duplicate query parameter: {key}")
+                    if matches:
+                        if matches[0] != expected:
+                            raise ValueError(f"conflicting query parameter: {key}")
+                    else:
+                        pairs.append((key, expected))
+                        modified = True
+                if modified:
+                    url = urlunsplit(parts._replace(query=urlencode(pairs)))
+            if url in visited:
                 raise ValueError("Invalid source pagination")
             visited.add(url)
             with self.open(url, True) as response:
@@ -1181,6 +1204,87 @@ def showcase_inventory(institution, source, account, video_ids, *, root, dry_run
     return result, None
 
 
+def channel_inventory(institution, source, account, video_ids):
+    path = account + "/channels"
+    try:
+        channels = list(source.pages(path, params={"filter": "moderated"}))
+    except SourceFailure as exc:
+        if exc.status in (403, 404):
+            return [], f"Channel inventory returned HTTP {exc.status}. Check the account's channel access."
+        raise
+    result = []
+    seen = set()
+    for item in channels:
+        identity = re.fullmatch(r"/channels/([0-9]+)", item.get("uri", ""))
+        if not identity:
+            raise ValueError("Invalid channel identity")
+        identifier = identity.group(1)
+        if identifier in seen:
+            raise ValueError("Duplicate channel identity")
+        seen.add(identifier)
+        uri = "/channels/" + identifier
+        issues = []
+        try:
+            videos = list(source.pages(uri + "/videos"))
+        except SourceFailure as exc:
+            if exc.status not in (403, 404):
+                raise
+            videos = []
+            issues.append(f"Video list returned HTTP {exc.status}.")
+        ids = []
+        for member in videos:
+            member_uri = re.fullmatch(r"/videos/([0-9]+)", member.get("uri", ""))
+            if not member_uri:
+                raise ValueError("Invalid channel video identity")
+            ids.append(member_uri.group(1))
+        missing = list(dict.fromkeys(vid for vid in ids if vid not in video_ids))
+        recovered = [work_id(institution, "vimeo", vid) for vid in ids if vid in video_ids]
+        visibility = item.get("privacy", "")
+        if isinstance(visibility, dict):
+            visibility = visibility.get("view", "")
+        if visibility not in ("anybody", "public", "nobody", "private", "password",
+                              "embed_only", "team", "unlisted"):
+            visibility = "unknown"
+        source_category = ""
+        categories = item.get("categories", [])
+        if isinstance(categories, list):
+            for cat in categories:
+                if isinstance(cat, dict):
+                    name = cat.get("name")
+                    if isinstance(name, str) and name:
+                        source_category = name.strip()[:120]
+                        break
+        source_url = "https://vimeo.com" + uri
+        link = item.get("link")
+        if isinstance(link, str):
+            try:
+                parts = urlsplit(link)
+                if (parts.scheme == "https"
+                        and parts.netloc in ("vimeo.com", "www.vimeo.com")
+                        and not parts.query and not parts.fragment
+                        and not parts.username and not parts.password
+                        and re.fullmatch(r"/channels/[A-Za-z0-9_-]{1,80}", parts.path or "")):
+                    source_url = link
+            except (ValueError, AttributeError):
+                pass
+        title, description = item.get("name"), item.get("description")
+        result.append(dict(
+            id=work_id(institution, "vimeo-channel", uri),
+            uri=uri,
+            source_id=identifier,
+            source_url=source_url,
+            title=(title.strip()[:128] if isinstance(title, str) else "") or "Untitled channel",
+            description=description.strip()[:5000] if isinstance(description, str) else "",
+            source_visibility=visibility,
+            source_category=source_category,
+            kind="channel",
+            members=list(dict.fromkeys(recovered)),
+            missing=missing,
+            issues=issues,
+        ))
+    return result, None
+
+
 def event_schedule_draft(value):
     if value is None or value == {}:
         return None
@@ -1448,6 +1552,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         progress(0, len(videos))
     (root / "objects").mkdir(exist_ok=True)
     showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids, root=root, dry_run=dry_run)
+    channels, channel_issue = channel_inventory(institution, source, account, video_ids)
     folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "checkpoints").mkdir(exist_ok=True)
     works = []
@@ -1685,6 +1790,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             progress(len(works), len(videos))
     manifest = dict(
         schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue,
+        channels=channels, channel_issue=channel_issue,
         folders=folders, folder_issue=folder_issue,
         live_event_archives=live_event_archives, live_event_archives_issue=live_event_archives_issue,
     )

@@ -512,11 +512,12 @@ def create_app(root, database, operator, institution, simulation=None):
             try:
                 data = json.loads(snapshot.read_text(encoding="utf8"))
                 showcases = data.get("showcases", [])
-                if state == "transferred" and showcases:
+                channels = data.get("channels", [])
+                if state == "transferred" and (showcases or channels):
                     with tx() as con:
                         targets = library_showcases.imported_targets(con)
-                    for showcase in showcases:
-                        showcase["target"] = targets.get(showcase["uri"])
+                    for collection in showcases + channels:
+                        collection["target"] = targets.get(collection["uri"])
                 live_events = data.get("live_event_archives", [])
                 if state == "transferred" and live_events:
                     with tx() as con:
@@ -561,6 +562,7 @@ def create_app(root, database, operator, institution, simulation=None):
                                     and receipt["uri"] in source_versions):
                                 receipt["state"] = "retained"
                 status.update(works=entries, showcases=showcases, showcase_issue=data.get("showcase_issue"),
+                              channels=channels, channel_issue=data.get("channel_issue"),
                               folders=data.get("folders", []), folder_issue=data.get("folder_issue"))
             except (ValueError, OSError, KeyError):
                 return dict(state="failed", detail="The saved inventory is unavailable. Preview the transfer again.")
@@ -732,7 +734,9 @@ def create_app(root, database, operator, institution, simulation=None):
 
                         works.update(merge_collection(transfer_directory, root))
                         with tx() as con:
-                            library_showcases.import_showcases(con, data.get("showcases", []), transfer_directory)
+                            library_showcases.import_showcases(
+                                con, data.get("showcases", []) + data.get("channels", []), transfer_directory,
+                            )
                             library_folders.import_source_folders(con, data.get("folders", []), data["works"])
                             review_feedback.import_vimeo_editorial_status(con, data["works"], works)
                             audience_comments.import_vimeo_viewer_comments(con, data["works"], action)
