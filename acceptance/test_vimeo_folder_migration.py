@@ -601,6 +601,55 @@ class VimeoFolderMigration(unittest.TestCase):
             viewer.goto(self.base + "/event-series/test-series")
             expect(viewer.get_by_role("link", name="Watch Migrated replay")).to_have_count(0)
 
+    def test_operator_event_series_sort_filter_grid_copy_link(self):
+        for slug, title in (("gallery-night", "Gallery night"), ("community-brief", "Community brief")):
+            post_data = dict(slug=slug, settings=dict(title=title, visibility='public'))
+            response = self.client.post('/api/event-series', headers=self.auth, json=post_data)
+            self.assertEqual(response.status_code, 201)
+            entry = response.get_json()
+            response = self.client.put(f"/api/event-series/{entry['id']}", headers=self.auth, json=dict(revision=entry['revision'], slug=slug, settings=dict(title=title, visibility='public')))
+            self.assertEqual(response.status_code, 200)
+
+        viewer_url = self.base+'/event-series/gallery-night'
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+            context.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)});")
+            page = context.new_page()
+            try:
+                page.goto(self.base + '/operator/event-series')
+                expect(page.locator("#seriesWorkspace")).to_be_visible()
+                series_buttons = page.locator("#seriesList button")
+                expect(series_buttons).to_have_count(2)
+
+                page.select_option("#seriesSort", "title")
+                titles = page.locator("#seriesList button").evaluate_all("els => els.map(el => el.textContent.trim())")
+                self.assertEqual(titles, ["Community brief", "Gallery night"])
+
+                page.fill("#seriesSearch", "GALLERY-NIGHT")
+                expect(page.locator("#seriesList button")).to_have_count(1)
+                expect(page.locator("#seriesList button")).to_contain_text("Gallery night")
+
+                page.select_option("#seriesView", "grid")
+                expect(page.locator("#seriesList")).to_have_css("display", "grid")
+                self.assertEqual(page.locator("#seriesView").input_value(), "grid")
+
+                page.get_by_role("button", name="Gallery night").click()
+                page.get_by_role("button", name="Copy link", exact=True).click()
+                expect(page.locator("#seriesStatus")).to_have_text("Link copied.")
+                copied = page.evaluate("() => navigator.clipboard.readText()")
+                self.assertEqual(copied, viewer_url)
+
+                page.fill("#seriesSearch", "does-not-exist")
+                expect(page.locator("#seriesList button")).to_have_count(0)
+                expect(page.locator("#seriesEmpty")).to_be_visible()
+
+                page.fill("#seriesSearch", "")
+                page.select_option("#seriesView", "list")
+                expect(page.locator("#seriesList button")).to_have_count(2)
+                self.assertEqual(page.locator("#seriesView").input_value(), "list")
+            finally:
+                context.close()
+
     def test_event_series_builder_publication_flow(self):
         import base64
         with sync_playwright() as playwright, chromium(playwright) as browser:
