@@ -1,49 +1,52 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ viewer_language }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Watch · {{ brand.label }} · CuePorch</title>
+  <title>{{ viewer_labels.watch }} · {{ brand.label }} · CuePorch</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='cueporch.css') }}">
 </head>
 <body class="watch-catalog">
-  {% set sections = [('explore', 'Explore'), ('picks', 'Staff Picks'), ('categories', 'Categories'), ('channels', 'Channels')] %}
+  {% set sections = [('explore', viewer_labels.explore), ('picks', viewer_labels.staff_picks),
+                     ('categories', viewer_labels.categories), ('channels', viewer_labels.channels)] %}
   <header class="watch-banner">
     {% include "workspace_mark.html" %}
-    <h1>Watch</h1>
-    <nav aria-label="Watch">
+    <h1>{{ viewer_labels.watch }}</h1>
+    <nav aria-label="{{ viewer_labels.watch }}">
       {% for key, label in sections %}
         <a href="{{ url_for('catalog', section=key if key != 'explore' else none) }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
-      <a href="{{ url_for('viewer_feed') }}">Feed</a>
-      <a href="{{ url_for('watch_later_page') }}">Watch Later</a>
-      <a href="{{ url_for('liked_videos_page') }}">Liked videos</a>
-      <a href="{{ url_for('viewer_collections_page') }}">Collections</a>
-      <a href="{{ url_for('viewer_account_page') }}">Viewer account</a>
+      <a href="{{ url_for('viewer_feed') }}">{{ viewer_labels.feed }}</a>
+      <a href="{{ url_for('watch_later_page') }}">{{ viewer_labels.watch_later }}</a>
+      <a href="{{ url_for('liked_videos_page') }}">{{ viewer_labels.liked_videos }}</a>
+      <a href="{{ url_for('viewer_collections_page') }}">{{ viewer_labels.collections }}</a>
+      <a href="{{ url_for('viewer_account_page') }}">{{ viewer_labels.viewer_account }}</a>
     </nav>
   </header>
   <main>
     {% include "watch_featured.html" %}
     <section class="watch-results" aria-labelledby="resultsHeading">
-      <h2 id="resultsHeading">{% if section == 'picks' %}Staff Picks{% elif section == 'channels' %}Channels{% elif category %}{{ category }}{% elif section == 'categories' %}Categories{% else %}Public videos{% endif %}</h2>
+      <h2 id="resultsHeading">{% if section == 'picks' %}{{ viewer_labels.staff_picks }}{% elif section == 'channels' %}{{ viewer_labels.channels }}{% elif category %}{{ category }}{% elif section == 'categories' %}{{ viewer_labels.categories }}{% else %}{{ viewer_labels.public_videos }}{% endif %}</h2>
       <form class="watch-search" method="get" action="{{ url_for('catalog', section=section if section != 'explore' else none) }}">
-        <label for="watchSearch">{% if section == 'channels' %}Search channels{% else %}Search public videos{% endif %}</label>
+        <label for="watchSearch">{{ viewer_labels.search_channels if section == 'channels' else viewer_labels.search_public }}</label>
         <input id="watchSearch" type="search" name="q" maxlength="120" value="{{ q }}">
         {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
-        <button type="submit">Search</button>
+        <button type="submit">{{ viewer_labels.search }}</button>
       </form>
       {% if section in ('categories', 'channels') and categories %}
-        <nav class="watch-categories" aria-label="{{ 'Video categories' if section == 'categories' else 'Channel categories' }}">
-          <a href="{{ url_for('catalog', section=section, q=q or none) }}"{% if not category %} aria-current="page"{% endif %}>All categories</a>
+        <nav class="watch-categories" aria-label="{{ viewer_labels.video_categories if section == 'categories' else viewer_labels.channel_categories }}">
+          <a href="{{ url_for('catalog', section=section, q=q or none) }}"{% if not category %} aria-current="page"{% endif %}>{{ viewer_labels.all_categories }}</a>
           {% for name in categories %}
             <a href="{{ url_for('catalog', section=section, category=name, q=q or none) }}"{% if category.lower() == name.lower() %} aria-current="page"{% endif %}>{{ name }}</a>
           {% endfor %}
         </nav>
       {% endif %}
       {% if section == 'categories' and category %}
-        <div class="follow-category" data-follow-category="{{ category }}">
-          <button type="button" hidden aria-pressed="false">Follow this category</button>
-          <a href="{{ url_for('viewer_account_page') }}" hidden>Sign in to follow this category</a>
+        <div class="follow-category" data-follow-category="{{ category }}" data-follow-label="{{ viewer_labels.follow_category }}"
+             data-unfollow-label="{{ viewer_labels.unfollow_category }}" data-update-error="{{ feed_feedback[0] }}"
+             data-load-error="{{ feed_feedback[1] }}">
+          <button type="button" hidden aria-pressed="false">{{ viewer_labels.follow_this_category }}</button>
+          <a href="{{ url_for('viewer_account_page') }}" hidden>{{ viewer_labels.sign_in_follow_category }}</a>
           <span role="status" aria-live="polite"></span>
         </div>
         <script type="module" src="/static/ui/follow_category.js"></script>
@@ -60,14 +63,14 @@
             </li>
           {% endfor %}
         </ul>
-      {% elif q or category %}<p>No results. Try a different search.</p>
-      {% elif section == 'picks' %}<p>No Staff Picks have been selected.</p>
-      {% elif section == 'channels' %}<p>No public channels are available.</p>
-      {% else %}<p>No public videos are available.</p>{% endif %}
+      {% elif q or category %}<p>{{ viewer_labels.no_results }}</p>
+      {% elif section == 'picks' %}<p>{{ viewer_labels.no_staff_picks }}</p>
+      {% elif section == 'channels' %}<p>{{ viewer_labels.no_public_channels }}</p>
+      {% else %}<p>{{ viewer_labels.no_public_videos }}</p>{% endif %}
       {% if previous or next_page %}
-        <nav class="watch-pages" aria-label="Results pages">
-          {% if previous %}<a href="{{ previous }}">Previous page</a>{% endif %}
-          {% if next_page %}<a href="{{ next_page }}">Next page</a>{% endif %}
+        <nav class="watch-pages" aria-label="{{ viewer_labels.results_pages }}">
+          {% if previous %}<a href="{{ previous }}">{{ viewer_labels.previous_page }}</a>{% endif %}
+          {% if next_page %}<a href="{{ next_page }}">{{ viewer_labels.next_page }}</a>{% endif %}
         </nav>
       {% endif %}
     </section>

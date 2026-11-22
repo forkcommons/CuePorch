@@ -38,7 +38,7 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
       }
 
       if (!response.ok) {
-        if (method !== "GET") status.textContent = updateError;
+        if (method !== "GET") status.textContent = widget.dataset.updateError ?? updateError;
         return;
       }
 
@@ -51,11 +51,11 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
 
       const state: FollowCategoryState = await response.json();
       button.setAttribute("aria-pressed", String(state.following));
-      button.textContent = state.following ? `Unfollow ${kind}` : `Follow ${kind}`;
+      button.textContent = state.following ? (widget.dataset.unfollowLabel ?? `Unfollow ${kind}`) : (widget.dataset.followLabel ?? `Follow ${kind}`);
       button.hidden = false;
       signIn.hidden = true;
     } catch {
-      status.textContent = loadError;
+      status.textContent = widget.dataset.loadError ?? loadError;
     } finally {
       button.disabled = false;
     }
