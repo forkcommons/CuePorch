@@ -1,6 +1,7 @@
 import { embedBuilder } from "./embed_builder.js";
 import {sessionMarker} from "./team_api.js";
 import {sharingFields, type Sharing} from "./library_privacy.js";
+import {groupPlayback, type State as GroupPlaybackState} from "./group_playback.js";
 import {videoAIDrafts} from "./video_ai_drafts.js";
 
 interface VideoDetails {
@@ -213,6 +214,10 @@ async function loadTeamSharing() {
     notice.textContent = String(error);
     return;
   }
+  const refreshGroup = await groupPlayback(
+    container, () => call<GroupPlaybackState>("/group-playback"),
+    body => call<GroupPlaybackState>("/group-playback", "POST", body),
+  );
   fields.form.onsubmit = async event => {
     event.preventDefault();
     fields.save.disabled = true;
@@ -220,6 +225,7 @@ async function loadTeamSharing() {
       const updated = await call<Sharing>("/privacy", "PUT", fields.values());
       render(updated);
       if (!updated.pending) notice.textContent = "Video sharing saved.";
+      await refreshGroup();
     } catch (error) {
       notice.textContent = String(error);
     } finally {

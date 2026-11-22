@@ -753,7 +753,12 @@ function publicAddress(path) {
 }
 function editPrivacy(work) {
     const endpoint = workEndpoint(work) + "/privacy";
+    const groupEndpoint = workEndpoint(work) + "/group-playback";
     return openPrivacy({
+        groupPlayback: {
+            read: async () => (await completed(await request(groupEndpoint))).json(),
+            save: async (body) => (await completed(await request(groupEndpoint, "POST", body, { "X-CuePorch-Team": "1" }))).json(),
+        },
         open: openWorkDialog,
         read: async () => (await completed(await request(endpoint))).json(),
         save: async (settings) => (await completed(await request(endpoint, "PUT", settings))).json(),

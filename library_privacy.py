@@ -16,6 +16,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import library_peer_handoff
 import folder_slack_queue
+import group_protected
 import library_share
 import library_embed
 import library_appearance
@@ -27,7 +28,7 @@ import library_registration
 import library_analytics
 import library_salesforce_video_engagement as video_reports
 import library_hubspot_media_events as media_events
-from browser_account_security import json_mutation, secure_site
+from browser_account_security import json_mutation, private, same_origin, secure_site
 import library_video_questions
 import content_rating
 import viewer_locale
@@ -336,7 +337,7 @@ def apply_settings(con, action, work, settings, password_hash):
 
 def register(app, tx, staff, action, read_works, root, title_for, operator, permits, details_for, creator_for_work,
              operator_name, authorize_editor, sharing_access, enforce_sharing, viewing_preferences, team_origin,
-             questions_enabled, *, hubspot, hubspot_origins):
+             questions_enabled, *, hubspot, hubspot_origins, current_viewer):
     serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-view")
     embed_form = URLSafeTimedSerializer(operator, salt="cueporch-library-embed-unlock")
     rating_serializer = URLSafeTimedSerializer(operator, salt="cueporch-library-rating")
@@ -422,6 +423,72 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             allowed=allowed,
         )
 
+    def group_asset_eligible(con, work, row):
+        uid = work["id"]
+        if row is None or not row["password_hash"] or blocked(con, uid) or protected_route(con, uid):
+            return False
+        handoff = library_peer_handoff.get(con, uid)
+        if handoff and handoff["state"] == "pending":
+            return False
+        settings = json.loads(row["settings"])
+        return (settings["visibility"] == "password" and playback(work) is not None
+                and permits(work, settings))
+
+    def protected_group_entries(con, group, uid=None):
+        grants = {row["work"] for row in group_protected.available(con, group["id"])}
+        if uid is not None:
+            grants.intersection_update((uid,))
+        if not grants:
+            return {}
+        entries = {}
+        for work in read_works():
+            work_uid = work["id"]
+            if work_uid not in grants or not group_asset_eligible(con, work, get_privacy(con, work_uid)):
+                continue
+            details = details_for(con, work)
+            entries[("work", work_uid)] = dict(
+                kind="work", slug=work_uid, title=title_for(con, work), categories=details["categories"],
+                rating=details["rating"], content=details["content"],
+                allow_viewer_collections=details["allow_viewer_collections"],
+                watch=url_for("protected_group_watch", group_slug=group["slug"], uid=work_uid),
+                image=None, cover=None, added="",
+            )
+        return entries
+
+    app.extensions["protected_group_entries"] = protected_group_entries
+
+    @app.route("/api/library/work/<uid>/group-playback", methods=("GET", "POST"))
+    def publisher_group_playback(uid):
+        with tx() as con:
+            actor = operator_name(con)
+            if not actor and not authorize_editor(con, uid):
+                abort(403)
+            if actor and actor.startswith("team:"):
+                secure = secure_site(team_origin)
+                same_origin(secure)
+                body = json_mutation(secure, "X-CuePorch-Team") if request.method == "POST" else None
+            else:
+                body = request.get_json() if request.method == "POST" else None
+            work = find_work(uid)
+            if not work or hidden(con, "work", uid):
+                abort(404)
+            row = get_privacy(con, uid)
+            settings = json.loads(row["settings"]) if row else DEFAULTS
+            can_grant = group_asset_eligible(con, work, row) and "password" in sharing_access(con)["modes"]
+            if request.method == "POST":
+                if (not isinstance(body, dict) or not isinstance(body.get("group"), str)
+                        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]", body["group"])
+                        or not isinstance(body.get("allowed"), bool)):
+                    abort(400, "Choose a community group and whether to allow access.")
+                if body["allowed"]:
+                    if not can_grant:
+                        abort(409, "Save an eligible password-protected video before granting group access.")
+                    if con.execute("SELECT 1 FROM library_privacy_change WHERE work=?", (uid,)).fetchone():
+                        abort(409, "Resolve the pending privacy change first.")
+                    enforce_sharing(con, settings=settings, prior=settings)
+                group_protected.update_grant(con, uid, row, body, action)
+            return private(group_protected.group_grants_state(con, uid, row, can_grant))
+
     @app.get("/api/public/oembed")
     def public_oembed():
         parsed = library_embed.parse_oembed_url(team_origin, request.args.get("url"))
@@ -448,7 +515,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         response.cache_control.no_store = True
         return response
 
-    def watch(uid, embed, frame, alias_slug=None):
+    def watch(uid, embed, frame, alias_slug=None, group_slug=None):
         with tx() as con:
             alias = library_share.resolve(con, alias_slug) if alias_slug is not None else None
             if alias is not None:
@@ -458,11 +525,20 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if handoff and handoff["state"] == "pending":
                 abort(404)
             if row is None or protected_route(con, uid):
-                if alias is not None:
+                if alias is not None or group_slug is not None:
                     abort(404)
                 return None
             if blocked(con, uid):
                 abort(404)
+            group_scope = None
+            if group_slug is not None:
+                group = con.execute("SELECT id FROM audience_group WHERE slug=?", (group_slug,)).fetchone()
+                viewer = current_viewer(con, required=False)
+                if not group or not viewer:
+                    abort(404)
+                group_scope = group_protected.scope(con, group["id"], uid, viewer["id"])
+                if group_scope is None:
+                    abort(404)
             settings = json.loads(row["settings"])
             mode = settings["visibility"]
             if mode == "private" or (mode == "embed_only" and not embed):
@@ -493,7 +569,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if video is None or not permits(work, settings):
                 abort(404)
             preferences = {} if embed else viewing_preferences(con)
-            if mode == "public" and not embed and request.method in ("GET", "HEAD"):
+            if (mode == "public" or group_scope is not None) and not embed and request.method in ("GET", "HEAD"):
                 notice = content_rating.screening_notice(title_for(con, work), preferences,
                                                          details_for(con, work))
                 if notice is not None:
@@ -502,6 +578,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             enrollment = request.form.get("enrollment", "")
             enrollment_scope = [uid, row["revision"], alias["revision"] if alias else None,
                                 embed, form["revision"] if form else None]
+            if group_scope is not None:
+                enrollment_scope.append(group_scope)
             if enrollment:
                 try:
                     pending = registration_serializer.loads(enrollment, max_age=1200)
@@ -509,7 +587,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                     abort(403, "Open the registration form again.")
                 if not form or pending != enrollment_scope:
                     abort(403, "Open the registration form again.")
-            locked = mode == "password" and not (
+            locked = mode == "password" and group_scope is None and not (
                 enrollment or (request.method == "POST"
                                and try_password(con, operator, uid, request.form.get("password", ""), row["password_hash"]))
             )
@@ -539,7 +617,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             context = library_analytics.request_context(analytics_proxies) if (
                 can_watch and not options["dnt"] and library_analytics.permitted()
             ) else None
-            grant = {}
+            grant = {"group": group_scope} if group_scope is not None else {}
             salesforce = app.extensions.get("salesforce_form_consent")
             salesforce_report = None
             if salesforce and context and admitted and not request.form.get("registration_action"):
@@ -634,6 +712,10 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             response.vary.add("Accept-Language")
         return response
 
+    @app.route("/groups/<group_slug>/watch/<uid>", methods=("GET", "POST"))
+    def protected_group_watch(group_slug, uid):
+        return watch(uid, False, False, group_slug=group_slug)
+
     @app.route("/v/<slug>", methods=["GET", "POST"])
     def custom_watch(slug):
         return watch(None, False, False, alias_slug=slug)
@@ -647,6 +729,11 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if not row or row["revision"] != revision or blocked(con, uid):
             abort(404)
         extra = alias.pop() if alias and isinstance(alias[-1], dict) else {}
+        if "group" in extra:
+            scope = extra["group"]
+            account = current_viewer(con, required=False)
+            if not account or group_protected.scope(con, scope[0], uid, account["id"]) != scope:
+                abort(404)
         if alias and not library_share.current(con, uid, alias[0]):
             abort(404)
         form = library_registration.active(con, "video", uid)
@@ -656,6 +743,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         video = playback(work) if work else None
         settings = json.loads(row["settings"])
         if video is None or video["sha256"] != digest or not permits(work, settings):
+            abort(404)
+        if "group" in extra and not group_asset_eligible(con, work, row):
             abort(404)
         return work, video, settings, extra
 
@@ -711,6 +800,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                              as_attachment=download, download_name="video.mp4" if download else None)
         if download and (origin := grant.get("download")):
             library_analytics.record_download(tx, work["id"], response, origin)
+        if "group" in grant:
+            response.cache_control.private = True
+            response.cache_control.no_store = True
         return media_bandwidth.measure(response, tx, work["id"]) if track is None else response
 
     @app.get("/shared-video/<token>/poster")
@@ -758,6 +850,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                              download_name=f"video-{language}-{kind}.mp4" if download else None)
         if download and (origin := grant.get("download")):
             library_analytics.record_download(tx, work["id"], response, origin)
+        if "group" in grant:
+            response.cache_control.private = True
+            response.cache_control.no_store = True
         return media_bandwidth.measure(response, tx, work["id"])
 
     @app.post("/viewer-rating/<session>")

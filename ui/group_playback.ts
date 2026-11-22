@@ -1,0 +1,75 @@
+export type GrantState = { slug: string; revision: string; state: string };
+export type State = { privacy_revision: string | null; can_grant: boolean; grants: GrantState[] };
+export type GrantRequest = { group: string; allowed: boolean; privacy_revision: string | null; grant_revision: string | null };
+
+const label = (s: string) =>
+  s === 'waiting' ? 'Waiting for publication approval'
+  : s === 'eligible' ? 'Access granted' : s;
+
+export async function groupPlayback(
+  container: HTMLElement,
+  read: () => Promise<State>,
+  save: (body: GrantRequest) => Promise<State>,
+): Promise<() => Promise<void>> {
+  const tpl = document.querySelector<HTMLTemplateElement>('#groupPlaybackSettings');
+  if (!tpl) throw new Error('Missing #groupPlaybackSettings template');
+  const root = tpl.content.firstElementChild!.cloneNode(true) as HTMLElement;
+  root.hidden = true;
+  container.append(root);
+  const status = root.querySelector<HTMLElement>('[role="status"]')!;
+  const form = root.querySelector<HTMLFormElement>('form')!;
+  const slug = form.querySelector<HTMLInputElement>('input[name="group"]')!;
+  const add = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  const list = root.querySelector<HTMLUListElement>('ul')!;
+  let state: State | null = null;
+  const say = (m: string) => { status.textContent = m; };
+  const fail = (w: string, e: unknown) => say(`${w}: ${e instanceof Error ? e.message : String(e)}`);
+
+  const render = (s: State) => {
+    state = s;
+    root.hidden = !s.can_grant && s.grants.length === 0;
+    add.disabled = slug.disabled = !s.can_grant;
+    list.replaceChildren();
+    for (const g of s.grants) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = g.slug;
+      const badge = document.createElement('span');
+      badge.textContent = label(g.state);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = `Remove ${g.slug}`;
+      remove.addEventListener('click', async () => {
+        remove.disabled = true;
+        try {
+          render(await save({ group: g.slug, allowed: false,
+            privacy_revision: s.privacy_revision, grant_revision: g.revision }));
+          say('');
+        } catch (e) { remove.disabled = false; fail(`Could not remove ${g.slug}`, e); }
+      });
+      li.append(name, badge, remove);
+      list.append(li);
+    }
+  };
+
+  const refresh = async () => {
+    try { render(await read()); say(''); } catch (e) { fail('Could not load access', e); }
+  };
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    add.disabled = true;
+    try {
+      const group = slug.value.trim();
+      if (!state?.can_grant) return;
+      const current = state.grants.find(grant => grant.slug === group);
+      render(await save({ group, allowed: true,
+        privacy_revision: state.privacy_revision, grant_revision: current?.revision ?? null }));
+      slug.value = '';
+      say('');
+    } catch (e) { fail('Could not add access', e); add.disabled = slug.disabled = !state?.can_grant; }
+  });
+
+  await refresh();
+  return refresh;
+}

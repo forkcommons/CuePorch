@@ -361,4 +361,4 @@ def register(app, tx, origin_url, operator, listing, action, staff, current_team
     creator_profiles.register_audience(app, tx, viewer, lambda: mutation(scheme()), listing, entry_payload,
                                        ordered, PAGE_SIZE, account_preferences, audience_groups.followed_program,
                                        lambda con: current_team(con, scheme()))
-    return viewing_preferences
+    return viewing_preferences, viewer

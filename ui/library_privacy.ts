@@ -1,3 +1,5 @@
+import {groupPlayback, type GrantRequest, type State as GroupPlaybackState} from "./group_playback.js";
+
 type Visibility = "private" | "unlisted" | "password" | "public" | "embed_only";
 type Embedding = "disabled" | "anywhere" | "domains";
 
@@ -26,6 +28,7 @@ interface SharingDialog {
   reload(): Promise<void>;
   absolute(path: string): string;
   status: HTMLElement;
+  groupPlayback?: {read(): Promise<GroupPlaybackState>; save(body: GrantRequest): Promise<GroupPlaybackState>};
 }
 
 export const privateSettings: Sharing = {
@@ -92,6 +95,8 @@ export async function openPrivacy(dialog: SharingDialog) {
   const body = dialog.open(dialog.title || "Video privacy");
   const fields = sharingFields(body);
   const links = body.querySelector<HTMLElement>("[data-privacy-links]")!;
+  const group = dialog.groupPlayback;
+  const refreshGroup = group ? await groupPlayback(body, group.read, group.save) : null;
 
   function present(state: Sharing) {
     fields.populate(state);
@@ -119,6 +124,7 @@ export async function openPrivacy(dialog: SharingDialog) {
       present(state);
       if (!state.pending) dialog.status.textContent = dialog.success || "Privacy saved.";
       await dialog.reload();
+      await refreshGroup?.();
     } catch (error) {
       dialog.status.textContent = error instanceof Error ? error.message : String(error);
     } finally {

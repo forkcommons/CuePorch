@@ -11,6 +11,7 @@ from browser_account_security import email_key
 import content_rating
 import creator_blocks
 import group_albums
+import group_protected
 from library_discovery import PAGE_SIZE, entry_payload, ordered
 import mail_relay
 
@@ -46,7 +47,7 @@ CREATE TABLE IF NOT EXISTS audience_group_submission(
  PRIMARY KEY(group_id,kind,slug));
 CREATE INDEX IF NOT EXISTS audience_group_submission_account
  ON audience_group_submission(account);
-""" + group_albums.SCHEMA
+""" + group_albums.SCHEMA + group_protected.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 ACCESS = ("public", "members")
 INVITE_SECONDS = 7 * 86400
@@ -145,6 +146,10 @@ def delete(con, uid):
     con.execute("DELETE FROM audience_group_member WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_moderator WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_video WHERE group_id=?", (uid,))
+    con.execute("""UPDATE action SET status='rejected',decision='superseded' WHERE status='waiting' AND id IN (
+        SELECT approval FROM audience_group_playback_grant WHERE group_id=?
+    )""", (uid,))
+    con.execute("DELETE FROM audience_group_playback_grant WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission_policy WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (uid,))
@@ -166,6 +171,12 @@ def remove_account(con, uid):
 
 def register(app, tx, viewer, mutation, listing, private, watch_preferences, public_origin):
     invite_mail = mail_relay.configured(public_origin)
+
+    def protected_entries(con, group, uid=None):
+        provider = app.extensions.get("protected_group_entries")
+        if group["access"] != "members" or not provider:
+            return {}
+        return provider(con, group, uid)
 
     @app.route("/api/viewer/feed/group", methods=("GET", "PUT", "DELETE"))
     def viewer_feed_group():
@@ -229,7 +240,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             moderator = can_moderate(con, row, aid)
             settings = submission_settings(con, row["id"])
             contributes = moderator or (joined and settings["allow_members"])
-            source = listing(con)
+            restricted = protected_entries(con, row) if joined else {}
+            source = listing(con) | restricted
             prefs = watch_preferences(con)
             library = {
                 key: entry
@@ -266,6 +278,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                        if entry["kind"] in ("work", "meeting")
                        and (entry["kind"], entry["slug"]) not in included
                        and (entry["kind"], entry["slug"]) not in pending_keys
+                       and (moderator or (entry["kind"], entry["slug"]) not in restricted)
                        and (entry["kind"] != "work" or entry["slug"] not in blocked_choices)
                        and entry.get("allow_viewer_collections", True)] if contributes else []
             manage_members = con.execute("""SELECT a.id, a.name,
@@ -526,6 +539,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             if not moderator and not settings["allow_members"]:
                 abort(403, "Member submissions are disabled.")
             entry = listing(con, (kind, video)).get((kind, video))
+            if entry is None and moderator and kind == "work":
+                entry = protected_entries(con, group, video).get((kind, video))
             if entry is None:
                 abort(404)
             if not entry.get("allow_viewer_collections", True):
@@ -590,10 +605,10 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 if request.method == "DELETE":
                     con.execute("DELETE FROM audience_group_album WHERE group_id=? AND id=?", (group["id"], album))
                     return private("", 204)
-            public = listing(con)
+            available = listing(con) | protected_entries(con, group)
             allowed = {tuple(key) for key in con.execute(
                 "SELECT kind,slug FROM audience_group_video WHERE group_id=?", (group["id"],),
-            ) if tuple(key) in public}
+            ) if tuple(key) in available}
             title, sort, items = group_albums.parse(body, allowed)
             revision = uuid.uuid4().hex
             if album is None:
