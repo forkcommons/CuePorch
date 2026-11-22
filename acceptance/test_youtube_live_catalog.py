@@ -597,6 +597,15 @@ class YouTubeLiveCatalog(unittest.TestCase):
                             (series_event["id"], second)).fetchone()
                         self.assertEqual(("broadcast_pending", None), tuple(row))
 
+                    observed_writes = list(observed['writes'])
+                    delete_response = api.delete(later_targets + series_suffix, headers=operator_headers, data={"date": True})
+                    self.assertTrue(delete_response.ok, delete_response.text())
+                    self.assertEqual(active_series | {"skipped": True, "restorable": True},
+                                     api.get(later_targets + series_suffix, headers=operator_headers).json())
+                    restored_again = api.put(later_targets + series_suffix, headers=operator_headers, data={"date": True})
+                    self.assertTrue(restored_again.ok, restored_again.text())
+                    self.assertEqual(observed_writes, list(observed['writes']))
+
                     clock_at = datetime.fromtimestamp(second + 10, tz=timezone.utc)
                     observed["show_created"] = True
                     service.app = create_app(root, database, operator, "station")
