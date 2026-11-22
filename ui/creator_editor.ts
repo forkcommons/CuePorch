@@ -20,6 +20,12 @@ const links = form.elements.namedItem("links") as HTMLTextAreaElement;
 const visible = form.elements.namedItem("visible") as HTMLInputElement;
 const cover = form.elements.namedItem("cover") as HTMLSelectElement;
 const save = form.querySelector<HTMLButtonElement>("button[type=submit]")!;
+interface BlockItem {id: string; name: string; blocked: boolean}
+interface BlockPage {items: BlockItem[]; more: boolean}
+
+const blockList = document.querySelector<HTMLUListElement>("#creatorBlockList")!;
+const previousBlocks = document.querySelector<HTMLButtonElement>("#creatorBlocksPrevious")!;
+const nextBlocks = document.querySelector<HTMLButtonElement>("#creatorBlocksNext")!;
 let draft: Draft;
 
 function control(label: string, title: string, disabled: boolean, action: () => void) {
@@ -78,6 +84,39 @@ async function task(run: () => Promise<void>) {
   }
 }
 
+async function loadBlocks(page = 1): Promise<void> {
+  const response = await checked(await teamRequest(`profile/blocks?page=${page}`));
+  const {items, more}: BlockPage = await response.json();
+  if (!items.length && page > 1) return loadBlocks(page - 1);
+  blockList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No viewers to block.";
+    blockList.append(empty);
+  }
+  for (const item of items) {
+    const row = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `${item.blocked ? "Unblock" : "Block"} ${item.name}`;
+    button.onclick = () => {
+      button.disabled = true;
+      void task(async () => {
+        const path = `profile/blocks/${encodeURIComponent(item.id)}`;
+        await checked(await teamRequest(path, item.blocked ? "DELETE" : "PUT"));
+        await loadBlocks(page);
+        status.textContent = item.blocked ? "Viewer unblocked." : "Viewer blocked.";
+      }).finally(() => { button.disabled = false; });
+    };
+    row.append(button);
+    blockList.append(row);
+  }
+  previousBlocks.hidden = page <= 1;
+  nextBlocks.hidden = !more;
+  previousBlocks.onclick = () => void task(() => loadBlocks(page - 1));
+  nextBlocks.onclick = () => void task(() => loadBlocks(page + 1));
+}
+
 add.onclick = () => {
   if (!available.value) return;
   draft.featured.push(available.value);
@@ -116,5 +155,6 @@ void task(async () => {
     }
   }
   show(settings);
+  await loadBlocks();
   if (notice) status.textContent = notice;
 });

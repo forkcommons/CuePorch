@@ -7,6 +7,7 @@ import uuid
 from flask import abort, render_template, request, url_for
 
 import community_analytics
+import creator_blocks
 from library_discovery import entry_payload
 
 SCHEMA = """
@@ -89,6 +90,8 @@ def register(app, tx, viewer, mutation, listing, private):
                     return private(dict(liked=False, likes=0))
                 abort(404)
             if request.method == "PUT":
+                if creator_blocks.video_blocked(con, uid, kind, slug):
+                    abort(403, "You cannot like this video.")
                 added = con.execute("INSERT OR IGNORE INTO audience_like VALUES(?,?,?,?)", (uid, *key, time.time()))
                 if added.rowcount:
                     community_analytics.observe_like(con, uid, *key)

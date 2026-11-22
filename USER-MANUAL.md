@@ -92,6 +92,8 @@ Under **Manage your feed**, choose **Videos**, **Appearances**, and **Likes** fo
 
 In **Viewer account**, choose a **Language** under **Viewing preferences** to change the Watch catalog, Feed and their navigation. Choose **Use browser language** to reset the preference. The custom archive player uses the saved language on Watch and the browser language in an embed. Video titles, captions and user-written categories remain in their original language.
 
+In **Team workspace → Edit creator profile → Viewer blocks**, you can block a viewer who follows your profile or has commented on one of your videos. Blocking removes their follow, likes and comments across your own videos and prevents them from following, liking or commenting again. Public videos remain playable. Unblocking lets the viewer interact again. Previous follows, likes and comments stay removed.
+
 To share likes with followers, sign in to your viewer account and to Team with a published creator profile in the same browser. Open **Viewer account** and select **Share new likes**. Only likes added after you turn on sharing can appear, and only while the videos are public. Select **Stop sharing likes** in your viewer account to remove those likes from followers' feeds.
 
 In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.

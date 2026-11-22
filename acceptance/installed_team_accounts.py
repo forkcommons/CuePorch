@@ -656,6 +656,40 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             expect(feed.get_by_text("No public videos from creators you follow.")).to_be_visible()
             profile_visitor.get_by_role("button", name="Follow creator", exact=True).click()
             expect(profile_visitor.locator("[data-follower-count]")).to_have_text("1 follower")
+            block_api = base + "/api/team/profile/blocks"
+            assert guest.request.get(block_api).status == 401
+            own_blocks = contributor.request.get(block_api).json()["items"]
+            target = next(item for item in own_blocks if item["name"] == "Arts audience")
+            assert set(target) == {"id", "name", "blocked"} and not target["blocked"]
+            assert viewer.request.get(block_api).json()["items"] == []
+            assert viewer.request.put(f"{block_api}/{target['id']}", headers=TEAM, data={}).status == 404
+            like_path = f"{base}/api/viewer/likes/work/{second_work}"
+            comment_path = f"{base}/api/viewer/comments/work/{second_work}"
+            before = guest.request.get(like_path).json()["likes"]
+            assert guest.request.put(like_path, headers=marker, data={}).json()["likes"] == before + 1
+            earlier_comment = "A public screening note"
+            assert guest.request.post(comment_path, headers=marker, data={"body": earlier_comment}).status == 201
+            assert earlier_comment in [item["body"] for item in guest.request.get(comment_path).json()["comments"]]
+            contributor_page.reload()
+            contributor_page.get_by_role("button", name="Block Arts audience", exact=True).click()
+            expect(contributor_page.get_by_role("button", name="Unblock Arts audience", exact=True)).to_be_visible()
+            assert guest.request.put(follow_path, headers=marker, data={}).status == 403
+            assert guest.request.put(like_path, headers=marker, data={}).status == 403
+            assert guest.request.post(comment_path, headers=marker, data={"body": "Blocked note"}).status == 403
+            assert guest.request.get(like_path).json() == {"liked": False, "likes": before}
+            assert earlier_comment not in [item["body"] for item in guest.request.get(comment_path).json()["comments"]]
+            feed.reload()
+            expect(feed.locator(".watch-card")).to_have_count(0)
+            profile_visitor.goto(f"{base}/watch/work/{second_work}")
+            assert profile_visitor.locator("video").evaluate(
+                "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+            ) > 0
+            contributor_page.get_by_role("button", name="Unblock Arts audience", exact=True).click()
+            expect(contributor_page.get_by_text("Viewer unblocked.", exact=True)).to_be_visible()
+            profile_visitor.goto(profile_url)
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("0 followers")
+            profile_visitor.get_by_role("button", name="Follow creator", exact=True).click()
+            expect(profile_visitor.locator("[data-follower-count]")).to_have_text("1 follower")
             assert guest.request.delete(base + "/api/viewer/account", headers={"X-CuePorch-Viewer": "1"},
                                         data={"password": PASSWORD}).status == 204
             profile_visitor.reload()

@@ -26,6 +26,13 @@
       <button type="submit">Save creator profile</button>
     </form>
     <a id="publicCreatorLink" hidden>Open public profile</a>
+    <section id="creatorBlocks" aria-labelledby="creatorBlocksHeading">
+      <h2 id="creatorBlocksHeading">Viewer blocks</h2>
+      <p>Blocking a viewer removes their follow and their likes and comments on your videos. They can still watch public videos.</p>
+      <ul id="creatorBlockList"></ul>
+      <button type="button" id="creatorBlocksPrevious" hidden>Previous viewers</button>
+      <button type="button" id="creatorBlocksNext" hidden>Next viewers</button>
+    </section>
   </div>
 </main>
 <script type="module" src="/static/ui/creator_editor.js"></script>

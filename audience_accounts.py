@@ -222,6 +222,7 @@ def register(app, tx, origin_url, operator, listing, action, staff, current_team
                 con.execute("DELETE FROM audience_creator_follow_activity WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_creator_follow_likes WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM creator_shared_likes WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM creator_viewer_block WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_channel_follow WHERE account=?", (row["id"],))
