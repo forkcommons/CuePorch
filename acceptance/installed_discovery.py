@@ -127,7 +127,7 @@ def check_discovery(page, browser, base, auth, sample):
         viewer.reload()
         expect(picker.locator(f'option[value="work/{other}"]')).to_have_count(1)
         viewer.get_by_label("Video to add").select_option("work/" + first)
-        viewer.get_by_role("button", name="Add video").click()
+        viewer.get_by_role("button", name="Add video", exact=True).click()
         expect(viewer.get_by_role("link", name=first_title)).to_be_visible()
         assert viewer.request.put(group_api + "/videos/work/" + hidden, headers=group_marker, data={}).status == 404
         assert group_name in public("/watch/groups").text
@@ -203,6 +203,39 @@ def check_discovery(page, browser, base, auth, sample):
                 viewer.get_by_role("button", name="Save group", exact=True).click()
             expect(viewer.get_by_role("link", name=other_title, exact=True)).to_be_visible()
             expect(viewer.get_by_role("heading", name="Pending submissions", exact=True)).to_have_count(0)
+
+            create_album = viewer.locator("[data-album-form][data-album-id='']")
+            create_album.get_by_label("Album name").fill("Opening night")
+            for work in (other, first):
+                create_album.locator("[data-album-choices]").select_option("work/" + work)
+                create_album.get_by_role("button", name="Add video to album", exact=True).click()
+            create_album.locator(f"[data-album-video='work/{first}'] [data-album-move='up']").click()
+            create_album.get_by_role("button", name="Create album", exact=True).click()
+            playlist = viewer.locator("[data-album-playlist] a")
+            expect(playlist).to_have_text([first_title, other_title])
+            member_page.reload()
+            member_playlist = member_page.locator("[data-album-playlist] a")
+            expect(member_playlist).to_have_text([first_title, other_title])
+            expect(member_page.locator("[data-album-form]")).to_have_count(0)
+            member_playlist.first.click()
+            assert member_page.locator("video").evaluate(
+                "async video => {video.muted = true; await video.play(); return video.videoWidth;}"
+            ) > 0
+            member_page.goto(base + group_path)
+
+            viewer.get_by_text("Edit album", exact=True).click()
+            album_editor = viewer.locator("[data-album-form]:not([data-album-id=''])")
+            album_api = group_api + "/albums/" + album_editor.get_attribute("data-album-id")
+            album_revision = album_editor.locator("[name=revision]").input_value()
+            assert member.request.delete(album_api, headers=group_marker, data={"revision": album_revision}).status == 404
+            album_editor.get_by_label("Sort videos").select_option("title")
+            album_editor.get_by_role("button", name="Save album", exact=True).click()
+            expect(playlist).to_have_text([other_title, first_title])
+            assert viewer.request.delete(album_api, headers=group_marker, data={"revision": album_revision}).status == 409
+            viewer.get_by_text("Edit album", exact=True).click()
+            album_editor.get_by_role("button", name="Delete album", exact=True).click()
+            expect(viewer.get_by_role("heading", name="Opening night", exact=True)).to_have_count(0)
+            member_page.reload()
 
             before = viewer.locator("#groupSettings input[name=revision]").input_value()
             viewer.get_by_label("Group access").select_option("members")

@@ -114,6 +114,54 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-withdra
   };
 }
 
+for (const form of document.querySelectorAll<HTMLFormElement>("[data-album-form]")) {
+  const list = form.querySelector<HTMLOListElement>("[data-album-items]")!;
+  const choices = form.querySelector<HTMLSelectElement>("[data-album-choices]")!;
+  const template = form.querySelector<HTMLTemplateElement>("[data-album-item-template]")!;
+  const id = form.dataset.albumId;
+  const path = "groups/" + encodeURIComponent(groupSlug) + "/albums" + (id ? "/" + encodeURIComponent(id) : "");
+  const items = () => Array.from(list.querySelectorAll<HTMLLIElement>("[data-album-video]"));
+
+  form.addEventListener("click", event => {
+    const button = (event.target as Element).closest("button");
+    if (!button) return;
+    const item = button.closest<HTMLLIElement>("[data-album-video]");
+    if (button.matches("[data-album-add]")) {
+      const choice = choices.selectedOptions[0];
+      if (!choice || items().some(row => row.dataset.albumVideo === choice.value)) return;
+      const next = template.content.firstElementChild!.cloneNode(true) as HTMLLIElement;
+      next.dataset.albumVideo = choice.value;
+      next.querySelector<HTMLElement>("[data-album-item-title]")!.textContent = choice.textContent;
+      list.append(next);
+    } else if (button.dataset.albumMove === "up" && item?.previousElementSibling) {
+      item.previousElementSibling.before(item);
+      button.focus();
+    } else if (button.dataset.albumMove === "down" && item?.nextElementSibling) {
+      item.nextElementSibling.after(item);
+      button.focus();
+    } else if (button.matches("[data-album-remove]")) {
+      item?.remove();
+      choices.focus();
+    } else if (button.matches("[data-album-delete]")) {
+      void update(async () => {
+        await send("DELETE", path, {revision: new FormData(form).get("revision")});
+        location.reload();
+      });
+    }
+  });
+
+  form.onsubmit = event => {
+    event.preventDefault();
+    const fields = Object.fromEntries(new FormData(form));
+    void update(async () => {
+      await send(id ? "PUT" : "POST", path, {
+        ...fields, items: items().map(item => item.dataset.albumVideo!.split("/")),
+      });
+      location.reload();
+    });
+  };
+}
+
 const inviteForm = document.querySelector<HTMLFormElement>("#groupInvite");
 if (inviteForm) {
   const groupPath = "groups/" + encodeURIComponent(groupSlug);

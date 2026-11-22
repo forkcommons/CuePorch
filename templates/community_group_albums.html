@@ -1,0 +1,64 @@
+{% macro album_entry(video=none) %}
+  <li data-album-video="{{ video.kind ~ '/' ~ video.slug if video else '' }}">
+    <span data-album-item-title>{{ video.title if video else '' }}</span>
+    <button type="button" data-album-move="up">Move up</button>
+    <button type="button" data-album-move="down">Move down</button>
+    <button type="button" data-album-remove>Remove from album</button>
+  </li>
+{% endmacro %}
+
+{% macro album_form(album, choices) %}
+  <form method="post" data-album-form data-album-id="{{ album.id if album else '' }}">
+    <label>Album name <input name="title" value="{{ album.title if album else '' }}" maxlength="120" required></label>
+    <label>Sort videos
+      <select name="sort">
+        <option value="manual"{% if not album or album.sort == 'manual' %} selected{% endif %}>Manual</option>
+        <option value="recent"{% if album and album.sort == 'recent' %} selected{% endif %}>Newest added</option>
+        <option value="title"{% if album and album.sort == 'title' %} selected{% endif %}>Title</option>
+      </select>
+    </label>
+    <input type="hidden" name="revision" value="{{ album.revision if album else '' }}">
+    <ol data-album-items>
+      {% if album %}{% for video in album.edit_items %}{{ album_entry(video) }}{% endfor %}{% endif %}
+    </ol>
+    <template data-album-item-template>{{ album_entry() }}</template>
+    <label>Album video
+      <select data-album-choices>
+        {% for video in choices %}
+          <option value="{{ video.kind }}/{{ video.slug }}">{{ video.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="button" data-album-add{% if not choices %} disabled{% endif %}>Add video to album</button>
+    <button type="submit">{{ "Save album" if album else "Create album" }}</button>
+    {% if album %}<button type="button" data-album-delete>Delete album</button>{% endif %}
+  </form>
+{% endmacro %}
+
+{% if albums or moderator %}
+  <section aria-labelledby="groupAlbumsTitle">
+    <h2 id="groupAlbumsTitle">Albums</h2>
+    {% for album in albums %}
+      <section id="album-{{ album.id }}">
+        <h3>{{ album.title }}</h3>
+        <ol data-album-playlist>
+          {% for video in album.videos %}
+            <li><a href="{{ video.watch }}">{{ video.title }}</a></li>
+          {% else %}
+            <li>This album has no videos.</li>
+          {% endfor %}
+        </ol>
+        {% if moderator %}
+          <details>
+            <summary>Edit album</summary>
+            {{ album_form(album, videos) }}
+          </details>
+        {% endif %}
+      </section>
+    {% endfor %}
+    {% if moderator %}
+      <h3>Create an album</h3>
+      {{ album_form(none, videos) }}
+    {% endif %}
+  </section>
+{% endif %}
