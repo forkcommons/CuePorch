@@ -143,7 +143,17 @@ def check_discovery(page, browser, base, auth, sample):
             member_page.get_by_role("button", name="Join group", exact=True).click()
             expect(member_page.get_by_role("button", name="Leave group", exact=True)).to_be_visible()
             other_group_video = group_api + "/videos/work/" + other
-            assert member.request.put(other_group_video, headers=group_marker, data={}).status == 404
+            member_page.get_by_label("Video to add").select_option("work/" + other)
+            member_page.get_by_role("button", name="Submit video", exact=True).click()
+            expect(member_page.get_by_role("link", name=other_title, exact=True)).to_be_visible()
+            viewer.reload()
+            viewer.locator(f"[data-remove-group-video='work/{other}']").click()
+            expect(viewer.get_by_role("link", name=other_title, exact=True)).to_have_count(0)
+            viewer.get_by_label("Allow members to submit videos").uncheck()
+            with viewer.expect_navigation():
+                viewer.get_by_role("button", name="Save group", exact=True).click()
+            expect(viewer.get_by_label("Allow members to submit videos")).not_to_be_checked()
+            assert member.request.put(other_group_video, headers=group_marker, data={}).status == 403
             viewer.reload()
             membership = viewer.get_by_text("Manage group membership", exact=True)
             moderation = viewer.locator("[data-group-moderator]")
@@ -163,6 +173,36 @@ def check_discovery(page, browser, base, auth, sample):
             member_page.reload()
             expect(member_page.get_by_label("Video to add")).to_have_count(0)
             assert member.request.delete(other_group_video, headers=group_marker, data={}).status == 404
+            viewer.locator(f"[data-remove-group-video='work/{other}']").click()
+            expect(viewer.get_by_role("link", name=other_title, exact=True)).to_have_count(0)
+            viewer.get_by_label("Allow members to submit videos").check()
+            viewer.get_by_label("Require review for member submissions").check()
+            with viewer.expect_navigation():
+                viewer.get_by_role("button", name="Save group", exact=True).click()
+            member_page.reload()
+            member_page.get_by_label("Video to add").select_option("work/" + other)
+            member_page.get_by_role("button", name="Submit video", exact=True).click()
+            expect(member_page.get_by_role("heading", name="Pending submissions", exact=True)).to_be_visible()
+            expect(member_page.locator("#groupVideoList").get_by_role("link", name=other_title,
+                                                                      exact=True)).to_have_count(0)
+            assert "Pending submissions" not in public(group_path).text
+            viewer.reload()
+            expect(viewer.get_by_role("heading", name="Pending submissions", exact=True)).to_be_visible()
+            viewer.get_by_role("button", name="Approve", exact=True).click()
+            expect(viewer.get_by_role("link", name=other_title, exact=True)).to_be_visible()
+            viewer.locator(f"[data-remove-group-video='work/{other}']").click()
+            expect(viewer.get_by_role("link", name=other_title, exact=True)).to_have_count(0)
+            assert member.request.put(other_group_video, headers=group_marker, data={}).status == 202
+            member_page.reload()
+            member_page.get_by_role("button", name="Withdraw", exact=True).click()
+            expect(member_page.get_by_role("heading", name="Pending submissions", exact=True)).to_have_count(0)
+            assert member.request.put(other_group_video, headers=group_marker, data={}).status == 202
+            viewer.reload()
+            viewer.get_by_label("Require review for member submissions").uncheck()
+            with viewer.expect_navigation():
+                viewer.get_by_role("button", name="Save group", exact=True).click()
+            expect(viewer.get_by_role("link", name=other_title, exact=True)).to_be_visible()
+            expect(viewer.get_by_role("heading", name="Pending submissions", exact=True)).to_have_count(0)
 
             before = viewer.locator("#groupSettings input[name=revision]").input_value()
             viewer.get_by_label("Group access").select_option("members")

@@ -48,7 +48,11 @@ if (settings)
         event.preventDefault();
         const editing = settings.dataset.purpose === "edit";
         const slug = settings.dataset.slug ?? groupSlug;
-        const body = Object.fromEntries(new FormData(settings));
+        const formData = new FormData(settings);
+        const body = {
+            ...Object.fromEntries(formData),
+            ...(editing ? { allow_members: formData.has("allow_members"), require_review: formData.has("require_review") } : {}),
+        };
         void update(async () => {
             const response = await send(editing ? "PUT" : "POST", editing ? "groups/" + encodeURIComponent(slug) : "groups", body);
             location.assign((await response.json()).url);
@@ -88,6 +92,25 @@ if (videoForm)
 for (const button of document.querySelectorAll("[data-remove-group-video]")) {
     button.onclick = () => {
         void update(async () => { await send("DELETE", videoPath(button.dataset.removeGroupVideo ?? "")); location.reload(); });
+    };
+}
+for (const button of document.querySelectorAll("[data-approve-submission], [data-reject-submission]")) {
+    button.onclick = () => {
+        const value = (button.dataset.approveSubmission ?? button.dataset.rejectSubmission);
+        const approve = button.dataset.approveSubmission !== undefined;
+        const key = value.split("/").map(encodeURIComponent).join("/");
+        void update(async () => {
+            await send("POST", "groups/" + encodeURIComponent(groupSlug) + "/submissions/" + key, { approve });
+            location.reload();
+        });
+    };
+}
+for (const button of document.querySelectorAll("[data-withdraw-submission]")) {
+    button.onclick = () => {
+        void update(async () => {
+            await send("DELETE", videoPath(button.dataset.withdrawSubmission ?? ""));
+            location.reload();
+        });
     };
 }
 const inviteForm = document.querySelector("#groupInvite");

@@ -24,14 +24,32 @@
         {% endfor %}
       </ul>
     </section>
-    {% if moderator %}
+    {% if contributes %}
       <form id="groupVideoForm" method="post">
         <label for="groupVideoSelect">Video to add</label>
         <select id="groupVideoSelect" name="video">
           {% for choice in choices %}<option value="{{ choice.kind }}/{{ choice.slug }}">{{ choice.title }}</option>{% endfor %}
         </select>
-        <button type="submit"{% if not choices %} disabled{% endif %}>Add video</button>
+        <button type="submit"{% if not choices %} disabled{% endif %}>{{ "Add video" if moderator else "Submit video" }}</button>
+        {% if not moderator and require_review %}<p>Submissions are reviewed before appearing in the group.</p>{% endif %}
       </form>
+    {% endif %}
+    {% if pending %}
+      <section>
+        <h2>Pending submissions</h2>
+        <ul id="groupPendingList">
+          {% for item in pending %}
+            <li>{{ item.title }}
+              {% if moderator %}
+                <button type="button" data-approve-submission="{{ item.kind }}/{{ item.slug }}"{% if not item.can_approve %} disabled{% endif %}>Approve</button>
+                <button type="button" data-reject-submission="{{ item.kind }}/{{ item.slug }}">Reject</button>
+              {% else %}
+                <button type="button" data-withdraw-submission="{{ item.kind }}/{{ item.slug }}">Withdraw</button>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
     {% endif %}
     {% if owner %}
       <form id="groupSettings" data-purpose="edit" data-slug="{{ group.slug }}" method="post">
@@ -39,6 +57,8 @@
         <label>Link name <input name="slug" value="{{ group.slug }}" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9\-]{1,62}[a-z0-9]" required></label>
         <label>Description <textarea name="description" maxlength="1500" rows="3">{{ group.description }}</textarea></label>
         <label>Group access <select name="access"><option value="public"{% if group.access == "public" %} selected{% endif %}>Public</option><option value="members"{% if group.access == "members" %} selected{% endif %}>Members only</option></select></label>
+        <label><input type="checkbox" name="allow_members"{% if allow_members %} checked{% endif %}> Allow members to submit videos</label>
+        <label><input type="checkbox" name="require_review"{% if require_review %} checked{% endif %}> Require review for member submissions</label>
         <input type="hidden" name="revision" value="{{ group.revision }}">
         <button type="submit">Save group</button>
       </form>

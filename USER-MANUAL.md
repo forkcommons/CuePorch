@@ -34,6 +34,8 @@ Open **Manage group membership** on a group you own. Enter an email address and 
 
 Choose **Make moderator** next to a current member to let them add and remove group videos. The owner manages the group settings, invitations, member removal and ownership. **Revoke moderator** ends the member’s curation access.
 
+Members can submit eligible videos and they appear automatically. The group owner can turn off **Allow members to submit videos** or turn on **Require review for member submissions**. With review on, the owner and moderators can approve or reject items in **Pending submissions**. Members can withdraw their own pending submissions. Switching back to automatic publishing releases the pending items whose videos and contributors still qualify.
+
 In the operator Library, open **Staff Picks**. Add public videos, use **Move up** and **Move down** to arrange them, then select **Save Staff Picks**. The first picks appear in Explore, and the full list has its own page. Making a pick private or deleting it hides it from Watch and closes its public cover link. The selection stays in the editor so it can be removed or shown again if the video becomes public.
 
 Open **Viewer account** from Watch to create an account or sign in. Use **Save to Watch Later** on a public video, then open **Watch Later** from the Watch navigation. Your list follows your account across browsers. A saved item is visible while its video is public. To remove an item, use the list or the video's **Remove from Watch Later** button.
