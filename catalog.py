@@ -13,7 +13,10 @@ from filelock import FileLock
 from cueporch import checksum, dump, import_collection, work_id
 
 
-VERSION_FIELDS = ("duration_seconds", "disposition", "chapters", "editor_job", "editor_assets", "stock_asset")
+VERSION_FIELDS = (
+    "duration_seconds", "disposition", "chapters", "editor_job", "editor_assets", "stock_asset",
+    "source_version", "source_version_number",
+)
 
 
 def video_version_key(work):
@@ -136,7 +139,9 @@ def merge_collection(source, destination):
         works = {w["id"]: w for w in current["works"]}
         added_at = datetime.now(timezone.utc).isoformat()
         for work in incoming["works"]:
-            for item in work["files"]:
+            incoming_versions = work.get("versions_history", [])
+            history_files = [file for version in incoming_versions for file in version["files"]]
+            for item in work["files"] + history_files:
                 digest = item["sha256"]
                 target = destination / "objects" / digest
                 if target.exists() and checksum(target) == digest:
@@ -171,11 +176,24 @@ def merge_collection(source, destination):
             for field in ("language_edits", "chapter_edits"):
                 if prior and field in prior:
                     work[field] = prior[field]
-            if prior and video_version_key(prior) != video_version_key(work):
-                versions = prior.get("versions_history", [])
-                work["versions_history"] = versions + [version_snapshot(prior)]
-            elif prior and "versions_history" in prior:
-                work["versions_history"] = prior["versions_history"]
+            versions = list(prior.get("versions_history", [])) if prior else []
+            active_key = video_version_key(work)
+            if prior and video_version_key(prior) != active_key:
+                versions.append(version_snapshot(prior))
+            if incoming_versions or versions or (prior and "versions_history" in prior):
+                seen_keys = {active_key}
+                seen_sources = {work.get("source_version")} - {None}
+                history = []
+                for version in [*versions, *incoming_versions]:
+                    key = video_version_key(version)
+                    identity = version.get("source_version")
+                    if key in seen_keys or identity in seen_sources:
+                        continue
+                    seen_keys.add(key)
+                    if identity is not None:
+                        seen_sources.add(identity)
+                    history.append(version)
+                work["versions_history"] = history
             works[work["id"]] = work
         current["works"] = list(works.values())
         dump(destination / "manifest.json", current)

@@ -87,6 +87,30 @@ async function poll(page = currentPage) {
     const folder = w.source_folder_path ?? (w.source_folder_unavailable ? "Folder unavailable" : "Unfiled");
     for (const v of [w.title, w.source_id, folder, w.disposition, w.source_privacy])
       row.insertCell().textContent = v;
+    const versions: { uri?: string; number?: number; state: string; issue?: string }[] = w.version_recovery || [];
+    const previousCuts = row.insertCell();
+    if (!versions.length) {
+      previousCuts.textContent = w.unavailable_metadata?.["/versions"] ? "Unavailable" : "None reported";
+    } else {
+      const needed = versions.filter(version => version.state === "owner_file_needed").length;
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `${versions.length} previous ${versions.length === 1 ? "cut" : "cuts"}` +
+        (needed ? ` · ${needed} ${needed === 1 ? "needs a file" : "need files"}` : "");
+      const list = document.createElement("ul");
+      for (const version of versions) {
+        const item = document.createElement("li");
+        const label = typeof version.number === "number" ? `Vimeo version ${version.number}` :
+          version.uri ? `Vimeo version ${version.uri.split("/").pop()}` : "Previous Vimeo cut";
+        const status = version.state === "recovered" ? "Recovered" :
+          version.state === "available" ? "Available to transfer" :
+          version.state === "retained" ? "Already in Library" : "Owner file needed";
+        item.textContent = [label, status, version.issue].filter(Boolean).join(" · ");
+        list.append(item);
+      }
+      details.append(summary, list);
+      previousCuts.append(details);
+    }
     const exceptions = [
       ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
       ...(w.transfer_issues || []).map((issue: {role: string; http_status?: number; reason?: string}) =>

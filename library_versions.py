@@ -30,6 +30,9 @@ def register(app, tx, staff, get_work, root, remember_work):
                         "current": index == 0,
                         "saved_at": version.get("version_saved_at"),
                         "duration_seconds": version.get("duration_seconds"),
+                        **({"source_version": version["source_version"],
+                            "source_version_number": version.get("source_version_number")}
+                           if version.get("source_version") else {}),
                         "video_files": [
                             f
                             for f in version["files"]
