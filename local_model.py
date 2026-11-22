@@ -97,8 +97,8 @@ def generate(prompt, schema):
             raise ModelError("The configured local model returned invalid JSON.") from exc
 
 
-def start_worker(app, lock_path, label, process):
-    if not runtime():
+def start_worker(app, lock_path, label, process, *, ready=None):
+    if not (ready or runtime)():
         return lambda: None
     stopping = Event()
 

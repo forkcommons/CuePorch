@@ -1,6 +1,7 @@
 import { checked, sessionMarker } from "./team_api.js";
 import { setupSeriesPresentation } from "./event_series_presentation.js";
 import { setupSeriesLocalization } from "./event_series_localization.js";
+import { setupSeriesTranslationJobs } from "./event_series_translation_jobs.js";
 import type { Localization } from "./event_series_localization.js";
 import type { Presentation } from "./event_series_presentation.js";
 
@@ -75,6 +76,12 @@ let credential =
   sessionStorage.getItem("cueporchOperator") || sessionMarker;
 
 const localization = setupSeriesLocalization(byId("seriesLocalization"));
+const translationJobs = setupSeriesTranslationJobs(
+  byId("seriesLocalization"),
+  api,
+  (language, translation) => localization.applyDraft(language, translation),
+  () => withBusy(load),
+);
 
 const presentation = setupSeriesPresentation(
   document.querySelector<HTMLElement>("#seriesPresentation")!,
@@ -185,10 +192,14 @@ function field(name: string) {
 function renderEditor(entry: Series | null) {
   current = entry;
   form.hidden = !entry;
-  if (!entry) return;
+  if (!entry) {
+    translationJobs.populate(null);
+    return;
+  }
 
   presentation.populate(entry.settings.presentation);
   localization.populate(entry.settings.localization);
+  translationJobs.populate(entry);
   editorHeading.textContent = entry.settings.title;
   (field("title") as HTMLInputElement).value = entry.settings.title;
   (field("description") as HTMLTextAreaElement).value =
