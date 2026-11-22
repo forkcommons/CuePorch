@@ -1,5 +1,11 @@
 import {viewerRequest} from "./audience_api.js";
 
+const feedFeedback = document.querySelector<HTMLElement>("#viewerFeed")?.dataset;
+const updateError = feedFeedback?.updateError || "Could not update your follows.";
+const loadError = feedFeedback?.loadError || "Could not load your follow status.";
+const creatorError = feedFeedback?.creatorError || "Could not unfollow creator.";
+const saveError = feedFeedback?.saveError || "Could not save preferences.";
+
 interface FollowCategoryState {
   following: boolean;
 }
@@ -32,7 +38,7 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
       }
 
       if (!response.ok) {
-        if (method !== "GET") status.textContent = "Could not update your follows.";
+        if (method !== "GET") status.textContent = updateError;
         return;
       }
 
@@ -49,7 +55,7 @@ for (const widget of document.querySelectorAll<HTMLElement>("[data-follow-catego
       button.hidden = false;
       signIn.hidden = true;
     } catch {
-      status.textContent = "Could not load your follow status.";
+      status.textContent = loadError;
     } finally {
       button.disabled = false;
     }
@@ -78,12 +84,12 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-feed-un
     try {
       const response = await viewerRequest("follow/" + encodeURIComponent(handle), "DELETE");
       if (!response.ok) {
-        if (status) status.textContent = "Could not unfollow creator.";
+        if (status) status.textContent = creatorError;
         return;
       }
       window.location.reload();
     } catch {
-      if (status) status.textContent = "Could not unfollow creator.";
+      if (status) status.textContent = creatorError;
     } finally {
       button.disabled = false;
     }
@@ -104,12 +110,12 @@ for (const form of document.querySelectorAll<HTMLFormElement>("[data-creator-act
         videos: fields.has("videos"), appearances: fields.has("appearances"), likes: fields.has("likes"),
       });
       if (!response.ok) {
-        status.textContent = "Could not save preferences.";
+        status.textContent = saveError;
         return;
       }
       window.location.reload();
     } catch {
-      status.textContent = "Could not save preferences.";
+      status.textContent = saveError;
     } finally {
       save.disabled = false;
     }

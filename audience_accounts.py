@@ -23,6 +23,7 @@ from browser_account_security import (email_key, json_mutation, password, privat
 import community_analytics
 import content_rating
 import creator_profiles
+import viewer_locale
 from library_analytics import source_origin
 from library_discovery import PAGE_SIZE, entry_payload, ordered
 
@@ -167,9 +168,12 @@ def register(app, tx, origin_url, operator, listing, action, staff, current_team
     def viewer_account_page():
         scheme()
         destination = request.args.get("next", "")
+        with tx() as con:
+            language_context = viewer_locale.template_context(viewing_preferences(con))
         return private(render_template("viewer_account.html", content_choices=content_rating.PREFERENCE_CHOICES,
                                        can_recover=bool(email_security.config),
-                                       destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else ""))
+                                       destination=destination if VIEWER_RETURN_PATH.fullmatch(destination) else "",
+                                       browser_language=viewer_locale.choose({}), **language_context))
 
     @app.route("/api/viewer/preferences", methods=("GET", "PUT"))
     def viewer_preferences():
@@ -180,20 +184,20 @@ def register(app, tx, origin_url, operator, listing, action, staff, current_team
             autoplay = body["autoplay"]
             if autoplay is not None and type(autoplay) is not bool:
                 abort(400)
+        if isinstance(body, dict) and "language" in body:
+            language = body["language"]
+            if language is not None and (not isinstance(language, str) or language not in viewer_locale.LANGUAGES):
+                abort(400, "Choose a supported language.")
         settings = content_rating.validate_preference(body) if request.method == "PUT" else None
         with tx() as con:
             account = current(con, session)["id"]
             if settings is None:
                 return private(account_preferences(con, account))
-            if isinstance(body, dict) and "autoplay" in body:
-                if body["autoplay"] is None:
-                    settings.pop("autoplay", None)
-                else:
-                    settings["autoplay"] = body["autoplay"]
-            else:
-                existing = account_preferences(con, account)
-                if isinstance(existing, dict) and existing.get("autoplay") is not None:
-                    settings["autoplay"] = existing["autoplay"]
+            existing = account_preferences(con, account)
+            for name in ("autoplay", "language"):
+                value = body.get(name, existing.get(name))
+                if value is not None:
+                    settings[name] = value
             con.execute("""INSERT INTO audience_view_preferences VALUES(?,?) ON CONFLICT(account)
                            DO UPDATE SET maturity=excluded.maturity""", (account, json.dumps(settings)))
         return private(settings)

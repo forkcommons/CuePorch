@@ -17,6 +17,50 @@ def check_discovery(page, browser, base, auth, sample):
     def public(path):
         return requests.get(base + path, timeout=15)
 
+    with browser.new_context(locale="ja-JP") as locale_context:
+        locale_page = locale_context.new_page()
+        marker = {"X-CuePorch-Viewer": "1"}
+        preferences = base + "/api/viewer/preferences"
+        credentials = {"name": "Language fixture", "email": f"lang-{uuid.uuid4().hex}@example.invalid",
+                       "password": "Language fixture passphrase!"}
+        assert locale_context.request.post(base + "/api/viewer/signup", headers=marker, data=credentials).status == 201
+        locale_page.goto(base + "/account")
+        section = locale_page.locator("#viewerPreferences")
+        language = section.locator("select[name=language]")
+        expect(language).to_be_visible()
+        expect(language).to_have_value("")
+        language.select_option("fr")
+        with locale_page.expect_navigation():
+            section.get_by_role("button", name="視聴設定を保存").click()
+        expect(locale_page.locator("#viewerAccount")).to_have_attribute("data-language", "fr")
+        expect(locale_page.get_by_role("button", name="Enregistrer les préférences de visionnage")).to_be_visible()
+        locale_page.goto(base + "/watch/feed")
+        expect(locale_page.locator("html")).to_have_attribute("lang", "fr")
+        expect(locale_page.get_by_role("heading", name="Fil", exact=True)).to_be_visible()
+        assert locale_context.request.put(preferences, headers=marker, data={"mode": "all"}).json()["language"] == "fr"
+        assert locale_context.request.put(preferences, headers=marker,
+                                          data={"mode": "all", "language": []}).status == 400
+        with browser.new_context(locale="en-US") as returning:
+            assert returning.request.post(base + "/api/viewer/session", headers=marker, data=credentials).ok
+            returned = returning.new_page()
+            returned.goto(base + "/watch/feed")
+            expect(returned.get_by_role("heading", name="Fil", exact=True)).to_be_visible()
+        for tag, heading in (("en", "Feed"), ("es", "Feed"), ("de", "Feed"), ("pt-BR", "Feed"), ("ko", "피드")):
+            assert locale_context.request.put(preferences, headers=marker, data={"mode": "all", "language": tag}).ok
+            locale_page.reload()
+            expect(locale_page.locator("html")).to_have_attribute("lang", tag)
+            expect(locale_page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
+        locale_page.goto(base + "/account")
+        expect(language).to_have_value("ko")
+        language.select_option("")
+        with locale_page.expect_navigation():
+            section.get_by_role("button", name="시청 환경설정 저장").click()
+        locale_page.goto(base + "/watch/feed")
+        expect(locale_page.locator("html")).to_have_attribute("lang", "ja")
+        expect(locale_page.get_by_role("heading", name="フィード", exact=True)).to_be_visible()
+    fallback = requests.get(base + "/watch/feed", headers={"Accept-Language": "ko;q=0,zh-Hans;q=1"}, timeout=15)
+    assert '<html lang="en">' in fallback.text
+
     public_settings = dict(visibility="public", embed="anywhere", domains=[], download=False)
     private_settings = dict(visibility="private", embed="disabled", domains=[], download=False)
 

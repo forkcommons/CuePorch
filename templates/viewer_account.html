@@ -8,7 +8,7 @@
 </head>
 <body>
   {% include "viewer_watch_nav.html" %}
-  <main id="viewerAccount" class="viewer-account" data-destination="{{ destination }}">
+  <main id="viewerAccount" class="viewer-account" data-destination="{{ destination }}" data-language="{{ viewer_language }}" data-browser-language="{{ browser_language }}">
     <h1>Viewer account</h1>
     <p id="viewerAccountStatus" role="status"></p>
     <div id="viewerEntrance" class="account-entrance" hidden>
@@ -70,7 +70,16 @@
               <option value="off">Wait for me</option>
             </select>
           </label>
-          <button type="submit">Save viewing preferences</button>
+          <label lang="{{ viewer_language }}">
+            {{ viewer_labels.language }}
+            <select name="language">
+              <option value="">{{ viewer_labels.browser_language }}</option>
+              {% for code, name in viewer_languages.items() %}
+              <option value="{{ code }}" lang="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit" lang="{{ viewer_language }}">{{ viewer_labels.save_viewing_preferences }}</button>
         </form>
         <p><a href="{{ url_for('viewer_feed') }}#feed-preferences">Manage your feed</a></p>
       </section>
