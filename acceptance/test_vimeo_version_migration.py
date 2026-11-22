@@ -134,6 +134,121 @@ class VimeoVersionMigration(unittest.TestCase):
             for manifest in self.temp.rglob("*.json"):
                 self.assertNotIn("fixture-signature", manifest.read_text(encoding="utf8"))
 
+    def test_migration_preserves_previous_subtitles(self):
+        uid = work_id("station", "vimeo", "71")
+        work = f"/api/library/work/{uid}"
+        earlier_mp4, earlier_webm = "/videos/71/versions/202", "/videos/71/versions/200"
+        texttracks = "/videos/71/versions/202/texttracks"
+        subtitle_paths = ("/media/previous-fr.vtt", "/media/previous-en.srt")
+
+        def versions():
+            response = self.client.get(work + "/versions", headers=self.auth)
+            self.assertEqual(200, response.status_code, response.get_data(as_text=True))
+            return response.get_json()
+
+        def review(allow_versions):
+            response = self.client.post(work + "/review-links", headers=self.auth, json={
+                "name": "Migrated previous cuts", "allow_versions": allow_versions,
+            })
+            self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+            return self.base + response.get_json()["path"]
+
+        self.denied.add(texttracks)
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            previous = page.get_by_text("3 previous cuts", exact=False)
+            previous.click()
+            expect(page.get_by_text("Source inventory unavailable · HTTP 403", exact=True)).to_be_visible()
+
+            transfer = page.get_by_role("button", name="Transfer privately")
+            transfer.click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=18000)
+            before = versions()
+            self.assertEqual(3, len(before))
+            current = before[0]
+            self.assertEqual((True, "/videos/71/versions/203"), (current["current"], current["source_version"]))
+            old = {item["source_version"]: item for item in before[1:]}
+            self.assertEqual({earlier_mp4, earlier_webm}, set(old))
+            earlier = old[earlier_mp4]["key"]
+
+            old_review = review(True) + "?version=" + earlier
+            denied_review = review(False) + "?version=" + earlier
+            viewer = browser.new_page()
+            self.assertEqual(404, viewer.request.get(denied_review).status)
+            viewer.goto(old_review)
+            expect(viewer.locator('#reviewTourPlayer track[srclang="fr"]')).to_have_count(0)
+
+            self.denied.discard(texttracks)
+            page.get_by_role("button", name="Preview transfer").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            previous.click()
+            expect(page.get_by_text("fr · subtitles · Available to transfer")).to_be_visible()
+            expect(page.get_by_text("de · subtitles · Disabled on Vimeo")).to_be_visible()
+            expect(page.get_by_text("es · captions · Owner file needed")).to_be_visible()
+            self.assertEqual([0, 0], [self.requests[path] for path in subtitle_paths])
+
+            transfer.click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=18000)
+            after = versions()
+            self.assertEqual(current["key"], after[0]["key"])
+            after_old = {item["source_version"]: item for item in after[1:]}
+            self.assertEqual(earlier, after_old[earlier_mp4]["key"])
+            self.assertEqual([1, 1], [self.requests[path] for path in subtitle_paths])
+            self.assertEqual(0, self.requests["/media/disabled-de.vtt"])
+            self.assertEqual(404, viewer.request.get(denied_review).status)
+
+            viewer.goto(old_review)
+            video = viewer.locator("#reviewTourPlayer")
+            kind = video.evaluate(
+                """async (video) => {
+                    const track = video.querySelector('track[srclang="fr"]');
+                    track.track.mode = "showing";
+                    video.muted = true;
+                    await video.play();
+                    return track.kind;
+                }"""
+            )
+            self.assertEqual("subtitles", kind)
+            viewer.wait_for_function(
+                """() => {
+                    const track = document.querySelector('#reviewTourPlayer track[srclang="fr"]');
+                    const cues = (track && track.track.activeCues) || [];
+                    return Array.from(cues).some(cue => cue.text.includes("Earlier cut caption"));
+                }"""
+            )
+
+            resp = self.client.post(work + "/versions/restore", json={"current": current["key"], "restore": earlier}, headers=self.auth)
+            self.assertEqual(resp.status_code, 200)
+            resp = self.client.get(work + "/languages/fr", headers=self.auth)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertEqual(data["cues"][0]["text"], "Earlier cut caption")
+            english = self.client.get(work + "/languages/en", headers=self.auth)
+            self.assertEqual(200, english.status_code)
+            self.assertEqual("Earlier cut English", english.get_json()["cues"][0]["text"])
+            data["cues"][0]["text"] = "Local French edit"
+            resp = self.client.put(work + "/languages/fr", json={"version": data["version"], "revision": data["revision"], "cues": data["cues"]}, headers=self.auth)
+            self.assertEqual(resp.status_code, 200)
+            transfer.click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=18000)
+            resp = self.client.get(work + "/languages/fr", headers=self.auth)
+            self.assertEqual(resp.get_json()["cues"][0]["text"], "Local French edit")
+            resp = self.client.get(work + "/languages/fr", headers=self.auth)
+            data = resp.get_json()
+            resp = self.client.delete(work + "/languages/fr", json={"version": data["version"], "revision": data["revision"]}, headers=self.auth)
+            self.assertIn(resp.status_code, (200, 204))
+            transfer.click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=18000)
+            resp = self.client.get(work + "/languages/fr", headers=self.auth)
+            self.assertEqual(resp.status_code, 404)
+            for manifest in self.temp.rglob("*.json"):
+                self.assertNotIn("fixture-signature", manifest.read_text(encoding="utf8"))
+
     def test_migration_preserves_version_alternate_audio(self):
         uid = work_id("station", "vimeo", "71")
         work = f"/api/library/work/{uid}"

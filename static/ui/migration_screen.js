@@ -109,6 +109,27 @@ async function poll(page = currentPage) {
                     version.state === "available" ? "Available to transfer" :
                         version.state === "retained" ? "Already in Library" : "Owner file needed";
                 item.textContent = [label, status, version.issue].filter(Boolean).join(" · ");
+                if (version.text_tracks?.length) {
+                    const trackList = document.createElement("ul");
+                    const statusLabels = {
+                        available: "Available to transfer",
+                        recovered: "Recovered",
+                        owner_file_needed: "Owner file needed",
+                        inventory_unavailable: "Source inventory unavailable",
+                        disabled: "Disabled on Vimeo",
+                    };
+                    for (const track of version.text_tracks) {
+                        const trackItem = document.createElement("li");
+                        trackItem.textContent = [
+                            track.language,
+                            track.kind,
+                            statusLabels[track.state] ?? track.state,
+                            track.issue,
+                        ].filter(Boolean).join(" · ");
+                        trackList.append(trackItem);
+                    }
+                    item.append(trackList);
+                }
                 list.append(item);
             }
             details.append(summary, list);

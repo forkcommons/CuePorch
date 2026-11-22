@@ -50,7 +50,7 @@
     {% endif %}
     <video id="reviewTourPlayer" controls preload="metadata" data-frame-rate="{{ renditions[0].fps or '' }}" data-frames="{{ url_for('review_frames', uid=uid, version=selected) }}" {% if not allow_download %}controlslist="nodownload"{% endif %} src="{{ url_for('review_media', uid=uid, version=selected) }}">
       {% for item in tracks %}
-      <track kind="captions" srclang="{{ item.language }}" label="{{ item.language }}" src="{{ url_for('review_media', uid=uid, version=selected, track=loop.index0) }}">
+      <track kind="{{ item.text_kind if item.text_kind in ['captions', 'subtitles'] else 'captions' }}" srclang="{{ item.language }}" label="{{ item.language }}" src="{{ url_for('review_media', uid=uid, version=selected, track=loop.index0) }}">
       {% endfor %}
     </video>
     <div id="reviewPlayerControls">
