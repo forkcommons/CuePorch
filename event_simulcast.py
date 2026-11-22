@@ -1149,7 +1149,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
         if live_now and (event_revision, revision) != (automatic["event_revision"], automatic["revision"]):
             return {"state": "canceled"}, 200
 
-        def check(con):
+        def check(con, *, check_series=True):
             if not live_now:
                 enforce_sharing(con, feature="outbound")
             current, _, _, grant, _ = facebook_access(con, *key)
@@ -1158,7 +1158,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if live_now and not con.execute("""SELECT 1 FROM live_occurrence
                 WHERE event=? AND opens=? AND delivery='ready'""", key[:2]).fetchone():
                 abort(409, "The occurrence is no longer ready to stream.")
-            if live_now and automatic["series"] and not con.execute("""SELECT 1 FROM facebook_live_series
+            if check_series and live_now and automatic["series"] and not con.execute("""SELECT 1 FROM facebook_live_series
                 WHERE event=? AND page=? AND revision=? AND event_revision=? AND after_opens<? AND privacy IS ?""",
                 (uid, page, revision, event_revision, opens, automatic["privacy"])).fetchone():
                 abort(409, "Automatic starts for future dates are no longer enabled.")
@@ -1201,6 +1201,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                         **options),
                     save, *key, revision,
                     automatic=automatic,
+                    final_check=lambda con: check(con, check_series=False),
                 )
         except Timeout:
             if live_now:
