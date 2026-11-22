@@ -1,5 +1,6 @@
 """Viewer-owned community groups and their playable Watch programs."""
 
+import json
 import re
 import time
 import uuid
@@ -8,6 +9,7 @@ from flask import abort, render_template, request, url_for
 
 from browser_account_security import email_key
 import content_rating
+import group_albums
 from library_discovery import PAGE_SIZE, entry_payload, ordered
 import mail_relay
 
@@ -39,7 +41,7 @@ CREATE TABLE IF NOT EXISTS audience_group_submission(
  PRIMARY KEY(group_id,kind,slug));
 CREATE INDEX IF NOT EXISTS audience_group_submission_account
  ON audience_group_submission(account);
-"""
+""" + group_albums.SCHEMA
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 ACCESS = ("public", "members")
 INVITE_SECONDS = 7 * 86400
@@ -122,6 +124,7 @@ def delete(con, uid):
     con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission_policy WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_submission WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_album WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group WHERE id=?", (uid,))
 
 
@@ -232,6 +235,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 pending=pending,
                 **settings,
                 videos=videos,
+                albums=group_albums.rendered(con, row["id"], videos),
                 choices=choices,
                 manage_members=manage_members,
                 group_invites=group_invites,
@@ -509,3 +513,37 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 con.execute("INSERT OR IGNORE INTO audience_group_video VALUES(?,?,?,?)", (*key, time.time()))
             con.execute("DELETE FROM audience_group_submission WHERE group_id=? AND kind=? AND slug=?", key)
         return private("", 204)
+
+    @app.post("/api/viewer/groups/<slug>/albums")
+    @app.route("/api/viewer/groups/<slug>/albums/<album>", methods=("PUT", "DELETE"))
+    def viewer_group_album(slug, album=None):
+        body = mutation()
+        with tx() as con:
+            group = get_group(con, slug)
+            if not can_moderate(con, group, viewer(con)["id"]):
+                abort(404)
+            if album is not None:
+                row = con.execute("SELECT revision FROM audience_group_album WHERE group_id=? AND id=?",
+                                  (group["id"], album)).fetchone()
+                if row is None:
+                    abort(404)
+                if body.get("revision") != row["revision"]:
+                    abort(409, "This album changed. Reload it before saving.")
+                if request.method == "DELETE":
+                    con.execute("DELETE FROM audience_group_album WHERE group_id=? AND id=?", (group["id"], album))
+                    return private("", 204)
+            public = listing(con)
+            allowed = {tuple(key) for key in con.execute(
+                "SELECT kind,slug FROM audience_group_video WHERE group_id=?", (group["id"],),
+            ) if tuple(key) in public}
+            title, sort, items = group_albums.parse(body, allowed)
+            revision = uuid.uuid4().hex
+            if album is None:
+                album = uuid.uuid4().hex
+                con.execute("INSERT INTO audience_group_album VALUES(?,?,?,?,?,?,?)",
+                            (album, group["id"], title, sort, json.dumps(items), revision, time.time()))
+                return private(dict(id=album, revision=revision), 201)
+            con.execute("""UPDATE audience_group_album
+                SET title=?, sort=?, items=?, revision=? WHERE group_id=? AND id=?""",
+                (title, sort, json.dumps(items), revision, group["id"], album))
+            return private(dict(id=album, revision=revision))
