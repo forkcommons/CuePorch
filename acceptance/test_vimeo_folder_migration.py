@@ -15,10 +15,44 @@ from cueporch import work_id
 from demo_source import build_server
 from institution import create_app
 from test_drive_import import QuietHandler, service_worker
-from vimeo_transfer import SourceFailure, folder_inventory
+from vimeo_transfer import SourceFailure, folder_inventory, resolve_archive_recordings
 
 
 class VimeoFolderInventory(unittest.TestCase):
+    def test_archive_only_owner_check(self):
+        from io import BytesIO
+
+        account = "/users/10"
+        opened = []
+
+        class SourceDouble:
+            base = "https://api.vimeo.com"
+
+            def open(self, url, authenticated):
+                opened.append((url, authenticated))
+                vid = url.rsplit("/", 1)[-1]
+                if vid == "999":
+                    raise SourceFailure(403)
+                owner = "/users/11" if vid == "997" else account
+                uri = "/videos/995" if vid == "996" else "/videos/" + vid
+                return BytesIO(json.dumps(dict(uri=uri, user=dict(uri=owner))).encode())
+
+        recordings = [dict(source_id=vid, work=None) for vid in ("998", "997", "996", "999", "71")]
+        repeated = [dict(source_id=vid, work=None) for vid in ("998", "999")]
+        events = [dict(recordings=recordings), dict(recordings=repeated)]
+        videos, ids = [], {"71"}
+        resolve_archive_recordings("station", SourceDouble(), account, events, videos, ids)
+        self.assertEqual([dict(uri="/videos/998", user=dict(uri=account))], videos)
+        self.assertEqual({"71", "998"}, ids)
+        self.assertEqual(work_id("station", "vimeo", "998"), recordings[0]["work"])
+        self.assertEqual(recordings[0], repeated[0])
+        self.assertEqual(recordings[3], repeated[1])
+        for rejected in recordings[1:4]:
+            self.assertIsNone(rejected["work"])
+            self.assertIn("issue", rejected)
+        self.assertEqual([(f"https://api.vimeo.com/videos/{vid}", True)
+                          for vid in ("998", "997", "996", "999")], opened)
+
     def test_denied_folder_list_uses_complete_video_ancestry(self):
         class Denied:
             def pages(self, path):
@@ -82,6 +116,7 @@ class VimeoFolderMigration(unittest.TestCase):
         self.source.live_event_fixture = True
         self.source.live_event_denied = True
         uid = work_id("station", "vimeo", "71")
+        archive_uid = work_id("station", "vimeo", "998")
         with sync_playwright() as playwright, chromium(playwright) as browser:
             page = browser.new_page()
             page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
@@ -97,34 +132,40 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
             event = page.locator("details").filter(has=page.get_by_text("Council replay archive", exact=False))
             event.locator("summary").click()
-            expect(event.get_by_text("In source inventory")).to_be_visible()
+            expect(event.locator("li").filter(has_text="Council replay")).to_contain_text("In source inventory")
+            expect(event.locator("li").filter(has_text="Archive-only meeting")).to_contain_text("In source inventory")
             expect(event.get_by_text("Owner file or video access needed")).to_be_visible()
             expect(page.get_by_text("No past streams")).to_be_visible()
             snapshot = self.client.get("/api/migration", headers=self.auth).get_json()
             recordings = snapshot["live_event_archives"][0]["recordings"]
-            self.assertEqual([("71", uid), ("999", None)], [(r["source_id"], r["work"]) for r in recordings])
+            self.assertEqual([("71", uid), ("999", None), ("998", archive_uid)],
+                             [(r["source_id"], r["work"]) for r in recordings])
+            self.assertIn("HTTP 404", recordings[1]["issue"])
+            expect(page.get_by_role("cell", name="998", exact=True)).to_be_visible()
             self.assertNotIn("fixture-ingest-key", json.dumps(snapshot))
             self.assertEqual([], self.client.get("/api/library", headers=self.auth).get_json())
 
             page.get_by_role("button", name="Transfer privately").click()
             expect(page.locator("#status")).to_have_text("transferred", timeout=15000)
             event.locator("summary").click()
-            open_link = event.get_by_role("link", name="Open in Library")
-            expect(open_link).to_have_attribute("href", f"/operator/videos/{uid}")
+            old_link = event.locator("li").filter(has_text="Council replay").get_by_role("link", name="Open in Library")
+            expect(old_link).to_have_attribute("href", f"/operator/videos/{uid}")
+            open_link = event.locator("li").filter(has_text="Archive-only meeting").get_by_role("link", name="Open in Library")
+            expect(open_link).to_have_attribute("href", f"/operator/videos/{archive_uid}")
             expect(event.get_by_text("Owner file or video access needed")).to_be_visible()
             open_link.click()
-            expect(page).to_have_url(f"{self.base}/operator/videos/{uid}")
-            expect(page.locator("#videoHeading")).to_have_text("Station meeting")
+            expect(page).to_have_url(f"{self.base}/operator/videos/{archive_uid}")
+            expect(page.locator("#videoHeading")).to_have_text("Archive-only meeting")
             operator_preview = page.locator("#workspacePreview")
             expect(operator_preview).to_be_visible()
             operator_preview.evaluate("async video => { video.muted = true; await video.play(); }")
             page.wait_for_function("document.querySelector('#workspacePreview').videoWidth === 320")
 
-            review = self.client.post(f"/api/library/work/{uid}/review-links", headers=self.auth,
+            review = self.client.post(f"/api/library/work/{archive_uid}/review-links", headers=self.auth,
                                       json={"name": "Live event recording"})
             self.assertEqual(201, review.status_code, review.get_data(as_text=True))
             viewer = browser.new_page()
-            self.assertEqual(404, viewer.request.get(self.base + f"/watch/work/{uid}").status)
+            self.assertEqual(404, viewer.request.get(self.base + f"/watch/work/{archive_uid}").status)
             viewer.goto(self.base + review.get_json()["path"])
             video = viewer.locator("#reviewTourPlayer")
             expect(video).to_be_visible()

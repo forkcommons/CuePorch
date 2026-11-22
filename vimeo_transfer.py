@@ -1157,6 +1157,33 @@ def live_event_archive_inventory(institution, source, account, video_ids):
     return inventory, "Some source events had missing or duplicate IDs." if unresolved else None
 
 
+def resolve_archive_recordings(institution, source, account, events, videos, video_ids):
+    unavailable = {}
+    for event in events:
+        for recording in event["recordings"]:
+            vid = recording["source_id"]
+            if vid not in video_ids and vid not in unavailable:
+                uri = "/videos/" + vid
+                try:
+                    with source.open(source.base + uri, True) as response:
+                        video = json.load(response)
+                except SourceFailure as exc:
+                    if exc.status not in (401, 403, 404):
+                        raise
+                    unavailable[vid] = f"Vimeo video detail returned HTTP {exc.status}."
+                else:
+                    owner = video.get("user") if isinstance(video, dict) else None
+                    if not isinstance(owner, dict) or owner.get("uri") != account or video.get("uri") != uri:
+                        unavailable[vid] = "Vimeo did not confirm this recording belongs to the source account."
+                    else:
+                        video_ids.add(vid)
+                        videos.append(video)
+            if vid in unavailable:
+                recording["issue"] = unavailable[vid]
+            else:
+                recording["work"] = work_id(institution, "vimeo", vid)
+
+
 def migrate(institution, root, source, dry_run=False, *, progress=None):
     from filelock import FileLock
 
@@ -1189,13 +1216,14 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
     if job.exists() and json.loads(job.read_text(encoding="utf8")) != binding:
         raise ValueError("Source and destination do not match the previous migration")
     dump(job, binding)
-    if progress:
-        progress(0, len(videos))
     video_ids = {uri.split("/")[-1] for uri in resource_ids}
-    showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids)
     live_event_archives, live_event_archives_issue = live_event_archive_inventory(
         institution, source, account, video_ids,
     )
+    resolve_archive_recordings(institution, source, account, live_event_archives, videos, video_ids)
+    if progress:
+        progress(0, len(videos))
+    showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids)
     folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "objects").mkdir(exist_ok=True)
     (root / "checkpoints").mkdir(exist_ok=True)
