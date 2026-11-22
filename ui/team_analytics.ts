@@ -1,10 +1,19 @@
 import {checked, teamRequest} from "./team_api.js";
 
-interface ViewingRow {
+interface ViewingRow extends MetricsRow {
   member: string; name: string; email: string; removed: number | null;
-  work: string; title: string; views: number; completions: number; watched_seconds: number;
+  work: string; title: string;
 }
-interface TeamReport {date_from: string; date_to: string; viewers: number; videos: number; views: number; rows: ViewingRow[]}
+interface TeamSummaryRow extends MetricsRow {
+  id: string; label: string; removed: number | null;
+  viewers: number; videos: number;
+}
+interface TeamReport {
+  group: "member" | "video";
+  date_from: string; date_to: string;
+  viewers: number; videos: number; views: number;
+  rows: ViewingRow[]; summary: TeamSummaryRow[];
+}
 
 const access = document.querySelector<HTMLFormElement>("#teamAnalyticsAccess")!;
 const credential = access.querySelector<HTMLInputElement>("input")!;
@@ -13,6 +22,7 @@ const settings = document.querySelector<HTMLFormElement>("#teamAnalyticsSettings
 const enabled = settings.querySelector<HTMLInputElement>("input")!;
 const report = document.querySelector<HTMLElement>("#teamAnalyticsReport")!;
 const filter = document.querySelector<HTMLFormElement>("#teamAnalyticsFilter")!;
+const group = document.querySelector<HTMLSelectElement>("#teamAnalyticsGroup")!;
 const from = filter.elements.namedItem("from") as HTMLInputElement;
 const to = filter.elements.namedItem("to") as HTMLInputElement;
 const reset = document.querySelector<HTMLButtonElement>("#teamAnalyticsReset")!;
@@ -38,6 +48,7 @@ function query() {
   const params = new URLSearchParams();
   if (from.value) params.set("from", from.value);
   if (to.value) params.set("to", to.value);
+  params.set("group", group.value);
   if (selection) params.set(selection.key, selection.id);
   return params;
 }
@@ -50,6 +61,59 @@ function filterButton(key: "member" | "video", id: string, title: string) {
   return button;
 }
 
+interface MetricsRow {
+  views: number;
+  completions: number;
+  net_fraction: number | null;
+  avg_watched_fraction: number | null;
+  net_seconds: number;
+  covered_seconds: number;
+}
+
+const metricLabels = [
+  "Views",
+  "Completions",
+  "Net progress",
+  "Average watched",
+  "Net time (s)",
+  "Time covered (s)",
+] as const;
+
+const percent = new Intl.NumberFormat(undefined, {
+  style: "percent",
+  maximumFractionDigits: 1,
+});
+
+function formatPercent(value: number | null): string {
+  return value === null ? "—" : percent.format(value);
+}
+
+function appendMetrics(row: HTMLTableRowElement, item: MetricsRow): void {
+  const texts: string[] = [
+    number.format(item.views),
+    number.format(item.completions),
+    formatPercent(item.net_fraction),
+    formatPercent(item.avg_watched_fraction),
+    number.format(item.net_seconds),
+    number.format(item.covered_seconds),
+  ];
+  for (const text of texts) {
+    const cell = row.insertCell();
+    cell.textContent = text;
+  }
+}
+
+function updateHead(cells: string[]) {
+  const tr = document.querySelector<HTMLTableRowElement>("#teamAnalyticsHead")!;
+  tr.replaceChildren();
+  for (const text of cells) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = text;
+    tr.append(th);
+  }
+}
+
 async function loadReport() {
   const data: TeamReport = await (await call("analytics?" + query())).json();
   from.value = data.date_from;
@@ -57,13 +121,23 @@ async function loadReport() {
   totals.textContent = `Members ${number.format(data.viewers)} · Videos ${number.format(data.videos)} · Views ${number.format(data.views)}`;
   reset.hidden = !selection;
   rows.replaceChildren();
-  for (const item of data.rows) {
-    const row = rows.insertRow();
-    row.insertCell().append(filterButton("member", item.member, item.name + (item.removed ? " (removed)" : "")));
-    row.insertCell().append(filterButton("video", item.work, item.title));
-    row.insertCell().textContent = number.format(item.views);
-    row.insertCell().textContent = number.format(item.completions);
-    row.insertCell().textContent = number.format(item.watched_seconds) + " s";
+  if (selection) {
+    updateHead(["Member", "Video", ...metricLabels]);
+    for (const item of data.rows) {
+      const row = rows.insertRow();
+      row.insertCell().append(filterButton("member", item.member, item.name + (item.removed ? " (removed)" : "")));
+      row.insertCell().append(filterButton("video", item.work, item.title));
+      appendMetrics(row, item);
+    }
+  } else {
+    const byMember = data.group === "member";
+    updateHead(byMember ? ["Member", "Videos", ...metricLabels] : ["Video", "Viewers", ...metricLabels]);
+    for (const item of data.summary) {
+      const row = rows.insertRow();
+      row.insertCell().append(filterButton(data.group, item.id, item.label + (item.removed ? " (removed)" : "")));
+      row.insertCell().textContent = number.format(byMember ? item.videos : item.viewers);
+      appendMetrics(row, item);
+    }
   }
   report.hidden = false;
 }
@@ -91,6 +165,7 @@ settings.onsubmit = event => {
   });
 };
 filter.onsubmit = event => { event.preventDefault(); void action(loadReport); };
+group.onchange = () => { selection = undefined; void action(loadReport); };
 reset.onclick = () => { selection = undefined; void action(loadReport); };
 document.querySelector<HTMLButtonElement>("#teamAnalyticsExport")!.onclick = () => void action(async () => {
   const params = query();

@@ -1,5 +1,5 @@
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import secrets
@@ -222,6 +222,115 @@ class AnalyticsPicker(unittest.TestCase):
         self.assertEqual((1, 1, 1), (totals["views"], totals["measured"], totals["finishes"]))
         self.assertEqual((2, 0, 1), tuple(totals["points"][str(point)] for point in (25, 50, 100)))
         self.assertEqual((2, 0, 1), tuple(result["retention"][point] for point in (25, 50, 100)))
+
+    def test_team_analytics_reports(self):
+        now = datetime.now(timezone.utc).timestamp()
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            conn.executemany(
+                "INSERT INTO team_member (id,email,name,role,password_hash,joined,removed) VALUES (?,?,?,?,?,?,?)",
+                [
+                    ("alice", "a@example.test", "Alice", "viewer", "test", now, None),
+                    ("bob", "b@example.test", "Bob", "viewer", "test", now, now),
+                ],
+            )
+            conn.execute('INSERT INTO team_analytics_setting VALUES(1, "fixture-cycle")')
+            for sid, watched, interval in (
+                ("a1", 6000, [0, 6000]),
+                ("a2", 7000, [3000, 10000]),
+                ("b1", 10000, [0, 10000]),
+            ):
+                conn.execute(
+                    "INSERT INTO video_analytics_session (id,work,version,surface,created,sequence,played,completed,watched,intervals) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (sid, self.ids[0], "cut", "watch", now, 1, 1, 0, watched, json.dumps([interval])),
+                )
+            conn.executemany(
+                "INSERT INTO team_analytics_view (session,member,duration_ms) VALUES (?,?,?)",
+                [("a1", "alice", 10000), ("a2", "alice", 10000), ("b1", "bob", 10000)],
+            )
+
+        member_report = self.client.get("/api/team/analytics?group=member", headers=self.auth)
+        self.assertEqual(200, member_report.status_code)
+        members = {row["id"]: row for row in member_report.get_json()["summary"]}
+        alice = members["alice"]
+        assert alice["net_seconds"] == 10
+        self.assertAlmostEqual(.65, alice["avg_watched_fraction"])
+        assert alice["completions"] == 0
+        bob = members["bob"]
+        assert bob["removed"] == now
+        assert bob["completions"] == 1
+
+        videos = self.client.get("/api/team/analytics?group=video", headers=self.auth).get_json()["summary"]
+        assert len(videos) == 1
+        assert videos[0]["viewers"] == 2
+        assert videos[0]["net_seconds"] == 20
+        assert videos[0]["views"] == 3
+
+        pair = self.client.get("/api/team/analytics?member=alice", headers=self.auth).get_json()["rows"]
+        self.assertEqual(1, len(pair))
+        self.assertEqual(13, pair[0]["watched_seconds"])
+
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        self.enterContext(service_worker(server))
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.goto(f"http://127.0.0.1:{server.server_port}/team/analytics")
+            rows = page.locator("#teamAnalyticsRows tr")
+            page.locator("#teamAnalyticsGroup").select_option("video")
+            expect(rows).to_have_count(1)
+            expect(rows).to_contain_text("Fixture 00000")
+            expect(page.locator("#teamAnalyticsTotals")).to_contain_text("3")
+            page.locator("#teamAnalyticsGroup").select_option("member")
+            expect(rows).to_have_count(2)
+            expect(rows.get_by_role("button", name="Alice", exact=True)).to_be_visible()
+            expect(rows.get_by_role("button", name="Bob (removed)", exact=True)).to_be_visible()
+            expect(page.locator("#teamAnalyticsTotals")).to_contain_text("3")
+            page.locator("#teamAnalyticsRows").get_by_role("button", name="Alice").click()
+            expect(rows).to_have_count(1)
+            expect(rows).to_contain_text("Fixture 00000")
+            expect(rows).to_contain_text("100%")
+            with page.expect_download() as dl:
+                page.get_by_role("button", name="Download CSV").click()
+            reader = csv.DictReader(io.StringIO(dl.value.path().read_text(encoding="utf-8")))
+            assert reader.fieldnames and "Email" in reader.fieldnames
+            detail = list(reader)
+            self.assertEqual(1, len(detail))
+            self.assertEqual("a@example.test", detail[0]["Email"])
+            self.assertEqual("100.00%", detail[0]["Net percent completed"])
+
+    def test_team_analytics_excludes_deleted_and_expired_views(self):
+        current = datetime.now(timezone.utc)
+        expired = current - timedelta(days=366 * 5 + 1)
+        now, stale = current.timestamp(), expired.timestamp()
+        member, ok, gone = "m1", self.ids[0], self.ids[1]
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            conn.execute("INSERT INTO team_member VALUES(?,?,?,?,?,?,?)",
+                         (member, "a@b.c", "A", "member", "x", now, None))
+            conn.execute('INSERT INTO team_analytics_setting VALUES(1,"a")')
+            conn.executemany(
+                "INSERT INTO video_analytics_session VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [("s1", ok, 1, "watch", now - 100, 1, 1, 0, 95000, "[[0,95000]]"),
+                 ("s2", ok, 2, "watch", now - 200, 1, 1, 1, 96000, "[[0,96000]]"),
+                 ("s3", ok, 3, "watch", stale, 1, 1, 1, 100000, "[[0,100000]]"),
+                 ("s4", gone, 1, "watch", now - 50, 1, 1, 1, 100000, "[[0,100000]]")])
+            conn.executemany("INSERT INTO team_analytics_view VALUES(?,?,?)",
+                             [("s1", member, 100000), ("s2", member, 100000),
+                              ("s3", member, 100000), ("s4", member, 100000)])
+            conn.execute("INSERT INTO library_deletion VALUES(?,?,?,?,?,?,?,?,?)",
+                         ("d1", "work", gone, "T", "actor", now, "done", None, now))
+            conn.execute("INSERT INTO library_deleted_item VALUES(?,?,?)",
+                         ("work", gone, "d1"))
+        r = self.client.get(f"/api/team/analytics?group=video&from={expired.date().isoformat()}", headers=self.auth)
+        assert r.status_code == 200
+        rows = r.get_json()["rows"]
+        self.assertEqual([ok], [row["work"] for row in rows])
+        row = rows[0]
+        assert row["views"] == 2
+        assert row["completions"] == 1
+        self.assertEqual(191, row["net_seconds"])
+        self.assertAlmostEqual(.955, row["net_fraction"])
+        self.assertAlmostEqual(.955, row["avg_watched_fraction"])
 
     def test_operator_analytics_report_folder_limit(self):
         server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)

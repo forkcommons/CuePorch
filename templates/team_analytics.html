@@ -20,6 +20,12 @@
     <form id="teamAnalyticsFilter">
       <label>From (UTC) <input type="date" name="from" required></label>
       <label>To (UTC) <input type="date" name="to" required></label>
+      <label>Group by
+        <select id="teamAnalyticsGroup" name="group">
+          <option value="video" selected>By video</option>
+          <option value="member">By member</option>
+        </select>
+      </label>
       <button>Apply filters</button>
       <button type="button" id="teamAnalyticsReset" hidden>Clear member or video filter</button>
       <button type="button" id="teamAnalyticsExport">Download CSV</button>
@@ -27,8 +33,10 @@
     <p id="teamAnalyticsTotals" aria-live="polite"></p>
     <div class="analytics-table">
       <table>
-        <thead><tr><th scope="col">Member</th><th scope="col">Video</th><th scope="col">Views</th>
-          <th scope="col">Completions</th><th scope="col">Time watched</th></tr></thead>
+        <thead><tr id="teamAnalyticsHead">
+          <th scope="col">Video</th><th scope="col">Views</th><th scope="col">Completions</th>
+          <th scope="col">Net progress</th><th scope="col">Avg watched</th><th scope="col">Net watched</th>
+        </tr></thead>
         <tbody id="teamAnalyticsRows"></tbody>
       </table>
     </div>

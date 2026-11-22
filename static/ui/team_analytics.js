@@ -6,6 +6,7 @@ const settings = document.querySelector("#teamAnalyticsSettings");
 const enabled = settings.querySelector("input");
 const report = document.querySelector("#teamAnalyticsReport");
 const filter = document.querySelector("#teamAnalyticsFilter");
+const group = document.querySelector("#teamAnalyticsGroup");
 const from = filter.elements.namedItem("from");
 const to = filter.elements.namedItem("to");
 const reset = document.querySelector("#teamAnalyticsReset");
@@ -31,6 +32,7 @@ function query() {
         params.set("from", from.value);
     if (to.value)
         params.set("to", to.value);
+    params.set("group", group.value);
     if (selection)
         params.set(selection.key, selection.id);
     return params;
@@ -42,6 +44,45 @@ function filterButton(key, id, title) {
     button.onclick = () => { selection = { key, id }; void action(loadReport); };
     return button;
 }
+const metricLabels = [
+    "Views",
+    "Completions",
+    "Net progress",
+    "Average watched",
+    "Net time (s)",
+    "Time covered (s)",
+];
+const percent = new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 1,
+});
+function formatPercent(value) {
+    return value === null ? "—" : percent.format(value);
+}
+function appendMetrics(row, item) {
+    const texts = [
+        number.format(item.views),
+        number.format(item.completions),
+        formatPercent(item.net_fraction),
+        formatPercent(item.avg_watched_fraction),
+        number.format(item.net_seconds),
+        number.format(item.covered_seconds),
+    ];
+    for (const text of texts) {
+        const cell = row.insertCell();
+        cell.textContent = text;
+    }
+}
+function updateHead(cells) {
+    const tr = document.querySelector("#teamAnalyticsHead");
+    tr.replaceChildren();
+    for (const text of cells) {
+        const th = document.createElement("th");
+        th.scope = "col";
+        th.textContent = text;
+        tr.append(th);
+    }
+}
 async function loadReport() {
     const data = await (await call("analytics?" + query())).json();
     from.value = data.date_from;
@@ -49,13 +90,24 @@ async function loadReport() {
     totals.textContent = `Members ${number.format(data.viewers)} · Videos ${number.format(data.videos)} · Views ${number.format(data.views)}`;
     reset.hidden = !selection;
     rows.replaceChildren();
-    for (const item of data.rows) {
-        const row = rows.insertRow();
-        row.insertCell().append(filterButton("member", item.member, item.name + (item.removed ? " (removed)" : "")));
-        row.insertCell().append(filterButton("video", item.work, item.title));
-        row.insertCell().textContent = number.format(item.views);
-        row.insertCell().textContent = number.format(item.completions);
-        row.insertCell().textContent = number.format(item.watched_seconds) + " s";
+    if (selection) {
+        updateHead(["Member", "Video", ...metricLabels]);
+        for (const item of data.rows) {
+            const row = rows.insertRow();
+            row.insertCell().append(filterButton("member", item.member, item.name + (item.removed ? " (removed)" : "")));
+            row.insertCell().append(filterButton("video", item.work, item.title));
+            appendMetrics(row, item);
+        }
+    }
+    else {
+        const byMember = data.group === "member";
+        updateHead(byMember ? ["Member", "Videos", ...metricLabels] : ["Video", "Viewers", ...metricLabels]);
+        for (const item of data.summary) {
+            const row = rows.insertRow();
+            row.insertCell().append(filterButton(data.group, item.id, item.label + (item.removed ? " (removed)" : "")));
+            row.insertCell().textContent = number.format(byMember ? item.videos : item.viewers);
+            appendMetrics(row, item);
+        }
     }
     report.hidden = false;
 }
@@ -82,6 +134,7 @@ settings.onsubmit = event => {
     });
 };
 filter.onsubmit = event => { event.preventDefault(); void action(loadReport); };
+group.onchange = () => { selection = undefined; void action(loadReport); };
 reset.onclick = () => { selection = undefined; void action(loadReport); };
 document.querySelector("#teamAnalyticsExport").onclick = () => void action(async () => {
     const params = query();
