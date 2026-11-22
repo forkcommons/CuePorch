@@ -1179,7 +1179,8 @@ def _streamed_on_utc(raw):
 def live_event_archive_inventory(institution, source, account, video_ids):
     fields = ("uri,title,stream_privacy.view,recordings.uri,recordings.title,recordings.streamed_on,"
               "schedule.start_time,schedule.end_time,schedule.time_zone,schedule.rrule,"
-              "stream_description,preferred_stream_method,latency")
+              "stream_description,preferred_stream_method,latency,"
+              "chat_enabled,dvr,auto_cc_enabled,auto_cc_language,has_forced_lead_capture_form")
     try:
         events = list(source.pages(account + "/live_events", fields=fields))
     except SourceFailure as exc:
@@ -1248,6 +1249,21 @@ def live_event_archive_inventory(institution, source, account, video_ids):
                 latency = event.get("latency")
                 if latency in ("standard", "low", "fail-safe"):
                     draft["latency"] = latency
+                for source_field, target_field in (("chat_enabled", "chat_enabled"), ("dvr", "dvr_enabled")):
+                    setting = event.get(source_field)
+                    if type(setting) is bool:
+                        draft[target_field] = setting
+                enabled = event.get("auto_cc_enabled")
+                language = event.get("auto_cc_language")
+                if type(enabled) is bool:
+                    if language in ("en", "de", "fr", "es", "it", "nl", "pl"):
+                        draft["captions"] = dict(enabled=enabled, language=language)
+                    elif not enabled:
+                        draft["captions"] = dict(enabled=False)
+                    else:
+                        issues.append("Vimeo automatic captions use an unsupported or missing language. Set the caption language in Live Events.")
+        if event.get("has_forced_lead_capture_form") is True:
+            issues.append("Vimeo reports required registration. Recreate the form and its consent fields in Live Events.")
         inventory.append(dict(source_id=identifier, title=(title.strip()[:128] if isinstance(title, str) else "")
                               or "Untitled live event", source_visibility=visibility,
                               recordings=recordings, issues=issues, **draft))

@@ -630,6 +630,15 @@ async function load() {
                 field("method").value = draft.method;
             if (draft.latency)
                 field("latency").value = draft.latency;
+            if (typeof draft.chat_enabled === "boolean")
+                field("chat").checked = draft.chat_enabled;
+            if (draft.dvr_enabled === false)
+                field("dvr_seconds").value = "0";
+            if (draft.captions) {
+                field("captions").checked = draft.captions.enabled;
+                if (draft.captions.language !== undefined)
+                    field("caption_language").value = draft.captions.language;
+            }
             for (const name of ["timezone", "start", "end", "repeat", "interval", "count", "until"]) {
                 field(name).value = String(schedule[name] ?? "");
             }
