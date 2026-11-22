@@ -4,11 +4,27 @@ import type { Presentation } from "./event_series_presentation.js";
 
 export type Visibility = "private" | "team" | "public" | "password";
 
+export type UpcomingMode = "all" | "next" | "grouped";
+
+export interface HiddenRecording {
+  event: string;
+  opens: number;
+}
+
+export interface Recording {
+  event: string;
+  opens: number;
+  title: string;
+  label: string;
+}
+
 export interface Settings {
   title: string;
   description: string;
   visibility: Visibility;
+  upcoming_mode: UpcomingMode;
   events: string[];
+  hidden_recordings: HiddenRecording[];
   presentation: Presentation;
 }
 
@@ -31,6 +47,7 @@ export interface EventChoice {
 export interface ListResponse {
   series: Series[];
   events: EventChoice[];
+  recordings: Recording[];
 }
 
 const byId = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -82,6 +99,71 @@ async function api<T>(path: string, method = "GET", body?: object): Promise<T> {
 let current: Series | null = null;
 let choices: EventChoice[] = [];
 let entries: Series[] = [];
+let recordings: Recording[] = [];
+
+const hiddenKey = (event: string, opens: number) => event + "\u0000" + opens;
+
+function renderRecordingChoices(): void {
+  if (!current) return;
+  const container = byId("seriesHiddenRecordings");
+
+  const prev = new Map<string, boolean>();
+  container
+    .querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+    .forEach(el =>
+      prev.set(
+        hiddenKey(el.dataset.event!, Number(el.dataset.opens)),
+        el.checked,
+      ),
+    );
+
+  const selected = new Set(
+    Array.from(
+      eventChoices.querySelectorAll<HTMLInputElement>('input[name="events"]:checked'),
+    ).map(el => el.value),
+  );
+  const saved = new Set(
+    current.settings.hidden_recordings.map(hr => hiddenKey(hr.event, hr.opens)),
+  );
+
+  container.replaceChildren();
+  for (const rec of recordings) {
+    if (!selected.has(rec.event)) continue;
+    const key = hiddenKey(rec.event, rec.opens);
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "hidden_recordings";
+    input.dataset.event = rec.event;
+    input.dataset.opens = String(rec.opens);
+    input.checked = prev.get(key) ?? saved.has(key);
+    const text = document.createElement("span");
+    text.textContent = `Hide recording: ${rec.title} · ${rec.label}`;
+    label.append(input, text);
+    container.append(label);
+  }
+}
+
+function collectHiddenRecordings(target: Series): HiddenRecording[] {
+  const selected = new Set(
+    Array.from(
+      eventChoices.querySelectorAll<HTMLInputElement>('input[name="events"]:checked'),
+    ).map(el => el.value),
+  );
+  const result = new Map<string, HiddenRecording>();
+  for (const hr of target.settings.hidden_recordings) {
+    if (selected.has(hr.event)) result.set(hiddenKey(hr.event, hr.opens), hr);
+  }
+  const container = byId("seriesHiddenRecordings");
+  for (const el of container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
+    const event = el.dataset.event!;
+    const opens = Number(el.dataset.opens);
+    const key = hiddenKey(event, opens);
+    if (el.checked) result.set(key, { event, opens });
+    else result.delete(key);
+  }
+  return Array.from(result.values());
+}
 
 function field(name: string) {
   return form.elements.namedItem(name) as
@@ -103,6 +185,7 @@ function renderEditor(entry: Series | null) {
   field("slug").value = entry.slug;
   const visibilitySelect = field("visibility") as HTMLSelectElement;
   visibilitySelect.value = entry.settings.visibility;
+  (field("upcoming_mode") as HTMLSelectElement).value = entry.settings.upcoming_mode;
 
   const passwordRow = byId("seriesPasswordRow");
   const passwordInput = field("view_password") as HTMLInputElement;
@@ -124,11 +207,14 @@ function renderEditor(entry: Series | null) {
     input.name = "events";
     input.value = choice.id;
     input.checked = selected.has(choice.id);
+    input.addEventListener("change", renderRecordingChoices);
     const text = document.createElement("span");
     text.textContent = choice.title;
     label.append(input, text);
     eventChoices.append(label);
   }
+  byId("seriesHiddenRecordings").replaceChildren();
+  renderRecordingChoices();
 
   previewLink.hidden = true;
   previewLink.removeAttribute("href");
@@ -201,11 +287,12 @@ async function withBusy(fn: () => Promise<void>): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  const { series, events } = await api<ListResponse>("");
+  const { series, events, recordings: rec } = await api<ListResponse>("");
   workspace.hidden = false;
   identify.hidden = true;
   entries = series;
   choices = events;
+  recordings = rec;
   if (current) current = entries.find(s => s.id === current!.id) ?? null;
   renderList();
   renderEditor(current);
@@ -238,9 +325,11 @@ form.addEventListener("submit", e => {
         title: (field("title") as HTMLInputElement).value.trim(),
         description: (field("description") as HTMLTextAreaElement).value.trim(),
         visibility: (field("visibility") as HTMLSelectElement).value,
+        upcoming_mode: (field("upcoming_mode") as HTMLSelectElement).value as UpcomingMode,
         events: Array.from(
-          eventChoices.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked'),
+          eventChoices.querySelectorAll<HTMLInputElement>('input[name="events"]:checked'),
         ).map(el => el.value),
+        hidden_recordings: collectHiddenRecordings(target),
         presentation: await presentation.payload(),
       },
     };

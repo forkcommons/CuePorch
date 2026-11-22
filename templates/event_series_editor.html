@@ -58,6 +58,19 @@
         <legend>Events in this series</legend>
       </fieldset>
 
+      <label for="seriesUpcomingMode">Upcoming mode
+        <select id="seriesUpcomingMode" name="upcoming_mode">
+          <option value="all">All scheduled dates</option>
+          <option value="next">Next date per event</option>
+          <option value="grouped">Group dates by event</option>
+        </select>
+      </label>
+
+      <fieldset id="seriesHiddenRecordingsFieldset">
+        <legend>Hidden recordings</legend>
+        <div id="seriesHiddenRecordings"></div>
+      </fieldset>
+
       <fieldset id="seriesPresentation">
         <legend>Presentation</legend>
         <label>Accent color

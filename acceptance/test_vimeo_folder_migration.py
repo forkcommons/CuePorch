@@ -402,6 +402,101 @@ class VimeoFolderMigration(unittest.TestCase):
             guest.wait_for_selector('h1:has-text("Council program")')
             expect(guest.get_by_text("Private program", exact=True)).to_have_count(0)
 
+    def test_event_series_upcoming_modes(self):
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        start = now + timedelta(days=2)
+        end = start + timedelta(hours=1)
+        schedule = dict(
+            timezone="UTC",
+            repeat="days",
+            count=3,
+            start=start.strftime("%Y-%m-%dT%H:%M"),
+            end=end.strftime("%Y-%m-%dT%H:%M"),
+        )
+        response = self.client.post(
+            "/api/live-events",
+            headers=self.auth,
+            json=dict(
+                title="Daily program",
+                slug="daily-program",
+                visibility="public",
+                type="live",
+                latency="standard",
+                save_replay=False,
+                schedule=schedule,
+            ),
+        )
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        event_id = response.get_json()["id"]
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            admin = browser.new_page()
+            admin.add_init_script(
+                f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})"
+            )
+            admin.goto(f"{self.base}/operator/event-series")
+            admin.click("#seriesNew")
+            admin.fill("#seriesTitle", "Daily program")
+            admin.fill("#seriesSlug", "program-schedule")
+            admin.check(f'input[name=events][value="{event_id}"]')
+            admin.select_option("#seriesVisibility", "public")
+            with admin.expect_response(
+                lambda r: r.request.method == "PUT"
+            ) as response_info:
+                admin.get_by_role("button", name="Save Event Series").click()
+            self.assertEqual(200, response_info.value.status)
+            admin.wait_for_function(
+                "!document.querySelector('#seriesTitle').closest('form').inert"
+            )
+
+            viewer = browser.new_page()
+            viewer.goto(f"{self.base}/event-series/program-schedule")
+            section = viewer.locator('section[aria-labelledby="upcoming-heading"]')
+            initial_links = section.get_by_role("link", name="View Daily program")
+            expect(initial_links).to_have_count(3)
+            for i in range(3):
+                href = initial_links.nth(i).get_attribute("href") or ""
+                self.assertIn("occurrence=", href)
+                self.assertNotIn("mode", href)
+
+            admin.select_option("#seriesUpcomingMode", "next")
+            with admin.expect_response(
+                lambda r: r.request.method == "PUT"
+            ) as response_info:
+                admin.get_by_role("button", name="Save Event Series").click()
+            self.assertEqual(200, response_info.value.status)
+            admin.wait_for_function(
+                "!document.querySelector('#seriesUpcomingMode').closest('form').inert"
+            )
+
+            viewer.reload()
+            section = viewer.locator('section[aria-labelledby="upcoming-heading"]')
+            next_links = section.get_by_role("link", name="View Daily program")
+            expect(next_links).to_have_count(1)
+            href = next_links.first.get_attribute("href") or ""
+            self.assertIn("occurrence=", href)
+            self.assertNotIn("mode", href)
+
+            admin.select_option("#seriesUpcomingMode", "grouped")
+            with admin.expect_response(
+                lambda r: r.request.method == "PUT"
+            ) as response_info:
+                admin.get_by_role("button", name="Save Event Series").click()
+            self.assertEqual(200, response_info.value.status)
+            admin.wait_for_function(
+                "!document.querySelector('#seriesUpcomingMode').closest('form').inert"
+            )
+
+            viewer.reload()
+            section = viewer.locator('section[aria-labelledby="upcoming-heading"]')
+            grouped_links = section.get_by_role("link", name="View Daily program")
+            expect(grouped_links).to_have_count(3)
+            for i in range(3):
+                href = grouped_links.nth(i).get_attribute("href") or ""
+                self.assertIn("occurrence=", href)
+                self.assertNotIn("mode", href)
+            expect(section.locator('h3:has-text("Daily program")')).to_have_count(1)
+
     def test_event_series_released_replay(self):
         start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(second=0, microsecond=0)
         opens = int(start.timestamp())
@@ -460,6 +555,45 @@ class VimeoFolderMigration(unittest.TestCase):
             viewer.wait_for_function(
                 "v => v.videoWidth === 320 && v.currentTime > 0.15", arg=video.element_handle(),
             )
+
+            page.goto(self.base + "/operator/event-series")
+            page.get_by_role("button", name="Test series", exact=True).click()
+            hide_recording = page.get_by_role("checkbox", name="Hide recording: Migrated replay")
+            expect(hide_recording).to_be_visible()
+            expect(hide_recording).not_to_be_checked()
+            hide_recording.check()
+            with page.expect_response(
+                lambda response: response.request.method == "PUT"
+                and response.url.endswith(f"/api/event-series/{series['id']}")
+            ) as response_info:
+                page.get_by_role("button", name="Save Event Series").click()
+            assert response_info.value.status == 200
+
+            page.goto(self.base + "/event-series/test-series")
+            expect(page.get_by_role("link", name="Watch Migrated replay")).to_have_count(0)
+
+            viewer.goto(self.base + f"/events/migrated-replay?occurrence={opens}")
+            video = viewer.locator("#eventPlayer video")
+            expect(video).to_be_visible()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function(
+                "v => v.videoWidth === 320 && v.currentTime > 0.15", arg=video.element_handle(),
+            )
+
+            page.goto(self.base + "/operator/event-series")
+            page.get_by_role("button", name="Test series", exact=True).click()
+            hide_recording = page.get_by_role("checkbox", name="Hide recording: Migrated replay")
+            expect(hide_recording).to_be_checked()
+            hide_recording.uncheck()
+            with page.expect_response(
+                lambda response: response.request.method == "PUT"
+                and response.url.endswith(f"/api/event-series/{series['id']}")
+            ) as response_info:
+                page.get_by_role("button", name="Save Event Series").click()
+            assert response_info.value.status == 200
+
+            page.goto(self.base + "/event-series/test-series")
+            expect(page.get_by_role("link", name="Watch Migrated replay")).to_have_count(1)
 
             withdrawn = self.client.delete(f"/api/live-events/{event['id']}/{opens}/delivery", headers=self.auth)
             self.assertEqual(204, withdrawn.status_code, withdrawn.get_data(as_text=True))
