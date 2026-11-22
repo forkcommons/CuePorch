@@ -396,9 +396,9 @@ For HTTPS installations, set `CUEPORCH_PUSH_CONTACT` to a `mailto:` address or H
 
 Open **Showcases** from the library. **New showcase** creates a private gallery. Give it a title and link name, add videos, and use **Move up** or **Move down** to set playback order. Choose a gallery grid or a player with a playlist, add a logo and featured information, and pick a card size. Preview the saved gallery at desktop or mobile width before sharing.
 
-To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search. Share the **Channel link** to open the ordered gallery directly.
+To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search and upload a **Channel thumbnail** for the directory. Share the **Channel link** to open the ordered gallery directly.
 
-Vimeo migration lists moderated channels under **Showcases and channels**. It brings over the playlist order and available account videos and lists any video IDs outside the transfer inventory. Use **Open channel** to preview the private draft and set its publication settings.
+Vimeo migration lists moderated channels under **Showcases and channels**. It brings over the playlist order, available account videos, and any channel thumbnail and header supplied in the source inventory. The report lists video IDs outside the transfer inventory. Use **Open channel** to preview the private draft and set its publication settings.
 
 Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
 

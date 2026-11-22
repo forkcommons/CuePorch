@@ -1160,6 +1160,10 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertEqual(ordered, draft["settings"]["videos"])
             self.assertEqual("local-cinema", draft["slug"])
             self.assertIsNone(draft["channel"])
+            self.assertEqual(channel["source_channel_cover"]["sha256"], draft["settings"]["channel_cover"])
+            self.assertEqual(channel["source_channel_header"]["sha256"], draft["settings"]["feature_image"])
+            self.assertRegex(draft["settings"]["channel_cover"], r"^[0-9a-f]{64}$")
+            self.assertRegex(draft["settings"]["feature_image"], r"^[0-9a-f]{64}$")
             self.assertEqual(404, self.client.get("/channels/local-cinema").status_code)
             row = page.get_by_role("row").filter(has_text="Local Cinema")
             expect(row).to_contain_text("999")
@@ -1167,6 +1171,9 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(page.locator('input[name="title"]')).to_have_value("Local Cinema")
             page.get_by_role("button", name="Preview saved showcase").click()
             preview = page.frame_locator("#showcaseFrame")
+            self.assertGreater(preview.locator(".showcase-feature-image").evaluate(
+                "async image => { await image.decode(); return image.naturalWidth; }"
+            ), 0)
             self.assertEqual(320, preview.locator(".showcase-screen video").evaluate(
                 "async v => {v.muted = true; await v.play(); return v.videoWidth;}"
             ))

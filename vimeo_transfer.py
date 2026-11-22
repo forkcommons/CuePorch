@@ -1112,15 +1112,8 @@ def showcase_style(album):
     return style
 
 
-def transfer_showcase_logo(root, source, item, dry_run, issues):
-    web, embed = item.get("web_custom_logo"), item.get("embed_custom_logo")
-    if type(web) is bool and type(embed) is bool and web != embed:
-        issues.append("The Vimeo web and embed logo preferences differ. Choose a logo in CuePorch.")
-    if web is not True or embed is not True:
-        return {}
-
-    logo = item.get("custom_logo")
-    sizes = logo.get("sizes") if isinstance(logo, dict) else None
+def transfer_collection_picture(root, source, picture, dry_run, issues, label, key):
+    sizes = picture.get("sizes") if isinstance(picture, dict) else None
     chosen = None
     for size in sizes if isinstance(sizes, list) else []:
         if not isinstance(size, dict):
@@ -1132,21 +1125,31 @@ def transfer_showcase_logo(root, source, item, dry_run, issues):
         if chosen is None or width > chosen["width"]:
             chosen = size
     if chosen is None:
-        issues.append("The Vimeo showcase logo did not include a usable image.")
+        issues.append(f"The Vimeo {label.lower()} did not include a usable image.")
         return {}
     if dry_run:
-        return dict(source_logo_available=True)
+        return {key + "_available": True}
 
     try:
-        return dict(source_logo=store(root, source, chosen["link"], None, None,
-                                      max_bytes=4 * 1024 * 1024, check_image=True, vimeo_image=True))
+        return {key: store(root, source, chosen["link"], None, None,
+                           max_bytes=4 * 1024 * 1024, check_image=True, vimeo_image=True)}
     except SourceFailure as exc:
         if exc.status not in (403, 404):
             raise
-        issues.append(f"Showcase logo returned HTTP {exc.status}.")
+        issues.append(f"{label} returned HTTP {exc.status}.")
     except MediaFailure as exc:
-        issues.append(f"Showcase logo unavailable ({exc.reason}).")
+        issues.append(f"{label} unavailable ({exc.reason}).")
     return {}
+
+
+def transfer_showcase_logo(root, source, item, dry_run, issues):
+    web, embed = item.get("web_custom_logo"), item.get("embed_custom_logo")
+    if type(web) is bool and type(embed) is bool and web != embed:
+        issues.append("The Vimeo web and embed logo preferences differ. Choose a logo in CuePorch.")
+    if web is not True or embed is not True:
+        return {}
+    return transfer_collection_picture(root, source, item.get("custom_logo"), dry_run, issues,
+                                       "Showcase logo", "source_logo")
 
 
 def showcase_inventory(institution, source, account, video_ids, *, root, dry_run):
@@ -1204,7 +1207,7 @@ def showcase_inventory(institution, source, account, video_ids, *, root, dry_run
     return result, None
 
 
-def channel_inventory(institution, source, account, video_ids):
+def channel_inventory(institution, source, account, video_ids, *, root, dry_run):
     path = account + "/channels"
     try:
         channels = list(source.pages(path, params={"filter": "moderated"}))
@@ -1268,6 +1271,13 @@ def channel_inventory(institution, source, account, video_ids):
             except (ValueError, AttributeError):
                 pass
         title, description = item.get("name"), item.get("description")
+        art = {}
+        for field, label, key in (
+            ("pictures", "Channel thumbnail", "source_channel_cover"),
+            ("header", "Channel header", "source_channel_header"),
+        ):
+            if item.get(field) is not None:
+                art.update(transfer_collection_picture(root, source, item[field], dry_run, issues, label, key))
         result.append(dict(
             id=work_id(institution, "vimeo-channel", uri),
             uri=uri,
@@ -1281,6 +1291,7 @@ def channel_inventory(institution, source, account, video_ids):
             members=list(dict.fromkeys(recovered)),
             missing=missing,
             issues=issues,
+            **art,
         ))
     return result, None
 
@@ -1552,7 +1563,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         progress(0, len(videos))
     (root / "objects").mkdir(exist_ok=True)
     showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids, root=root, dry_run=dry_run)
-    channels, channel_issue = channel_inventory(institution, source, account, video_ids)
+    channels, channel_issue = channel_inventory(institution, source, account, video_ids, root=root, dry_run=dry_run)
     folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "checkpoints").mkdir(exist_ok=True)
     works = []
