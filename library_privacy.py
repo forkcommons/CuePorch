@@ -515,7 +515,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             sign_on = form_error = None
             if enrollment:
                 admitted, sign_on, form_error = library_registration.admit(con, "video", uid, form, enrollment_scope)
-            needs_registration = not locked and form and not admitted
+            prompt = not locked and form is not None and not admitted
+            timing = form["timing"] if form else "before"
+            needs_registration = prompt and timing == "before"
             can_watch = not locked and not needs_registration
             surface = "embed" if embed else "watch"
             details = details_for(con, work) if can_watch else None
@@ -574,12 +576,13 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 analytics = analytics_serializer.dumps(
                     [token, video_version_key(work), surface, secrets.token_urlsafe(18), context, original_language(work)]
                 )
-            start = request.args.get("start", "")
+            start = (request.form.get("resume_at", "") if enrollment and timing == "during"
+                     else request.args.get("start", ""))
             start = float(start) if re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,3})?", start) else 0
             duration = work.get("duration_seconds")
             if duration and start >= duration:
                 start = 0
-            form_token = registration_serializer.dumps(enrollment_scope) if needs_registration else None
+            form_token = registration_serializer.dumps(enrollment_scope) if prompt else None
             registration_view = library_registration.presentation(con, form, sign_on, mailchimp_target=("video", uid, enrollment_scope)) if form_token else None
             if registration_view and salesforce and not options["dnt"] and library_analytics.permitted():
                 registration_view["salesforce_video_engagement_consent"] = salesforce.engagement_offer(con, work, form, enrollment_scope)
@@ -606,6 +609,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             presentation=presentation, poster=poster, rating=rating, analytics=analytics, hubspot_origin=hubspot_origin, questions=questions,
                             share=share_paths(uid, row)["watch"], registration=registration_view,
                             salesforce_report=bool(salesforce_report),
+                            timed_registration=timing if prompt and timing != "before" else None,
+                            registration_time=form["time_seconds"] if prompt else 0,
+                            show_timed_registration=bool(enrollment),
                             enrollment=form_token, registration_error=form_error),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
         )

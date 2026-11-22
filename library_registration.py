@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS vimeo_registration_history(
 UTM_FIELDS = ("utm_source", "utm_campaign", "utm_term", "utm_content", "utm_medium")
 DEFAULT = dict(enabled=False, heading="Register to watch", description="", privacy_url="",
                first_name="optional", last_name="optional", fields=[], collect_utm=False, layout="single",
-               attendance_analytics=False, translations={})
+               attendance_analytics=False, translations={}, timing="before", time_seconds=0)
 DEFAULT_APPEARANCE = dict(alignment="center", logo=None, background_image=None,
                           background="#e7eee5", overlay="#ffffff", opacity=25)
 FORM_TYPES = ("text", "select", "checkbox", "description", "hidden")
@@ -74,6 +74,13 @@ def validation(body, kind="video"):
     if layout not in ("single", "steps"):
         abort(422, "Choose a registration layout.")
     result["layout"] = layout
+    timing = body.get("timing", "before")
+    if timing not in ("before", "during", "after") or (kind != "video" and timing != "before"):
+        abort(422, "Choose a supported registration timing.")
+    point = body.get("time_seconds", 0)
+    if timing == "during" and (type(point) is not int or not 1 <= point <= 86400):
+        abort(422, "Enter the time to show registration in whole seconds.")
+    result.update(timing=timing, time_seconds=point if timing == "during" else 0)
     raw = body.get("appearance", {})
     if not isinstance(raw, dict):
         abort(422, "Choose a registration appearance.")
@@ -251,7 +258,7 @@ def csv_cell(value):
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) or text[:1] in ("\t", "\r") else text
 
 
-def operator_form(con, kind, uid, protected_public=False):
+def operator_form(con, kind, uid, protected_public=False, *, duration=None):
     revision, config = read_form(con, kind, uid)
     if request.method == "PUT":
         body = request.get_json()
@@ -261,6 +268,9 @@ def operator_form(con, kind, uid, protected_public=False):
         if isinstance(supplied, dict) and "appearance" not in supplied:
             supplied = dict(supplied, appearance=config["appearance"])
         updated = validation(supplied, kind)
+        if (updated["timing"] == "during" and type(duration) in (int, float)
+                and 0 < duration < float("inf") and updated["time_seconds"] >= duration):
+            abort(422, "Choose a registration time before the end of the video.")
         check_images(con, updated)
         if updated["enabled"] and protected_public:
             abort(409, "Registration cannot gate a designated public record.")
@@ -342,7 +352,8 @@ def register(app, tx, staff, get_work, protected_public):
             work = get_work(con, uid)
             if work.get("asset_type", "video") != "video":
                 abort(404)
-            payload = operator_form(con, "video", uid, protected_public(con, uid))
+            payload = operator_form(con, "video", uid, protected_public(con, uid),
+                                    duration=work.get("duration_seconds"))
             payload.update({"vimeo_history": work.get("provider") == "vimeo"})
             return payload
 

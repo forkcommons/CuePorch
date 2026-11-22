@@ -88,7 +88,7 @@
       <p id="ratingStatus" role="status"></p>
     </form>
     {% with video_registration_editor=true %}
-      {% include 'registration_editor.html' %}
+      {% with video_registration_editor = true %}{% include 'registration_editor.html' %}{% endwith %}
     {% endwith %}
     {% endif %}
   </main>
