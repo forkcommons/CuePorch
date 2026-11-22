@@ -261,6 +261,12 @@ async function poll(page = currentPage) {
         const summary = document.createElement("summary");
         summary.textContent = `${event.title} · Vimeo event ${event.source_id} · ${event.source_visibility}`;
         details.append(summary);
+        if (event.schedule) {
+            const link = document.createElement("a");
+            link.textContent = "Set up in Live Events";
+            link.href = "/operator/live-events?create=1&vimeoEvent=" + encodeURIComponent(event.source_id);
+            details.append(link);
+        }
         if (event.issues.length || !event.recordings.length) {
             const issue = document.createElement("p");
             issue.textContent = event.issues.length ? event.issues.join(" ") : "No recordings reported.";

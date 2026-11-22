@@ -15,7 +15,7 @@ from cueporch import work_id
 from demo_source import build_server
 from institution import create_app
 from test_drive_import import QuietHandler, service_worker
-from vimeo_transfer import SourceFailure, folder_inventory, resolve_archive_recordings
+from vimeo_transfer import SourceFailure, event_schedule_draft, folder_inventory, resolve_archive_recordings
 
 
 class VimeoFolderInventory(unittest.TestCase):
@@ -52,6 +52,18 @@ class VimeoFolderInventory(unittest.TestCase):
             self.assertIn("issue", rejected)
         self.assertEqual([(f"https://api.vimeo.com/videos/{vid}", True)
                           for vid in ("998", "997", "996", "999")], opened)
+
+    def test_event_schedule_draft(self):
+        source = dict(start_time="2030-01-07T17:00:00Z", end_time="2030-01-07T18:00:00Z", time_zone="America/Denver")
+        result = event_schedule_draft(source)
+        self.assertEqual(("2030-01-07T10:00", "2030-01-07T11:00", "none"),
+                         (result["start"], result["end"], result["repeat"]))
+        for rrule in ("FREQ=YEARLY", "FREQ=WEEKLY;BYDAY=TU", "FREQ=DAILY;UNTIL=20300201T180000Z"):
+            with self.assertRaises(ValueError):
+                event_schedule_draft(dict(source, rrule=rrule))
+        with self.assertRaises(ValueError):
+            event_schedule_draft(dict(source, start_time="2030-11-03T01:30:00-07:00",
+                                      end_time="2030-11-03T03:00:00-07:00"))
 
     def test_denied_folder_list_uses_complete_video_ancestry(self):
         class Denied:
@@ -174,6 +186,42 @@ class VimeoFolderMigration(unittest.TestCase):
                 const video = document.querySelector('#reviewTourPlayer');
                 return video.videoWidth === 320 && video.currentTime > .2;
             }""")
+
+    def test_vimeo_schedule_reconstruction(self):
+        self.source.live_event_fixture = True
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            unsupported = page.locator("details").filter(has=page.get_by_text("No past streams", exact=False))
+            unsupported.locator("summary").click()
+            expect(unsupported).to_contain_text("Recreate the Vimeo schedule in Live Events.")
+            expect(unsupported.get_by_role("link", name="Set up in Live Events")).to_have_count(0)
+            source = page.locator("details").filter(has=page.get_by_text("Council replay archive", exact=False))
+            source.locator("summary").click()
+            source.get_by_role("link", name="Set up in Live Events").click()
+            form = page.locator("#newEventForm")
+            for name, value in dict(title="Council replay archive", description="Recurring council meeting",
+                                    timezone="America/Denver", start="2030-01-07T10:00", end="2030-01-07T11:00",
+                                    repeat="weeks", interval="2", count="4", visibility="private", embed_mode="disabled",
+                                    latency="low", method="encoder").items():
+                expect(form.locator(f'[name="{name}"]')).to_have_value(value)
+            self.assertEqual([], self.client.get("/api/live-events", headers=self.auth).get_json()["events"])
+            with page.expect_response(lambda response: response.request.method == "POST"
+                                      and response.url.endswith("/api/live-events")) as saved:
+                form.get_by_role("button", name="Save event", exact=True).click()
+            self.assertEqual(201, saved.value.status)
+            calendar = self.client.get("/api/live-events?from=2030-01-01&to=2030-01-31", headers=self.auth).get_json()
+            event, = calendar["events"]
+            self.assertEqual("private", event["event"]["visibility"])
+            self.assertEqual("disabled", event["event"]["embed_policy"]["mode"])
+            self.assertEqual([0, 2], event["event"]["schedule"]["weekdays"])
+            self.assertEqual([f"2030-01-{date}T17:00:00+00:00" for date in ("07", "09", "21", "23")],
+                             [row["start"] for row in event["occurrences"]])
+            self.assertIsNone(event["embed"])
+            self.assertEqual(404, self.client.get(event["watch"]).status_code)
 
     def test_preserves_folders_and_local_changes(self):
         local = self.client.post("/api/library/folders", headers=self.auth,

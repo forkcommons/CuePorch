@@ -13,7 +13,9 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import event_schedule
 from cueporch import checksum, dump, verify, work_id
 from vimeo_appearance import custom_logo, embed_appearance, embed_ending, watch_appearance
 
@@ -1102,8 +1104,61 @@ def showcase_inventory(institution, source, account, video_ids):
     return result, None
 
 
+def event_schedule_draft(value):
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Invalid event schedule")
+    try:
+        zone = ZoneInfo(value.get("time_zone", ""))
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        raise ValueError("Invalid event timezone") from None
+
+    def local_minute(field):
+        raw = value.get(field)
+        if not isinstance(raw, str):
+            raise ValueError("Missing event time")
+        instant = datetime.fromisoformat(raw)
+        if instant.tzinfo is None:
+            raise ValueError("Missing event time offset")
+        local = instant.astimezone(zone).replace(tzinfo=None)
+        if local.second or local.microsecond or event_schedule.actual_time(local, zone) != instant.astimezone(timezone.utc):
+            raise ValueError("Event time cannot be represented exactly")
+        return local.isoformat(timespec="minutes")
+
+    schedule = dict(timezone=zone.key, start=local_minute("start_time"), end=local_minute("end_time"))
+    rule = value.get("rrule")
+    if rule is not None and rule != "":
+        if not isinstance(rule, str) or len(rule) > 500:
+            raise ValueError("Invalid recurrence rule")
+        parts = {}
+        for part in rule.strip().upper().removeprefix("RRULE:").split(";"):
+            name, sep, content = part.partition("=")
+            if not sep or not content or name in parts or name not in {"FREQ", "INTERVAL", "BYDAY", "COUNT"}:
+                raise ValueError("Unsupported recurrence rule")
+            parts[name] = content
+        repeat = {"DAILY": "days", "WEEKLY": "weeks", "MONTHLY": "months"}.get(parts.get("FREQ"))
+        if repeat is None:
+            raise ValueError("Unsupported recurrence frequency")
+        schedule["repeat"] = repeat
+        for name in ("INTERVAL", "COUNT"):
+            if name in parts:
+                if not re.fullmatch(r"[1-9][0-9]{0,4}", parts[name]):
+                    raise ValueError("Invalid recurrence number")
+                schedule[name.lower()] = int(parts[name])
+        if "BYDAY" in parts:
+            names = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+            days = parts["BYDAY"].split(",")
+            if repeat != "weeks" or any(day not in names for day in days):
+                raise ValueError("Unsupported recurrence weekdays")
+            schedule["weekdays"] = [names.index(day) for day in days]
+    return event_schedule.validate(schedule)
+
+
 def live_event_archive_inventory(institution, source, account, video_ids):
-    fields = "uri,title,stream_privacy.view,recordings.uri,recordings.title"
+    fields = ("uri,title,stream_privacy.view,recordings.uri,recordings.title,"
+              "schedule.start_time,schedule.end_time,schedule.time_zone,schedule.rrule,"
+              "stream_description,preferred_stream_method,latency")
     try:
         events = list(source.pages(account + "/live_events", fields=fields))
     except SourceFailure as exc:
@@ -1151,9 +1206,26 @@ def live_event_archive_inventory(institution, source, account, video_ids):
                                    work=work_id(institution, "vimeo", vid) if vid in video_ids else None))
         if invalid_recordings:
             issues.append("Some recordings had no recognized Vimeo video ID.")
+        draft = {}
+        try:
+            schedule = event_schedule_draft(event.get("schedule"))
+        except (ValueError, OverflowError):
+            issues.append("Recreate the Vimeo schedule in Live Events.")
+        else:
+            if schedule is not None:
+                draft["schedule"] = schedule
+                description = event.get("stream_description")
+                if isinstance(description, str):
+                    draft["description"] = description.strip()[:5000]
+                method = event.get("preferred_stream_method")
+                if method in ("browser", "encoder"):
+                    draft["method"] = method
+                latency = event.get("latency")
+                if latency in ("standard", "low", "fail-safe"):
+                    draft["latency"] = latency
         inventory.append(dict(source_id=identifier, title=(title.strip()[:128] if isinstance(title, str) else "")
                               or "Untitled live event", source_visibility=visibility,
-                              recordings=recordings, issues=issues))
+                              recordings=recordings, issues=issues, **draft))
     return inventory, "Some source events had missing or duplicate IDs." if unresolved else None
 
 
