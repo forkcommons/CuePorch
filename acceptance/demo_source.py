@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 
-def build_server(directory, port=0):
+def build_server(directory, port=0, *, version_fixture=False):
     directory.mkdir(parents=True, exist_ok=True)
     clip = directory / "meeting.mp4"
     if not clip.exists():
@@ -38,6 +38,21 @@ def build_server(directory, port=0):
             check=True,
         )
     media = clip.read_bytes()
+    previous = {}
+    if version_fixture:
+        for extension, dimensions, video_codec, audio_codec in (
+            ("mp4", "256x144", "libx264", "aac"),
+            ("webm", "192x108", "libvpx-vp9", "libopus"),
+        ):
+            target = directory / f"previous.{extension}"
+            if not target.exists():
+                subprocess.run([
+                    "ffmpeg", "-v", "error",
+                    "-f", "lavfi", "-i", f"testsrc2=s={dimensions}:r=24:d=3",
+                    "-f", "lavfi", "-i", "sine=frequency=880:duration=3",
+                    "-c:v", video_codec, "-pix_fmt", "yuv420p", "-c:a", audio_codec, str(target),
+                ], check=True)
+            previous[extension] = target.read_bytes()
     caption = (
         b"WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nThe public meeting is in session.\n"
     )
@@ -52,6 +67,12 @@ def build_server(directory, port=0):
             if path == "/fixture/legacy-player":
                 content_type = "text/html; charset=utf-8"
                 data = b'<!doctype html><title>Legacy test player</title><video controls src="/media/72.mp4"></video>'
+            elif version_fixture and path in ("/media/previous.mp4", "/media/previous.webm"):
+                if self.headers.get("Authorization"):
+                    return self.send_error(400)
+                extension = path.rsplit(".", 1)[1]
+                content_type = "video/" + extension
+                data = previous[extension]
             elif path.startswith("/media/"):
                 content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
@@ -69,6 +90,24 @@ def build_server(directory, port=0):
                     self.end_headers()
                     self.wfile.write(data)
                     return
+                if version_fixture and path in ("/videos/71/versions/200", "/videos/71/versions/202"):
+                    extension, number, height = ("mp4", 2, 144) if path.endswith("/202") else ("webm", 1, 108)
+                    data = json.dumps(dict(
+                        uri=path, active=False, sequence_number=number, duration=3,
+                        created_time=f"2026-09-0{number}T12:00:00Z",
+                        play=dict(status="playable", progressive=[dict(
+                            link=f"{origin}/media/previous.{extension}?fixture-signature=short-lived",
+                            type="video/" + extension, height=height, size=len(previous[extension]),
+                        )]),
+                    )).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
+                if version_fixture and path == "/videos/71/versions/201":
+                    return self.send_error(403)
                 following = None
                 total = None
                 if path == "/users/10/albums":
@@ -205,7 +244,10 @@ def build_server(directory, port=0):
                 elif path.endswith("/credits"):
                     values = [dict(name="Fixture station", role="Producer")]
                 elif path.endswith("/versions"):
-                    values = []
+                    values = [
+                        dict(uri=f"/videos/71/versions/{uid}", sequence_number=number, active=uid == 203)
+                        for uid, number in ((203, 4), (202, 2), (201, 3), (200, 1))
+                    ] if version_fixture and path == "/videos/71/versions" else []
                 else:
                     return self.send_error(404)
                 data = json.dumps(

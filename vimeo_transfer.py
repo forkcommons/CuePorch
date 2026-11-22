@@ -221,6 +221,150 @@ class RefreshLinks(Exception):
     pass
 
 
+def canonical_version_uri(video_uri, value):
+    if isinstance(value, str) and re.fullmatch(re.escape(video_uri) + r"/versions/[0-9]+", value):
+        return value
+    return None
+
+
+def version_asset(version):
+    playable = folder_field(version, "play", "progressive")
+    if not isinstance(playable, list):
+        return None
+    videos = [
+        item for item in playable if isinstance(item, dict)
+        and item.get("type") in ("video/mp4", "video/webm") and isinstance(item.get("link"), str)
+    ]
+    return next(assets({"play": {"progressive": videos}}, ()), None)
+
+
+def version_declines_playback(version):
+    return (
+        version.get("is_deleted") is True or version.get("is_playable") is False
+        or folder_field(version, "play", "status") not in (None, "playable")
+    )
+
+
+def archive_version(source, video_uri, row):
+    uri = canonical_version_uri(video_uri, row.get("uri"))
+    if uri is None:
+        return row, None, "Unrecognized source version identity"
+    if row.get("active") is not False:
+        return row, None, "Vimeo did not identify this as a previous cut"
+    if version_declines_playback(row):
+        return row, None, "Vimeo did not allow playback"
+    asset = version_asset(row)
+    if asset is not None:
+        return row, asset, None
+    try:
+        with source.open(source.base + uri, authenticated=True) as response:
+            detail = json.load(response)
+    except SourceFailure as error:
+        if error.status in (403, 404, 410):
+            return row, None, f"Source version unavailable (HTTP {error.status})"
+        raise
+    if not isinstance(detail, dict) or detail.get("uri") != uri or detail.get("active") is not False:
+        return row, None, "Vimeo did not confirm the previous cut's identity"
+    if version_declines_playback(detail):
+        return detail, None, "Vimeo did not allow playback"
+    asset = version_asset(detail)
+    return detail, asset, None if asset else "Vimeo supplied no supported progressive file"
+
+
+def archived_version_files(root, raw):
+    if raw["format"] == "mp4":
+        return [raw]
+    from media_tools import prepare_screening
+
+    with tempfile.TemporaryDirectory(dir=root) as temp:
+        screening = Path(temp) / "screening.mp4"
+        try:
+            prepare_screening(root / "objects" / raw["sha256"], screening,
+                              input_format="matroska", full_resolution=True)
+        except (OSError, ValueError):
+            raise MediaFailure("Could not prepare an MP4 screening copy") from None
+        digest, size = checksum(screening), screening.stat().st_size
+        screening.replace(root / "objects" / digest)
+    return [dict(role="playback", format="mp4", sha256=digest, bytes=size), raw]
+
+
+def verified_version_objects(root, files):
+    if not isinstance(files, list) or not files:
+        return False
+    for file in files:
+        digest = file["sha256"]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return False
+        path = root / "objects" / digest
+        if path.stat().st_size != file["bytes"] or checksum(path) != digest:
+            return False
+    return True
+
+
+def recover_version(root, source, uri, detail, asset, *, refresh):
+    link, meta, size, md5 = asset
+    revision = detail.get("modified_time") or detail.get("created_time")
+    scope = dict(uri=uri, revision=revision, media=meta, size=size, md5=md5)
+    checkpoint = root / "checkpoints" / (uri.strip("/").replace("/", "-") + ".json")
+    if revision or md5:
+        try:
+            saved = json.loads(checkpoint.read_text(encoding="utf8"))
+            files = saved["files"]
+            if saved["scope"] == scope and verified_version_objects(root, files):
+                return files, None
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    try:
+        raw = dict(meta, **store(root, source, link, size, md5))
+        files = archived_version_files(root, raw)
+    except MediaFailure as error:
+        return None, error.reason
+    except SourceFailure as error:
+        if error.status == 429:
+            raise
+        if refresh and error.status in (401, 403, 410):
+            raise RefreshLinks() from None
+        return None, f"Source media unavailable (HTTP {error.status})"
+    if revision or md5:
+        dump(checkpoint, dict(scope=scope, files=files))
+    return files, None
+
+
+def retain_previous_versions(root, source, video_uri, title, versions, *, dry_run, refresh):
+    history, recovery = [], []
+    seen = set()
+    for row in versions:
+        if row.get("active") is True:
+            continue
+        uri = canonical_version_uri(video_uri, row.get("uri"))
+        if uri is not None:
+            if uri in seen:
+                continue
+            seen.add(uri)
+        detail, asset, issue = archive_version(source, video_uri, row)
+        number = detail.get("sequence_number")
+        entry = dict(uri=uri, number=number if type(number) is int else None)
+        if asset is not None and dry_run:
+            entry["state"] = "available"
+        else:
+            files = None
+            if asset is not None:
+                files, issue = recover_version(root, source, uri, detail, asset, refresh=refresh)
+            if files:
+                entry["state"] = "recovered"
+                saved_at = detail.get("upload_date") or detail.get("created_time")
+                history.append(dict(
+                    files=files, title=title, version_saved_at=saved_at if isinstance(saved_at, str) else None,
+                    duration_seconds=detail.get("duration"), disposition="playback copy only",
+                    source_version=uri, source_version_number=entry["number"],
+                ))
+            else:
+                entry.update(state="owner_file_needed", issue=issue)
+        recovery.append(entry)
+    history.sort(key=lambda version: version["version_saved_at"] or "")
+    return history, recovery
+
+
 def original_url(video, vid):
     fallback = "https://vimeo.com/" + vid
     link = video.get("link")
@@ -488,12 +632,16 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         for family, fields in (
             ("credits", ("uri", "name", "role")),
             ("chapters", ("uri", "title", "timecode")),
-            ("versions", ("uri", "version", "active", "created_time")),
         ):
             record[family] = [
                 {key: item[key] for key in fields if key in item}
                 for item in related("/" + family)
             ]
+        versions = [item for item in related("/versions") if isinstance(item, dict)]
+        record["versions"] = [
+            {key: item[key] for key in ("uri", "version", "active", "created_time") if key in item}
+            for item in versions
+        ]
         record["unavailable_metadata"] = unavailable
         record["source_privacy_details"] = {
             key: val
@@ -604,6 +752,21 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             else:
                 record["source_folder"] = selected["id"]
                 record["source_folder_path"] = selected["path"]
+        history, recovery = retain_previous_versions(
+            root, source, uri, record["title"], versions, dry_run=dry_run, refresh=refresh,
+        )
+        if history:
+            record["versions_history"] = history
+        if recovery:
+            record["version_recovery"] = recovery
+        active = next((item for item in versions if item.get("active") is True), None)
+        if active and (source_version := canonical_version_uri(uri, active.get("uri"))):
+            record["source_version"] = source_version
+            if type(active.get("sequence_number")) is int:
+                record["source_version_number"] = active["sequence_number"]
+            active_time = active.get("upload_date") or active.get("created_time")
+            if isinstance(active_time, str):
+                record["version_saved_at"] = active_time
         works.append(record)
         if progress:
             progress(len(works), len(videos))

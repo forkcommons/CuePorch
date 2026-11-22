@@ -500,6 +500,21 @@ def create_app(root, database, operator, institution, simulation=None):
                     page = min(page, pages)
                     entries = entries[(page - 1) * size:page * size]
                     status.update(page=page, pages=pages)
+                if state == "transferred":
+                    for entry in entries:
+                        recovery = entry.get("version_recovery", [])
+                        if not recovery:
+                            continue
+                        local = works.get(entry["id"], {})
+                        source_versions = {
+                            cut.get("source_version") for cut in [local, *local.get("versions_history", [])]
+                            if any(file["format"] == "mp4" and file["role"] in ("original", "playback")
+                                   for file in cut.get("files", []))
+                        }
+                        for receipt in recovery:
+                            if (receipt["state"] == "owner_file_needed" and receipt.get("uri")
+                                    and receipt["uri"] in source_versions):
+                                receipt["state"] = "retained"
                 status.update(works=entries, showcases=showcases, showcase_issue=data.get("showcase_issue"),
                               folders=data.get("folders", []), folder_issue=data.get("folder_issue"))
             except (ValueError, OSError, KeyError):
