@@ -152,6 +152,51 @@ class ShowcaseDistribution(unittest.TestCase):
                     async node => {node.muted = true; await node.play(); node.pause(); return node.videoWidth}
                 """))
 
+                editor.get_by_label("List in Watch channels").check()
+                editor.get_by_label("Channel category").fill("Arts")
+                with page.expect_response(lambda response: response.url == base + endpoint
+                                          and response.request.method == "PUT") as saved_channel:
+                    editor.get_by_role("button", name="Save showcase").click()
+                self.assertTrue(saved_channel.value.ok)
+                current = send("GET", endpoint)
+                channel = current["channel"]
+                self.assertEqual("/channels/station-arts", channel)
+                expect(page.get_by_label("Channel link")).to_have_value(base + channel)
+                directory = base + "/watch/channels?category=Arts"
+                guest.goto(base + "/watch/channels")
+                guest.get_by_role("navigation", name="Channel categories").get_by_role("link", name="Arts").click()
+                guest.get_by_role("link", name="Station arts", exact=True).click()
+                expect(guest).to_have_url(base + channel)
+                expect(guest.locator("#nowPlaying")).to_have_text("Artist interview")
+                guest.get_by_role("button", name="Stage recording").click()
+                self.assertEqual(320, guest.locator(".showcase-screen video").evaluate(
+                    "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+                ))
+                expect(guest.get_by_text("Private assembly", exact=True)).to_have_count(0)
+                marker = {"X-CuePorch-Viewer": "1"}
+                self.assertTrue(guest.context.request.post(base + "/api/viewer/signup", headers=marker, data={
+                    "name": "Channel viewer", "email": "channel-viewer@example.invalid",
+                    "password": "Channel fixture password 2026!",
+                }).ok)
+                self.assertTrue(guest.context.request.put(base + "/api/viewer/preferences", headers=marker,
+                                                         data={"mode": "hide_mature"}).ok)
+                second_details = f"/api/library/work/{second}/details"
+                original_details = send("GET", second_details)
+                send("PUT", second_details, original_details | {"rating": "mature", "content": ["language"]})
+                guest.reload()
+                expect(guest.get_by_role("button", name="Artist interview")).to_have_count(0)
+                expect(guest.get_by_role("button", name="Stage recording")).to_be_visible()
+                send("PUT", second_details, original_details)
+                send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "private"}})
+                self.assertEqual(404, requests.get(base + channel, timeout=10).status_code)
+                guest.goto(directory)
+                expect(guest.get_by_role("link", name="Station arts", exact=True)).to_have_count(0)
+                current = send("GET", endpoint)
+                send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "public"}})
+                page.reload()
+                editor = page.locator("#showcaseEdit")
+                expect(editor).to_be_visible()
+
                 backdrop = root / "exhibition.png"
                 Image.new("RGB", (89, 54), "#03655d").save(backdrop)
                 editor.get_by_label("Featured background image").set_input_files(backdrop)

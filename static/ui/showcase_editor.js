@@ -16,6 +16,7 @@ const sharing = document.querySelector("#showcaseSharing");
 const link = document.querySelector("#showcaseLink");
 const code = document.querySelector("#showcaseCode");
 const rokuFeed = document.querySelector("#showcaseRokuFeed");
+const channelLink = document.querySelector("#showcaseChannelLink");
 const searchStatus = document.querySelector("#showcaseSearchStatus");
 const searchTitle = document.querySelector("#showcaseSearchTitle");
 const searchAddress = document.querySelector("#showcaseSearchAddress");
@@ -152,6 +153,8 @@ function select(value) {
     link.parentElement.hidden = !value.watch;
     code.parentElement.hidden = !value.embed;
     renderRokuLink(value.roku);
+    channelLink.value = value.channel ? new URL(value.channel, base).href : "";
+    channelLink.parentElement.hidden = !value.channel;
     visibility();
     renderSearchPreview();
     membership();

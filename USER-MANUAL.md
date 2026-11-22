@@ -26,7 +26,7 @@ Choose **Take a tour** in Video details, an open review, or Live Studio to highl
 
 ### Browse public videos and curate Staff Picks
 
-Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** links to the institution’s published channel pages. Each result opens its existing watch address.
+Open **Watch** at `/watch` or the site home page. Use **Explore** to browse public videos and move through the featured picks. Use **Categories** to narrow the list or enter a title, description keyword, category or tag in **Search public videos**. **Channels** lists local channels and linked channels published by the institution.
 
 In the operator Library, open **Staff Picks**. Add public videos, use **Move up** and **Move down** to arrange them, then select **Save Staff Picks**. The first picks appear in Explore, and the full list has its own page. Making a pick private or deleting it hides it from Watch and closes its public cover link. The selection stays in the editor so it can be removed or shown again if the video becomes public.
 
@@ -395,6 +395,8 @@ For HTTPS installations, set `CUEPORCH_PUSH_CONTACT` to a `mailto:` address or H
 ### Showcases
 
 Open **Showcases** from the library. **New showcase** creates a private gallery. Give it a title and link name, add videos, and use **Move up** or **Move down** to set playback order. Choose a gallery grid or a player with a playlist, add a logo and featured information, and pick a card size. Preview the saved gallery at desktop or mobile width before sharing.
+
+To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search. Share the **Channel link** to open the ordered gallery directly.
 
 Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
 

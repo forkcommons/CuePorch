@@ -17,6 +17,7 @@ interface Showcase {
   watch: string | null;
   embed: string | null;
   roku: string | null;
+  channel: string | null;
 }
 interface Work {id: string; title: string; asset_type: string;}
 interface ShowcaseStats {
@@ -42,6 +43,7 @@ const sharing = document.querySelector<HTMLElement>("#showcaseSharing")!;
 const link = document.querySelector<HTMLInputElement>("#showcaseLink")!;
 const code = document.querySelector<HTMLInputElement>("#showcaseCode")!;
 const rokuFeed = document.querySelector<HTMLInputElement>("#showcaseRokuFeed")!;
+const channelLink = document.querySelector<HTMLInputElement>("#showcaseChannelLink")!;
 const searchStatus = document.querySelector<HTMLElement>("#showcaseSearchStatus")!;
 const searchTitle = document.querySelector<HTMLElement>("#showcaseSearchTitle")!;
 const searchAddress = document.querySelector<HTMLElement>("#showcaseSearchAddress")!;
@@ -188,6 +190,8 @@ function select(value: Showcase) {
   link.parentElement!.hidden = !value.watch;
   code.parentElement!.hidden = !value.embed;
   renderRokuLink(value.roku);
+  channelLink.value = value.channel ? new URL(value.channel, base).href : "";
+  channelLink.parentElement!.hidden = !value.channel;
   visibility();
   renderSearchPreview();
   membership();
