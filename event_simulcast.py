@@ -1431,8 +1431,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if interactive:
                 staff()
             with tx() as con:
-                check(con)
-                check_provider_capacity(con, uid, opens)
+                try:
+                    check(con)
+                    check_provider_capacity(con, uid, opens)
+                except Conflict as error:
+                    if interactive:
+                        raise
+                    raise linkedin_live_job.AutomaticIngestDeferred from error
 
         def save(con, target):
             check_provider_capacity(con, uid, opens)

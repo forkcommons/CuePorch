@@ -37,6 +37,10 @@ SCOPE = " WHERE event=? AND opens=? AND company=?"
 RESTART = "SELECT * FROM linkedin_live_restart" + SCOPE
 
 
+class AutomaticIngestDeferred(Exception):
+    """A local check deferred automatic registration before the provider request."""
+
+
 def provider_for(owner_key):
     return "linkedin-member-live" if owner_key.startswith("member:") else "linkedin-live"
 
@@ -166,6 +170,14 @@ def prepare_ingest(tx, check, send, save, key, revision):
 
     try:
         target = send()
+    except AutomaticIngestDeferred:
+        with tx() as con:
+            deleted = con.execute(
+                "DELETE FROM linkedin_live_ingest" + SCOPE + " AND phase='registering' AND asset IS NULL", key,
+            ).rowcount
+            if deleted:
+                con.execute("UPDATE linkedin_live_auto SET state='queued'" + SCOPE + " AND state='attempted'", key)
+        return {"state": "pending"}, 202
     except LinkedInWriteUnconfirmed:
         return {"state": "unconfirmed"}, 202
     except HTTPException as error:

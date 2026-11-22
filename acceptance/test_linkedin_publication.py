@@ -694,8 +694,28 @@ class LinkedInPublication(unittest.TestCase):
                     return due_auto(con, now)
 
                 deliveries = []
+                register_attempts = []
+                original_register = linkedin_live.LiveConnection.register_ingest
+
+                def register_after_local_pause(connection, revision, author, before_send):
+                    register_attempts.append(author)
+                    if len(register_attempts) > 1:
+                        return original_register(connection, revision, author, before_send)
+
+                    def withdrawal():
+                        with closing(sqlite3.connect(database)) as db, db:
+                            db.execute("UPDATE live_occurrence SET delivery='withdrawing' WHERE event=? AND opens=?", scope)
+                        try:
+                            before_send()
+                        finally:
+                            with closing(sqlite3.connect(database)) as db, db:
+                                db.execute("UPDATE live_occurrence SET delivery='ready' WHERE event=? AND opens=?", scope)
+
+                    return original_register(connection, revision, author, withdrawal)
+
                 try:
                     with (
+                        patch.object(linkedin_live.LiveConnection, "register_ingest", register_after_local_pause),
                         patch.object(event_simulcast, "datetime", OccurrenceClock),
                         patch.object(linkedin_live_job, "time", lambda: clock.timestamp()),
                         patch.object(linkedin_live_job, "due_auto", observe_capacity_poll),
@@ -721,6 +741,7 @@ class LinkedInPublication(unittest.TestCase):
                     with closing(sqlite3.connect(database)) as db:
                         db.execute("DELETE FROM live_simulcast_destination WHERE id LIKE 'li-capacity-fixture-%'")
                         db.commit()
+                self.assertEqual([owner, owner], register_attempts)
                 self.assertEqual([(item["id"], "registered")], deliveries)
                 self.assertEqual([asset, asset], ingests)
                 self.assertEqual([asset], links)
