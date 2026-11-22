@@ -24,6 +24,7 @@ import creator_profiles
 import event_series_team_access
 import library_analytics
 import mail_relay
+import media_bandwidth
 import team_analytics
 import team_workspaces
 from browser_account_security import (TOKEN, email_key, json_mutation, password, private, same_origin,
@@ -876,7 +877,8 @@ def register(app, tx, origin, key, workspace_brand, operator_name, read_works, t
             path = root / "objects" / playback(item)["sha256"]
             if not path.is_file():
                 abort(404)
-        return private(send_file(path, mimetype="video/mp4", conditional=True))
+        response = private(send_file(path, mimetype="video/mp4", conditional=True))
+        return media_bandwidth.measure(response, tx, str(work))
 
     team_workspaces.register(app, tx, origin, manager, note)
     creator_profiles.register(app, tx, origin, member, mutation, public_listing, entry_payload, read_works,

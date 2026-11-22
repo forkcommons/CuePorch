@@ -332,6 +332,48 @@ class AnalyticsPicker(unittest.TestCase):
         self.assertAlmostEqual(.955, row["net_fraction"])
         self.assertAlmostEqual(.955, row["avg_watched_fraction"])
 
+    def test_bandwidth_counts_authorized_team_media_range_only(self):
+        self.manifest.write_text(json.dumps({"institution": "station", "schema": 1, "works": []}), encoding="utf-8")
+        clip = generate_replacement(self.root / "team-bandwidth.mp4", width=320)
+        with clip.open("rb") as stream:
+            upload = self.client.post("/api/library/uploads", headers=self.auth, data={
+                "file": (stream, "fixture.mp4"), "upload_id": uuid.uuid4().hex,
+            })
+        self.assertEqual(201, upload.status_code, upload.get_data(as_text=True))
+        work = upload.get_json()["id"]
+        team = {"X-CuePorch-Team": "1"}
+        manager = self.auth | team
+        invite = self.client.post("/api/team/invitations", headers=manager, json={
+            "email": "bandwidth@example.test", "role": "viewer",
+        })
+        self.assertEqual(201, invite.status_code)
+        viewer = self.app.test_client()
+        joined = viewer.post("/api/team/join", headers=team, json={
+            "invitation": invite.get_json()["path"].split("#", 1)[1],
+            "name": "Meter test", "password": "fixture-long-password",
+        })
+        self.assertEqual(201, joined.status_code)
+        grant = f"/api/team/members/{joined.get_json()['id']}/works/{work}"
+        media = f"/team/video/{work}/media"
+        self.assertEqual(204, self.client.put(grant, headers=manager, json={}).status_code)
+        with self.app.test_client().get(media) as response:
+            self.assertEqual(401, response.status_code)
+        with viewer.head(media) as response:
+            self.assertEqual(200, response.status_code)
+        with viewer.get(media, headers={"Range": "bytes=999999999-"}) as response:
+            self.assertEqual(416, response.status_code)
+        with viewer.get(media, headers={"Range": "bytes=20-99"}, buffered=True) as response:
+            self.assertEqual(206, response.status_code)
+            self.assertEqual(80, len(response.data))
+        self.assertEqual(204, self.client.delete(grant, headers=manager, json={}).status_code)
+        with viewer.get(media, headers={"Range": "bytes=20-99"}) as response:
+            self.assertEqual(404, response.status_code)
+        report = self.client.post("/api/analytics/bandwidth-report", headers=self.auth, json={
+            "videos": [work], "bandwidth_group": "video",
+        })
+        self.assertEqual(200, report.status_code)
+        self.assertEqual({"live_bytes": 0, "vod_bytes": 80, "total_bytes": 80}, report.get_json()["totals"])
+
     def test_operator_analytics_report_folder_limit(self):
         server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
         self.enterContext(service_worker(server))
