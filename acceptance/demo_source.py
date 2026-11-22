@@ -264,6 +264,8 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                                    "stream_privacy": {"view": "team"},
                                    "stream_description": "Recurring council meeting",
                                    "preferred_stream_method": "encoder", "latency": "low",
+                                   "chat_enabled": True, "dvr": False, "auto_cc_enabled": True,
+                                   "auto_cc_language": "fr", "has_forced_lead_capture_form": True,
                                    "schedule": dict(start_time="2030-01-07T10:00:00-07:00",
                                                     end_time="2030-01-07T11:00:00-07:00",
                                                     time_zone="America/Denver", rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=4"),

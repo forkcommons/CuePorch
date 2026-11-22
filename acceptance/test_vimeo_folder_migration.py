@@ -16,10 +16,37 @@ from cueporch import work_id
 from demo_source import build_server
 from institution import create_app
 from test_drive_import import QuietHandler, service_worker
-from vimeo_transfer import SourceFailure, event_schedule_draft, folder_inventory, resolve_archive_recordings
+from vimeo_transfer import (SourceFailure, event_schedule_draft, folder_inventory,
+                            live_event_archive_inventory, resolve_archive_recordings)
 
 
 class VimeoFolderInventory(unittest.TestCase):
+    def test_event_options_are_strict(self):
+        event = {
+            "uri": "/live_events/37", "recordings": [],
+            "schedule": {"start_time": "2030-01-07T10:00:00Z",
+                         "end_time": "2030-01-07T10:30:00Z", "time_zone": "UTC"},
+            "chat_enabled": "false", "dvr": True, "auto_cc_enabled": True,
+            "auto_cc_language": {}, "has_forced_lead_capture_form": "true",
+        }
+
+        class Source:
+            def pages(self, path, *, fields):
+                return [event]
+
+        inventory, _ = live_event_archive_inventory("station", Source(), "/users/10", set())
+        item, = inventory
+        self.assertNotIn("chat_enabled", item)
+        self.assertNotIn("captions", item)
+        self.assertIs(True, item["dvr_enabled"])
+        self.assertEqual(["Vimeo automatic captions use an unsupported or missing language. "
+                          "Set the caption language in Live Events."], item["issues"])
+
+        event.update(chat_enabled=False, auto_cc_enabled=False)
+        inventory, _ = live_event_archive_inventory("station", Source(), "/users/10", set())
+        self.assertEqual(dict(enabled=False), inventory[0]["captions"])
+        self.assertIs(False, inventory[0]["chat_enabled"])
+
     def test_archive_only_owner_check(self):
         from io import BytesIO
 
@@ -331,6 +358,7 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(unsupported.get_by_role("link", name="Set up in Live Events")).to_have_count(0)
             source = page.locator("details").filter(has=page.get_by_text("Council replay archive", exact=False))
             source.locator("summary").click()
+            expect(source).to_contain_text("Vimeo reports required registration.")
             source.get_by_role("link", name="Set up in Live Events").click()
             form = page.locator("#newEventForm")
             for name, value in dict(title="Council replay archive", description="Recurring council meeting",
@@ -338,6 +366,11 @@ class VimeoFolderMigration(unittest.TestCase):
                                     repeat="weeks", interval="2", count="4", visibility="private", embed_mode="disabled",
                                     latency="low", method="encoder").items():
                 expect(form.locator(f'[name="{name}"]')).to_have_value(value)
+            expect(form.locator('[name="chat"]')).to_be_checked()
+            expect(form.locator('[name="captions"]')).to_be_checked()
+            expect(form.locator('[name="registration"]')).not_to_be_checked()
+            expect(form.locator('[name="dvr_seconds"]')).to_have_value("0")
+            expect(form.locator('[name="caption_language"]')).to_have_value("fr")
             self.assertEqual([], self.client.get("/api/live-events", headers=self.auth).get_json()["events"])
             with page.expect_response(lambda response: response.request.method == "POST"
                                       and response.url.endswith("/api/live-events")) as saved:
@@ -345,6 +378,12 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertEqual(201, saved.value.status)
             calendar = self.client.get("/api/live-events?from=2030-01-01&to=2030-01-31", headers=self.auth).get_json()
             event, = calendar["events"]
+            settings = event["event"]
+            self.assertIs(True, settings["setup"]["chat"]["enabled"])
+            self.assertEqual(dict(enabled=True, language="fr"), settings["setup"]["captions"])
+            self.assertEqual(0, settings["dvr_seconds"])
+            registration = self.client.get(f"/api/live-events/{event['id']}/registration", headers=self.auth).get_json()
+            self.assertIs(False, registration["settings"]["enabled"])
             self.assertEqual("private", event["event"]["visibility"])
             self.assertEqual("disabled", event["event"]["embed_policy"]["mode"])
             self.assertEqual([0, 2], event["event"]["schedule"]["weekdays"])
