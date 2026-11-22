@@ -267,9 +267,12 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                                    "schedule": dict(start_time="2030-01-07T10:00:00-07:00",
                                                     end_time="2030-01-07T11:00:00-07:00",
                                                     time_zone="America/Denver", rrule="FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=4"),
-                                   "recordings": [{"uri": "/videos/71", "title": "Council replay"},
-                                                  {"uri": "/videos/999", "title": "Missing replay"},
-                                                  {"uri": "/videos/998", "title": "Archive-only meeting"}],
+                                   "recordings": [{"uri": "/videos/71", "title": "Council replay",
+                                                   "streamed_on": "2026-11-03T18:30:45.125-07:00"},
+                                                  {"uri": "/videos/999", "title": "Missing replay",
+                                                   "streamed_on": "2026-11-03T18:30:45"},
+                                                  {"uri": "/videos/998", "title": "Archive-only meeting",
+                                                   "streamed_on": None}],
                                    "streamable_clip": "/videos/72", "stream_key": "fixture-ingest-key"}]
                     else:
                         values = [{"uri": "/live_events/802", "title": "No past streams", "recordings": [],

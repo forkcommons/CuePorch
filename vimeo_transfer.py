@@ -1164,8 +1164,20 @@ def event_schedule_draft(value):
     return event_schedule.validate(schedule)
 
 
+def _streamed_on_utc(raw):
+    if not isinstance(raw, str) or len(raw) >= 70:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None or dt.utcoffset() is None:
+            return None
+        return dt.astimezone(timezone.utc).isoformat()
+    except (ValueError, OverflowError):
+        return None
+
+
 def live_event_archive_inventory(institution, source, account, video_ids):
-    fields = ("uri,title,stream_privacy.view,recordings.uri,recordings.title,"
+    fields = ("uri,title,stream_privacy.view,recordings.uri,recordings.title,recordings.streamed_on,"
               "schedule.start_time,schedule.end_time,schedule.time_zone,schedule.rrule,"
               "stream_description,preferred_stream_method,latency")
     try:
@@ -1211,8 +1223,12 @@ def live_event_archive_inventory(institution, source, account, video_ids):
                 continue
             seen.add(vid)
             name = recording.get("title")
-            recordings.append(dict(source_id=vid, title=(name.strip()[:128] if isinstance(name, str) else ""),
-                                   work=work_id(institution, "vimeo", vid) if vid in video_ids else None))
+            record = dict(source_id=vid, title=name.strip()[:128] if isinstance(name, str) else "",
+                          work=work_id(institution, "vimeo", vid) if vid in video_ids else None)
+            streamed_on = _streamed_on_utc(recording.get('streamed_on'))
+            if streamed_on is not None:
+                record['streamed_on'] = streamed_on
+            recordings.append(record)
         if invalid_recordings:
             issues.append("Some recordings had no recognized Vimeo video ID.")
         draft = {}

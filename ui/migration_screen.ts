@@ -280,6 +280,16 @@ async function poll(page = currentPage) {
         const item = document.createElement("li");
         const name = recording.title ? `${recording.title} · ` : "";
         item.append(`${name}Vimeo video ${recording.source_id} · `);
+        if (recording.streamed_on) {
+          const date = new Date(recording.streamed_on.replace(/(\.\d{3})\d+(?=\+00:00$)/, "$1"));
+          if (Number.isFinite(date.getTime())) {
+            const time = document.createElement("time");
+            time.dateTime = date.toISOString();
+            time.title = recording.streamed_on;
+            time.textContent = date.toLocaleString(undefined, { timeZoneName: "short" });
+            item.append("Originally streamed ", time, " · ");
+          }
+        }
         if (recording.target) {
           const link = document.createElement("a");
           link.href = "/operator/videos/" + encodeURIComponent(recording.target);
