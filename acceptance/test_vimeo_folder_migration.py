@@ -161,6 +161,188 @@ class VimeoFolderMigration(unittest.TestCase):
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
 
+    def test_team_series_exposes_private_child_to_invited_viewer(self):
+        team_headers = {'X-CuePorch-Team': '1'}
+        start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+        end = start + timedelta(hours=1)
+        schedule = dict(timezone="UTC", repeat="none",
+                        start=start.strftime("%Y-%m-%dT%H:%M"), end=end.strftime("%Y-%m-%dT%H:%M"))
+        response = self.client.post("/api/live-events", headers=self.auth, json=dict(
+            title="Private child", slug="private-child", visibility="private",
+            type="live", latency="standard", save_replay=False, schedule=schedule))
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        child = response.get_json()["id"]
+
+        response = self.client.post("/api/event-series", headers=self.auth, json={})
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        created = response.get_json()
+
+        response = self.client.put(
+            "/api/event-series/" + str(created["id"]), headers=self.auth,
+            json=dict(revision=created["revision"], slug="team-series",
+                      settings=dict(title="Team series", visibility="team", events=[child])))
+        self.assertEqual(200, response.status_code, response.get_data(as_text=True))
+
+        response = self.client.post(
+            "/api/team/invitations", headers={**self.auth, **team_headers},
+            json={"email": "viewer@example.com", "role": "viewer"},
+        )
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        invitation = response.get_json()["path"].split("#", 1)[1]
+
+        series_url = self.base + "/event-series/team-series"
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            anon = browser.new_context()
+            self.assertEqual(anon.request.get(series_url).status, 404)
+
+            team = browser.new_context()
+            joined = team.request.post(self.base + "/api/team/join", headers=team_headers, data={
+                "invitation": invitation, "name": "Viewer", "password": "viewer-password",
+            })
+            self.assertEqual(joined.status, 201, joined.text())
+
+            series_page = team.new_page()
+            self.assertEqual(series_page.goto(series_url).status, 200)
+            href = series_page.locator('a:has-text("Private child")').first.get_attribute("href")
+            self.assertTrue(href)
+            child_url = href if href.startswith("http") else self.base + href
+            self.assertEqual(anon.request.get(child_url).status, 404)
+
+            child_page = team.new_page()
+            self.assertEqual(child_page.goto(child_url).status, 200)
+
+            logout = team.request.delete(self.base + "/api/team/session", headers=team_headers, data={})
+            self.assertEqual(logout.status, 204)
+            self.assertEqual(team.request.get(series_url).status, 404)
+            self.assertEqual(team.request.get(child_url).status, 404)
+
+    def test_event_series_password_gate(self):
+        start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
+        end = start + timedelta(hours=1)
+        schedule = dict(timezone="UTC", repeat="none",
+                        start=start.strftime("%Y-%m-%dT%H:%M"), end=end.strftime("%Y-%m-%dT%H:%M"))
+
+        response = self.client.post("/api/live-events", headers=self.auth, json=dict(
+            title="Locked program", slug="locked-program", visibility="password",
+            type="live", latency="standard", save_replay=False, schedule=schedule,
+            view_password="inner-fixture-pass"))
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        event_id = response.get_json()["id"]
+
+        response = self.client.post("/api/event-series", headers=self.auth, json={})
+        self.assertEqual(201, response.status_code, response.get_data(as_text=True))
+        draft = response.get_json()
+        draft_id = draft["id"]
+
+        series_payload = dict(
+            revision=draft["revision"],
+            slug="outer-password-series",
+            settings=dict(title="Locked series", visibility="password", events=[event_id]),
+            view_password="outer-series-pass",
+        )
+        response = self.client.put(f"/api/event-series/{draft_id}", headers=self.auth, json=series_payload)
+        self.assertEqual(200, response.status_code, response.get_data(as_text=True))
+        published = response.get_json()
+        self.assertTrue(published.get("has_password"))
+        raw = response.get_data(as_text=True)
+        self.assertNotIn("outer-series-pass", raw)
+        self.assertNotIn("inner-fixture-pass", raw)
+        for marker in ("$argon", "$2a$", "$2b$", "$2y$", "scrypt:", "pbkdf2:"):
+            self.assertNotIn(marker, raw, marker)
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            guest = browser.new_page()
+            guest.goto(f"{self.base}/event-series/outer-password-series")
+            guest.wait_for_selector('input[name="password"]')
+            initial_html = guest.content()
+            self.assertIn("Event password", initial_html)
+            self.assertIn("Open event series", initial_html)
+            self.assertNotIn("Locked program", initial_html)
+            self.assertNotIn("Locked series", initial_html)
+
+            guest.fill('input[name="password"]', "wrong-password")
+            with guest.expect_navigation() as wrong_nav:
+                guest.get_by_role("button", name="Open event series").click()
+            self.assertEqual(403, wrong_nav.value.status)
+            wrong_html = guest.content()
+            self.assertNotIn("Locked program", wrong_html)
+            self.assertNotIn("Locked series", wrong_html)
+
+            guest.goto(f"{self.base}/event-series/outer-password-series")
+            guest.wait_for_selector('input[name="password"]')
+            guest.fill('input[name="password"]', "outer-series-pass")
+            with guest.expect_navigation() as ok_nav:
+                guest.get_by_role("button", name="Open event series").click()
+            self.assertEqual(200, ok_nav.value.status)
+            self.assertIn("Locked series", guest.content())
+
+            with guest.expect_navigation():
+                guest.get_by_role("link", name="Locked program").click()
+            guest.wait_for_selector('input[name="password"]')
+            child_html = guest.content()
+            self.assertIn("Event password", child_html)
+            self.assertIn("Unlock event", child_html)
+            self.assertNotIn("Locked program", child_html)
+
+            guest.fill('input[name="password"]', "outer-series-pass")
+            with guest.expect_navigation() as child_wrong_nav:
+                guest.get_by_role("button", name="Unlock event").click()
+            self.assertEqual(403, child_wrong_nav.value.status)
+            self.assertNotIn("Locked program", guest.content())
+
+            guest.goto(f"{self.base}/event-series/outer-password-series")
+            guest.wait_for_selector('input[name="password"]')
+            guest.fill('input[name="password"]', "outer-series-pass")
+            with guest.expect_navigation():
+                guest.get_by_role("button", name="Open event series").click()
+            with guest.expect_navigation():
+                guest.get_by_role("link", name="Locked program").click()
+            guest.wait_for_selector('input[name="password"]')
+            guest.fill('input[name="password"]', "inner-fixture-pass")
+            with guest.expect_navigation() as child_ok_nav:
+                guest.get_by_role("button", name="Unlock event").click()
+            self.assertEqual(200, child_ok_nav.value.status)
+
+            admin = browser.new_page()
+            admin.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            admin.goto(self.base + '/operator/event-series')
+            admin.get_by_role("button", name="Locked series", exact=True).click()
+            view_password = admin.locator('#seriesViewPassword')
+            assert view_password.is_visible()
+            assert view_password.input_value() == ''
+            assert view_password.get_attribute('required') is None
+            admin.locator('#seriesDescription').fill('rotated series description')
+            with admin.expect_response(lambda r: r.request.method == 'PUT') as kept:
+                admin.get_by_role("button", name="Save Event Series", exact=True).click()
+            kept_response = kept.value
+            assert kept_response.status == 200
+            assert json.loads(kept_response.text())['has_password'] is True
+            admin.wait_for_function("!document.getElementById('seriesEdit').inert")
+            admin.locator('#seriesViewPassword').fill('rotated-series-pass')
+            with admin.expect_response(lambda r: r.request.method == 'PUT') as kept:
+                admin.get_by_role("button", name="Save Event Series", exact=True).click()
+            kept_response = kept.value
+            admin.wait_for_function("document.getElementById('seriesViewPassword').value === ''")
+            assert kept_response.status == 200
+            assert json.loads(kept_response.text())['has_password'] is True
+            assert 'rotated-series-pass' not in kept_response.text()
+
+            guest.goto(f"{self.base}/event-series/outer-password-series")
+            guest.wait_for_selector('input[name="password"]')
+            guest.fill('input[name="password"]', "outer-series-pass")
+            with guest.expect_navigation() as stale_nav:
+                guest.get_by_role("button", name="Open event series").click()
+            self.assertEqual(403, stale_nav.value.status)
+            self.assertNotIn("Locked series", guest.content())
+
+            guest.goto(f"{self.base}/event-series/outer-password-series")
+            guest.wait_for_selector('input[name="password"]')
+            guest.fill('input[name="password"]', "rotated-series-pass")
+            with guest.expect_navigation() as rotated_nav:
+                guest.get_by_role("button", name="Open event series").click()
+            self.assertEqual(200, rotated_nav.value.status)
+            self.assertIn("Locked series", guest.content())
+
     def test_event_series_publication_gate(self):
         start = (datetime.now(timezone.utc) + timedelta(days=2)).replace(minute=0, second=0, microsecond=0)
         end = start + timedelta(hours=1)

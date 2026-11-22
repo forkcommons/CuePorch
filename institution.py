@@ -1656,7 +1656,7 @@ def create_app(root, database, operator, institution, simulation=None):
                             facebook_profile_live_connection=facebook_profile_live_connection,
                             linkedin_live_connection=linkedin_live_connection,
                             linkedin_member_live_connection=linkedin_member_live_connection)
-    event_series_pages.register(app, tx, staff, action, operator, enforce_sharing)
+    event_series_pages.register(app, tx, staff, action, operator, enforce_sharing, team_origin)
     event_api.register(app, tx, team_origin, credential_owner)
     app.extensions["stop_event_webhooks"] = event_webhooks.register(app, tx, team_origin, credential_owner, database)
 

@@ -42,8 +42,17 @@
       <label for="seriesVisibility">Visibility</label>
       <select id="seriesVisibility" name="visibility">
         <option value="private" selected>Private draft</option>
+        <option value="team">Team only</option>
         <option value="public">Public</option>
+        <option value="password">Password protected</option>
       </select>
+
+      <div id="seriesPasswordRow" hidden>
+        <label for="seriesViewPassword">View password
+          <input id="seriesViewPassword" name="view_password" type="password" maxlength="256" autocomplete="new-password">
+        </label>
+        <small>Required for password visibility when no password has been saved yet. Leave blank to keep the existing password.</small>
+      </div>
 
       <fieldset id="seriesEventChoices">
         <legend>Events in this series</legend>

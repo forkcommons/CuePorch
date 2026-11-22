@@ -54,7 +54,14 @@ function renderEditor(entry) {
     field("description").value =
         entry.settings.description;
     field("slug").value = entry.slug;
-    field("visibility").value = entry.settings.visibility;
+    const visibilitySelect = field("visibility");
+    visibilitySelect.value = entry.settings.visibility;
+    const passwordRow = byId("seriesPasswordRow");
+    const passwordInput = field("view_password");
+    passwordInput.value = "";
+    passwordInput.required =
+        entry.settings.visibility === "password" && !entry.has_password;
+    passwordRow.hidden = entry.settings.visibility !== "password";
     const selected = new Set(entry.settings.events);
     const ordered = [
         ...entry.settings.events.flatMap((id) => choices.filter((choice) => choice.id === id)),
@@ -109,6 +116,17 @@ const setStatus = (msg, err = false) => {
 const seriesNew = document.querySelector("#seriesNew");
 const seriesDelete = document.querySelector("#seriesDelete");
 const seriesPreview = document.querySelector("#seriesPreview");
+{
+    const visibilitySelect = field("visibility");
+    const passwordRow = byId("seriesPasswordRow");
+    const passwordInput = field("view_password");
+    visibilitySelect.addEventListener("change", () => {
+        passwordInput.value = "";
+        passwordRow.hidden = visibilitySelect.value !== "password";
+        passwordInput.required =
+            visibilitySelect.value === "password" && !current?.has_password;
+    });
+}
 const setBusy = (v) => {
     busy = v;
     form.inert = v;
@@ -160,6 +178,7 @@ form.addEventListener("submit", e => {
     void withBusy(async () => {
         const payload = {
             slug: field("slug").value,
+            view_password: field("view_password").value || undefined,
             settings: {
                 title: field("title").value.trim(),
                 description: field("description").value.trim(),

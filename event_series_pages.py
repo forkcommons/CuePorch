@@ -7,11 +7,15 @@ from zoneinfo import ZoneInfo
 
 from flask import abort, make_response, render_template, request, url_for
 from itsdangerous import BadSignature, URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import event_schedule
 import event_series_presentation
 import library_events
+import library_privacy
+from browser_account_security import private, secure_site
 from library_interactivity import text_field
+from team_accounts import current as current_team_member
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_series_page (
@@ -21,6 +25,10 @@ CREATE TABLE IF NOT EXISTS live_series_page (
     settings TEXT NOT NULL,
     publication TEXT,
     created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS live_series_access (
+    series TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL
 );
 """
 
@@ -32,7 +40,37 @@ DEFAULTS = dict(
     presentation=event_series_presentation.DEFAULTS,
 )
 
-VISIBILITIES = ("private", "public")
+VISIBILITIES = ("private", "public", "team", "password")
+
+
+def password_hash(con, uid):
+    row = con.execute(
+        "SELECT password_hash FROM live_series_access WHERE series=?", (uid,)
+    ).fetchone()
+    return row["password_hash"] if row else None
+
+
+def requested_password(body, values, previous=None):
+    password = body.get("view_password", "")
+    if not isinstance(password, str) or len(password) > 256:
+        abort(422, "Enter a password of up to 256 characters.")
+    if values["visibility"] != "password":
+        return None
+    if not (password or previous):
+        abort(422, "Enter a password for series viewers.")
+    if password and (not previous or not check_password_hash(previous, password)):
+        return generate_password_hash(password)
+    return previous
+
+
+def store_password(con, uid, digest):
+    if digest:
+        con.execute(
+            "INSERT OR REPLACE INTO live_series_access(series,password_hash) VALUES(?,?)",
+            (uid, digest),
+        )
+    else:
+        con.execute("DELETE FROM live_series_access WHERE series=?", (uid,))
 
 
 def series_row(con, value, by_slug=False):
@@ -59,7 +97,7 @@ def validate(con, body, prior_presentation=None):
     description = text_field(body.get("description", DEFAULTS["description"]), "a description", 5000)
     visibility = body.get("visibility", DEFAULTS["visibility"])
     if visibility not in VISIBILITIES:
-        abort(422, "Choose a visibility of private or public.")
+        abort(422, "Choose private draft, public, team only, or password protected.")
     events = body.get("events", DEFAULTS["events"])
     if not isinstance(events, list) or any(not isinstance(item, str) for item in events):
         abort(422, "Select valid events.")
@@ -101,11 +139,13 @@ def summary(con, row):
         revision=row["revision"],
         settings=settings,
         publication=status,
+        has_password=bool(password_hash(con, row["id"])),
         created=row["created"],
         watch=url_for("event_series_view", slug=row["slug"]) if status == "eligible" else None,
     )
 
-def page_events(con, settings, preview=False):
+
+def page_events(con, settings, preview=False, audience="public"):
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=366)
     upcoming, recordings = [], []
@@ -118,9 +158,12 @@ def page_events(con, settings, preview=False):
     ).fetchall()
     for row in rows:
         event = json.loads(row["settings"])
-        public = event["visibility"] == "public"
+        mode = event["visibility"]
         visible = library_events.publication(con, row, event)
-        if not preview and not (public and visible == "eligible"):
+        can_link = (
+            visible == "eligible" and (mode == "public" or (mode == "password" and audience == "password"))
+        ) or (mode == "private" and audience == "team")
+        if not preview and not can_link:
             continue
         tzname = event["schedule"]["timezone"]
         zone = ZoneInfo(tzname)
@@ -137,8 +180,7 @@ def page_events(con, settings, preview=False):
             if delivery in ("withdrawing", "withdrawn", "replay"):
                 continue
             href = (
-                library_events.viewer_url(row, event, False, opens=occ["id"])
-                if public and visible == "eligible" else None
+                library_events.viewer_url(row, event, False, opens=occ["id"]) if can_link else None
             )
             upcoming.append(dict(
                 slug=row["slug"], title=title, href=href,
@@ -149,8 +191,7 @@ def page_events(con, settings, preview=False):
             (o for o, d in deliveries.items() if d == "replay"), reverse=True
         ):
             href = (
-                library_events.viewer_url(row, event, False, opens=opens)
-                if public and visible == "eligible" else None
+                library_events.viewer_url(row, event, False, opens=opens) if can_link else None
             )
             local = datetime.fromtimestamp(opens, timezone.utc).astimezone(zone)
             recordings.append(dict(
@@ -161,7 +202,8 @@ def page_events(con, settings, preview=False):
     recordings.sort(key=lambda x: (-x["opens"], x["title"], x["slug"]))
     return dict(upcoming=upcoming, recordings=recordings)
 
-def register(app, tx, staff, action, signing_key, enforce_sharing):
+
+def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
     preview_serializer = URLSafeTimedSerializer(
         signing_key, salt="cueporch-event-series-preview"
     )
@@ -207,14 +249,25 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
                 abort(409)
             if request.method == "DELETE":
                 library_events.supersede_publication(con, row["publication"])
+                store_password(con, uid, None)
                 con.execute("DELETE FROM live_series_page WHERE id=?", (row["id"],))
                 return ("", 204)
             prior = DEFAULTS | json.loads(row["settings"])
             values = validate(con, body.get("settings"), prior["presentation"])
+            previous_digest = password_hash(con, uid)
+            digest = requested_password(body, values, previous_digest)
             enforce_sharing(
                 con,
-                settings=dict(visibility=values["visibility"], embed="disabled", domains=[]),
-                prior=dict(visibility=prior.get("visibility"), embed="disabled", domains=[]),
+                settings=dict(
+                    visibility=("private" if values["visibility"] == "team" else values["visibility"]),
+                    embed="disabled",
+                    domains=[],
+                ),
+                prior=dict(
+                    visibility=("private" if prior.get("visibility") == "team" else prior.get("visibility")),
+                    embed="disabled",
+                    domains=[],
+                ),
             )
             new_slug = body.get("slug")
             if not isinstance(new_slug, str) or not library_events.SLUG.fullmatch(new_slug):
@@ -225,17 +278,17 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
             ).fetchone()
             if clash is not None:
                 abort(409)
-            if values == prior and new_slug == row["slug"]:
+            if values == prior and new_slug == row["slug"] and digest == previous_digest:
                 return summary(con, row)
             library_events.supersede_publication(con, row["publication"])
             publication = None
-            if values["visibility"] == "public":
+            if values["visibility"] != "private":
                 new_action_id = f"live-series-{uid}-{uuid.uuid4().hex}"
                 action(
                     con,
                     new_action_id,
                     "publication",
-                    dict(title=values["title"], series=uid, visibility="public"),
+                    dict(title=values["title"], series=uid, visibility=values["visibility"]),
                 )
                 publication = new_action_id
             new_revision = uuid.uuid4().hex
@@ -243,10 +296,10 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
                 "UPDATE live_series_page SET slug=?, revision=?, settings=?, publication=? WHERE id=?",
                 (new_slug, new_revision, json.dumps(values), publication, row["id"]),
             )
-            row = series_row(con, uid)
-            return summary(con, row)
+            store_password(con, uid, digest)
+            return summary(con, series_row(con, uid))
 
-    @app.get("/event-series/<slug>")
+    @app.route("/event-series/<slug>", methods=["GET", "POST"])
     def event_series_view(slug):
         with tx() as con:
             row = series_row(con, slug, by_slug=True)
@@ -268,7 +321,24 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
             elif series_status(con, row, settings) != "eligible":
                 abort(404)
 
-            payload = page_events(con, settings, preview=internal)
+            audience = "public" if internal else settings["visibility"]
+            if audience == "team":
+                secure = secure_site(team_origin, required=False)
+                if secure is None or not current_team_member(con, secure):
+                    abort(404)
+            elif audience == "password":
+                digest = password_hash(con, row["id"])
+                if not digest:
+                    abort(404)
+                if request.method != "POST":
+                    return private(render_template("event_series_password.html", incorrect=False))
+                request.max_content_length = 4096
+                if not library_privacy.try_password(
+                    con, signing_key, "series:" + row["id"], request.form.get("password", ""), digest
+                ):
+                    return private(render_template("event_series_password.html", incorrect=True), 403)
+
+            payload = page_events(con, settings, preview=internal, audience=audience)
             payload["presentation"] = event_series_presentation.render(
                 con, settings["presentation"]
             )
@@ -284,7 +354,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing):
         resp.headers["Cache-Control"] = "private, no-store"
         resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
 
-        if internal:
+        if internal or audience != "public":
             resp.headers["X-Robots-Tag"] = "noindex"
             resp.headers["Referrer-Policy"] = "no-referrer"
 

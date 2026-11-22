@@ -410,7 +410,9 @@ From **Live events**, select **Event series** and create a private draft. Enter 
 
 Under **Presentation**, choose a theme and accent color, upload a logo or hero image, and add the date and time zone text you want viewers to see. Enable and reorder the blocks you need. Add navigation links and FAQ entries in their lists. Choose **Save Event Series**, then **Preview** and **Open preview** to review the page.
 
-To publish, choose **Public** and save. The existing optional **Publication** approval applies. **Upcoming events** shows the public schedule, and **On demand** lists released recordings from the selected public events. Viewers open the original event page, where the event’s registration and access rules still apply.
+To publish, choose **Public**, **Team only**, or **Password protected**, then save. The workspace’s optional **Publication** approval applies. Team viewers must sign in with an active account. For a password-protected series, set a viewer password and share it separately from the link. Leave the field blank on later edits to keep the existing password.
+
+**Upcoming events** and **On demand** show selected events and released recordings available to the series audience. Team-only series can include private team events. Password-protected series can include password-protected events. Viewers open the original event page, where the event’s own password and registration rules still apply.
 
 ### Live events
 
