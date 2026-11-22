@@ -156,7 +156,7 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                                 expires_on='2020-12-31T23:59:59Z',
                             ),
                         ]
-                    body = json.dumps(dict(review_status='needs_review', review_links=entries)).encode()
+                    body = json.dumps(dict(review_status=getattr(self.server, 'review_status', 'needs_review'), review_links=entries)).encode()
                     self.send_response(200)
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers()

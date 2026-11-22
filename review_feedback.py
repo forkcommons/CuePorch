@@ -9,6 +9,8 @@ import uuid
 
 from flask import Response, abort, request
 
+from catalog import video_version_key
+
 import folder_slack_queue
 import review_notifications
 import review_push
@@ -29,6 +31,12 @@ CREATE TABLE IF NOT EXISTS review_decision(
 CREATE TABLE IF NOT EXISTS video_editorial_status(
  work TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL,
  PRIMARY KEY(work,version));
+CREATE TABLE IF NOT EXISTS video_source_editorial_status(
+    work TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY(work, version)
+);
 CREATE TABLE IF NOT EXISTS review_reaction(
  comment TEXT NOT NULL, actor TEXT NOT NULL, emoji TEXT NOT NULL,
  PRIMARY KEY(comment,actor,emoji));
@@ -46,10 +54,51 @@ REVIEWER_COOKIE = "cueporch_reviewer"
 
 def editorial_status(con, work, version):
     row = con.execute(
-        "SELECT status FROM video_editorial_status WHERE work=? AND version=?",
-        (work, version),
+        """
+        SELECT COALESCE(
+            (SELECT status FROM video_editorial_status WHERE work = ? AND version = ?),
+            (SELECT status FROM video_source_editorial_status WHERE work = ? AND version = ?)
+        ) AS status
+        """,
+        (work, version, work, version),
     ).fetchone()
-    return row["status"] if row else None
+    return row["status"] if row is not None else None
+
+
+def import_vimeo_editorial_status(con, incoming, works):
+    status_map = {
+        "in_progress": "In progress",
+        "needs_review": "Needs review",
+        "approved": "Approved",
+    }
+
+    for work in incoming:
+        if work.get("provider") != "vimeo":
+            continue
+
+        if not any(item["role"] in ("original", "playback") for item in work["files"]):
+            continue
+
+        status = status_map.get(work.get("source_review", {}).get("status"))
+        if status is None:
+            continue
+
+        merged = works[work["id"]]
+        cut = video_version_key(work)
+        source = work.get("source_version")
+
+        if not any(
+            row.get("source_version") == source and video_version_key(row) == cut
+            for row in [merged, *merged.get("versions_history", [])]
+        ):
+            continue
+
+        con.execute(
+            "INSERT INTO video_source_editorial_status (work, version, status) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(work, version) DO UPDATE SET status=excluded.status",
+            (work["id"], cut, status),
+        )
 
 
 def set_editorial_status(con, work, version, status):
