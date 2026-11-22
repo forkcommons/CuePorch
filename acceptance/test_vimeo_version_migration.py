@@ -58,6 +58,93 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_history_import_source_fixture_contract(self):
+        from urllib.parse import parse_qs
+
+        endpoint = "/api/analytics/vimeo-history/import-source"
+        history = "/api/analytics/vimeo-history"
+        payload = {"first": "2024-01-01", "last": "2024-01-02", "token": "fixture-supplied-token"}
+        queries, source_denied = [], set()
+        original = self.source.RequestHandlerClass.do_GET
+
+        def provider_row(video, **metrics):
+            return {"metadata": {"connections": {"video": {
+                "uri": f"/videos/{video}", "title": f"Fixture {video}",
+                "manage_link": "https://example.test/private?key=fixture-provider-secret",
+            }}}, **metrics}
+
+        first_page = [provider_row(71, views=10, unique_viewers=4),
+                      *(provider_row(video, views=1) for video in range(1000, 1499))]
+
+        def reply(handler, data, status=200):
+            content = json.dumps(data).encode()
+            handler.send_response(status)
+            handler.send_header("Content-Type", "application/vnd.vimeo.analytics+json")
+            handler.send_header("Content-Length", str(len(content)))
+            handler.end_headers()
+            handler.wfile.write(content)
+
+        def analytics_provider(handler):
+            parts = urlsplit(handler.path)
+            if parts.path == "/me":
+                return reply(handler, {"uri": "/users/555"})
+            if parts.path != "/users/555/analytics":
+                return original(handler)
+            query = {name: values[0] for name, values in parse_qs(parts.query).items()}
+            queries.append((query, handler.headers.get("Authorization")))
+            if 403 in source_denied:
+                return reply(handler, {"error": "denied"}, 403)
+            if query["dimension"] == "total":
+                return reply(handler, [{"views": 516, "unique_viewers": 5}])
+            if query["page"] == "1" or 502 in source_denied:
+                return reply(handler, first_page)
+            return reply(handler, [provider_row(999, views=6)])
+
+        self.enterContext(patch.object(self.source.RequestHandlerClass, "do_GET", analytics_provider))
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/analytics")
+            page.get_by_text("Vimeo analytics history", exact=True).click()
+            page.get_by_label("API report from (UTC)").fill(payload["first"])
+            page.get_by_label("API report to (UTC)").fill(payload["last"])
+            token = page.get_by_label("Vimeo access token", exact=True)
+            token.fill(payload["token"])
+            with page.expect_response(lambda reply: reply.url.endswith(endpoint)) as receipt:
+                page.get_by_role("button", name="Import from Vimeo API", exact=True).click()
+            self.assertEqual(201, receipt.value.status, receipt.value.text())
+            expect(token).to_have_value("")
+            expect(page.locator("#vimeoHistorySummary")).to_contain_text("Unique viewers 5")
+            expect(page.locator("#vimeoHistoryTable").get_by_role("cell", name="71", exact=True)).to_be_visible()
+            body = receipt.value.json()
+
+        self.assertEqual(("api", 501), (body["source"], body["count"]))
+        self.assertEqual({"views": 516, "unique_viewers": 5}, body["total"])
+        self.assertEqual([("video", "1"), ("video", "2"), ("total", "1")],
+                         [(params["dimension"], params["page"]) for params, _ in queries])
+        for params, authorization in queries:
+            self.assertEqual("Bearer cueporch-fixture", authorization)
+            self.assertEqual("500", params["per_page"])
+            self.assertEqual("2024-01-01T00:00:00Z", params["from"])
+            self.assertEqual("2024-01-02T23:59:59Z", params["to"])
+            self.assertEqual("none" if params["dimension"] == "video" else None, params.get("time_interval"))
+
+        detail = self.client.get(f"{history}/{body['id']}", headers=self.auth)
+        self.assertEqual(200, detail.status_code)
+        self.assertNotIn("fixture-supplied-token", detail.text)
+        self.assertNotIn("fixture-provider-secret", detail.text)
+        self.assertEqual({"views": 10, "unique_viewers": 4}, detail.json["rows"][0]["metrics"])
+        page6 = self.client.get(f"{history}/{body['id']}?page=6", headers=self.auth).json
+        self.assertEqual(["999"], [row["source_id"] for row in page6["rows"]])
+
+        self.assertEqual(200, self.client.post(endpoint, json=payload, headers=self.auth).status_code)
+        self.assertEqual(403, self.client.post(endpoint, json=payload).status_code)
+        for status in (403, 502):
+            source_denied.add(status)
+            self.assertEqual(status, self.client.post(endpoint, json=payload, headers=self.auth).status_code)
+            source_denied.clear()
+        self.assertEqual([body], self.client.get(history, headers=self.auth).json["reports"])
+
     def test_vimeo_history_transfer_import_and_preview(self):
         import io
 

@@ -260,6 +260,7 @@ def create_app(root, database, operator, institution, simulation=None):
         social_publication.migrate(db)
         intake_watch.migrate(db)
         folder_slack.migrate(db)
+        vimeo_analytics_history.initialize(db)
     app = Flask(__name__)
     app.extensions["account_reset_delivery"] = account_recovery.ResetDelivery()
     app.config["MAX_CONTENT_LENGTH"] = 65536
@@ -1445,7 +1446,7 @@ def create_app(root, database, operator, institution, simulation=None):
         authorize_editor, operator_name, enforce_sharing, team_origin, ai_actor,
     )
     analytics_reports.register(app, tx, staff, read_library_works)
-    vimeo_analytics_history.register(app, tx, staff, read_library_works)
+    vimeo_analytics_history.register(app, tx, staff, read_library_works, simulation)
     hubspot = workspace_oauth.Connection(hubspot_crm.oauth_config(), tx, operator)
     mailchimp = workspace_oauth.Connection(mailchimp_crm.OAUTH, tx, operator)
     constant_contact = workspace_oauth.Connection(constant_contact_crm.OAUTH, tx, operator)

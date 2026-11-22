@@ -35,7 +35,7 @@ _NUMBER = r"(?:[0-9]{1,15}|[0-9]{1,3}(?:,[0-9]{3}){1,4})"
 _SOURCE_ID = r"([0-9]{1,20})"
 
 
-def _iso(value):
+def valid_utc_date(value):
     try:
         return date.fromisoformat(value).isoformat() == value
     except ValueError:
@@ -92,7 +92,7 @@ def _metric(key, value):
 
 
 def parse(data, first, last):
-    if not _iso(first) or not _iso(last) or first > last:
+    if not valid_utc_date(first) or not valid_utc_date(last) or first > last:
         raise ValueError("Enter the UTC date range used for the Vimeo export.")
     try:
         text = data.decode("utf-8-sig")
@@ -142,7 +142,7 @@ def parse(data, first, last):
                         exact.add(source_id)
                 dimensions = {key: values[key] for key in _DIMENSIONS.values() if values.get(key)}
                 if dimensions.get("date") and (
-                    not _iso(dimensions["date"]) or not first <= dimensions["date"] <= last
+                    not valid_utc_date(dimensions["date"]) or not first <= dimensions["date"] <= last
                 ):
                     raise ValueError("A report date is outside the selected UTC window or invalid.")
                 if "source" in dimensions:

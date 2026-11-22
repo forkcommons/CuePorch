@@ -153,6 +153,22 @@
         <button type="submit" name="action" value="import">Import report</button>
         <button type="submit" name="action" value="preview">Preview report</button>
       </form>
+    <form id="vimeoApiImportForm" class="vimeo-import-form">
+      <label for="vimeoApiFirst">API report from (UTC)</label>
+      <input type="date" id="vimeoApiFirst" name="first" required>
+
+      <label for="vimeoApiLast">API report to (UTC)</label>
+      <input type="date" id="vimeoApiLast" name="last" required>
+
+      <label for="vimeoApiToken">Vimeo access token</label>
+      <input type="password" id="vimeoApiToken" name="token" autocomplete="off" placeholder="Optional">
+
+      <p class="hint">
+        Approved Enterprise Analytics API token, or leave blank to use the configured server token.
+      </p>
+
+      <button type="submit" id="vimeoApiImportBtn">Import from Vimeo API</button>
+    </form>
       <p id="vimeoHistoryStatus" role="status"></p>
       <label>Report <select id="vimeoHistorySelect"><option value="">— select —</option></select></label>
       <div id="vimeoHistorySummary"></div>
