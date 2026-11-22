@@ -1,4 +1,4 @@
-type Summary = { id: string; first: string; last: string; columns: string[]; count: number; matched: number; unmatched: number; total: Record<string, number> | null };
+type Summary = { id: string; source: "csv" | "api"; first: string; last: string; columns: string[]; count: number; matched: number; unmatched: number; total: Record<string, number> | null };
 type Row = { source_id: string; work: string | null; title: string | null; dimensions: Record<string, string>; metrics: Record<string, number> };
 
 const BASE = '/api/analytics/vimeo-history';
@@ -35,7 +35,7 @@ async function refreshReports(): Promise<void> {
   selectEl.replaceChildren();
   const opt = new Option('— select —', '');
   selectEl.appendChild(opt);
-  for (const r of data.reports) selectEl.appendChild(new Option(`${r.first} to ${r.last} · ${r.count} rows · ${r.id.slice(0, 8)}`, r.id));
+  for (const r of data.reports) selectEl.appendChild(new Option(`${r.first} to ${r.last} · ${r.source === "api" ? "Vimeo API" : "CSV"} · ${r.count} rows · ${r.id.slice(0, 8)}`, r.id));
 }
 
 async function loadReport(id: string, page: number): Promise<void> {
@@ -136,6 +136,52 @@ form.addEventListener('submit', async (e) => {
     }
   } catch (err) { setStatus(`Error: ${(err as Error).message}`); }
   finally { for (const button of buttons) button.disabled = false; }
+});
+
+const apiForm = document.querySelector<HTMLFormElement>("#vimeoApiImportForm");
+const apiBtn = document.querySelector<HTMLButtonElement>("#vimeoApiImportBtn");
+
+apiForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!apiBtn) return;
+
+  // Snapshot the form, then clear the token field immediately.
+  const data = new FormData(apiForm);
+  const payload = {
+    first: String(data.get("first") ?? ""),
+    last: String(data.get("last") ?? ""),
+    token: String(data.get("token") ?? "").trim(),
+  };
+  const tokenInput = apiForm.querySelector<HTMLInputElement>('input[name="token"]');
+  if (tokenInput) tokenInput.value = "";
+
+  ++selection;
+  apiBtn.disabled = true;
+  setStatus("Importing from Vimeo API…");
+
+  try {
+    const requestHeaders = new Headers(headers());
+    requestHeaders.set("Content-Type", "application/json");
+
+    const res = await fetch(BASE + "/import-source", {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload),
+    });
+
+    const body = await res.json().catch(() => null);
+    if (!res.ok || typeof body?.id !== "string") {
+      setStatus(body?.error ?? "The Vimeo API report could not be imported.");
+      return;
+    }
+    await refreshReports();
+    selectEl.value = body.id;
+    await loadReport(body.id, 1);
+  } catch {
+    setStatus("Import failed.");
+  } finally {
+    apiBtn.disabled = false;
+  }
 });
 
 details.addEventListener('toggle', () => {
