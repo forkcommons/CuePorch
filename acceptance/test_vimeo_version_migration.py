@@ -58,6 +58,73 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_embed_appearance_import(self):
+        self.source.public_viewer_fixture = True
+        self.source.video_embed_fixture = dict(
+            colors=dict(color_one="112233", color_four="223344"),
+            playbar=False, title=dict(name="show"), muted=True, speed=False,
+            html="fake-html-secret", logos=dict(custom=dict(url="https://example.test/?fake-logo-secret")),
+        )
+        uid = work_id("station", "vimeo", "71")
+        root = f"/api/library/work/{uid}"
+        path = root + "/appearance/embed"
+        expected = dict(primary="#112233", background="#223344", progress=False, show_title=True, muted=True, speed=False)
+
+        def settings():
+            response = self.client.get(path, headers=self.auth)
+            self.assertEqual(200, response.status_code, response.text)
+            return response.json["settings"]
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+
+            def transfer():
+                page.get_by_role("button", name="Preview transfer", exact=True).click()
+                expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+                page.get_by_role("button", name="Transfer privately", exact=True).click()
+                expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            transfer()
+            source = settings()
+            self.assertEqual(expected, {key: source[key] for key in expected})
+            watch = self.client.get(root + "/appearance/watch", headers=self.auth).json["settings"]
+            self.assertTrue(watch["speed"])
+            self.assertNotEqual(watch["background"], source["background"])
+            self.assertEqual(403, self.client.get(path).status_code)
+            self.assertEqual(404, self.client.get(f"/embed/work/{uid}").status_code)
+            self.assertEqual(self.client.put(root + "/source-privacy", headers=self.auth, json={}).status_code, 200)
+            guest = browser.new_page()
+            guest.goto(self.base + "/watch")
+            guest.evaluate("""url => {
+                const player = document.createElement('iframe');
+                player.id = 'migration-test-player';
+                player.src = url;
+                document.body.append(player);
+            }""", self.base + f"/embed/work/{uid}")
+            frame = guest.frame_locator("#migration-test-player")
+            expect(frame.get_by_text("Station meeting", exact=True)).to_be_visible()
+            expect(frame.get_by_role("combobox", name="Speed", exact=True)).to_have_count(0)
+            played = frame.locator("video").evaluate("""async video => {
+                await video.play();
+                return video.muted && video.videoWidth > 0;
+            }""")
+            self.assertTrue(played)
+
+            local = source | {"speed": True}
+            self.assertEqual(200, self.client.put(path, headers=self.auth, json=local).status_code)
+            self.source.video_embed_fixture["colors"]["color_four"] = "99AABB"
+            transfer()
+            self.assertEqual(local, settings())
+            self.assertEqual(200, self.client.delete(path, headers=self.auth).status_code)
+            self.assertEqual(source | {"background": "#99aabb"}, settings())
+            self.source.video_embed_fixture = None
+            transfer()
+            self.assertEqual(source | {"background": "#99aabb"}, settings())
+            migration_text = self.client.get("/api/migration", headers=self.auth).text
+            self.assertNotIn("fake-html-secret", migration_text)
+            self.assertNotIn("fake-logo-secret", migration_text)
+
     def test_vimeo_chapters_survive_denied_repeat_transfer(self):
         uid = work_id("station", "vimeo", "71")
         endpoint = f"/api/library/work/{uid}/chapters"

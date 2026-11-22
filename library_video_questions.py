@@ -44,7 +44,7 @@ def source_track(work):
 def available(con, work, surface, enabled):
     if not enabled(con) or not local_model.runtime():
         return None, False
-    appearance = library_appearance.read_settings(con, work["id"], surface) or library_appearance.surface_defaults(surface)
+    appearance = library_appearance.resolve_settings(con, work, surface) or library_appearance.surface_defaults(surface)
     if not appearance["viewer_questions"] or not appearance["captions"]:
         return None, False
     return source_track(work), appearance["allow_seek"]

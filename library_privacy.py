@@ -522,7 +522,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             panorama = details["panorama"] if details else "flat"
             if panorama == "source":
                 panorama = "360-mono" if work.get("source_projection") == "equirectangular" else "flat"
-            appearance = library_appearance.read_settings(con, uid, surface) if can_watch else None
+            appearance = library_appearance.resolve_settings(con, work, surface) if can_watch else None
             if panorama != "flat" and appearance is None:
                 appearance = library_appearance.surface_defaults(surface)
             options = library_embed.options(request.args if embed else {}, appearance)
