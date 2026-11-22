@@ -73,6 +73,7 @@ def migrate(con):
         if column not in columns:
             con.execute(f"ALTER TABLE live_simulcast_destination ADD COLUMN {column} {definition}")
     facebook_live_job.migrate(con)
+    linkedin_live_job.migrate(con)
 
 
 MAX_DESTINATIONS = 20
@@ -1474,7 +1475,7 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                             return {"state": "pending"}, 202
                 return linkedin_live_job.prepare_ingest(
                     tx, check, lambda: connection.register_ingest(record["revision"], owner, before_send),
-                    save, key, record["revision"],
+                    save, key, record["revision"], automatic=not interactive,
                 )
         except Timeout:
             return {"state": "pending"}, 202

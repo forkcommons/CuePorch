@@ -699,7 +699,14 @@ class LinkedInPublication(unittest.TestCase):
 
                 def register_after_local_pause(connection, revision, author, before_send):
                     register_attempts.append(author)
-                    if len(register_attempts) > 1:
+                    if len(register_attempts) == 2:
+                        before_send()
+                        from requests import Response as _Response
+                        response = _Response()
+                        response.status_code = 429
+                        response.headers["Retry-After"] = "30"
+                        linkedin.denied(response)
+                    elif len(register_attempts) > 2:
                         return original_register(connection, revision, author, before_send)
 
                     def withdrawal():
@@ -729,6 +736,30 @@ class LinkedInPublication(unittest.TestCase):
                             db.execute("DELETE FROM live_simulcast_destination WHERE id='li-capacity-fixture-0'")
                             db.commit()
                         release.set()
+
+                        # Poll SQLite until both register attempts fired and the reservation
+                        # is no longer mid-registration, capped at 55ms between polls.
+                        deadline = monotonic() + 8
+                        while monotonic() < deadline:
+                            with closing(sqlite3.connect(database)) as db:
+                                registering = db.execute(
+                                    "SELECT 1 FROM linkedin_live_ingest WHERE opens=? AND phase='registering'",
+                                    (opens,),
+                                ).fetchone()
+                            if len(register_attempts) >= 2 and not registering:
+                                break
+                            sleep(0.055)
+
+                        # Retry must still be queued and not yet due at +29s.
+                        with closing(sqlite3.connect(database)) as db:
+                            self.assertEqual([("queued",)], db.execute(
+                                "SELECT state FROM linkedin_live_auto WHERE event=? AND opens=?", scope,
+                            ).fetchall())
+                            self.assertEqual([], due_auto(db, int(clock.timestamp()) + 29))
+
+                        # Advance past the TooManyRequests(retry_after=30) so registration resumes.
+                        clock += timedelta(seconds=30)
+
                         deadline = monotonic() + 8
                         while monotonic() < deadline:
                             with closing(sqlite3.connect(database)) as db:
@@ -741,7 +772,7 @@ class LinkedInPublication(unittest.TestCase):
                     with closing(sqlite3.connect(database)) as db:
                         db.execute("DELETE FROM live_simulcast_destination WHERE id LIKE 'li-capacity-fixture-%'")
                         db.commit()
-                self.assertEqual([owner, owner], register_attempts)
+                self.assertEqual([owner, owner, owner], register_attempts)
                 self.assertEqual([(item["id"], "registered")], deliveries)
                 self.assertEqual([asset, asset], ingests)
                 self.assertEqual([asset], links)
