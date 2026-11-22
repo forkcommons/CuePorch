@@ -1102,6 +1102,61 @@ def showcase_inventory(institution, source, account, video_ids):
     return result, None
 
 
+def live_event_archive_inventory(institution, source, account, video_ids):
+    fields = "uri,title,stream_privacy.view,recordings.uri,recordings.title"
+    try:
+        events = list(source.pages(account + "/live_events", fields=fields))
+    except SourceFailure as exc:
+        if exc.status in (401, 403, 404):
+            return [], f"Live event inventory returned HTTP {exc.status}. Check the account's Live API access."
+        raise
+
+    inventory = []
+    event_ids = set()
+    unresolved = False
+    for event in events:
+        uri = event.get("uri") if isinstance(event, dict) else None
+        identity = re.fullmatch(r"/live_events/([0-9]+)", uri.removeprefix(account)) if isinstance(uri, str) else None
+        if not identity or identity[1] in event_ids:
+            unresolved = True
+            continue
+        identifier = identity[1]
+        event_ids.add(identifier)
+        title = event.get("title")
+        privacy = event.get("stream_privacy")
+        visibility = privacy.get("view") if isinstance(privacy, dict) else None
+        if visibility not in ("anybody", "nobody", "password", "unlisted", "embed_only", "team"):
+            visibility = "unknown"
+
+        recordings = []
+        seen = set()
+        issues = []
+        rows = event.get("recordings")
+        if not isinstance(rows, list):
+            issues.append("Vimeo did not return a usable recordings list.")
+            rows = []
+        invalid_recordings = False
+        for recording in rows:
+            uri = recording.get("uri") if isinstance(recording, dict) else None
+            video = re.fullmatch(r"/videos/([0-9]+)", uri) if isinstance(uri, str) else None
+            if not video:
+                invalid_recordings = True
+                continue
+            vid = video[1]
+            if vid in seen:
+                continue
+            seen.add(vid)
+            name = recording.get("title")
+            recordings.append(dict(source_id=vid, title=(name.strip()[:128] if isinstance(name, str) else ""),
+                                   work=work_id(institution, "vimeo", vid) if vid in video_ids else None))
+        if invalid_recordings:
+            issues.append("Some recordings had no recognized Vimeo video ID.")
+        inventory.append(dict(source_id=identifier, title=(title.strip()[:128] if isinstance(title, str) else "")
+                              or "Untitled live event", source_visibility=visibility,
+                              recordings=recordings, issues=issues))
+    return inventory, "Some source events had missing or duplicate IDs." if unresolved else None
+
+
 def migrate(institution, root, source, dry_run=False, *, progress=None):
     from filelock import FileLock
 
@@ -1136,8 +1191,11 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
     dump(job, binding)
     if progress:
         progress(0, len(videos))
-    showcases, showcase_issue = showcase_inventory(institution, source, account,
-                                                   {uri.split("/")[-1] for uri in resource_ids})
+    video_ids = {uri.split("/")[-1] for uri in resource_ids}
+    showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids)
+    live_event_archives, live_event_archives_issue = live_event_archive_inventory(
+        institution, source, account, video_ids,
+    )
     folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "objects").mkdir(exist_ok=True)
     (root / "checkpoints").mkdir(exist_ok=True)
@@ -1377,6 +1435,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
     manifest = dict(
         schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue,
         folders=folders, folder_issue=folder_issue,
+        live_event_archives=live_event_archives, live_event_archives_issue=live_event_archives_issue,
     )
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:

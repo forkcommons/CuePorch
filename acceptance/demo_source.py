@@ -235,6 +235,21 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     following = path + "?per_page=100&page=2" if page == "1" else None
                     total = 3
                     values = [{"uri": "/videos/" + uid} for uid in subset]
+                elif path == "/users/10/live_events" and getattr(self.server, "live_event_fixture", False):
+                    if getattr(self.server, "live_event_denied", False):
+                        self.send_error(403)
+                        return
+                    page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
+                    following = path + "?per_page=100&page=2" if page == "1" else None
+                    total = 2
+                    if page == "1":
+                        values = [{"uri": "/live_events/801", "title": "Council replay archive",
+                                   "stream_privacy": {"view": "team"},
+                                   "recordings": [{"uri": "/videos/71", "title": "Council replay"},
+                                                  {"uri": "/videos/999", "title": "Missing replay"}],
+                                   "streamable_clip": "/videos/72", "stream_key": "fixture-ingest-key"}]
+                    else:
+                        values = [{"uri": "/live_events/802", "title": "No past streams", "recordings": []}]
                 elif path == "/users/10/projects" and getattr(self.server, "folder_fixture", False):
                     page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
                     root_uri, root_title = "/users/10/projects/100", "Foundation archive"

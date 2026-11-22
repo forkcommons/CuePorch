@@ -60,6 +60,7 @@ class VimeoFolderMigration(unittest.TestCase):
             json.dumps(dict(institution="station", schema=1, works=[])), encoding="utf-8",
         )
         source = self.enterContext(build_server(temp / "vimeo"))
+        self.source = source
         source.folder_fixture = True
         self.enterContext(service_worker(source))
         self.operator = secrets.token_urlsafe(32)
@@ -75,6 +76,63 @@ class VimeoFolderMigration(unittest.TestCase):
         self.enterContext(service_worker(server))
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
+
+    def test_live_event_recordings(self):
+        self.assertEqual(403, self.client.get("/api/migration").status_code)
+        self.source.live_event_fixture = True
+        self.source.live_event_denied = True
+        uid = work_id("station", "vimeo", "71")
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            preview = page.get_by_role("button", name="Preview transfer")
+            preview.click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            expect(page.locator("#liveEventInventoryIssue")).to_contain_text("HTTP 403")
+            expect(page.get_by_role("cell", name="71", exact=True)).to_be_visible()
+
+            self.source.live_event_denied = False
+            preview.click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            event = page.locator("details").filter(has=page.get_by_text("Council replay archive", exact=False))
+            event.locator("summary").click()
+            expect(event.get_by_text("In source inventory")).to_be_visible()
+            expect(event.get_by_text("Owner file or video access needed")).to_be_visible()
+            expect(page.get_by_text("No past streams")).to_be_visible()
+            snapshot = self.client.get("/api/migration", headers=self.auth).get_json()
+            recordings = snapshot["live_event_archives"][0]["recordings"]
+            self.assertEqual([("71", uid), ("999", None)], [(r["source_id"], r["work"]) for r in recordings])
+            self.assertNotIn("fixture-ingest-key", json.dumps(snapshot))
+            self.assertEqual([], self.client.get("/api/library", headers=self.auth).get_json())
+
+            page.get_by_role("button", name="Transfer privately").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=15000)
+            event.locator("summary").click()
+            open_link = event.get_by_role("link", name="Open in Library")
+            expect(open_link).to_have_attribute("href", f"/operator/videos/{uid}")
+            expect(event.get_by_text("Owner file or video access needed")).to_be_visible()
+            open_link.click()
+            expect(page).to_have_url(f"{self.base}/operator/videos/{uid}")
+            expect(page.locator("#videoHeading")).to_have_text("Station meeting")
+            operator_preview = page.locator("#workspacePreview")
+            expect(operator_preview).to_be_visible()
+            operator_preview.evaluate("async video => { video.muted = true; await video.play(); }")
+            page.wait_for_function("document.querySelector('#workspacePreview').videoWidth === 320")
+
+            review = self.client.post(f"/api/library/work/{uid}/review-links", headers=self.auth,
+                                      json={"name": "Live event recording"})
+            self.assertEqual(201, review.status_code, review.get_data(as_text=True))
+            viewer = browser.new_page()
+            self.assertEqual(404, viewer.request.get(self.base + f"/watch/work/{uid}").status)
+            viewer.goto(self.base + review.get_json()["path"])
+            video = viewer.locator("#reviewTourPlayer")
+            expect(video).to_be_visible()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function("""() => {
+                const video = document.querySelector('#reviewTourPlayer');
+                return video.videoWidth === 320 && video.currentTime > .2;
+            }""")
 
     def test_preserves_folders_and_local_changes(self):
         local = self.client.post("/api/library/folders", headers=self.auth,
