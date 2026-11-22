@@ -334,6 +334,55 @@ def check_discovery(page, browser, base, auth, sample):
             assert member_page.locator("video").evaluate(
                 "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
             ) > 0
+            title = "Protected screening"
+            password_settings = public_settings | dict(
+                visibility="password", embed="disabled", password="Fixture password passphrase!",
+            )
+            uid = upload(title, password_settings, "Art and film", "closed-fixture")
+            gp = f"/api/library/work/{uid}/group-playback"
+            current = send("GET", gp)
+            assert current["can_grant"] and not current["grants"]
+            payload = dict(group="arts-screenings", privacy_revision=current["privacy_revision"], allowed=True)
+            protected = group_path + "/watch/" + uid
+            assert public(protected).status_code == 404
+            assert "Video password" in public("/watch/work/" + uid).text
+
+            page.goto(base + "/operator/library")
+            page.locator("#key").fill(auth["Authorization"].removeprefix("Bearer "))
+            page.get_by_role("button", name="Load library").click()
+            page.get_by_role("button", name="Change privacy for " + title, exact=True).click()
+            page.get_by_label("Group slug").fill("arts-screenings")
+            page.get_by_role("button", name="Add access", exact=True).click()
+            expect(page.get_by_text("Access granted", exact=True)).to_be_visible()
+            grant = send("GET", gp)["grants"][0]
+            assert member.request.get(base + protected).status == 404
+            viewer.reload()
+            viewer.get_by_label("Video to add").select_option("work/" + uid)
+            viewer.get_by_role("button", name="Add video", exact=True).click()
+            member_page.goto(base + group_path)
+            member_page.get_by_role("link", name=title, exact=True).click()
+            video = member_page.locator("video")
+            decode = "async v => {v.muted = true; await v.play(); v.pause(); return v.videoWidth}"
+            assert video.evaluate(decode) > 0
+            media = video.evaluate("v => v.currentSrc")
+            response = member.request.get(media)
+            assert response.ok and "no-store" in response.headers["cache-control"]
+            assert requests.get(media, timeout=15).status_code == 404
+
+            send("PUT", "/api/policy/publication", json={"required": True})
+            pending = send("POST", gp, json=payload | dict(grant_revision=grant["revision"]))["grants"][0]
+            assert pending["state"] == "waiting"
+            assert member.request.get(base + protected).status == 404
+            assert member.request.get(media).status == 404
+            action = "group-playback-" + pending["revision"]
+            send("POST", f"/api/actions/{action}/decision", json={"decision": "approve"})
+            member_page.reload()
+            assert video.evaluate(decode) > 0
+            new_media = video.evaluate("v => v.currentSrc")
+            send("POST", gp, json=payload | dict(grant_revision=pending["revision"], allowed=False))
+            assert member.request.get(new_media).status == 404
+            send("PUT", "/api/policy/publication", json={"required": False})
+
             member_page.goto(base + group_path)
             member_page.get_by_role("button", name="Leave group", exact=True).click()
             expect(member_page.get_by_role("heading", name="Not Found")).to_be_visible()

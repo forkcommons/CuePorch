@@ -1,3 +1,4 @@
+import { groupPlayback } from "./group_playback.js";
 export const privateSettings = {
     visibility: "private", embed: "disabled", domains: [], download: false,
     has_password: false, pending: null, watch: null, embed_url: null,
@@ -56,6 +57,8 @@ export async function openPrivacy(dialog) {
     const body = dialog.open(dialog.title || "Video privacy");
     const fields = sharingFields(body);
     const links = body.querySelector("[data-privacy-links]");
+    const group = dialog.groupPlayback;
+    const refreshGroup = group ? await groupPlayback(body, group.read, group.save) : null;
     function present(state) {
         fields.populate(state);
         links.replaceChildren();
@@ -84,6 +87,7 @@ export async function openPrivacy(dialog) {
             if (!state.pending)
                 dialog.status.textContent = dialog.success || "Privacy saved.";
             await dialog.reload();
+            await refreshGroup?.();
         }
         catch (error) {
             dialog.status.textContent = error instanceof Error ? error.message : String(error);

@@ -1580,7 +1580,7 @@ def create_app(root, database, operator, institution, simulation=None):
     def public_listing(con, item=None):
         return library_discovery.listing(con, read_library_works, library_actions.title_for, vimeo_privacy.permits, item)
 
-    viewing_preferences = audience_accounts.register(
+    viewing_preferences, current_viewer = audience_accounts.register(
         app, tx, os.environ.get("CUEPORCH_PUBLIC_URL", ""), operator, public_listing, action, staff,
         team_accounts.current,
     )
@@ -1743,6 +1743,7 @@ def create_app(root, database, operator, institution, simulation=None):
         questions_enabled,
         hubspot=hubspot,
         hubspot_origins=hubspot_origins,
+        current_viewer=current_viewer,
     )
 
     @app.get("/api/library")
