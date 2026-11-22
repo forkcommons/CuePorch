@@ -84,15 +84,27 @@ def translation_fields(settings, language, stopping):
         date_label=presentation.get('date_label', ''),
         timezone_label=presentation.get('timezone_label', ''),
     )
-    keys = [key for key, text in source.items() if text]
-    items = caption_adapter.translate_cues(
-        [dict(text=source[key]) for key in keys], language, stopping
-    )
     result = dict(published=False, **dict.fromkeys(source, ''))
-    for key, item in zip(keys, items, strict=True):
+    records = [(None, key, text, LIMITS[key]) for key, text in source.items() if text]
+    for group, (collection_key, field, limit) in event_series_locale.CONTENT_FIELDS.items():
+        records.extend(
+            (group, field, text, limit)
+            for text in dict.fromkeys(item[field] for item in presentation.get(collection_key, []))
+        )
+    items = caption_adapter.translate_cues(
+        [dict(text=text) for _, _, text, _ in records], language, stopping
+    )
+    content_entries = {}
+    for (group, key, source_text, limit), item in zip(records, items, strict=True):
         if not isinstance(item, dict) or not isinstance(item.get('text'), str) or not item['text'].strip():
             raise caption_adapter.CaptionError('The translation was incomplete.')
-        result[key] = text_field(item['text'], 'a translated ' + key, LIMITS[key], required=True)
+        text = text_field(item['text'], 'a translated ' + key, limit, required=True)
+        if group is None:
+            result[key] = text
+        else:
+            content_entries.setdefault(group, []).append(dict(source=source_text, text=text))
+    if content_entries:
+        result['content'] = content_entries
     return result
 
 

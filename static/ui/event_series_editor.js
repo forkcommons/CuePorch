@@ -109,7 +109,7 @@ function renderEditor(entry) {
         return;
     }
     presentation.populate(entry.settings.presentation);
-    localization.populate(entry.settings.localization);
+    localization.populate(entry.settings.localization, entry.settings.presentation);
     translationJobs.populate(entry);
     editorHeading.textContent = entry.settings.title;
     field("title").value = entry.settings.title;

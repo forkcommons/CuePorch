@@ -189,6 +189,18 @@ class EventSeriesTranslation(unittest.TestCase):
                 settings=dict(
                     title='Gallery program',
                     visibility='public',
+                    presentation=dict(
+                        blocks=["navigation", "hero", "faq"],
+                        navigation=[
+                            dict(
+                                label='Schedule',
+                                href='https://venue.example.test/schedule',
+                            ),
+                        ],
+                        faq=[
+                            dict(question='Where?', answer='The gallery'),
+                        ],
+                    ),
                 ),
             ),
             headers=self.auth,
@@ -214,6 +226,10 @@ class EventSeriesTranslation(unittest.TestCase):
             page.click("#seriesAiRefresh")
             page.click("#seriesAiDraft")
             assert page.locator("#translatedTitle").input_value() == "es: Gallery program"
+            assert page.get_by_label("Navigation translation: Schedule", exact=True).input_value() == "es: Schedule"
+            assert page.get_by_label("FAQ question translation: Where?", exact=True).input_value() == "es: Where?"
+            assert page.get_by_label("FAQ answer translation: The gallery", exact=True).input_value() == "es: The gallery"
+            page.get_by_label("FAQ answer translation: The gallery", exact=True).fill("La galería")
             assert not page.is_checked("#translationPublished")
             page.check("#translationPublished")
             with page.expect_response(lambda r: r.request.method == "PUT") as put_info:
@@ -222,6 +238,32 @@ class EventSeriesTranslation(unittest.TestCase):
             fresh_page = browser.new_page()
             fresh_page.goto(base + "/event-series/gallery-program?lang=es")
             assert fresh_page.get_by_role("heading", level=1).inner_text() == "es: Gallery program"
+            schedule_link = fresh_page.get_by_role("link", name="es: Schedule", exact=True)
+            assert schedule_link.get_attribute("href") == "https://venue.example.test/schedule"
+            fresh_page.get_by_text("es: Where?", exact=True).click()
+            assert fresh_page.get_by_text("es: Where?", exact=True).is_visible()
+            assert fresh_page.get_by_text("La galería", exact=True).is_visible()
+
+            saved = self.client.get(f'/api/event-series/{uid}', headers=self.auth).get_json()
+            settings = saved["settings"]
+            settings["presentation"]["navigation"][0]["label"] = "Tickets"
+            settings["presentation"]["navigation"][0]["href"] = "https://venue.example.test/schedule"
+            edit = self.client.put(
+                f'/api/event-series/{uid}',
+                json=dict(
+                    revision=saved["revision"],
+                    slug=saved["slug"],
+                    settings=settings,
+                ),
+                headers=self.auth,
+            )
+            self.assertEqual(edit.status_code, 200)
+            fresh_page.reload()
+            assert fresh_page.get_by_role("link", name="Tickets", exact=True).get_attribute("href") == "https://venue.example.test/schedule"
+            assert fresh_page.get_by_role("link", name="es: Schedule", exact=True).count() == 0
+            fresh_page.get_by_text("es: Where?", exact=True).click()
+            assert fresh_page.get_by_text("es: Where?", exact=True).is_visible()
+            assert fresh_page.get_by_text("La galería", exact=True).is_visible()
 
     def test_translation_job_superseded_by_concurrent_edit(self):
         created = self.client.post(
