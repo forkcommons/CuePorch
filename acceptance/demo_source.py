@@ -60,7 +60,10 @@ def build_server(directory, port=0):
                     return self.send_error(401)
                 origin = f"http://127.0.0.1:{self.server.server_port}"
                 if path == "/me":
-                    data = b'{"uri":"/users/10"}'
+                    body = {"uri": "/users/10"}
+                    if getattr(self.server, "folder_fixture", False):
+                        body["metadata"] = {"connections": {"folders": {"uri": "/users/10/projects"}}}
+                    data = json.dumps(body).encode()
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
@@ -77,6 +80,23 @@ def build_server(directory, port=0):
                     following = path + "?per_page=100&page=2" if page == "1" else None
                     total = 3
                     values = [{"uri": "/videos/" + uid} for uid in subset]
+                elif path == "/users/10/projects" and getattr(self.server, "folder_fixture", False):
+                    page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
+                    root_uri, root_title = "/users/10/projects/100", "Foundation archive"
+                    meta = {"connections": {"ancestor_path": [
+                        {"uri": root_uri, "name": root_title}]}}
+                    if page == "1":
+                        values = [
+                            {"uri": root_uri, "name": root_title},
+                            {"uri": "/users/10/projects/102", "name": "Empty vault", "metadata": meta, "settings": {"color": "#445566"}},
+                        ]
+                        following = path + "?per_page=100&page=2"
+                    else:
+                        values = [
+                            {"uri": "/users/10/projects/101", "name": "Gallery edits", "metadata": meta, "settings": {"color": "#445566"}},
+                        ]
+                        following = None
+                    total = 3
                 elif path == "/me/videos":
                     values = [
                         dict(
@@ -121,6 +141,14 @@ def build_server(directory, port=0):
                             download=[],
                         ),
                     ]
+                    if getattr(self.server, "folder_fixture", False):
+                        folders = {
+                            "/videos/71": {"uri": "/users/10/projects/101", "name": "Gallery edits"},
+                            "/videos/72": {"uri": "/users/10/projects/100", "name": "Foundation archive"},
+                        }
+                        for v in values:
+                            if v.get("uri") in folders:
+                                v["parent_folder"] = folders[v["uri"]]
                     if getattr(self.server, "privacy_fixture", None):
                         stage = self.server.privacy_fixture
                         for identifier, title, privacy, embed, download in (

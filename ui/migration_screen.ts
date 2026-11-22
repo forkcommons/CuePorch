@@ -7,6 +7,10 @@ const inventory =
   document.querySelector<HTMLButtonElement>("button#inventory")!;
 const transfer = document.querySelector<HTMLButtonElement>("button#transfer")!;
 const rows = document.querySelector<HTMLTableSectionElement>("tbody#rows")!;
+const folderIssue = document.querySelector<HTMLElement>("#migrationFolderIssue")!;
+const folderDetails = document.querySelector<HTMLDetailsElement>("#migrationFolders")!;
+const folderSummary = document.querySelector<HTMLElement>("#migrationFolderSummary")!;
+const folderList = document.querySelector<HTMLUListElement>("#migrationFolderList")!;
 const showcases = document.querySelector<HTMLElement>("#showcaseInventory")!;
 const showcaseIssue = document.querySelector<HTMLElement>("#showcaseInventoryIssue")!;
 const showcaseRows = document.querySelector<HTMLTableSectionElement>("#showcaseInventoryRows")!;
@@ -80,7 +84,8 @@ async function poll(page = currentPage) {
   rows.replaceChildren();
   for (const w of data.works || []) {
     const row = rows.insertRow();
-    for (const v of [w.title, w.source_id, w.disposition, w.source_privacy])
+    const folder = w.source_folder_path ?? (w.source_folder_unavailable ? "Folder unavailable" : "Unfiled");
+    for (const v of [w.title, w.source_id, folder, w.disposition, w.source_privacy])
       row.insertCell().textContent = v;
     const exceptions = [
       ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
@@ -88,6 +93,17 @@ async function poll(page = currentPage) {
         `${issue.role} (${issue.reason ? mediaIssueLabels[issue.reason] || "Transfer failed" : `HTTP ${issue.http_status}`})`),
     ];
     row.insertCell().textContent = exceptions.join(", ") || "None reported";
+  }
+  const folders = data.folders || [];
+  folderIssue.textContent = data.folder_issue || "";
+  folderIssue.hidden = !data.folder_issue;
+  folderDetails.hidden = !folders.length;
+  folderSummary.textContent = `${folders.length} source ${folders.length === 1 ? "folder" : "folders"}`;
+  folderList.replaceChildren();
+  for (const folder of folders) {
+    const item = document.createElement("li");
+    item.textContent = folder.path;
+    folderList.append(item);
   }
   const albums = data.showcases || [];
   showcases.hidden = !albums.length && !data.showcase_issue;

@@ -1,5 +1,6 @@
 """Read-only Vimeo API transport and private, checkpointed collection migration."""
 
+from collections import defaultdict, deque
 import hashlib
 from http.client import HTTPException
 import json
@@ -237,6 +238,130 @@ def original_url(video, vid):
     return fallback
 
 
+def folder_field(value, *keys):
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def canonical_folder_uri(uri, account):
+    if not isinstance(uri, str):
+        return None
+    match = re.fullmatch(r"(?:/users/([0-9]+)|/me)/(?:projects|folders)/([0-9]+)", uri)
+    if not match or (match[1] and account != "/users/" + match[1]):
+        return None
+    return f"{account}/projects/{match[2]}"
+
+
+def folder_node(project, parent):
+    name = folder_field(project, "name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    color = folder_field(project, "settings", "color")
+    if isinstance(color, str) and re.fullmatch(r"#?[0-9a-fA-F]{6}", color):
+        color = "#" + color.removeprefix("#")
+    else:
+        color = "#5678a1"
+    return dict(name=name.strip(), parent=parent, color=color)
+
+
+def add_folder(project, account, nodes, *, catalog=False):
+    uri = canonical_folder_uri(folder_field(project, "uri"), account)
+    if uri is None:
+        return None
+    connections = folder_field(project, "metadata", "connections")
+    path = folder_field(connections, "ancestor_path")
+    ancestors = []
+    if isinstance(path, list):
+        ancestors = [canonical_folder_uri(folder_field(item, "uri"), account) for item in path]
+        if all(ancestors):
+            parent = None
+            for item, ancestor in reversed(list(zip(path, ancestors))):
+                if node := folder_node(item, parent):
+                    nodes.setdefault(ancestor, node)
+                parent = ancestor
+    if ancestors and all(ancestors):
+        parent = ancestors[0]
+    elif isinstance(connections, dict) and "parent_folder" in connections:
+        reference = connections["parent_folder"]
+        parent = None if reference is None else (
+            canonical_folder_uri(folder_field(reference, "uri"), account) or ""
+        )
+    elif ancestors:
+        parent = ""
+    elif isinstance(path, list) or catalog:
+        parent = None
+    else:
+        # A video may return only a folder name and URI. These do not establish its parent.
+        return uri
+    node = folder_node(project, parent)
+    if node is not None:
+        if catalog:
+            nodes[uri] = node
+        else:
+            nodes.setdefault(uri, node)
+    return uri
+
+
+def order_folders(institution, nodes):
+    children = defaultdict(list)
+    queue = deque()
+    for uri, node in nodes.items():
+        parent = node["parent"]
+        if parent is None:
+            queue.append(uri)
+        else:
+            children[parent].append(uri)
+    ordered = []
+    resolved = {}
+    while queue:
+        uri = queue.popleft()
+        node = nodes[uri]
+        parent = resolved.get(node["parent"])
+        item = dict(
+            id=work_id(institution, "vimeo-folder", uri),
+            parent=parent["id"] if parent else None,
+            name=node["name"],
+            color=node["color"],
+            path=f"{parent['path']} / {node['name']}" if parent else node["name"],
+        )
+        ordered.append(item)
+        resolved[uri] = item
+        queue.extend(children[uri])
+    return ordered, resolved
+
+
+def folder_inventory(institution, source, account, profile, videos):
+    uri = folder_field(profile, "metadata", "connections", "folders", "uri")
+    default = account + "/projects"
+    path = uri if uri in (default, account + "/folders", "/me/projects", "/me/folders") else default
+    warnings = []
+    nodes = {}
+    try:
+        projects = list(source.pages(path))
+        incomplete = False
+        for project in projects:
+            if add_folder(project, account, nodes, catalog=True) not in nodes:
+                incomplete = True
+        if incomplete:
+            warnings.append("Vimeo returned a folder without a usable identity or name.")
+    except SourceFailure as error:
+        if error.status not in (403, 404):
+            raise
+        warnings.append(f"Vimeo's folder listing was unavailable (HTTP {error.status}).")
+    placements = {
+        video["uri"]: add_folder(video["parent_folder"], account, nodes)
+        for video in videos if video.get("parent_folder") is not None
+    }
+    ordered, resolved = order_folders(institution, nodes)
+    by_video = {video: resolved.get(folder) for video, folder in placements.items()}
+    if nodes.keys() - resolved.keys() or any(folder is None for folder in by_video.values()):
+        warnings.append("Some source folders or placements could not be resolved.")
+    return ordered, by_video, " ".join(dict.fromkeys(warnings)) or None
+
+
 def showcase_inventory(institution, source, account, video_ids):
     path = account + "/albums"
     try:
@@ -311,7 +436,8 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
     root.mkdir(parents=True, exist_ok=True)
     job = root / "migration.json"
     with source.open(source.base + "/me", True) as response:
-        account = json.load(response)["uri"]
+        profile = json.load(response)
+        account = profile["uri"]
     if not re.fullmatch(r"/users/[0-9]+", account):
         raise ValueError("Expected an authenticated account identifier")
     binding = dict(institution=institution, source=source.base, account=account)
@@ -322,6 +448,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
         progress(0, len(videos))
     showcases, showcase_issue = showcase_inventory(institution, source, account,
                                                    {uri.split("/")[-1] for uri in resource_ids})
+    folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "objects").mkdir(exist_ok=True)
     (root / "checkpoints").mkdir(exist_ok=True)
     works = []
@@ -470,10 +597,20 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
                         caption_status=record.get("caption_status"),
                     ),
                 )
+        if uri in folder_map:
+            selected = folder_map[uri]
+            if selected is None:
+                record["source_folder_unavailable"] = True
+            else:
+                record["source_folder"] = selected["id"]
+                record["source_folder_path"] = selected["path"]
         works.append(record)
         if progress:
             progress(len(works), len(videos))
-    manifest = dict(schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue)
+    manifest = dict(
+        schema=1, institution=institution, works=works, showcases=showcases, showcase_issue=showcase_issue,
+        folders=folders, folder_issue=folder_issue,
+    )
     dump(root / ("inventory.json" if dry_run else "manifest.json"), manifest)
     if not dry_run:
         verify(root)

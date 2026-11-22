@@ -21,6 +21,27 @@ CREATE TABLE IF NOT EXISTS library_star(
 """
 
 
+def import_source_folders(con, folders, entries):
+    """Add missing folders and placements without changing local sharing rules."""
+    usable = set()
+    for folder in folders:
+        uid, parent = folder["id"], folder["parent"]
+        if hidden(con, "folder", uid):
+            continue
+        existing = con.execute("SELECT 1 FROM library_folder WHERE id=?", (uid,)).fetchone()
+        if not existing and parent is not None and parent not in usable:
+            continue
+        con.execute(
+            "INSERT OR IGNORE INTO library_folder(id,parent,name,color) VALUES(?,?,?,?)",
+            (uid, parent, folder["name"], folder["color"]),
+        )
+        usable.add(uid)
+    for entry in entries:
+        uid, folder = entry["id"], entry.get("source_folder")
+        if folder in usable and not hidden(con, "work", uid):
+            con.execute("INSERT OR IGNORE INTO library_placement(work,folder) VALUES(?,?)", (uid, folder))
+
+
 def register(app, tx, staff, action, read_works, enforce_sharing):
     @app.put("/api/library/star/<kind>/<item>")
     def set_star(kind, item):
