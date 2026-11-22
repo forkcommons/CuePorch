@@ -14,6 +14,10 @@ function watchTime(seconds) {
         return "—";
     return seconds.toLocaleString(undefined, { maximumFractionDigits: 1 }) + " s";
 }
+const replayWatchedFormat = new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 });
+function replayWatched(fraction) {
+    return fraction == null ? "—" : replayWatchedFormat.format(fraction);
+}
 export function setupEventRoster(request, download) {
     const panel = document.querySelector("#eventRoster");
     const form = document.querySelector("#eventRosterSearch");
@@ -50,6 +54,7 @@ export function setupEventRoster(request, download) {
                 row.insertCell().textContent = sourceNames[attendee.source] ?? attendee.source;
                 row.insertCell().textContent = watchTime(attendee.watch_time?.live_seconds);
                 row.insertCell().textContent = watchTime(attendee.watch_time?.replay_seconds);
+                row.insertCell().textContent = replayWatched(attendee.watch_time?.replay_watched_fraction);
             }
             prev.disabled = page === 0;
             next.disabled = page + pageSize >= result.total;

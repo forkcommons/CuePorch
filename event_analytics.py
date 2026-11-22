@@ -64,7 +64,7 @@ def record(con, uid, opens, phase, nonce, body, *, report_scope=None, viewer_key
     now = time.time()
     prior = con.execute("SELECT sequence,playing,seen FROM live_playback WHERE id=?", (nonce,)).fetchone()
     if prior and sequence <= prior["sequence"]:
-        return
+        return False
     con.execute(
         """INSERT INTO live_playback VALUES(?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET sequence=excluded.sequence, played=max(played,excluded.played),
@@ -99,6 +99,7 @@ def record(con, uid, opens, phase, nonce, body, *, report_scope=None, viewer_key
                ON CONFLICT(event,opens,phase) DO UPDATE SET peak=max(peak,excluded.peak)""",
             (uid, opens, phase, count),
         )
+    return True
 
 
 def summarize(con, uid, opens, active_phase):

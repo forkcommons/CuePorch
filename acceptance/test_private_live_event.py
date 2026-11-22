@@ -19,6 +19,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
+import event_registrants
 import library_events
 from event_media import Gateway, local_hls
 from institution import create_app
@@ -229,6 +230,93 @@ class PrivateLiveEventTest(unittest.TestCase):
                     operator.locator("#downloadHostedAnalytics").click()
                 download = download_info.value
                 assert download.suggested_filename.endswith(".csv")
+
+    def test_registrant_replay_coverage(self):
+        created = self.create_event("coverage-replay", "public")
+        uid, opens = created["id"], created["occurrences"][0]["id"]
+        registration_path = f"/api/live-events/{uid}/registration"
+        registration = self.client.get(registration_path, headers=self.auth).get_json()
+        registration["settings"].update(enabled=True, attendance_analytics=True)
+        saved = self.client.put(registration_path, headers=self.auth, json=registration)
+        self.assertEqual(200, saved.status_code, saved.get_data(as_text=True))
+        with self.tx() as con:
+            con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)", (uid, opens, PEER, REMOTE, "replay"))
+        self.make_media()
+        metadata = {
+            "isLive": False, "duration": 4, "privacy": {"id": 3}, "state": {"id": 1},
+            "streamingPlaylists": [{
+                "type": 1, "playlistUrl": f"{PEER}/static/streaming-playlists/hls/private/{REMOTE}/0.m3u8",
+            }],
+        }
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        base = f"http://127.0.0.1:{server.server_port}"
+        occurrence_path = f"/api/live-events/{uid}/{opens}"
+        roster_path = occurrence_path + "/registrants"
+        with service_worker(server), patch.object(Gateway, "metadata", return_value=metadata), patch.object(
+            Gateway, "media", side_effect=lambda origin, remote, gateway, filename, byte_range: local_hls(self.root, filename),
+        ), sync_playwright() as pw, chromium(pw) as browser:
+            page = browser.new_page()
+            page.goto(base + created["watch"])
+            page.locator('input[name="email"]').fill("viewer@example.test")
+            page.locator('input[name="share_watch_time"]').check()
+            page.get_by_role("button", name="Register and watch", exact=True).click()
+            expect(page.locator("#eventStatus")).to_have_text("Replay")
+            video = page.locator("#eventPlayer video")
+            def paused_sample(response):
+                if not response.url.endswith("/api/event-playback") or response.request.method != "POST":
+                    return False
+                data = response.request.post_data_json
+                return data["played"] and not data["playing"]
+
+            video.evaluate("async v => { v.muted = true; await v.play(); }")
+            page.wait_for_function("() => document.querySelector('video').currentTime >= 0.7")
+            with page.expect_response(paused_sample, timeout=10000) as first:
+                video.evaluate("v => v.pause()")
+            self.assertEqual(204, first.value.status)
+            self.assertTrue(first.value.request.post_data_json.get("replay_intervals"))
+            page.evaluate("""() => new Promise(res => {
+                const v = document.querySelector('video');
+                v.addEventListener('seeked', res, {once: true});
+                v.currentTime = 2.5;
+            })""")
+            video.evaluate("v => v.play()")
+            page.wait_for_function("() => document.querySelector('#eventPlayer video').currentTime >= 3.3")
+            with page.expect_response(paused_sample, timeout=10000) as observed:
+                video.evaluate("v => v.pause()")
+            self.assertEqual(204, observed.value.status)
+            self.assertEqual(320, video.evaluate("v => v.videoWidth"))
+            intervals = observed.value.request.post_data_json["replay_intervals"]
+            self.assertGreater(intervals[1][0] - intervals[0][1], 1000)
+            attendee = self.client.get(roster_path, headers=self.auth).get_json()["attendees"][0]
+            fraction = attendee["watch_time"]["replay_watched_fraction"]
+            self.assertAlmostEqual(fraction, sum(last - first for first, last in intervals) / 4000)
+            exported = self.client.get(occurrence_path + "/registration/export", headers=self.auth)
+            rows = list(csv.DictReader(StringIO(exported.get_data(as_text=True))))
+            self.assertEqual(fraction, float(rows[0]["replay_watched_fraction"]))
+
+            with page.expect_response(lambda response: response.url.endswith("/api/event-playback/withdraw-sharing")) as stopped:
+                page.locator("#stopAttendeeSharing").click()
+            self.assertEqual(204, stopped.value.status)
+            attendee = self.client.get(roster_path, headers=self.auth).get_json()["attendees"][0]
+            self.assertIsNone(attendee["watch_time"])
+            totals = self.client.get(occurrence_path + "/analytics", headers=self.auth).get_json()
+            self.assertEqual(1, totals["replay"]["plays"])
+            with self.tx() as con:
+                self.assertEqual(0, con.execute("SELECT count(*) FROM live_attendee_replay_coverage").fetchone()[0])
+
+        with self.tx() as con:
+            registrant, _ = event_registrants.record(con, uid, opens, "covered@example.test", {}, "form")
+            sharing = event_registrants.share(con, registrant)
+            for session, intervals in (("first", [[0, 1000], [2000, 3000]]), ("second", [[500, 1500], [2500, 3500]])):
+                event_registrants.record_replay_coverage(con, session, sharing, REMOTE, 2, 4000, intervals)
+            assert event_registrants.replay_coverage(con, registrant) == 0.75
+            event_registrants.record_replay_coverage(con, session, sharing, REMOTE, 1, 4000, [[500, 1000]])
+            assert event_registrants.replay_coverage(con, registrant) == 0.75
+            event_registrants.stop_sharing(con, sharing)
+            count = con.execute(
+                "SELECT count(*) FROM live_attendee_replay_coverage WHERE sharing=?", (sharing,)
+            ).fetchone()[0]
+            assert count == 0
 
     def test_private_live_and_replay_require_active_team(self):
         created = self.create_event("private-rehearsal", "private")

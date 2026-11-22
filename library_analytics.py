@@ -3,6 +3,7 @@
 import csv
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
+from heapq import merge
 import hmac
 from io import StringIO
 from ipaddress import ip_address
@@ -194,6 +195,23 @@ def track_pair_observations(work, samples, watched, source_language):
         if audio_key in audio and caption_key in captions and milliseconds:
             totals[(*audio[audio_key], *captions[caption_key])] += milliseconds
     return [(*labels, milliseconds) for labels, milliseconds in totals.items()]
+
+
+def merge_coverage(left, right):
+    result = []
+    current = None
+    for start, end in merge(left, right):
+        if current is None:
+            current = [start, end]
+        elif start <= current[1]:
+            if end > current[1]:
+                current[1] = end
+        else:
+            result.append(current)
+            current = [start, end]
+    if current is not None:
+        result.append(current)
+    return result
 
 
 def _engagement_ranges(raw, limit):

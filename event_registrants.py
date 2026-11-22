@@ -11,6 +11,7 @@ from flask import Response, abort, request
 
 from browser_account_security import private
 import event_webhooks
+import library_analytics
 from library_registration import UTM_FIELDS, csv_cell
 
 
@@ -25,6 +26,10 @@ CREATE TABLE IF NOT EXISTS live_attendee_sharing(
 CREATE INDEX IF NOT EXISTS live_attendee_sharing_registrant ON live_attendee_sharing(registrant,revoked);
 CREATE TABLE IF NOT EXISTS live_attendee_session(session TEXT PRIMARY KEY, sharing TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS live_attendee_session_consent ON live_attendee_session(sharing);
+CREATE TABLE IF NOT EXISTS live_attendee_replay_coverage(
+ session TEXT PRIMARY KEY, sharing TEXT NOT NULL, source TEXT NOT NULL,
+ sequence INTEGER NOT NULL, duration_ms INTEGER NOT NULL, intervals TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS live_attendee_replay_coverage_sharing ON live_attendee_replay_coverage(sharing);
 """
 PAGE = 50
 
@@ -72,10 +77,77 @@ def sharing_active(con, uid, event, opens):
 def stop_sharing(con, uid):
     con.execute("UPDATE live_attendee_sharing SET revoked=1 WHERE id=?", (uid,))
     con.execute("DELETE FROM live_attendee_session WHERE sharing=?", (uid,))
+    con.execute("DELETE FROM live_attendee_replay_coverage WHERE sharing=?", (uid,))
 
 
 def link_sample(con, session, uid):
     con.execute("INSERT OR IGNORE INTO live_attendee_session VALUES(?,?)", (session, uid))
+
+
+def record_replay_coverage(con, session, sharing, source, sequence, duration_ms, ranges):
+    if type(duration_ms) is not int or duration_ms <= 0:
+        return
+    if not isinstance(ranges, list) or len(ranges) > 512:
+        abort(400)
+    kept, prev_last = [], 0
+    for pair in ranges:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            abort(400)
+        first, last = pair
+        if type(first) is not int or type(last) is not int:
+            abort(400)
+        if first < 0 or first >= last or last > duration_ms + 2000:
+            abort(400)
+        if first < prev_last:
+            abort(400)
+        clip = min(last, duration_ms)
+        if first >= clip:
+            continue
+        kept.append([first, clip])
+        prev_last = clip
+    payload = json.dumps(kept, separators=(",", ":"))
+    con.execute(
+        "INSERT INTO live_attendee_replay_coverage(session,sharing,source,sequence,duration_ms,intervals) "
+        "VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(session) DO UPDATE SET "
+        "sharing=excluded.sharing,source=excluded.source,sequence=excluded.sequence,"
+        "duration_ms=excluded.duration_ms,intervals=excluded.intervals "
+        "WHERE excluded.sequence > live_attendee_replay_coverage.sequence",
+        (session, sharing, source, sequence, duration_ms, payload),
+    )
+
+
+def replay_coverage(con, registrant):
+    rows = con.execute(
+        """
+        SELECT c.duration_ms, c.intervals
+        FROM live_attendee_replay_coverage c
+        JOIN live_attendee_sharing s ON s.id=c.sharing
+        JOIN live_event_registrant r ON r.id=s.registrant
+        JOIN live_occurrence o ON o.event=r.event AND o.opens=r.opens
+        WHERE s.registrant = ?
+          AND s.revoked = 0
+          AND o.delivery = 'replay'
+          AND c.source = o.remote
+        ORDER BY c.duration_ms DESC
+        """,
+        (registrant,),
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    duration = rows[0][0]
+    coverage = []
+
+    for measured, intervals in rows:
+        if measured != duration:
+            continue
+        coverage = library_analytics.merge_coverage(
+            coverage, json.loads(intervals)
+        )
+
+    return sum(last - first for first, last in coverage) / duration
 
 
 def watch_time(con, registrant):
@@ -84,7 +156,8 @@ def watch_time(con, registrant):
                                         FROM live_attendee_sharing s JOIN live_attendee_session v ON v.sharing=s.id
                                         JOIN live_playback p ON p.id=v.session WHERE s.registrant=? AND s.revoked=0""",
                                      (registrant,)).fetchone()
-    return (dict(live_seconds=live / 1000, replay_seconds=replay / 1000, plays=plays) if live is not None else None)
+    return (dict(live_seconds=live / 1000, replay_seconds=replay / 1000, plays=plays,
+                 replay_watched_fraction=replay_coverage(con, registrant)) if live is not None else None)
 
 
 def describe(row, con=None):
@@ -105,13 +178,14 @@ def export(con, uid, opens):
     keys += sorted({key for entry in entries for key in entry["answers"] if key.startswith("field_")})
     output = StringIO()
     writer = csv.writer(output)
-    tracking = ["live_seconds", "replay_seconds", "plays"]
+    tracking = ["live_seconds", "replay_seconds", "plays", "replay_watched_fraction"]
     writer.writerow(["email", "occurrence", "registration_date_utc", "registration_source", *keys, *tracking])
     for entry in entries:
         registered = entry["registered"]
         date = datetime.fromtimestamp(registered, timezone.utc).isoformat() if registered is not None else ""
         values = [entry["email"], opens, date, entry["source"], *(entry["answers"].get(key, "") for key in keys)]
-        values += [(entry["watch_time"] or {}).get(key, "") for key in tracking]
+        watch = entry["watch_time"] or {}
+        values += ["" if watch.get(key) is None else watch[key] for key in tracking]
         writer.writerow(csv_cell(value) for value in values)
     return Response(output.getvalue(), mimetype="text/csv", headers={
         "Cache-Control": "no-store", "Content-Disposition": f"attachment; filename=cueporch-attendees-{opens}.csv",
