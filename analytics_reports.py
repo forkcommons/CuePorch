@@ -224,9 +224,14 @@ def summarize(con, options, catalog, lengths, *, include_top=False, library_ids=
         breakdown_counts = VIDEO_COUNTS.format(watched=split_watched)
     elif community and not community_rows:
         breakdown_scope = VIDEO_TABLES + identity_join + join + clause + where
+    order_by = (
+        "category, breakdown"
+        if primary == "date"
+        else "views DESC, impressions DESC, downloads DESC, likes DESC, comments DESC, category, breakdown"
+    )
     rows = con.execute(f"""SELECT {group} AS category,{detail} AS breakdown,{breakdown_counts} {breakdown_scope}
                         GROUP BY category,breakdown
-                        ORDER BY views DESC,impressions DESC,downloads DESC,likes DESC,comments DESC,category,breakdown""", breakdown_params)
+                        ORDER BY {order_by}""", breakdown_params)
     items = []
     for row in rows:
         category, value = row["category"], row["breakdown"]
@@ -264,7 +269,8 @@ def durations(works):
 
 def engagement(con, options, catalog, lengths):
     _, clause, params = filter_settings(options)
-    rows = con.execute("SELECT s.work,s.version,s.watched,s.completed,s.intervals" + PLAYBACK_TABLES +
+    rows = con.execute("SELECT s.work,s.version,s.watched,s.completed,s.intervals,e.ranges" + PLAYBACK_TABLES +
+                       " LEFT JOIN video_analytics_engagement e ON e.session=s.id" +
                        clause + " AND s.played=1", params)
     curve = [0] * 101
     by_video = {}
@@ -277,13 +283,16 @@ def engagement(con, options, catalog, lengths):
         intervals = json.loads(row["intervals"])
         if row["completed"] or (duration and intervals and intervals[-1][1] >= duration - 2000):
             stats["finishes"] += 1
-        stats["points"][100] += row["completed"]
-        curve[100] += row["completed"]
+        ranges = json.loads(row["ranges"]) if row["ranges"] else []
+        ending_passes = sum(last >= duration for _, last in ranges) if duration else 0
+        terminal = max(row["completed"], ending_passes)
+        stats["points"][100] += terminal
+        curve[100] += terminal
         if not duration:
             continue
         stats["measured"] += 1
         stats["fraction_watched"] += row["watched"] / duration
-        for first, last in intervals:
+        for first, last in ranges or intervals:
             start = min(100, (first * 100 + duration - 1) // duration)
             stop = min(100, (last * 100 + duration - 1) // duration)
             curve[start] += 1

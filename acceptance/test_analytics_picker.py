@@ -1,4 +1,6 @@
+import csv
 from datetime import datetime, timezone
+import io
 import json
 import secrets
 import sqlite3
@@ -9,11 +11,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from flask import Response, request, send_file
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import make_server
 
 from browser import chromium
+from installed_versions import generate_replacement
 from institution import create_app
+from library_analytics import record
 from test_drive_import import QuietHandler, service_worker
 
 
@@ -111,6 +116,112 @@ class AnalyticsPicker(unittest.TestCase):
                     ),
                 ],
             )
+
+    def test_date_report_utc_buckets_and_csv(self):
+        wid = self.ids[0]
+        sessions = [
+            (9001, datetime(2025, 12, 28, 12, tzinfo=timezone.utc).timestamp(), 0),
+            (9002, datetime(2025, 12, 29, 12, tzinfo=timezone.utc).timestamp(), 1),
+            (9003, datetime(2025, 12, 29, 13, tzinfo=timezone.utc).timestamp(), 2),
+            (9004, datetime(2026, 1, 1, 12, tzinfo=timezone.utc).timestamp(), 3),
+        ]
+        with closing(sqlite3.connect(self.db)) as conn:
+            conn.executemany(
+                "INSERT INTO video_analytics_session VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [(sid, wid, "fixture-cut", "watch", ts, seq, 1, 1, 1000, "[]") for sid, ts, seq in sessions],
+            )
+            conn.executemany(
+                "INSERT INTO video_analytics_viewer VALUES(?,?)",
+                [(sid, f"v-{sid}") for sid, _, _ in sessions],
+            )
+            conn.commit()
+        expected = {
+            "day": [("2025-12-28", 1), ("2025-12-29", 2), ("2026-01-01", 1)],
+            "week": [("2025-12-22", 1), ("2025-12-29", 3)],
+            "month": [("2025-12-01", 3), ("2026-01-01", 1)],
+            "year": [("2025-01-01", 3), ("2026-01-01", 1)],
+        }
+        for period, buckets in expected.items():
+            opts = {"from": "2025-12-28", "to": "2026-01-01", "period": period, "videos": [wid]}
+            result = self.client.post("/api/analytics/date-report", headers=self.auth, json=opts).get_json()
+            self.assertEqual(buckets, [(r["category"], r["views"]) for r in result["rows"]])
+            totals = result["totals"]
+            self.assertEqual((4, 4, 4, 4, 1), tuple(totals[k] for k in ("views", "impressions", "unique_viewers", "watched_seconds", "average_watched_seconds")))
+            text = self.client.post("/api/analytics/date-report?format=csv", headers=self.auth, json=opts).get_data(as_text=True)
+            csv_rows = list(csv.DictReader(io.StringIO(text)))
+            self.assertEqual(buckets, [(r["date"], int(r["views"])) for r in csv_rows])
+
+    def test_engagement_counts_replayed_passages_and_skips_seek_gaps(self):
+        work = {"id": self.ids[0], "title": "Repeat", "duration_seconds": 8, "files": []}
+        self.manifest.write_text(
+            json.dumps({"institution": "station", "schema": 1, "works": [work]}), encoding="utf-8",
+        )
+        media = generate_replacement(self.root / "retention.mp4", width=320, seconds=8)
+
+        @self.app.get("/fixture-media")
+        def fixture_media():
+            return send_file(media, conditional=True)
+
+        @self.app.get("/fixture-player")
+        def fixture_player():
+            return Response(
+                '<video data-analytics="/fixture-observe" src="/fixture-media" muted></video>'
+                '<script src="/static/ui/playback_analytics.js" type="module"></script>',
+                mimetype="text/html",
+            )
+
+        @self.app.post("/fixture-observe")
+        def fixture_observe():
+            with closing(sqlite3.connect(self.db)) as connection, connection:
+                record(connection, work, "repeat-session", "watch", request.get_json())
+            return "", 204
+
+        server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+        self.enterContext(service_worker(server))
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+
+            def observation(response, *, finished):
+                return (
+                    response.url.endswith("/fixture-observe")
+                    and response.request.method == "POST"
+                    and response.request.post_data_json["completed"] == finished
+                    and response.request.post_data_json["watched"] > 0
+                )
+
+            page.goto(f"http://127.0.0.1:{server.server_port}/fixture-player")
+            video = page.locator("video")
+            page.wait_for_function("document.querySelector('video').videoWidth === 320", timeout=5000)
+
+            def seek(seconds):
+                video.evaluate("""(video, seconds) => new Promise(resolve => {
+                    video.addEventListener("seeked", resolve, {once: true});
+                    video.currentTime = seconds;
+                })""", seconds)
+
+            def play_and_pause():
+                video.evaluate("video => video.play()")
+                page.wait_for_function("document.querySelector('video').currentTime >= 2.5", timeout=5000)
+                with page.expect_response(lambda response: observation(response, finished=False)) as response:
+                    video.evaluate("video => video.pause()")
+                self.assertEqual(204, response.value.status)
+
+            play_and_pause()
+            seek(1)
+            play_and_pause()
+            seek(5.5)
+            with page.expect_response(lambda response: observation(response, finished=True)) as response:
+                video.evaluate("video => video.play()")
+            self.assertEqual(204, response.value.status)
+            self.assertTrue(video.evaluate("video => video.ended"))
+
+        response = self.client.post("/api/analytics/engagement-report", headers=self.auth, json={"videos": [work["id"]]})
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        totals = result["totals"]
+        self.assertEqual((1, 1, 1), (totals["views"], totals["measured"], totals["finishes"]))
+        self.assertEqual((2, 0, 1), tuple(totals["points"][str(point)] for point in (25, 50, 100)))
+        self.assertEqual((2, 0, 1), tuple(result["retention"][point] for point in (25, 50, 100)))
 
     def test_operator_analytics_report_folder_limit(self):
         server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
