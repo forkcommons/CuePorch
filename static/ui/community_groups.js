@@ -131,6 +131,16 @@ if (inviteForm) {
             });
         };
     const revision = () => new FormData(inviteForm).get("revision");
+    for (const button of document.querySelectorAll("[data-group-moderator]")) {
+        button.onclick = () => {
+            const member = encodeURIComponent(button.dataset.groupModerator);
+            const enabled = button.dataset.enabled === "true";
+            void update(async () => {
+                await send("PUT", groupPath + "/moderators/" + member, { enabled, revision: revision() });
+                location.reload();
+            });
+        };
+    }
     for (const button of document.querySelectorAll("[data-revoke-invite]")) {
         button.onclick = () => {
             void update(async () => {

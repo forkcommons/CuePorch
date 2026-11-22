@@ -142,6 +142,28 @@ def check_discovery(page, browser, base, auth, sample):
             member_page.goto(base + group_path)
             member_page.get_by_role("button", name="Join group", exact=True).click()
             expect(member_page.get_by_role("button", name="Leave group", exact=True)).to_be_visible()
+            other_group_video = group_api + "/videos/work/" + other
+            assert member.request.put(other_group_video, headers=group_marker, data={}).status == 404
+            viewer.reload()
+            membership = viewer.get_by_text("Manage group membership", exact=True)
+            moderation = viewer.locator("[data-group-moderator]")
+            membership.click()
+            viewer.get_by_role("button", name="Grant moderator to Group member", exact=True).click()
+            expect(moderation).to_have_attribute("data-enabled", "false")
+            member_page.reload()
+            member_page.get_by_label("Video to add").select_option("work/" + other)
+            member_page.get_by_role("button", name="Add video", exact=True).click()
+            expect(member_page.get_by_role("link", name=other_title, exact=True)).to_be_visible()
+            expect(member_page.locator("#groupSettings")).to_have_count(0)
+            assert member.request.put(group_api + "/videos/work/" + hidden, headers=group_marker, data={}).status == 404
+            assert member.request.post(group_api + "/ownership", headers=group_marker, data={}).status == 404
+            membership.click()
+            viewer.get_by_role("button", name="Revoke moderator for Group member", exact=True).click()
+            expect(moderation).to_have_attribute("data-enabled", "true")
+            member_page.reload()
+            expect(member_page.get_by_label("Video to add")).to_have_count(0)
+            assert member.request.delete(other_group_video, headers=group_marker, data={}).status == 404
+
             before = viewer.locator("#groupSettings input[name=revision]").input_value()
             viewer.get_by_label("Group access").select_option("members")
             viewer.get_by_role("button", name="Save group", exact=True).click()

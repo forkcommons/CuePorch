@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS audience_group_video(
 CREATE TABLE IF NOT EXISTS audience_group_invite(
  group_id TEXT NOT NULL, address TEXT NOT NULL, expires REAL NOT NULL,
  PRIMARY KEY(group_id,address));
+CREATE TABLE IF NOT EXISTS audience_group_moderator(
+ group_id TEXT NOT NULL, account TEXT NOT NULL,
+ PRIMARY KEY(group_id,account));
 """
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
 ACCESS = ("public", "members")
@@ -71,6 +74,17 @@ def payload(row):
                 url=url_for("community_group_page", slug=row["slug"]))
 
 
+def can_moderate(con, row, account_id):
+    if account_id is None:
+        return False
+    if row["owner"] == account_id:
+        return True
+    return con.execute("""SELECT 1 FROM audience_group_moderator g
+        JOIN audience_group_member m ON m.group_id=g.group_id AND m.account=g.account
+        WHERE g.group_id=? AND g.account=?""",
+        (row["id"], account_id)).fetchone() is not None
+
+
 def invitation_for(con, group, account):
     if account is None:
         return False
@@ -83,6 +97,7 @@ def invitation_for(con, group, account):
 
 def delete(con, uid):
     con.execute("DELETE FROM audience_group_member WHERE group_id=?", (uid,))
+    con.execute("DELETE FROM audience_group_moderator WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_video WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group_invite WHERE group_id=?", (uid,))
     con.execute("DELETE FROM audience_group WHERE id=?", (uid,))
@@ -94,6 +109,7 @@ def remove_account(con, uid):
     for row in con.execute("SELECT id FROM audience_group WHERE owner=?", (uid,)).fetchall():
         delete(con, row["id"])
     con.execute("DELETE FROM audience_group_member WHERE account=?", (uid,))
+    con.execute("DELETE FROM audience_group_moderator WHERE account=?", (uid,))
 
 
 def register(app, tx, viewer, mutation, listing, private, watch_preferences, public_origin):
@@ -135,6 +151,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                     abort(404)
                 return private(render_template("community_group_invited.html", group=payload(row)))
             owner = row["owner"] == aid
+            moderator = can_moderate(con, row, aid)
             source = listing(con)
             prefs = watch_preferences(con)
             library = {
@@ -156,8 +173,11 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             choices = [entry_payload(entry) for entry in ordered(library.values())
                        if entry["kind"] in ("work", "meeting")
                        and (entry["kind"], entry["slug"]) not in included
-                       and entry.get("allow_viewer_collections", True)] if owner else []
-            manage_members = con.execute("""SELECT a.id, a.name FROM audience_group_member m
+                       and entry.get("allow_viewer_collections", True)] if moderator else []
+            manage_members = con.execute("""SELECT a.id, a.name,
+                EXISTS (SELECT 1 FROM audience_group_moderator g
+                    WHERE g.group_id=m.group_id AND g.account=m.account) AS is_moderator
+                FROM audience_group_member m
                 JOIN audience_account a ON a.id=m.account WHERE m.group_id=?
                 ORDER BY a.name COLLATE NOCASE, a.id""", (row["id"],)).fetchall() if owner else []
             group_invites = [item["address"] for item in con.execute("""SELECT address FROM audience_group_invite
@@ -168,6 +188,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                 signed_in=bool(account),
                 joined=joined,
                 owner=owner,
+                moderator=moderator,
                 videos=videos,
                 choices=choices,
                 manage_members=manage_members,
@@ -234,6 +255,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
                     " WHERE group_id=? AND account=?",
                     (row["id"], aid),
                 )
+                con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account=?",
+                            (row["id"], aid))
             elif row["owner"] != aid:
                 con.execute(
                     "INSERT OR IGNORE INTO audience_group_member"
@@ -300,6 +323,8 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             con.execute("INSERT OR IGNORE INTO audience_group_member(group_id,account,joined) VALUES(?,?,?)",
                         (row["id"], aid, time.time()))
             con.execute("DELETE FROM audience_group_member WHERE group_id=? AND account=?", (row["id"], new_owner))
+            con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account IN (?,?)",
+                        (row["id"], aid, new_owner))
             con.execute("UPDATE audience_group SET owner=?,revision=? WHERE id=?",
                         (new_owner, uuid.uuid4().hex, row["id"]))
             return private(payload(get_group(con, slug)))
@@ -316,7 +341,34 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
             result = con.execute("DELETE FROM audience_group_member WHERE group_id=? AND account=?",
                                  (row["id"], member))
             if result.rowcount:
+                con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account=?",
+                            (row["id"], member))
                 con.execute("UPDATE audience_group SET revision=? WHERE id=?", (uuid.uuid4().hex, row["id"]))
+        return private("", 204)
+
+    @app.put("/api/viewer/groups/<slug>/moderators/<member>")
+    def modify_moderator(slug, member):
+        body = mutation()
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            abort(400, "Choose whether to grant moderator access.")
+        with tx() as con:
+            row = get_group(con, slug)
+            if row["owner"] != viewer(con)["id"]:
+                abort(404)
+            if body.get("revision") != row["revision"]:
+                abort(409, "This group changed. Reload it before saving.")
+            if not con.execute("SELECT 1 FROM audience_group_member WHERE group_id=? AND account=?",
+                               (row["id"], member)).fetchone():
+                abort(422, "Choose a current group member.")
+            if enabled:
+                con.execute("INSERT OR IGNORE INTO audience_group_moderator(group_id,account) VALUES(?,?)",
+                            (row["id"], member))
+            else:
+                con.execute("DELETE FROM audience_group_moderator WHERE group_id=? AND account=?",
+                            (row["id"], member))
+            con.execute("UPDATE audience_group SET revision=? WHERE id=?",
+                        (uuid.uuid4().hex, row["id"]))
         return private("", 204)
 
     @app.route("/api/viewer/groups/<slug>/videos/<any(work,meeting):kind>/<video>", methods=("PUT", "DELETE"))
@@ -325,7 +377,7 @@ def register(app, tx, viewer, mutation, listing, private, watch_preferences, pub
         with tx() as con:
             account = viewer(con)
             group = get_group(con, slug)
-            if group["owner"] != account["id"]:
+            if not can_moderate(con, group, account["id"]):
                 abort(404)
             if request.method == "DELETE":
                 con.execute("DELETE FROM audience_group_video WHERE group_id=? AND kind=? AND slug=?",
