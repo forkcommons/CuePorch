@@ -577,6 +577,60 @@ def create_app(root, database, operator, institution, simulation=None):
             abort(404)
         return private(profile)
 
+    def reconciliation_row(con, entry, current):
+        uid = entry["id"]
+        local = current.get(uid)
+        video = library_privacy.playback(local) if local else None
+        if library_privacy.blocked(con, uid):
+            media = "held"
+        elif video and (root / "objects" / video["sha256"]).is_file():
+            media = "playable"
+        else:
+            media = "missing"
+        catalog = catalog_candidate(con, entry, current) or {}
+        issues = ", ".join(issue["reason"] if "reason" in issue else f"HTTP {issue['http_status']}"
+                           for issue in entry.get("transfer_issues", []))
+        unavailable = ", ".join(f"{name}: HTTP {code}"
+                                for name, code in sorted(entry.get("unavailable_metadata", {}).items()))
+        values = (
+            entry.get("source_id"), uid, entry.get("title"), entry.get("source_privacy"),
+            entry.get("source_folder_path"), entry.get("disposition"), media,
+            catalog.get("state"), issues, unavailable,
+        )
+        return tuple(team_accounts.spreadsheet_cell(str(value or "")) for value in values)
+
+    @app.get("/api/migration/reconciliation.csv")
+    def migration_reconciliation_csv():
+        staff()
+        if not transfer_lock.acquire(blocking=False):
+            abort(409, "Wait for the current migration operation to finish.")
+        try:
+            if transfer_status["state"] != "transferred":
+                abort(409, "Transfer the Vimeo inventory privately first.")
+            try:
+                snapshot = transfer_snapshot("transferred")
+                entries = json.loads(snapshot.read_text(encoding="utf8"))["works"]
+            except (OSError, ValueError, KeyError, TypeError):
+                abort(409, "The saved transfer inventory is unavailable.")
+
+            buf = io.StringIO(newline="")
+            writer = csv.writer(buf)
+            writer.writerow([
+                "source_id", "work_id", "title", "source_visibility", "source_folder",
+                "transfer_result", "destination_media", "public_catalog", "media_issues",
+                "unavailable_source_metadata",
+            ])
+            with tx() as con:
+                current = {work["id"]: work for work in read_library_works()}
+                writer.writerows(reconciliation_row(con, entry, current) for entry in entries)
+            return private(Response(
+                buf.getvalue(),
+                mimetype="text/csv",
+                headers={"Content-Disposition": "attachment; filename=cueporch-vimeo-reconciliation.csv"},
+            ))
+        finally:
+            transfer_lock.release()
+
     @app.post("/api/migration/public-catalog")
     def migration_public_catalog():
         staff()

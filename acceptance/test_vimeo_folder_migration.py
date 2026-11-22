@@ -1,5 +1,6 @@
 """Verify the Vimeo folder transfer through the operator and Library screens."""
 
+import csv
 import json
 import secrets
 import unittest
@@ -159,6 +160,44 @@ class VimeoFolderMigration(unittest.TestCase):
         self.enterContext(service_worker(server))
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
+
+    def test_reconciliation_csv_export(self):
+        self.source.extra_inventory_count = 101
+        endpoint = "/api/migration/reconciliation.csv"
+        self.assertEqual(403, self.client.get(endpoint).status_code)
+        self.assertEqual(409, self.client.get(endpoint, headers=self.auth).status_code)
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=60000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=60000)
+            page.locator("#migrationNextPage").click()
+            expect(page.locator("#migrationPageNumber")).to_have_text("Page 2 of 2")
+
+            with page.expect_download() as event:
+                page.get_by_role("button", name="Download reconciliation CSV").click()
+            download = event.value
+            self.assertEqual("cueporch-vimeo-reconciliation.csv", download.suggested_filename)
+            with Path(download.path()).open(newline="", encoding="utf8") as handle:
+                reader = csv.DictReader(handle)
+                rows = list(reader)
+                self.assertFalse(any("url" in name or "token" in name for name in reader.fieldnames))
+
+        expected_ids = {"71", "72", "73", *(str(source_id) for source_id in range(1000, 1101))}
+        by_source_id = {row["source_id"]: row for row in rows}
+        self.assertEqual(104, len(rows))
+        self.assertEqual(expected_ids, set(by_source_id))
+        self.assertEqual("original recovered", by_source_id["71"]["transfer_result"])
+        self.assertEqual("playable", by_source_id["71"]["destination_media"])
+        self.assertEqual("ready", by_source_id["71"]["public_catalog"])
+        self.assertEqual("playback copy only", by_source_id["72"]["transfer_result"])
+        self.assertEqual("playable", by_source_id["72"]["destination_media"])
+        self.assertEqual("owner file needed", by_source_id["73"]["transfer_result"])
+        self.assertEqual("missing", by_source_id["73"]["destination_media"])
 
     def test_vimeo_folder_migration_public_catalog(self):
         self.source.catalog_fixture = True

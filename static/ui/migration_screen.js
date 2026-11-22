@@ -18,6 +18,7 @@ const liveEventList = document.querySelector("#liveEventInventoryList");
 const creatorProfile = document.querySelector("#migrationCreatorProfile");
 const cutover = document.querySelector("#migrationCutover");
 const exportMap = document.querySelector("#migrationExportMap");
+const exportReconciliation = document.querySelector("#migrationExportReconciliation");
 const cutoverStatus = document.querySelector("#migrationCutoverStatus");
 const catalogColumn = document.querySelector("#migrationCatalogColumn");
 const restoreCatalog = document.querySelector("#migrationRestoreCatalog");
@@ -375,6 +376,23 @@ restoreCatalog.onclick = async () => {
     finally {
         catalogBusy = false;
         updateRestoreCatalog();
+    }
+};
+exportReconciliation.onclick = async () => {
+    cutoverStatus.textContent = "Preparing reconciliation CSV…";
+    exportReconciliation.disabled = true;
+    try {
+        const response = await fetch("/api/migration/reconciliation.csv", { headers: headers() });
+        if (!response.ok)
+            throw new Error(`Could not download reconciliation CSV (${response.status}).`);
+        await saveEmbedMap(response, "cueporch-vimeo-reconciliation.csv");
+        cutoverStatus.textContent = "Reconciliation CSV downloaded.";
+    }
+    catch (error) {
+        cutoverStatus.textContent = error instanceof Error ? error.message : "Could not download reconciliation CSV.";
+    }
+    finally {
+        exportReconciliation.disabled = false;
     }
 };
 exportMap.onclick = async () => {
