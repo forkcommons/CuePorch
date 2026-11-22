@@ -58,6 +58,45 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_vimeo_chapters_survive_denied_repeat_transfer(self):
+        uid = work_id("station", "vimeo", "71")
+        endpoint = f"/api/library/work/{uid}/chapters"
+        source_path = "/videos/71/chapters"
+        HandlerClass = self.source.RequestHandlerClass
+        original = HandlerClass.do_GET
+
+        def empty(handler):
+            if urlsplit(handler.path).path == source_path:
+                body = b'{"data":[],"total":0,"paging":{"next":null}}'
+                handler.send_response(200)
+                handler.send_header("Content-Type", "application/json")
+                handler.send_header("Content-Length", str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+            else:
+                return original(handler)
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+
+            def transfer():
+                page.get_by_role("button", name="Preview transfer", exact=True).click()
+                expect(page.locator("#status")).to_have_text("inventoried", timeout=20000)
+                page.get_by_role("button", name="Transfer privately", exact=True).click()
+                expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+
+            transfer()
+            assert self.client.get(endpoint, headers=self.auth).json["chapters"] == [dict(title="Opening", timecode=0)]
+            self.denied.add(source_path)
+            transfer()
+            assert self.client.get(endpoint, headers=self.auth).json["chapters"] == [dict(title="Opening", timecode=0)]
+            self.denied.remove(source_path)
+            with patch.object(self.source.RequestHandlerClass, "do_GET", empty):
+                transfer()
+                staff = self.client.get(endpoint, headers=self.auth)
+                assert staff.json["chapters"] == []
+
     def test_vimeo_history_import_source_fixture_contract(self):
         from urllib.parse import parse_qs
 
