@@ -29,6 +29,10 @@ export function setupRegistration(call, download, credential, saved, registratio
     const showPreview = form.querySelector("#showRegistrationPreview");
     const presets = form.querySelector("[name=preset]");
     const attendeeAnalytics = form.querySelector("[name=attendance_analytics]");
+    const timing = form.querySelector('select[name="timing"]');
+    const timeSeconds = form.querySelector('input[name="time_seconds"]');
+    const registrationTime = form.querySelector("#registrationTime");
+    const enabledLabel = form.querySelector("[data-registration-enabled-label]");
     const field = (node, name) => node.querySelector(`[name="${name}"]`);
     const language = field(form, "translation_language");
     const translate = field(form, "translation_enabled");
@@ -143,6 +147,15 @@ export function setupRegistration(call, download, credential, saved, registratio
         renderTranslation();
     };
     fields.addEventListener("input", renderTranslation);
+    function updateTiming() {
+        if (!timing || !timeSeconds || !registrationTime || !enabledLabel)
+            return;
+        const during = timing.value === "during";
+        registrationTime.hidden = !during;
+        timeSeconds.required = during;
+        enabledLabel.textContent = timing.value === "before" ? "Require registration before playback" : "Show registration form";
+    }
+    timing?.addEventListener("change", updateTiming);
     function renderFields(settings) {
         const enabled = field(form, "enabled");
         enabled.checked = settings.enabled && !current.protected_public;
@@ -151,6 +164,11 @@ export function setupRegistration(call, download, credential, saved, registratio
         field(form, "collect_utm").checked = settings.collect_utm;
         if (attendeeAnalytics)
             attendeeAnalytics.checked = settings.attendance_analytics ?? false;
+        if (timing)
+            timing.value = settings.timing || "before";
+        if (timeSeconds)
+            timeSeconds.value = settings.time_seconds ? String(settings.time_seconds) : "";
+        updateTiming();
         for (const key of ["heading", "description", "privacy_url", "layout", "first_name", "last_name"]) {
             field(form, key).value = settings[key];
         }
@@ -247,6 +265,10 @@ export function setupRegistration(call, download, credential, saved, registratio
         return {
             enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
             ...(attendeeAnalytics ? { attendance_analytics: attendeeAnalytics.checked } : {}),
+            ...(timing && timeSeconds ? {
+                timing: timing.value,
+                time_seconds: timing.value === "during" ? timeSeconds.valueAsNumber : 0,
+            } : {}),
             heading: field(form, "heading").value, description: field(form, "description").value,
             privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
             last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: questions,

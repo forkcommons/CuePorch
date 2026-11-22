@@ -111,13 +111,27 @@ class RegistrationAppearance(unittest.TestCase):
                 expect(view.get_by_role("heading", name=heading)).to_be_visible()
                 gate = view.locator(".registration-gate")
                 expect(gate).to_have_attribute("data-alignment", "end")
-                self.assertEqual(["flex-end", "rgb(15, 49, 50)", "rgb(97, 37, 92)", "0.62"], gate.evaluate("""
+                appearance = gate.evaluate("""
                     node => {
                         const styles = getComputedStyle(node);
                         const overlay = getComputedStyle(node, "::before");
-                        return [styles.justifyContent, styles.backgroundColor, overlay.backgroundColor, overlay.opacity];
+                        const raw = styles.justifyContent;
+                        const justify = raw === "flow-end" ? "flex-end" : raw;
+                        const card = node.querySelector(".registration-card").getBoundingClientRect();
+                        const bounds = node.getBoundingClientRect();
+                        const padding = Number.parseFloat(styles.paddingRight);
+                        const border = Number.parseFloat(styles.borderRightWidth);
+                        const freeSpace = node.clientWidth - card.width - padding - Number.parseFloat(styles.paddingLeft);
+                        return {
+                            style: [justify, styles.backgroundColor, overlay.backgroundColor, overlay.opacity],
+                            trailingGap: bounds.right - card.right - border,
+                            padding, freeSpace,
+                        };
                     }
-                """))
+                """)
+                self.assertEqual(["flex-end", "rgb(15, 49, 50)", "rgb(97, 37, 92)", "0.62"], appearance["style"])
+                if appearance["freeSpace"] > 1:
+                    self.assertAlmostEqual(appearance["padding"], appearance["trailingGap"], delta=1)
                 self.assertEqual(41, view.get_by_role("img", name="Organizer logo").evaluate(
                     "async node => {await node.decode();return node.naturalWidth}"))
                 self.assertEqual(80, gate.locator(".registration-background").evaluate(

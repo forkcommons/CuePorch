@@ -34,6 +34,8 @@ interface Definition {
   last_name: string;
   collect_utm: boolean;
   attendance_analytics?: boolean;
+  timing?: "before" | "during" | "after";
+  time_seconds?: number;
   appearance: Appearance;
   fields: Field[];
   translations: Record<string, Translation>;
@@ -78,6 +80,10 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   const showPreview = form.querySelector<HTMLButtonElement>("#showRegistrationPreview")!;
   const presets = form.querySelector<HTMLSelectElement>("[name=preset]")!;
   const attendeeAnalytics = form.querySelector<HTMLInputElement>("[name=attendance_analytics]");
+  const timing = form.querySelector<HTMLSelectElement>('select[name="timing"]');
+  const timeSeconds = form.querySelector<HTMLInputElement>('input[name="time_seconds"]');
+  const registrationTime = form.querySelector<HTMLElement>("#registrationTime");
+  const enabledLabel = form.querySelector<HTMLElement>("[data-registration-enabled-label]");
   const field = <T extends HTMLElement = HTMLInputElement>(node: Element, name: string) =>
     node.querySelector<T>(`[name="${name}"]`)!;
   const language = field<HTMLSelectElement>(form, "translation_language");
@@ -197,6 +203,15 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
   };
   fields.addEventListener("input", renderTranslation);
 
+  function updateTiming() {
+    if (!timing || !timeSeconds || !registrationTime || !enabledLabel) return;
+    const during = timing.value === "during";
+    registrationTime.hidden = !during;
+    timeSeconds.required = during;
+    enabledLabel.textContent = timing.value === "before" ? "Require registration before playback" : "Show registration form";
+  }
+  timing?.addEventListener("change", updateTiming);
+
   function renderFields(settings: Definition) {
     const enabled = field(form, "enabled");
     enabled.checked = settings.enabled && !current.protected_public;
@@ -204,6 +219,9 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     protectedNotice.hidden = !current.protected_public;
     field(form, "collect_utm").checked = settings.collect_utm;
     if (attendeeAnalytics) attendeeAnalytics.checked = settings.attendance_analytics ?? false;
+    if (timing) timing.value = settings.timing || "before";
+    if (timeSeconds) timeSeconds.value = settings.time_seconds ? String(settings.time_seconds) : "";
+    updateTiming();
     for (const key of ["heading", "description", "privacy_url", "layout", "first_name", "last_name"] as const) {
       field(form, key).value = settings[key];
     }
@@ -296,6 +314,10 @@ export function setupRegistration(call: VideoRequest, download: () => Promise<vo
     return {
       enabled: field(form, "enabled").checked, collect_utm: field(form, "collect_utm").checked,
       ...(attendeeAnalytics ? {attendance_analytics: attendeeAnalytics.checked} : {}),
+      ...(timing && timeSeconds ? {
+        timing: timing.value as Definition["timing"],
+        time_seconds: timing.value === "during" ? timeSeconds.valueAsNumber : 0,
+      } : {}),
       heading: field(form, "heading").value, description: field(form, "description").value,
       privacy_url: field(form, "privacy_url").value, first_name: field(form, "first_name").value,
       last_name: field(form, "last_name").value, layout: field(form, "layout").value, fields: questions,

@@ -23,6 +23,7 @@
     {% endif %}
     {% if registration_error %}<p role="alert">{{ registration_error }}</p>{% endif %}
     <input type="hidden" name="enrollment" value="{{ enrollment }}">
+    {% if timed_registration == 'during' %}<input type="hidden" name="resume_at" value="{{ start }}">{% endif %}
     {% if event_context %}<input type="hidden" name="event_context" value="{{ event_context }}">{% endif %}
     {% if unlock_token %}<input type="hidden" name="frame" value="{{ unlock_token }}">{% endif %}
     {% if event_access %}<input type="hidden" name="event_access" value="{{ event_access }}">{% endif %}

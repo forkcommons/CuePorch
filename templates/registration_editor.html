@@ -2,7 +2,15 @@
       <h2>Registration</h2>
       <p id="registrationProtected" hidden>This video is a designated public record and remains open for viewing.</p>
       <label>Saved registration preset <select name="preset"><option value="">Choose a preset</option></select></label>
-      <label><input type="checkbox" name="enabled"> Require registration before playback</label>
+      <label><input type="checkbox" name="enabled"> <span data-registration-enabled-label>Require registration before playback</span></label>
+      {% if video_registration_editor %}
+      <label>Timing <select name="timing">
+        <option value="before">Before playback</option>
+        <option value="during">During playback</option>
+        <option value="after">After playback</option>
+      </select></label>
+      <label id="registrationTime" hidden>Time (seconds) <input type="number" name="time_seconds" min="1" max="86400" step="1"></label>
+      {% endif %}
       <label>Form heading <input name="heading" maxlength="80" required></label>
       <label>Form description <textarea name="description" maxlength="1000" rows="3"></textarea></label>
       <label>Privacy policy URL <input type="url" name="privacy_url" maxlength="2048"></label>

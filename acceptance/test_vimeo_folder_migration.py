@@ -161,6 +161,78 @@ class VimeoFolderMigration(unittest.TestCase):
         self.base = f"http://127.0.0.1:{server.server_port}"
         self.client = app.test_client()
 
+    def test_timed_video_registration(self):
+        uid = work_id("station", "vimeo", "71")
+        endpoint = f"/api/library/work/{uid}/registration"
+        watch = f"/watch/work/{uid}"
+        email = "viewer@example.test"
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+            published = self.client.post("/api/migration/public-catalog", headers=self.auth, json=dict(works=[uid]))
+            self.assertEqual(200, published.status_code)
+
+            page.goto(f"{self.base}/operator/videos/{uid}/interactivity")
+            editor = page.locator("#registrationEditor")
+            editor.locator('input[name="enabled"]').check()
+            timing = editor.locator('select[name="timing"]')
+            timing.select_option("during")
+            editor.locator('input[name="time_seconds"]').fill("1")
+            editor.get_by_role("button", name="Save registration").click()
+            expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+
+            viewer = browser.new_page()
+            viewer.goto(self.base + watch)
+            video = viewer.locator("video")
+            prompt = viewer.locator('[data-timed-registration="during"]')
+            expect(prompt).to_be_hidden()
+            expect(video).to_be_visible()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            expect(prompt).to_be_visible()
+            self.assertTrue(video.evaluate("video => video.paused && video.videoWidth > 0 && video.currentTime >= 1"))
+            prompt.locator('input[name="email"]').fill(email)
+            prompt.locator('button[type="submit"]:not([formnovalidate])').click()
+            expect(prompt).to_have_count(0)
+            media_path = video.get_attribute("src").split("#", 1)[0]
+            self.assertIn("#t=", video.get_attribute("src"))
+            registrants, = self.client.get(endpoint, headers=self.auth).get_json()["registrants"]
+            self.assertEqual(email, registrants["email"])
+
+            timing.select_option("after")
+            editor.get_by_role("button", name="Save registration").click()
+            expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+            self.assertEqual(404, self.client.get(media_path).status_code)
+            viewer.goto(self.base + watch)
+            prompt = viewer.locator('[data-timed-registration="after"]')
+            expect(prompt).to_be_hidden()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            expect(prompt).to_be_visible()
+            self.assertTrue(video.evaluate("video => video.ended"))
+            prompt.get_by_role("button", name="Dismiss registration").click()
+            expect(prompt).to_be_hidden()
+            expect(video).to_be_visible()
+
+            embed_page = browser.new_page()
+            embed_page.goto(self.base + "/watch")
+            embed_page.set_content(f'<iframe title="Example embed" src="{self.base}/embed/work/{uid}?loop=1"></iframe>')
+            frame = embed_page.frame_locator("iframe")
+            player = frame.locator("video")
+            embedded_prompt = frame.locator('[data-timed-registration="after"]')
+            expect(player).to_be_visible()
+            expect(embedded_prompt).to_be_hidden()
+            player.evaluate("async video => { video.muted = true; await video.play(); }")
+            expect(embedded_prompt).to_be_visible()
+            self.assertTrue(player.evaluate("video => video.ended"))
+            embedded_prompt.get_by_role("button", name="Dismiss registration").click()
+            expect(embedded_prompt).to_be_hidden()
+            self.assertTrue(player.evaluate("video => video.loop"))
+
     def test_showcase_style_migration_roundtrip(self):
         self.source.showcase_logo_fixture = "valid"
         self.source.showcase_style_fixture = dict(
