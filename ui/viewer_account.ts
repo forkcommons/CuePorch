@@ -2,7 +2,7 @@ import {viewerRequest} from "./audience_api.js";
 import {requestSignInCode, resetSignInCode, signInValues} from "./sign_in_factor.js";
 
 interface Account {name: string; email: string; pronouns: string;}
-interface ViewingPreferences {mode: "all" | "hide_mature" | "custom"; excluded: string[];}
+interface ViewingPreferences {mode: "all" | "hide_mature" | "custom"; excluded: string[]; autoplay?: boolean;}
 
 const top = document.querySelector<HTMLElement>("#viewerAccount")!;
 const status = document.querySelector<HTMLElement>("#viewerAccountStatus")!;
@@ -16,7 +16,8 @@ const remove = document.querySelector<HTMLFormElement>("#deleteViewerAccount")!;
 const signOut = document.querySelector<HTMLButtonElement>("#viewerSignOut")!;
 const preferenceSection = document.querySelector<HTMLElement>("#viewerPreferences")!;
 const preferenceForm = preferenceSection.querySelector<HTMLFormElement>("form")!;
-const preferenceMode = preferenceForm.querySelector<HTMLSelectElement>("select")!;
+const preferenceMode = preferenceForm.querySelector<HTMLSelectElement>("select[name=mode]")!;
+const preferenceAutoplay = preferenceForm.querySelector<HTMLSelectElement>("select[name=autoplay]")!;
 const preferenceChoices = preferenceForm.querySelector<HTMLFieldSetElement>("fieldset")!;
 let busy = false;
 
@@ -59,6 +60,7 @@ const values = (form: HTMLFormElement) => Object.fromEntries(new FormData(form))
 
 function showPreferences(preferences: ViewingPreferences) {
   preferenceMode.value = preferences.mode;
+  preferenceAutoplay.value = preferences.autoplay === true ? "on" : preferences.autoplay === false ? "off" : "default";
   for (const choice of preferenceChoices.querySelectorAll<HTMLInputElement>("input")) {
     choice.checked = preferences.excluded.includes(choice.value);
   }
@@ -82,6 +84,7 @@ preferenceForm.onsubmit = event => {
   void perform(async () => {
     const response = await viewerRequest("preferences", "PUT", {
       mode: preferenceMode.value, excluded: new FormData(preferenceForm).getAll("excluded"),
+      autoplay: preferenceAutoplay.value === "default" ? null : preferenceAutoplay.value === "on",
     });
     if (!response.ok) return failure(response, {...messages, 401: "Sign in to save viewing preferences."});
     showPreferences(await response.json());

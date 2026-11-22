@@ -62,6 +62,14 @@
             <label><input type="checkbox" name="excluded" value="{{ value }}"> {{ text }}</label>
             {% endfor %}
           </fieldset>
+          <label>
+            Autoplay
+            <select name="autoplay">
+              <option value="default">Use video setting</option>
+              <option value="on">Play automatically</option>
+              <option value="off">Wait for me</option>
+            </select>
+          </label>
           <button type="submit">Save viewing preferences</button>
         </form>
       </section>

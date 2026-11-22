@@ -126,8 +126,51 @@ def check_audience_accounts(browser, base, staff, sample):
             save.click()
             expect(first.locator("#viewerAccountStatus")).to_have_text("Viewing preferences saved.")
 
-        saved_mode("hide_mature")
         preferences_url = base + "/api/viewer/preferences"
+        autoplay = preferences.get_by_label("Autoplay")
+
+        def save_autoplay(value):
+            autoplay.select_option(value)
+            with first.expect_response(lambda response: response.url == preferences_url
+                                       and response.request.method == "PUT") as saved:
+                save.click()
+            assert saved.value.ok
+            expect(first.locator("#viewerAccountStatus")).to_have_text("Viewing preferences saved.")
+
+        save_autoplay("on")
+        other_session.goto(base + "/account")
+        expect(other_session.locator("#viewerPreferences").get_by_label("Autoplay")).to_have_value("on")
+        assert returning.request.get(preferences_url).json()["autoplay"] is True
+        other_session.goto(base + path)
+        other_session.wait_for_function(
+            """() => {
+                const v = document.querySelector('video');
+                return v && v.muted && v.videoWidth === 256 && v.currentTime > 0.1;
+            }"""
+        )
+        other_session.evaluate(
+            """src => {
+                const frame = document.createElement('iframe');
+                frame.id = 'autoplay-embed';
+                frame.src = src;
+                document.body.appendChild(frame);
+            }""",
+            "/embed/work/" + video,
+        )
+        player = other_session.frame_locator("#autoplay-embed").locator("video")
+        expect(player).to_be_visible()
+        assert player.get_attribute("autoplay") is None
+        save_autoplay("off")
+        legacy = returning.request.put(preferences_url, headers=MUTATION, data={"mode": "all"})
+        assert legacy.ok and legacy.json()["autoplay"] is False
+        invalid = returning.request.put(preferences_url, headers=MUTATION, data={"mode": "all", "autoplay": "yes"})
+        assert invalid.status == 400
+        other_session.goto(base + path)
+        assert other_session.locator("video").evaluate("v => !v.autoplay && v.paused && v.currentTime === 0")
+        save_autoplay("default")
+        assert "autoplay" not in returning.request.get(preferences_url).json()
+
+        saved_mode("hide_mature")
         search_url = base + "/watch?q=Independent+Gallery+Session"
         assert returning.request.get(preferences_url).json() == {"mode": "hide_mature", "excluded": []}
         assert b.request.get(preferences_url).json()["mode"] == "all"

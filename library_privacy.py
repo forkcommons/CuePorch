@@ -528,6 +528,12 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             if panorama != "flat" and appearance is None:
                 appearance = library_appearance.surface_defaults(surface)
             options = library_embed.options(request.args if embed else {}, appearance)
+            if can_watch and not embed:
+                autoplay = viewing_preferences(con).get("autoplay")
+                if autoplay is not None:
+                    options["autoplay"] = autoplay
+                    if autoplay is True:
+                        options["muted"] = True
             context = library_analytics.request_context(analytics_proxies) if (
                 can_watch and not options["dnt"] and library_analytics.permitted()
             ) else None
