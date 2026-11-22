@@ -58,12 +58,21 @@ class VimeoFolderInventory(unittest.TestCase):
         result = event_schedule_draft(source)
         self.assertEqual(("2030-01-07T10:00", "2030-01-07T11:00", "none"),
                          (result["start"], result["end"], result["repeat"]))
-        for rrule in ("FREQ=YEARLY", "FREQ=WEEKLY;BYDAY=TU", "FREQ=DAILY;UNTIL=20300201T180000Z"):
+        for rrule in ("FREQ=YEARLY", "FREQ=WEEKLY;BYDAY=TU"):
             with self.assertRaises(ValueError):
                 event_schedule_draft(dict(source, rrule=rrule))
         with self.assertRaises(ValueError):
             event_schedule_draft(dict(source, start_time="2030-11-03T01:30:00-07:00",
                                       end_time="2030-11-03T03:00:00-07:00"))
+
+        transition = dict(start_time="2030-03-09T10:00:00-07:00", end_time="2030-03-09T11:00:00-07:00",
+                          time_zone="America/Denver")
+        for cutoff, last_date in (("20300311T155959Z", "2030-03-10"), ("20300311T160000Z", "2030-03-11")):
+            result = event_schedule_draft(dict(transition, rrule=f"FREQ=DAILY;UNTIL={cutoff}"))
+            self.assertEqual(last_date, result["until"])
+        for malformed in ("FREQ=DAILY;COUNT=3;UNTIL=20300311T160000Z", "FREQ=DAILY;UNTIL=20300311T160000"):
+            with self.assertRaises(ValueError):
+                event_schedule_draft(dict(transition, rrule=malformed))
 
     def test_denied_folder_list_uses_complete_video_ancestry(self):
         class Denied:
