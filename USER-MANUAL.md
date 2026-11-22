@@ -308,6 +308,8 @@ The **Date** report lists periods in UTC order and exports the same order to CSV
 
 Open the content selector and browse a Library folder and its subfolders to see the item count. Use **Select folder videos** to include the chosen folder or use the existing search to choose individual videos and events. Deselect a folder without dropping selections outside it. Choose **Apply filters**. The selection limit is 10,000 items.
 
+In the **Video**, **Region**, **Source URL**, and **Device** reports, use **Compare** in the breakdown table to plot the selected metric for up to 10 rows. The table beneath the chart shows the exact values by UTC period and uses a dash for missing values. Toggle **Report total** to show or hide the aggregate line. The totals and CSV download follow the active filters. Applying new filters clears the comparison selection.
+
 In the **Video** report, **Top by views** ranks up to five videos, regions, device types and referring sites under your current filters. Select a video title to open its analytics. The rankings appear when the selection has playback views.
 
 **Downloads** counts authorized viewer download requests that begin at the start of the file on CuePorch's watch pages and embeds. It includes a full-file request or a range beginning at byte zero. The report records requests, including retries from the start, and cannot confirm how much a visitor saved. Ordinary playback, later ranges, file checks and operator downloads do not count. Viewer analytics opt-outs also apply to downloads.
