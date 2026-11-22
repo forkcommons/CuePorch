@@ -13,6 +13,9 @@ const links = form.elements.namedItem("links");
 const visible = form.elements.namedItem("visible");
 const cover = form.elements.namedItem("cover");
 const save = form.querySelector("button[type=submit]");
+const blockList = document.querySelector("#creatorBlockList");
+const previousBlocks = document.querySelector("#creatorBlocksPrevious");
+const nextBlocks = document.querySelector("#creatorBlocksNext");
 let draft;
 function control(label, title, disabled, action) {
     const button = document.createElement("button");
@@ -63,6 +66,39 @@ async function task(run) {
         status.textContent = error instanceof Error ? error.message : String(error);
     }
 }
+async function loadBlocks(page = 1) {
+    const response = await checked(await teamRequest(`profile/blocks?page=${page}`));
+    const { items, more } = await response.json();
+    if (!items.length && page > 1)
+        return loadBlocks(page - 1);
+    blockList.replaceChildren();
+    if (!items.length) {
+        const empty = document.createElement("li");
+        empty.textContent = "No viewers to block.";
+        blockList.append(empty);
+    }
+    for (const item of items) {
+        const row = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = `${item.blocked ? "Unblock" : "Block"} ${item.name}`;
+        button.onclick = () => {
+            button.disabled = true;
+            void task(async () => {
+                const path = `profile/blocks/${encodeURIComponent(item.id)}`;
+                await checked(await teamRequest(path, item.blocked ? "DELETE" : "PUT"));
+                await loadBlocks(page);
+                status.textContent = item.blocked ? "Viewer unblocked." : "Viewer blocked.";
+            }).finally(() => { button.disabled = false; });
+        };
+        row.append(button);
+        blockList.append(row);
+    }
+    previousBlocks.hidden = page <= 1;
+    nextBlocks.hidden = !more;
+    previousBlocks.onclick = () => void task(() => loadBlocks(page - 1));
+    nextBlocks.onclick = () => void task(() => loadBlocks(page + 1));
+}
 add.onclick = () => {
     if (!available.value)
         return;
@@ -104,6 +140,7 @@ void task(async () => {
         }
     }
     show(settings);
+    await loadBlocks();
     if (notice)
         status.textContent = notice;
 });

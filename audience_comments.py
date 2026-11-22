@@ -7,6 +7,7 @@ from flask import abort, request
 
 from audience_library import COLLECTION_ID, VIDEO_KEY
 import community_analytics
+import creator_blocks
 
 
 STEP = "public_comments"
@@ -170,6 +171,8 @@ def register(app, tx, viewer, mutation, listing, private, limit, action, staff):
             account = viewer(con, required=post)
             author = account["id"] if account else None
             if post:
+                if creator_blocks.video_blocked(con, author, kind, slug):
+                    abort(403, "You cannot comment on this video.")
                 limit(con, "comment", author)
                 uid, now = uuid.uuid4().hex, time.time()
                 approval = APPROVAL_PREFIX + uid

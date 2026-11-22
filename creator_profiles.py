@@ -7,7 +7,9 @@ import uuid
 
 from flask import abort, make_response, render_template, request, url_for
 
+import audience_comments
 import content_rating
+import creator_blocks
 import library_registration
 import library_showcases
 import viewer_locale
@@ -40,7 +42,7 @@ CREATE TABLE IF NOT EXISTS audience_creator_follow_likes(
 CREATE TABLE IF NOT EXISTS audience_category_follow(
  account TEXT NOT NULL, key TEXT NOT NULL, label TEXT NOT NULL,
  PRIMARY KEY(account,key));
-"""
+""" + creator_blocks.SCHEMA
 HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])")
 VISIBLE = "m.removed IS NULL AND m.role IN ('owner','admin','contributor','contributor_plus') AND p.visible=1"
 
@@ -113,6 +115,8 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                 abort(404)
             member = profile["member"]
             if request.method == "PUT":
+                if creator_blocks.blocked(con, member, account):
+                    abort(403, "You cannot follow this creator.")
                 con.execute("INSERT OR IGNORE INTO audience_creator_follow VALUES(?,?)", (account, member))
             following = con.execute("SELECT 1 FROM audience_creator_follow WHERE account=? AND member=?",
                                     (account, member)).fetchone() is not None
@@ -404,6 +408,48 @@ def register(app, tx, origin, member, mutation, listing, entry_payload, read_wor
                     (uid, handle, name, bio, json.dumps(links), visible, cover, json.dumps(featured), uuid.uuid4().hex))
                 note(con, "team:" + uid, "creator_profile_saved", uid, "public" if visible else "hidden")
             return private(draft(con, row, works))
+
+    @app.get("/api/team/profile/blocks")
+    def creator_viewer_blocks():
+        secure = secure_site(origin)
+        same_origin(secure)
+        page = request.args.get("page", 1, type=int)
+        if not 1 <= page <= 100_000_000:
+            abort(400, "Choose a valid page.")
+        with tx() as con:
+            uid = creator(con, secure)["id"]
+            return private(creator_blocks.candidates(con, uid, page))
+
+    @app.route("/api/team/profile/blocks/<account>", methods=("PUT", "DELETE"))
+    def creator_viewer_block(account):
+        if not re.fullmatch(r"[0-9a-f]{32}", account):
+            abort(404)
+        secure = secure_site(origin)
+        mutation(secure)
+        with tx() as con:
+            uid = creator(con, secure)["id"]
+            actor = "team:" + uid
+            if request.method == "DELETE":
+                changed = con.execute("DELETE FROM creator_viewer_block WHERE member=? AND account=?", (uid, account))
+                if changed.rowcount:
+                    note(con, actor, "creator_unblocked", account, "")
+                return private(dict(blocked=False))
+            if not creator_blocks.eligible(con, uid, account):
+                abort(404)
+            changed = con.execute("INSERT OR IGNORE INTO creator_viewer_block VALUES(?,?,?)", (uid, account, time.time()))
+            if changed.rowcount:
+                con.execute("DELETE FROM audience_creator_follow WHERE account=? AND member=?", (account, uid))
+                con.execute("DELETE FROM audience_creator_follow_activity WHERE account=? AND member=?", (account, uid))
+                con.execute("DELETE FROM audience_creator_follow_likes WHERE account=? AND member=?", (account, uid))
+                con.execute("""DELETE FROM audience_like WHERE account=? AND kind='work'
+                    AND slug IN (SELECT work FROM team_owned_work WHERE member=?)""", (account, uid))
+                comments = con.execute("""SELECT c.* FROM audience_comment c
+                    JOIN team_owned_work o ON o.work=c.slug
+                    WHERE o.member=? AND c.account=? AND c.kind='work'""", (uid, account)).fetchall()
+                for comment in comments:
+                    audience_comments.remove(con, comment, actor)
+                note(con, actor, "creator_blocked", account, "")
+            return private(dict(blocked=True))
 
     @app.get("/creators/<handle>")
     def creator_page(handle):
