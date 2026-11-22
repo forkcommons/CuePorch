@@ -96,7 +96,7 @@ def register(app, tx, staff, read_works, root, remember_work, permits, action, s
         return work
 
     library_thumbnail.register(app, tx, staff, get_work, root)
-    library_appearance.register(app, tx, staff, get_work, read_works, title_for)
+    library_appearance.register(app, tx, staff, get_work, read_works, title_for, root)
     library_details.register(app, tx, authorize_editor, root, get_work, title_for, save_title)
     start_file_links = library_file_links.register(app, tx, root, get_work, permits, operator_name,
                                                    authorize_editor, enforce_sharing)

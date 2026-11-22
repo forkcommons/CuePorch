@@ -105,7 +105,7 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     return self.send_error(400)
                 content_type = "application/x-subrip"
                 data = b"1\n00:00:00,100 --> 00:00:02,500\nEarlier cut English\n\n"
-            elif path == "/media/chapter.png":
+            elif path in ("/media/chapter.png", "/media/vimeo-logo.png"):
                 if self.headers.get("Authorization"):
                     return self.send_error(400)
                 import base64

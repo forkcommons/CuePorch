@@ -219,7 +219,11 @@ def merge_collection(source, destination):
                 for edit in work.get("language_edits", {}).values()
                 for item in edit.get("tracks", [])
             ]
-            for item in work["files"] + history_files + audio_files + caption_files:
+            copy_items = work["files"] + history_files + audio_files + caption_files
+            source_embed_logo = work.get("source_embed_logo")
+            if isinstance(source_embed_logo, dict):
+                copy_items.append(source_embed_logo)
+            for item in copy_items:
                 digest = item["sha256"]
                 target = destination / "objects" / digest
                 if target.exists() and checksum(target) == digest:
@@ -237,7 +241,7 @@ def merge_collection(source, destination):
                     temporary.unlink(missing_ok=True)
             prior = works.get(work["id"])
             if prior and prior.get("provider") == work.get("provider") == "vimeo":
-                for field in ("source_embed_appearance", "source_embed_ending", "source_watch_appearance"):
+                for field in ("source_embed_appearance", "source_embed_ending", "source_watch_appearance", "source_embed_logo"):
                     if field not in work and field in prior:
                         work[field] = prior[field]
             source_incomplete = work.get("transfer_issues") or work.get("disposition") == "owner file needed"

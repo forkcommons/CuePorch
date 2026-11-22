@@ -1,11 +1,13 @@
 """Stored watch page and embed appearance for archive-delivered videos."""
 
 import base64
+import hashlib
 import json
 import re
 
 from flask import abort, request
 
+from library_thumbnail import thumbnail_type
 from library_trash import hidden
 
 SCHEMA = """
@@ -43,12 +45,26 @@ def read_settings(con, uid, surface):
 
 
 def imported_settings(work, surface):
-    field = {"watch": "source_watch_appearance", "embed": "source_embed_appearance"}.get(surface)
-    appearance = work.get(field) if field else None
-    if (work.get("provider") != "vimeo"
-            or not isinstance(appearance, dict) or not appearance):
+    if work.get("provider") != "vimeo":
         return None
-    return surface_defaults(surface) | appearance
+    mapping = {
+        "watch": "source_watch_appearance",
+        "embed": "source_embed_appearance",
+    }
+    field = mapping.get(surface)
+    if field is None:
+        return None
+    raw = work.get(field)
+    appearance = dict(raw) if isinstance(raw, dict) else {}
+    if surface == "embed":
+        logo = work.get("source_embed_logo")
+        if isinstance(logo, dict):
+            digest = logo.get("sha256")
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                appearance = {**appearance, "logo": digest}
+    if not appearance:
+        return None
+    return {**surface_defaults(surface), **appearance}
 
 
 def resolve_settings(con, work, surface):
@@ -58,14 +74,57 @@ def resolve_settings(con, work, surface):
     return imported_settings(work, surface)
 
 
-def brand_image(con, digest):
+def source_logo_blob(root, work, surface, digest):
+    if (
+        root is None
+        or not isinstance(work, dict)
+        or work.get("provider") != "vimeo"
+        or surface != "embed"
+    ):
+        return None
+    descriptor = work.get("source_embed_logo")
+    if not isinstance(descriptor, dict):
+        return None
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    if (
+        descriptor.get("sha256") != digest
+        or type(descriptor.get("bytes")) is not int
+    ):
+        return None
+    size = descriptor["bytes"]
+    if size < 1 or size > 4 * 1024 * 1024:
+        return None
+    path = root / "objects" / digest
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(size + 1)
+        mime = thumbnail_type(path)
+    except OSError:
+        return None
+    if not mime:
+        return None
+    if (
+        len(data) != size
+        or hashlib.sha256(data).hexdigest() != digest
+    ):
+        return None
+    return mime, data
+
+
+def brand_image(con, digest, *, root=None, work=None, surface=None):
     if not digest:
         return None
     row = con.execute("SELECT mime,content FROM review_logo WHERE digest=?", (digest,)).fetchone()
-    if row is None:
-        return None
-    encoded = base64.b64encode(row["content"]).decode("ascii")
-    return f"data:{row['mime']};base64,{encoded}"
+    if row is not None:
+        mime, content = row["mime"], row["content"]
+    else:
+        blob = source_logo_blob(root, work, surface, digest)
+        if blob is None:
+            return None
+        mime, content = blob
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 def validate(con, body, surface):
@@ -103,7 +162,7 @@ def store(con, uid, surface, values):
     )
 
 
-def register(app, tx, staff, get_work, read_works, title_for):
+def register(app, tx, staff, get_work, read_works, title_for, root):
     @app.route("/api/library/work/<uid>/appearance/<surface>", methods=["GET", "PUT", "DELETE"])
     def video_appearance(uid, surface):
         staff()
@@ -117,6 +176,10 @@ def register(app, tx, staff, get_work, read_works, title_for):
                 con.execute("DELETE FROM video_appearance WHERE work=? AND surface=?", (uid, surface))
             if request.method == "PUT":
                 body = request.get_json()
+                if isinstance(body, dict) and body.get("logo"):
+                    blob = source_logo_blob(root, work, surface, body.get("logo"))
+                    if blob:
+                        con.execute("INSERT OR IGNORE INTO review_logo(digest,mime,content) VALUES(?,?,?)", (body["logo"], *blob))
                 values = validate(con, body, surface)
                 target_all = body.get("apply_page_to_library", False)
                 if type(target_all) is not bool or (target_all and surface != "watch"):
@@ -148,7 +211,7 @@ def register(app, tx, staff, get_work, read_works, title_for):
             }
             settings = current or imported_settings(work, surface) or surface_defaults(surface)
             logos = {values["logo"] for values in [settings, *presets.values()] if values["logo"]}
-            images = {digest: brand_image(con, digest) for digest in logos}
+            images = {digest: brand_image(con, digest, root=root, work=work, surface=surface) for digest in logos}
             title = title_for(con, work)
         return dict(title=title, settings=settings, is_default=current is None,
                     presets=[dict(name=name, settings=values) for name, values in presets.items()],

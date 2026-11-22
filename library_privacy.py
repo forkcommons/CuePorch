@@ -549,7 +549,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             questions = question_session(con, work, token, surface) if token else None
             title = "Protected video" if locked else title_for(con, work)
             creator = creator_for_work(con, uid) if can_watch and mode == "public" and not embed else None
-            logo = library_appearance.brand_image(con, appearance["logo"]) if appearance else None
+            logo = library_appearance.brand_image(con, appearance["logo"], root=root, work=work, surface=surface) if appearance else None
             chapters = library_interactivity.readable_chapters(work) if can_watch and (
                 appearance is None or (appearance["chapters"] and appearance["allow_seek"])
             ) else []

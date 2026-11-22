@@ -137,6 +137,13 @@ def verify(root):
         files = list(work["files"])
         for prior in work.get("versions_history", []):
             files.extend(prior["files"])
+        source_embed_logo = work.get("source_embed_logo")
+        if source_embed_logo is not None:
+            if not isinstance(source_embed_logo, dict):
+                raise ValueError("Invalid source_embed_logo")
+            if "sha256" not in source_embed_logo or "bytes" not in source_embed_logo:
+                raise ValueError("Invalid source_embed_logo descriptor")
+            files.append(source_embed_logo)
         for version, edit in work.get("language_edits", {}).items():
             if not re.fullmatch("[0-9a-f]{64}", version):
                 raise ValueError("Invalid subtitle version")
