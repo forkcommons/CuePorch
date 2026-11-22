@@ -22,12 +22,13 @@
 <template id="groupPlaybackSettings">
   <section class="group-playback" aria-labelledby="group-playback-title">
     <h2 id="group-playback-title">Group playback</h2>
-    <p>Give members of a specific group access to this video without asking for its password.</p>
+    <p>Choose a group whose viewers can play this video without entering its password.</p>
     <p class="group-playback-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <form class="group-playback-form" aria-label="Group playback access">
       <label>Group slug
         <input name="group" type="text" required maxlength="64" autocomplete="off" spellcheck="false" />
       </label>
+      <label><input type="checkbox" name="public_group"> Allow anyone in this public group to play the video</label>
       <button type="submit">Add access</button>
     </form>
     <ul class="group-playback-list" aria-label="Group playback grants"></ul>

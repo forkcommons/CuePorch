@@ -1,6 +1,6 @@
 export type GrantState = { slug: string; revision: string; state: string };
 export type State = { privacy_revision: string | null; can_grant: boolean; grants: GrantState[] };
-export type GrantRequest = { group: string; allowed: boolean; privacy_revision: string | null; grant_revision: string | null };
+export type GrantRequest = { group: string; allowed: boolean; privacy_revision: string | null; grant_revision: string | null; public_group?: boolean };
 
 const label = (s: string) =>
   s === 'waiting' ? 'Waiting for publication approval'
@@ -19,6 +19,7 @@ export async function groupPlayback(
   const status = root.querySelector<HTMLElement>('[role="status"]')!;
   const form = root.querySelector<HTMLFormElement>('form')!;
   const slug = form.querySelector<HTMLInputElement>('input[name="group"]')!;
+  const publicGroup = form.querySelector<HTMLInputElement>('input[name="public_group"]')!;
   const add = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
   const list = root.querySelector<HTMLUListElement>('ul')!;
   let state: State | null = null;
@@ -64,8 +65,10 @@ export async function groupPlayback(
       if (!state?.can_grant) return;
       const current = state.grants.find(grant => grant.slug === group);
       render(await save({ group, allowed: true,
-        privacy_revision: state.privacy_revision, grant_revision: current?.revision ?? null }));
+        privacy_revision: state.privacy_revision, grant_revision: current?.revision ?? null,
+        public_group: publicGroup.checked }));
       slug.value = '';
+      publicGroup.checked = false;
       say('');
     } catch (e) { fail('Could not add access', e); add.disabled = slug.disabled = !state?.can_grant; }
   });

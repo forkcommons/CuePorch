@@ -10,6 +10,7 @@ export async function groupPlayback(container, read, save) {
     const status = root.querySelector('[role="status"]');
     const form = root.querySelector('form');
     const slug = form.querySelector('input[name="group"]');
+    const publicGroup = form.querySelector('input[name="public_group"]');
     const add = form.querySelector('button[type="submit"]');
     const list = root.querySelector('ul');
     let state = null;
@@ -63,8 +64,10 @@ export async function groupPlayback(container, read, save) {
                 return;
             const current = state.grants.find(grant => grant.slug === group);
             render(await save({ group, allowed: true,
-                privacy_revision: state.privacy_revision, grant_revision: current?.revision ?? null }));
+                privacy_revision: state.privacy_revision, grant_revision: current?.revision ?? null,
+                public_group: publicGroup.checked }));
             slug.value = '';
+            publicGroup.checked = false;
             say('');
         }
         catch (e) {
