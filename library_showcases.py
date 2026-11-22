@@ -70,6 +70,14 @@ def import_showcases(con, records, transfer_root):
         else:
             slug = uid if not con.execute("SELECT 1 FROM video_showcase WHERE slug=?", (uid,)).fetchone() else uuid.uuid4().hex
             settings = DEFAULTS | dict(title=record["title"], description=record["description"], videos=record["members"])
+            if record.get("kind") == "channel":
+                candidate = urlsplit(record["source_url"]).path.rsplit("/", 1)[-1].casefold()
+                if SLUG.fullmatch(candidate) and not con.execute(
+                    "SELECT 1 FROM video_showcase WHERE slug=?", (candidate,)
+                ).fetchone():
+                    slug = candidate
+                settings["channel_listed"] = True
+                settings["channel_category"] = record["source_category"]
             style = record.get("source_style", {})
             settings.update({
                 name: style[name]

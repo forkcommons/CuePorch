@@ -398,6 +398,8 @@ Open **Showcases** from the library. **New showcase** creates a private gallery.
 
 To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search. Share the **Channel link** to open the ordered gallery directly.
 
+Vimeo migration lists moderated channels under **Showcases and channels**. It brings over the playlist order and available account videos and lists any video IDs outside the transfer inventory. Use **Open channel** to preview the private draft and set its publication settings.
+
 Use **Brand and layout** to add a featured background, align the text and choose whether the grid shows thumbnails or a player for each video. **Playback and discovery** controls Watch navigation, search, copying the gallery link and advancing the playlist. The active video shows its title and description.
 
 Enable **Offer downloads where the video allows them** to show the download link on permitted videos. **Copy link to this video** opens the selected title in the same showcase. Visitors still pass the gallery's passwords and registration.

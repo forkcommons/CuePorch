@@ -267,6 +267,30 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     following = path + "?per_page=100&page=2" if page == "1" else None
                     total = 3
                     values = [{"uri": "/videos/" + uid} for uid in subset]
+                elif path == "/users/10/channels" and getattr(self.server, "channel_fixture", False):
+                    if parse_qs(urlsplit(self.path).query).get("filter") != ["moderated"]:
+                        self.send_error(400)
+                        return
+                    page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
+                    if page == "2":
+                        values = [dict(uri="/channels/902", name="Private Channel", privacy="private",
+                                       link="https://vimeo.com/channels/902?untrusted=1")]
+                        following = None
+                    else:
+                        values = [dict(uri="/channels/901", name="Local Cinema", privacy="public",
+                                       link="https://vimeo.com/channels/local-cinema",
+                                       categories=[{"name": "Arts"}])]
+                        following = path + "?page=2"
+                    total = 2
+                elif path == "/channels/901/videos" and getattr(self.server, "channel_fixture", False):
+                    page = parse_qs(urlsplit(self.path).query).get("page", ["1"])[0]
+                    subset = ["72", "71"] if page == "1" else ["999"]
+                    following = path + "?per_page=100&page=2" if page == "1" else None
+                    total = 3
+                    values = [{"uri": "/videos/" + uid} for uid in subset]
+                elif path == "/channels/902/videos" and getattr(self.server, "channel_fixture", False):
+                    self.send_error(403)
+                    return
                 elif path == "/users/10/live_events" and getattr(self.server, "live_event_fixture", False):
                     if getattr(self.server, "live_event_denied", False):
                         self.send_error(403)

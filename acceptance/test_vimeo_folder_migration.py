@@ -1118,6 +1118,7 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(video).to_have_js_property("paused", False)
 
     def test_showcase_style_migration_roundtrip(self):
+        self.source.channel_fixture = True
         self.source.showcase_logo_fixture = "valid"
         self.source.showcase_style_fixture = dict(
             theme="dark", layout="player", brand_color="267ABC",
@@ -1140,7 +1141,40 @@ class VimeoFolderMigration(unittest.TestCase):
             self.assertNotIn("no-copy-source-password", response.get_data(as_text=True))
             self.assertNotIn("no-copy-source-html", response.get_data(as_text=True))
             self.assertNotIn("/media/vimeo-logo.png", response.get_data(as_text=True))
-            album, = response.get_json()["showcases"]
+            snapshot = response.get_json()
+            album, = snapshot["showcases"]
+            channel, inaccessible = snapshot["channels"]
+            self.assertEqual("901", channel["source_id"])
+            self.assertEqual("/channels/901", channel["uri"])
+            self.assertEqual("https://vimeo.com/channels/local-cinema", channel["source_url"])
+            ordered = [work_id("station", "vimeo", source_id) for source_id in ("72", "71")]
+            self.assertEqual(ordered, channel["members"])
+            self.assertEqual(["999"], channel["missing"])
+            self.assertEqual("https://vimeo.com/channels/902", inaccessible["source_url"])
+            self.assertTrue(any("403" in issue for issue in inaccessible["issues"]))
+            channel_endpoint = "/api/showcases/" + channel["target"]
+            draft = self.client.get(channel_endpoint, headers=self.auth).get_json()
+            self.assertEqual("private", draft["settings"]["visibility"])
+            self.assertTrue(draft["settings"]["channel_listed"])
+            self.assertEqual("Arts", draft["settings"]["channel_category"])
+            self.assertEqual(ordered, draft["settings"]["videos"])
+            self.assertEqual("local-cinema", draft["slug"])
+            self.assertIsNone(draft["channel"])
+            self.assertEqual(404, self.client.get("/channels/local-cinema").status_code)
+            row = page.get_by_role("row").filter(has_text="Local Cinema")
+            expect(row).to_contain_text("999")
+            row.get_by_role("link", name="Open channel").click()
+            expect(page.locator('input[name="title"]')).to_have_value("Local Cinema")
+            page.get_by_role("button", name="Preview saved showcase").click()
+            preview = page.frame_locator("#showcaseFrame")
+            self.assertEqual(320, preview.locator(".showcase-screen video").evaluate(
+                "async v => {v.muted = true; await v.play(); return v.videoWidth;}"
+            ))
+            page.locator('input[name="title"]').fill("Local Cinema edited")
+            page.get_by_role("button", name="Save showcase").click()
+            expect(page.locator("#showcaseStatus")).to_have_text("Showcase saved.")
+            page.goto(f"{self.base}/operator/migration")
+            expect(page.locator("#status")).to_have_text("transferred")
             uid = album["target"]
             endpoint = f"/api/showcases/{uid}"
             gallery = self.client.get(endpoint, headers=self.auth).get_json()
@@ -1186,6 +1220,10 @@ class VimeoFolderMigration(unittest.TestCase):
             updated = self.client.get(endpoint, headers=self.auth).get_json()
             self.assertEqual("#123456", updated["settings"]["accent"])
             self.assertEqual(settings["logo"], updated["settings"]["logo"])
+            refreshed = self.client.get("/api/migration", headers=self.auth).get_json()["channels"]
+            self.assertEqual(channel["target"], refreshed[0]["target"])
+            after = self.client.get(channel_endpoint, headers=self.auth).get_json()
+            self.assertEqual("Local Cinema edited", after["settings"]["title"])
 
     def test_reconciliation_csv_export(self):
         self.source.extra_inventory_count = 101
