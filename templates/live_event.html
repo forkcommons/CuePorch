@@ -35,6 +35,20 @@
           <p role="status" id="eventStatus">{{ status }}</p>
         {% if landing %}</div></div>{% endif %}
     </header>
+    {% if landing and landing.speakers %}
+    <section class="event-landing event-speakers" aria-labelledby="eventSpeakersHeading">
+      <h2 id="eventSpeakersHeading">Speakers</h2>
+      <ol class="event-speakers-list">
+        {% for speaker in landing.speakers %}
+          <li class="event-speaker">
+            <p class="event-speaker-name">{{ speaker.name }}</p>
+            {% if speaker.role %}<p class="event-speaker-role">{{ speaker.role }}</p>{% endif %}
+            {% if speaker.bio %}<p class="event-speaker-bio">{{ speaker.bio }}</p>{% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+    {% endif %}
     {% if registration %}
       {% include 'viewer_registration.html' %}
     {% endif %}

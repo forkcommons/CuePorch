@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from flask import abort, request
 
+import event_landing_speakers
 from library_appearance import PALETTE
 
 DEFAULTS = {
@@ -14,6 +15,7 @@ DEFAULTS = {
     "layout": "stacked",
     "show_logo": True,
     "show_poster": False,
+    "speaker_ids": [],
 }
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS live_event_landing (
@@ -27,20 +29,34 @@ VALUES (?, ?, ?)
 ON CONFLICT(uid) DO UPDATE SET revision=excluded.revision, settings=excluded.settings"""
 
 
-def _payload(row):
+def _payload(con, row):
     if row is None:
-        return {"revision": None, "settings": dict(DEFAULTS)}
+        return {
+            "revision": None,
+            "settings": dict(DEFAULTS),
+            "profiles": event_landing_speakers.profiles(con),
+        }
     merged = dict(DEFAULTS)
     merged.update(json.loads(row[1] or "{}"))
-    return {"revision": row[0], "settings": merged}
+    return {
+        "revision": row[0],
+        "settings": merged,
+        "profiles": event_landing_speakers.profiles(con),
+    }
 
 
-def _valid_settings(data):
+def _valid_settings(con, data, current_settings):
     if not isinstance(data, dict) or set(data) != {"revision", "settings"}:
         abort(422)
     settings = data["settings"]
-    if not isinstance(settings, dict) or set(settings) != set(DEFAULTS):
+    if not isinstance(settings, dict):
         abort(422)
+    appearance = set(DEFAULTS) - {"speaker_ids"}
+    if set(settings) not in (appearance, set(DEFAULTS)):
+        abort(422)
+    settings = dict(settings)
+    if "speaker_ids" not in settings:
+        settings["speaker_ids"] = current_settings["speaker_ids"]
     for key in ("enabled", "show_logo", "show_poster"):
         if type(settings[key]) is not bool:
             abort(422)
@@ -51,6 +67,7 @@ def _valid_settings(data):
     value = settings["accent"]
     if not isinstance(value, str) or not PALETTE.fullmatch(value):
         abort(422)
+    settings["speaker_ids"] = event_landing_speakers.validate_ids(con, settings["speaker_ids"])
     return settings
 
 
@@ -66,6 +83,7 @@ def viewer(con, uid, embed):
     settings.update(json.loads(row[0] or "{}"))
     if not settings["enabled"]:
         return None
+    settings["speakers"] = event_landing_speakers.selected(con, settings["speaker_ids"])
     return settings
 
 
@@ -80,17 +98,14 @@ def register(app, tx, staff, read):
                 (uid,),
             ).fetchone()
             if request.method in ("GET", "HEAD"):
-                return _payload(landing_row)
+                return _payload(con, landing_row)
             data = request.get_json(silent=True)
-            settings = _valid_settings(data)
-            current = _payload(landing_row)
+            current = _payload(con, landing_row)
+            settings = _valid_settings(con, data, current["settings"])
             if data["revision"] != current["revision"]:
                 abort(409, "This landing page changed. Reload it before saving.")
             if settings == current["settings"]:
-                return {
-                    "revision": current["revision"],
-                    "settings": current["settings"],
-                }
+                return current
             revision = uuid4().hex
             con.execute(UPSERT, (uid, revision, json.dumps(settings, sort_keys=True)))
-            return {"revision": revision, "settings": settings}
+            return current | {"revision": revision, "settings": settings}

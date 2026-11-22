@@ -163,9 +163,34 @@
             Show poster
           </label>
           <small>Use Event player to choose the logo and poster.</small>
+          <fieldset id="eventLandingSpeakerFields" disabled>
+            <legend>Speaker lineup</legend>
+            <label for="eventLandingSpeakerChoice">Speaker</label>
+            <select id="eventLandingSpeakerChoice">
+              <option value="">Select a speaker</option>
+            </select>
+            <button type="button" id="eventLandingSpeakerAdd">Add to lineup</button>
+            <button type="button" id="eventLandingSpeakerEdit">Edit profile</button>
+            <button type="button" id="eventLandingSpeakerNew">New speaker profile</button>
+            <ol id="eventLandingSpeakerRows"></ol>
+          </fieldset>
           <p id="eventLandingStatus" role="status"></p>
           <button type="submit" id="saveEventLanding" disabled>Save landing page</button>
         </form>
+        <dialog id="eventLandingSpeakerDialog" aria-labelledby="eventLandingSpeakerDialogTitle">
+          <h2 id="eventLandingSpeakerDialogTitle">Speaker profile</h2>
+          <form id="eventLandingSpeakerForm">
+            <label for="eventLandingSpeakerName">Name</label>
+            <input id="eventLandingSpeakerName" name="name" type="text" maxlength="128" required>
+            <label for="eventLandingSpeakerRole">Role</label>
+            <input id="eventLandingSpeakerRole" name="role" type="text" maxlength="160">
+            <label for="eventLandingSpeakerBio">Bio</label>
+            <textarea id="eventLandingSpeakerBio" name="bio" maxlength="3000"></textarea>
+            <p id="eventLandingSpeakerStatus" role="status"></p>
+            <button type="submit" id="eventLandingSpeakerSave">Save</button>
+            <button type="button" id="eventLandingSpeakerCancel">Cancel</button>
+          </form>
+        </dialog>
       </details>
       <a id="eventStudio">Open browser studio</a>
       <a id="eventRecordOnly">Recording only</a>

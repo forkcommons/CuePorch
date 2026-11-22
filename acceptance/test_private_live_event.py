@@ -218,6 +218,11 @@ class PrivateLiveEventTest(unittest.TestCase):
             )
             self.assertEqual(artwork.status_code, 200, artwork.get_data(as_text=True))
 
+            assert self.client.post(
+                "/api/live-event-speaker-profiles",
+                headers=self.auth,
+                json=dict(name="Owen Lin", role="Moderator", bio="Hosts the discussion."),
+            ).status_code == 201
             operator = browser.new_page()
             operator_token = self.auth["Authorization"].removeprefix("Bearer ")
             operator.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(operator_token)})")
@@ -230,6 +235,25 @@ class PrivateLiveEventTest(unittest.TestCase):
             panel.get_by_text("Event landing page", exact=True).click()
             expect(panel.get_by_role("combobox", name="Theme", exact=True)).to_have_value("dark")
             panel.get_by_role("combobox", name="Layout", exact=True).select_option("stacked")
+            with operator.expect_response(
+                lambda r: r.request.method == "POST"
+                and r.url.endswith("/api/live-event-speaker-profiles")
+            ) as speaker_profile_response:
+                panel.get_by_role("button", name="New speaker profile").click()
+                dialog = operator.get_by_role("dialog", name="Speaker profile", exact=True)
+                dialog.get_by_label("Name").fill("Mina Reed")
+                dialog.get_by_label("Role").fill("Keynote")
+                dialog.get_by_label("Bio").fill("Founder and keynote speaker.")
+                dialog.get_by_role("button", name="Save", exact=True).click()
+            assert speaker_profile_response.value.status == 201
+            speaker = speaker_profile_response.value.json()
+            panel.get_by_role("combobox", name="Speaker", exact=True).select_option(
+                label="Mina Reed"
+            )
+            panel.get_by_role("button", name="Add to lineup").click()
+            panel.get_by_role("combobox", name="Speaker", exact=True).select_option(label="Owen Lin")
+            panel.get_by_role("button", name="Add to lineup", exact=True).click()
+            panel.get_by_role("button", name="Move Owen Lin up", exact=True).click()
             panel.get_by_role("button", name="Save landing page", exact=True).click()
             expect(panel.locator("#eventLandingStatus")).to_have_text("Saved")
             self.assertEqual(created["watch"], WATCH)
@@ -255,6 +279,12 @@ class PrivateLiveEventTest(unittest.TestCase):
                 self.assertEqual(hero_poster.evaluate("async i => { await i.decode(); return i.naturalWidth }"), 160)
                 self.assertEqual(anon.request.get(base + hero_poster.get_attribute("src")).status, 404)
                 expect(page.locator(".event-landing-logo")).to_be_visible()
+                speakers_region = page.get_by_role("region", name="Speakers")
+                expect(speakers_region.get_by_text("Mina Reed")).to_be_visible()
+                expect(speakers_region.get_by_text("Keynote", exact=True)).to_be_visible()
+                expect(speakers_region.get_by_text("Founder and keynote speaker.", exact=True)).to_be_visible()
+                expect(speakers_region.get_by_role("listitem").nth(0)).to_contain_text("Owen Lin")
+                expect(speakers_region.get_by_role("listitem").nth(1)).to_contain_text("Mina Reed")
                 expect(page.get_by_role("combobox", name="Audio track", exact=True)).to_have_count(0)
                 segment = playlist.rsplit("/", 1)[0] + "/0-0.ts"
                 self.assertEqual(team.request.get(segment).status, 200)
@@ -267,6 +297,7 @@ class PrivateLiveEventTest(unittest.TestCase):
                 frame = page.frame_locator("iframe")
                 expect(frame.locator("#eventStatus")).to_have_text("Live")
                 expect(frame.locator(".event-custom-landing")).to_have_count(0)
+                expect(frame.locator("#eventSpeakersHeading")).to_have_count(0)
                 frame.locator("video").evaluate("""video => {
                     if (video.readyState >= 2) return;
                     return new Promise(resolve => video.addEventListener("loadeddata", resolve, {once: true}));
@@ -280,6 +311,24 @@ class PrivateLiveEventTest(unittest.TestCase):
                 expect(page.locator("body")).to_have_attribute("data-landing-theme", "dark")
                 expect(page.locator("body")).to_have_attribute("data-landing-layout", "stacked")
                 self.assertEqual(anon.request.get(replay).status, 404)
+                public_event = self.create_event("shared-speaker-public", "public")
+                saved = self.client.get(f"/api/live-events/{event}/landing", headers=self.auth).get_json()
+                resp = self.client.put(
+                    f"/api/live-events/{public_event['id']}/landing",
+                    headers=self.auth,
+                    json={"revision": None, "settings": saved["settings"]},
+                )
+                assert resp.status_code == 200
+                resp = self.client.put(
+                    f"/api/live-event-speaker-profiles/{speaker['id']}",
+                    headers=self.auth,
+                    json=dict(revision=speaker["revision"], name=speaker["name"], role="Curator", bio=speaker["bio"]),
+                )
+                assert resp.status_code == 200
+                page.reload()
+                expect(page.get_by_role("region", name="Speakers").get_by_text("Curator", exact=True)).to_be_visible()
+                public_watch = self.client.get(public_event["watch"])
+                assert public_watch.status_code == 200 and b"Curator" in public_watch.data
                 logout = team.request.delete(base + "/api/team/session", headers=TEAM, data={})
                 self.assertEqual(logout.status, 204)
                 for address in (stable, stable + "/embed", segment, replay):

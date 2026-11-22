@@ -49,6 +49,7 @@ import event_replay_spool
 import event_mail
 import event_player
 import event_landing
+import event_landing_speakers
 import event_playlist
 import event_program
 import event_questions
@@ -94,7 +95,7 @@ CREATE TABLE IF NOT EXISTS live_event_access(event TEXT PRIMARY KEY, link_key TE
        + event_speakers.SCHEMA + event_captions.SCHEMA + event_analytics.SCHEMA
        + event_replay_captions.SCHEMA + event_simulcast.SCHEMA + event_library_recordings.SCHEMA
        + event_imported_replay.SCHEMA
-       + event_player.SCHEMA + event_playlist.SCHEMA + event_landing.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
+       + event_player.SCHEMA + event_playlist.SCHEMA + event_landing.SCHEMA + event_landing_speakers.SCHEMA + event_slide_decks.SCHEMA + event_attendance.SCHEMA
        + event_mail.SCHEMA + event_registrants.SCHEMA + event_hubspot_sync.SCHEMA + event_hubspot_outbound.SCHEMA
        + event_hubspot_engagement.SCHEMA + event_marketo_engagement.SCHEMA
        + event_mailchimp_engagement.SCHEMA + event_salesforce_engagement.SCHEMA)
@@ -639,6 +640,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
     event_playlist.register(app, tx, staff, read)
     event_player.register(app, tx, staff, read)
     event_landing.register(app, tx, staff, read)
+    event_landing_speakers.register(app, tx, staff)
 
     def enforce_territories(event):
         if not regional_availability.permits(territories(event), analytics_proxies):
