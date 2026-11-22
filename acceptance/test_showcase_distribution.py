@@ -31,7 +31,9 @@ class ShowcaseDistribution(unittest.TestCase):
             (root / "objects").mkdir()
             (root / "manifest.json").write_text(json.dumps(dict(institution="station", schema=1, works=[])))
             operator = secrets.token_urlsafe(32)
-            with patch("institution.library_worker.start", return_value=lambda: None):
+            relay = cleanup.enter_context(patch("mail_relay.deliver", return_value=True))
+            with (patch("institution.library_worker.start", return_value=lambda: None),
+                  patch("mail_relay.configured", return_value=("relay.example.invalid", 465, "station@example.invalid", "", ""))):
                 app = create_app(root, root / "workspace.sqlite", operator, "station")
             for name, stop in app.extensions.items():
                 if name.startswith("stop_"):
@@ -155,7 +157,7 @@ class ShowcaseDistribution(unittest.TestCase):
                 thumbnail = root / "channel-thumbnail.png"
                 Image.new("RGB", (2, 2), (10, 20, 30)).save(thumbnail)
                 editor.get_by_label("Channel thumbnail").set_input_files(str(thumbnail))
-                editor.get_by_label("List in Watch channels").check()
+                editor.get_by_label("Enable channel").check()
                 editor.get_by_label("Channel category").fill("Arts")
                 with page.expect_response(lambda response: response.url == base + endpoint
                                           and response.request.method == "PUT") as saved_channel:
@@ -245,6 +247,21 @@ class ShowcaseDistribution(unittest.TestCase):
                     curator_page.get_by_role("button", name="Save channel videos").click()
                     expect(curator_page.get_by_role("status")).to_have_text("Channel videos saved.")
                     self.assertEqual(restricted, send("GET", endpoint)["settings"]["videos"][-1])
+                    current = send("GET", endpoint)
+                    send("PUT", endpoint, current | {"settings": current["settings"] | {
+                        "visibility": "private", "channel_access": "moderators",
+                    }})
+                    self.assertEqual(403, guest.request.get(base + channel).status)
+                    self.assertEqual(200, curator_page.goto(base + channel).status)
+                    player = curator_page.locator(".showcase-screen video")
+                    self.assertEqual(320, player.evaluate(
+                        "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+                    ))
+                    self.assertEqual(404, guest.request.get(player.evaluate("video => video.currentSrc")).status)
+                    current = send("GET", endpoint)
+                    send("PUT", endpoint, current | {"settings": current["settings"] | {
+                        "visibility": "public", "channel_access": "public",
+                    }})
                     admin.get_by_role("button", name="Reload channels").click()
                     admin.get_by_label("Guest curator").uncheck()
                     admin.get_by_role("button", name="Save moderators").click()
@@ -316,11 +333,57 @@ class ShowcaseDistribution(unittest.TestCase):
                 self.assertEqual(404, requests.get(base + channel, timeout=10).status_code)
                 guest.goto(directory)
                 expect(guest.get_by_role("link", name="Station arts", exact=True)).to_have_count(0)
+
+                editor_url = page.url
+                page.reload()
+                page.get_by_label("Channel audience").select_option("invited")
+                page.get_by_role("button", name="Save showcase").click()
+                expect(page.locator("#showcaseStatus")).to_have_text("Showcase saved.")
+                viewers_path = "/api/team/channels/" + showcase["id"] + "/viewers"
+                address = "channel-viewer@example.invalid"
+                invitation = dict(revision=send("GET", endpoint)["revision"], emails=[address])
+                wrong_origin = manager | {"Origin": "https://unrelated.example.invalid"}
+                self.assertEqual(403, api.put(viewers_path, json=invitation, headers=wrong_origin,
+                                              base_url=base).status_code)
+                self.assertEqual(422, api.put(viewers_path, json=invitation, headers=manager,
+                                              base_url=base).status_code)
+                verification = base + "/api/viewer/email-verification"
+                self.assertEqual(202, guest.request.post(verification, headers=marker, data={}).status)
+                self.assertEqual(address, relay.call_args.args[1])
+                code = relay.call_args.args[3].split("\n\n")[1]
+                self.assertEqual(200, guest.request.put(verification, headers=marker, data={"code": code}).status)
+                page.goto(base + "/team/channels?select=" + showcase["id"])
+                emails = page.get_by_label("Verified viewer email addresses")
+                emails.fill(address)
+                save_viewers = page.get_by_role("button", name="Save invited viewers")
+                save_viewers.click()
+                expect(page.get_by_role("status")).to_have_text("Invited viewers saved.")
+
+                denied = requests.get(base + channel, timeout=10)
+                self.assertEqual(403, denied.status_code)
+                self.assertNotIn("Station arts", denied.text)
+                self.assertEqual(404, requests.get(watch, timeout=10).status_code)
+                self.assertEqual(200, guest.goto(base + channel).status)
+                player = guest.locator(".showcase-screen video")
+                self.assertEqual(320, player.evaluate(
+                    "async video => {video.muted = true; await video.play(); video.pause(); return video.videoWidth}"
+                ))
+                media_url = player.evaluate("video => video.currentSrc")
+                self.assertEqual(404, requests.get(media_url, timeout=10).status_code)
+                expect(guest.get_by_text("Private assembly", exact=True)).to_have_count(0)
+                emails.fill("")
+                save_viewers.click()
+                expect(page.get_by_role("status")).to_have_text("Invited viewers saved.")
+                self.assertEqual(404, guest.request.get(media_url).status)
+                self.assertEqual(403, guest.request.get(base + channel).status)
+
                 current = send("GET", endpoint)
-                send("PUT", endpoint, current | {"settings": current["settings"] | {"visibility": "public"}})
+                send("PUT", endpoint, current | {"settings": current["settings"] | {
+                    "visibility": "public", "channel_access": "public",
+                }})
                 self.assertEqual({"following": False},
                                  guest.context.request.get(follow_api + "station-arts").json())
-                page.reload()
+                page.goto(editor_url)
                 editor = page.locator("#showcaseEdit")
                 expect(editor).to_be_visible()
 

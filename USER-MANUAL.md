@@ -396,9 +396,11 @@ For HTTPS installations, set `CUEPORCH_PUSH_CONTACT` to a `mailto:` address or H
 
 Open **Showcases** from the library. **New showcase** creates a private gallery. Give it a title and link name, add videos, and use **Move up** or **Move down** to set playback order. Choose a gallery grid or a player with a playlist, add a logo and featured information, and pick a card size. Preview the saved gallery at desktop or mobile width before sharing.
 
-To publish a curated channel, choose **List in Watch channels** and set the showcase visibility to **Public**. You can add a category for search and upload a **Channel thumbnail** for the directory. Share the **Channel link** to open the ordered gallery directly.
+To publish a curated channel, choose **Enable channel**. Set **Channel audience** to **Anyone** and the showcase visibility to **Public** to include the channel in Watch. You can add a category for search and upload a **Channel thumbnail** for the directory. Share the **Channel link** to open the ordered gallery directly.
 
 Open **Channel curation** from the team workspace or the showcase editor. Owners and administrators can assign active Contributors and Contributors Plus to a channel under **Channel moderators**. An assigned moderator can change the order of public videos, remove them, or add public videos they can edit. Use **Save channel videos** to apply the changes. Removing the assignment takes effect on the moderator’s next request.
+
+For a restricted channel, set showcase visibility to **Private** and choose **Moderators only** or **Moderators and invited viewers** as the channel audience. Use **Channel curation** to enter verified viewer account addresses, one per line, under **Invited viewers**. Share the **Channel link** with the people you added. They sign in with their viewer accounts. Removing an address revokes channel viewing and old playback links for that viewer.
 
 Vimeo migration lists moderated channels under **Showcases and channels**. It brings over the playlist order, available account videos, and any channel thumbnail and header supplied in the source inventory. The report lists video IDs outside the transfer inventory. Use **Open channel** to preview the private draft and set its publication settings.
 

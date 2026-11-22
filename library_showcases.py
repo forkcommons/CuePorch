@@ -6,6 +6,7 @@ from io import StringIO
 import json
 import math
 import re
+from time import time
 from urllib.parse import urlsplit
 import uuid
 
@@ -15,7 +16,7 @@ from werkzeug.security import generate_password_hash
 
 import content_rating
 from catalog import video_version_key
-from browser_account_security import is_loopback, json_mutation, private, same_origin, secure_site
+from browser_account_security import email_key, is_loopback, json_mutation, private, same_origin, secure_site, workspace_session
 import folder_slack_queue
 import library_analytics
 import library_details
@@ -50,6 +51,9 @@ CREATE INDEX IF NOT EXISTS audience_channel_follow_by_channel ON audience_channe
 CREATE TABLE IF NOT EXISTS video_channel_moderator(
  channel TEXT NOT NULL, member TEXT NOT NULL, PRIMARY KEY(channel, member));
 CREATE INDEX IF NOT EXISTS video_channel_moderator_by_member ON video_channel_moderator(member);
+CREATE TABLE IF NOT EXISTS audience_channel_invite(
+ channel TEXT NOT NULL, account TEXT NOT NULL, address TEXT NOT NULL, PRIMARY KEY(channel, account));
+CREATE INDEX IF NOT EXISTS audience_channel_invite_by_account ON audience_channel_invite(account);
 """
 DEFAULTS = dict(
     title="Untitled showcase", description="", visibility="private", domains=[], videos=[],
@@ -60,7 +64,7 @@ DEFAULTS = dict(
     feature_alignment="start", navigation=False, product_brand=False, grid_media="thumbnails",
     download=False, questions=False, likes=False, comments=False,
     roku_enabled=False, roku_provider="", roku_language="en-US", roku_genres="",
-    channel_listed=False, channel_category="",
+    channel_listed=False, channel_category="", channel_access="public",
 )
 VISIBILITIES = ("private", "password", "public", "embed_only")
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{1,62}[a-z0-9]")
@@ -144,7 +148,13 @@ def roku_origin(public_url):
 
 
 def channel_visible(settings):
-    return bool(settings.get("channel_listed")) and settings.get("visibility") == "public"
+    return (bool(settings.get("channel_listed")) and settings.get("visibility") == "public"
+            and settings.get("channel_access", "public") == "public")
+
+
+def channel_restricted(settings):
+    return (bool(settings.get("channel_listed")) and settings.get("visibility") == "private"
+            and settings.get("channel_access") in ("moderators", "invited"))
 
 
 def summary(con, row, public_url):
@@ -156,7 +166,8 @@ def summary(con, row, public_url):
                 watch=url_for("showcase_main", slug=row["slug"]) if mode in ("public", "password") else None,
                 embed=url_for("showcase_frame", slug=row["slug"]) if mode != "private" else None,
                 roku=origin + url_for("showcase_roku", uid=row["id"]) if origin else None,
-                channel=url_for("showcase_channel", slug=row["slug"]) if channel_visible(settings) else None)
+                channel=url_for("showcase_channel", slug=row["slug"])
+                if channel_visible(settings) or channel_restricted(settings) else None)
 
 
 def validate_settings(con, raw, lookup):
@@ -188,11 +199,14 @@ def validate_settings(con, raw, lookup):
     for name, options in (("visibility", VISIBILITIES), ("layout", ("grid", "featured")),
                           ("size", ("small", "medium", "large", "extra-large")),
                           ("feature_alignment", ("start", "center", "end")),
-                          ("grid_media", ("thumbnails", "players"))):
+                          ("grid_media", ("thumbnails", "players")),
+                          ("channel_access", ("public", "moderators", "invited"))):
         value = raw.get(name, DEFAULTS[name])
         if value not in options:
             abort(422, f"Choose a valid {name}.")
         values[name] = value
+    if values["channel_listed"] and values["channel_access"] != "public" and values["visibility"] != "private":
+        abort(422, "Choose Private showcase visibility for a restricted channel audience.")
     domains = raw.get("domains", [])
     if not isinstance(domains, list) or len(domains) > 50:
         abort(422, "Choose up to 50 allowed embed sites.")
@@ -264,6 +278,38 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     def library():
         return {work["id"]: work for work in read_works() if work.get("asset_type", "video") == "video"}
 
+    def channel_principals(con, row, values):
+        secure = secure_site(team_origin, required=False)
+        if secure is None:
+            return []
+        out = []
+        channel = row["id"]
+        member = team_accounts.current(con, secure)
+        if member is not None:
+            role = member["role"]
+            allowed = role in team_accounts.MANAGERS
+            if not allowed and role in team_accounts.CONTRIBUTORS:
+                allowed = con.execute(
+                    "SELECT 1 FROM video_channel_moderator WHERE channel=? AND member=?",
+                    (channel, member["id"]),
+                ).fetchone() is not None
+            if allowed:
+                out.append(["team", member["id"]])
+        if values["channel_access"] == "invited":
+            digest = workspace_session("viewer", secure)
+            if digest:
+                viewer = con.execute(
+                    "SELECT a.id FROM audience_session s"
+                    " JOIN audience_account a ON a.id=s.account"
+                    " JOIN audience_channel_invite i ON i.account=a.id AND i.channel=? AND i.address=a.email"
+                    " JOIN account_verified_email e ON e.scope='viewer' AND e.account=a.id AND e.address=a.email"
+                    " WHERE s.token_hash=? AND s.expires>?",
+                    (channel, digest, time()),
+                ).fetchone()
+                if viewer is not None:
+                    out.append(["viewer", viewer["id"]])
+        return out
+
     @app.get("/team/channels")
     def team_channels_page():
         return private(render_template("team_channels.html"))
@@ -286,7 +332,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             channels = []
             for row in rows:
                 values = state(row)
-                if values["channel_listed"] and (manager or channel_visible(values)):
+                if values["channel_listed"] and (manager or channel_visible(values) or channel_restricted(values)):
                     channels.append(dict(id=row["id"], title=values["title"], slug=row["slug"]))
             return private(dict(channels=channels, manage=manager))
 
@@ -328,6 +374,58 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 id=item["id"], name=item["name"], assigned=item["id"] in assigned,
             ) for item in eligible]))
 
+    @app.route("/api/team/channels/<uid>/viewers", methods=["GET", "PUT"])
+    def team_channel_viewers(uid):
+        secure = secure_site(team_origin)
+        same_origin(secure)
+        with tx() as con:
+            if not operator_name(con):
+                abort(403)
+            row = get_showcase(con, uid)
+            values = state(row)
+            if not channel_restricted(values) or values["channel_access"] != "invited":
+                abort(404)
+            revision = row["revision"]
+            current = {(item["account"], item["address"]) for item in con.execute(
+                "SELECT account, address FROM audience_channel_invite WHERE channel=?", (uid,))}
+            emails = sorted(address for _, address in current)
+            if request.method == "PUT":
+                request.max_content_length = 128 * 1024
+                body = json_mutation(secure, team_accounts.MUTATION_HEADER)
+                if body.get("revision") != revision:
+                    abort(409, "This channel changed. Reload it before saving.")
+                raw = body.get("emails")
+                if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+                    abort(422, "Enter valid email addresses.")
+                normalized = []
+                seen = set()
+                for item in raw:
+                    key = email_key(item)
+                    if key in seen:
+                        abort(422, "Duplicate email addresses.")
+                    seen.add(key)
+                    normalized.append(key)
+                accounts = []
+                for key in normalized:
+                    acct = con.execute("""
+                        SELECT a.id FROM audience_account a
+                        JOIN account_verified_email v
+                          ON v.scope='viewer' AND v.account=a.id AND v.address=a.email
+                        WHERE a.email=? COLLATE NOCASE
+                    """, (key,)).fetchone()
+                    if not acct:
+                        abort(422, "Every address must belong to a verified account.")
+                    accounts.append((acct[0], key))
+                emails = sorted(key for _, key in accounts)
+                if set(accounts) != current:
+                    con.execute("DELETE FROM audience_channel_invite WHERE channel=?", (uid,))
+                    con.executemany(
+                        "INSERT INTO audience_channel_invite(channel,account,address) VALUES(?,?,?)",
+                        ((uid, account, address) for account, address in accounts))
+                    revision = uuid.uuid4().hex
+                    con.execute("UPDATE video_showcase SET revision=? WHERE id=?", (revision, uid))
+            return private(dict(revision=revision, emails=emails))
+
     @app.route("/api/team/channels/<uid>", methods=["GET", "PUT"])
     def team_channel(uid):
         secure = secure_site(team_origin)
@@ -341,10 +439,11 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 abort(404)
             row = get_showcase(con, uid)
             values = state(row)
-            if not channel_visible(values):
+            if not (channel_visible(values) or channel_restricted(values)):
                 abort(404)
+            video_policy = values | {"visibility": "public"} if channel_restricted(values) else values
             available = {key: work for key, work in library().items()
-                         if content_policy(con, work, permits, values, False, "", False)}
+                         if content_policy(con, work, permits, video_policy, False, "", False)}
             choices = {key: work for key, work in available.items() if manager or can_edit(con, member, key)}
             revision = row["revision"]
             current = values["videos"]
@@ -433,6 +532,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 return summary(con, row, public_url)
             if request.method == "DELETE":
                 con.execute("DELETE FROM audience_channel_follow WHERE channel=?", (uid,))
+                con.execute("DELETE FROM audience_channel_invite WHERE channel=?", (uid,))
                 con.execute("DELETE FROM video_channel_moderator WHERE channel=?", (uid,))
                 con.execute("DELETE FROM video_showcase WHERE id=?", (uid,))
                 con.execute("DELETE FROM viewer_form WHERE kind='showcase' AND subject=?", (uid,))
@@ -444,7 +544,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 new_id = uuid.uuid4().hex
                 values = state(row)
                 values.update(title=(values["title"][:118] + " (copy)"), visibility="private", indexable=False,
-                              roku_enabled=False, channel_listed=False)
+                              roku_enabled=False, channel_listed=False, channel_access="public")
                 con.execute("INSERT INTO video_showcase VALUES(?,?,?,?,NULL,?)",
                             (new_id, new_id, uuid.uuid4().hex, json.dumps(values), datetime.now(timezone.utc).isoformat()))
                 return summary(con, get_showcase(con, new_id), public_url), 201
@@ -469,6 +569,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                             (slug, uuid.uuid4().hex, json.dumps(values), hashed, uid))
                 if not channel_visible(values):
                     con.execute("DELETE FROM audience_channel_follow WHERE channel=?", (uid,))
+                if not channel_restricted(values) or values["channel_access"] != "invited":
+                    con.execute("DELETE FROM audience_channel_invite WHERE channel=?", (uid,))
                 previous = set(state(row)["videos"])
                 for work in values["videos"]:
                     if work not in previous:
@@ -556,7 +658,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         with tx() as con:
             row = get_showcase(con, slug, by_slug=True)
         values = state(row)
-        if channel and not channel_visible(values):
+        restricted = channel and channel_restricted(values)
+        if channel and not (channel_visible(values) or restricted):
             abort(404)
         mode = values["visibility"]
         internal = False
@@ -570,8 +673,14 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             if not internal:
                 abort(404)
             ancestors = "'self'"
+        principal = None
         if not internal:
-            if mode == "private" or (mode == "embed_only" and not embed):
+            if restricted:
+                with tx() as con:
+                    principal = next(iter(channel_principals(con, row, values)), None)
+                if not principal:
+                    return private(render_template("channel_sign_in.html", next_path=request.path), 403)
+            if (mode == "private" and not restricted) or (mode == "embed_only" and not embed):
                 abort(404)
             if embed:
                 if request.method == "POST":
@@ -605,9 +714,13 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                 current = get_showcase(con, row["id"])
                 if current["revision"] != row["revision"]:
                     abort(409, "Reopen the showcase. Its settings have changed.")
+                if principal and principal not in channel_principals(con, current, values):
+                    abort(404)
                 form = None if internal else library_registration.active(con, "showcase", row["id"])
                 form_revision = form["revision"] if form else None
                 scope = [row["id"], row["revision"], form_revision, origin, embed]
+                if principal:
+                    scope.append(principal)
                 admitted = False
                 sign_on = None
                 if enrollment:
@@ -628,6 +741,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                if not internal and library_analytics.permitted() else None)
                     works = library()
                     preference = viewing_preferences(con) if channel and not internal else None
+                    video_policy = values | {"visibility": "public"} if restricted else values
                     for uid in values["videos"]:
                         work = works.get(uid)
                         if not work:
@@ -636,13 +750,15 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                             continue
                         member_form = None if internal else library_registration.active(con, "video", uid)
                         member_revision = member_form["revision"] if member_form else None
-                        allowed = content_policy(con, work, permits, values, embed, origin, internal)
+                        allowed = content_policy(con, work, permits, video_policy, embed, origin, internal)
                         if not allowed:
                             continue
                         _, sharing = allowed
                         policy = privacy.get_privacy(con, uid)
                         claims = [row["id"], row["revision"], uid, video_version_key(work),
                                   policy["revision"] if policy else None, internal, embed, origin, form_revision, member_revision]
+                        if principal:
+                            claims.append(principal)
                         if member_form and member_form["timing"] == "before":
                             token = member_access.dumps(claims)
                             entries.append(dict(id=uid, title=title_for(con, work),
@@ -667,7 +783,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                                 feature_image=feature_image,
                                                 locked=locked, wrong=locked and request.method == "POST",
                                                 unlock_token=frame, embed=embed, internal=internal,
-                                                channel_slug=row["slug"] if channel and not internal else None,
+                                                channel_slug=row["slug"] if channel and not internal and not restricted else None,
                                                 registration=registration_view, enrollment=form_token,
                                                 registration_error=form_error),
                                  401 if locked and request.method == "POST" else 422 if form_error else 200)
@@ -714,9 +830,14 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         try:
             claims = signer.loads(token, max_age=max_age)
             uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision, *member_tail = claims
-            if len(member_tail) > 1:
+            if len(member_tail) > 2:
                 raise ValueError
             member_revision = member_tail[0] if member_tail else None
+            principal = member_tail[1] if len(member_tail) == 2 else None
+            if len(member_tail) == 2 and (
+                not isinstance(principal, list) or len(principal) != 2 or principal[0] not in ("team", "viewer")
+            ):
+                raise ValueError
             if internal:
                 signer.loads(token, max_age=600)
         except (BadSignature, ValueError):
@@ -728,6 +849,12 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         if (row["revision"] != version or work_id not in values["videos"] or not work
                 or video_version_key(work) != cut or (policy["revision"] if policy else None) != privacy_revision):
             abort(404)
+        if principal is not None:
+            if (internal or embed or not channel_restricted(values)
+                    or principal not in channel_principals(con, row, values)):
+                abort(404)
+        elif not internal and channel_restricted(values):
+            abort(404)
         member_form = None if internal else library_registration.active(con, "video", work_id)
         current_member_revision = member_form["revision"] if member_form else None
         if member_revision != current_member_revision:
@@ -735,7 +862,8 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         form = None if internal else library_registration.active(con, "showcase", uid)
         if (form["revision"] if form else None) != form_revision:
             abort(404)
-        allowed = content_policy(con, work, permits, values, embed, origin, internal)
+        video_policy = values | {"visibility": "public"} if principal is not None else values
+        allowed = content_policy(con, work, permits, video_policy, embed, origin, internal)
         if not allowed:
             abort(404)
         return uid, work, values, allowed, internal, embed, claims, member_form

@@ -7,6 +7,8 @@ const reload = element("reload");
 const channel = element("channel");
 const curation = element("curation");
 const moderation = element("moderation");
+const viewerAccess = element("viewerAccess");
+const viewerEmails = element("viewerEmails");
 const videoList = element("videos");
 const choices = element("choices");
 const addVideo = element("addVideo");
@@ -15,13 +17,14 @@ let credential = sessionStorage.getItem("cueporchOperator") || sessionMarker;
 let manage = false;
 let editor;
 let roster;
+let viewers;
 let busy = false;
 const endpoint = () => "channels/" + encodeURIComponent(channel.value);
 async function run(task) {
     if (busy)
         return;
     busy = true;
-    for (const control of [channel, curation, moderation, reload, credentialInput, identify.querySelector("button")]) {
+    for (const control of [channel, curation, moderation, viewerAccess, reload, credentialInput, identify.querySelector("button")]) {
         control.disabled = true;
     }
     status.textContent = "";
@@ -32,7 +35,7 @@ async function run(task) {
         status.textContent = error instanceof Error ? error.message : String(error);
     }
     finally {
-        for (const control of [channel, curation, moderation, reload, credentialInput, identify.querySelector("button")]) {
+        for (const control of [channel, curation, moderation, viewerAccess, reload, credentialInput, identify.querySelector("button")]) {
             control.disabled = false;
         }
         busy = false;
@@ -69,8 +72,9 @@ function renderVideos() {
     addVideo.disabled = choices.options.length === 0;
 }
 async function loadChannel() {
-    curation.hidden = moderation.hidden = true;
-    editor = roster = undefined;
+    curation.hidden = moderation.hidden = viewerAccess.hidden = true;
+    viewerEmails.value = "";
+    editor = roster = viewers = undefined;
     if (!channel.value)
         return;
     const response = await teamRequest(endpoint(), "GET", {}, credential);
@@ -97,12 +101,22 @@ async function loadChannel() {
     if (!roster.members.length)
         memberList.textContent = "No eligible contributors.";
     moderation.hidden = false;
+    const viewerResponse = await teamRequest(endpoint() + "/viewers", "GET", {}, credential);
+    if (viewerResponse.ok) {
+        viewers = await viewerResponse.json();
+        viewerEmails.value = viewers.emails.join("\n");
+        viewerAccess.hidden = false;
+    }
+    else if (viewerResponse.status !== 404) {
+        await checked(viewerResponse);
+    }
 }
 async function loadChannels() {
     const preferred = channel.value || new URLSearchParams(location.search).get("select");
     identify.hidden = false;
     channel.replaceChildren();
-    curation.hidden = moderation.hidden = true;
+    curation.hidden = moderation.hidden = viewerAccess.hidden = true;
+    viewerEmails.value = "";
     const result = await (await checked(await teamRequest("channels", "GET", {}, credential))).json();
     manage = result.manage;
     identify.hidden = true;
@@ -142,5 +156,10 @@ element("saveModerators").addEventListener("click", () => {
     const members = Array.from(memberList.querySelectorAll("input:checked")).map(input => input.value);
     if (roster)
         void save(endpoint() + "/moderators", { revision: roster.revision, members }, "Moderators saved.");
+});
+element("saveViewers").addEventListener("click", () => {
+    const emails = viewerEmails.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    if (viewers)
+        void save(endpoint() + "/viewers", { revision: viewers.revision, emails }, "Invited viewers saved.");
 });
 void run(loadChannels);

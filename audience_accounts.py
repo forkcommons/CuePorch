@@ -213,6 +213,7 @@ def register(app, tx, origin_url, operator, listing, action, staff):
                 con.execute("DELETE FROM audience_category_follow WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_watch_later WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_channel_follow WHERE account=?", (row["id"],))
+                con.execute("DELETE FROM audience_channel_invite WHERE account=?", (row["id"],))
                 con.execute("DELETE FROM audience_view_preferences WHERE account=?", (row["id"],))
                 authenticator.forget(con, row["id"])
                 email_factor.forget(con, row["id"])
