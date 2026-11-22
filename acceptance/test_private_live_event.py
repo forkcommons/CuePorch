@@ -11,6 +11,7 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from time import monotonic
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import requests
 from browser import chromium
@@ -160,6 +161,74 @@ class PrivateLiveEventTest(unittest.TestCase):
         self.assertEqual(approval.call_count, 2)
         self.assertEqual(approval.call_args.args[2], "replay")
         host.set_public.assert_not_called()
+
+    def test_event_hosted_analytics(self):
+        created = self.create_event("hosted-analytics", "private")
+        uid = created["id"]
+        opens = created["occurrences"][0]["id"]
+        remote = "32afbe9b-f707-47d9-9048-09455917640b"
+        with self.tx() as con:
+            con.execute("INSERT INTO live_occurrence VALUES(?,?,?,?,?)", (uid, opens, PEER, remote, "ready"))
+        path = f"/api/live-events/{uid}/{opens}/hosted-analytics?from=2026-01-01&to=2026-01-02"
+        response = requests.Response()
+        response.status_code = 200
+        response.raw = BytesIO(b'{"totalViewers":7,"viewersPeak":3,"totalWatchTime":140.5,"averageWatchTime":20,"unused":"ignored"}')
+
+        with patch('event_peer.authorization', return_value='Bearer fixture-provider'), \
+                patch('event_media.requests.get', return_value=response) as upstream:
+            self.assertEqual(self.client.get(path).status_code, 403)
+            upstream.assert_not_called()
+            r = self.client.get(path, headers=self.auth)
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.get_json(), {
+                "source": "PeerTube", "date_from": "2026-01-01", "date_to": "2026-01-02",
+                "totalViewers": 7, "viewersPeak": 3, "totalWatchTime": 140.5, "averageWatchTime": 20,
+            })
+            url = upstream.call_args.args[0]
+            self.assertEqual(url.split("?", 1)[0], f"{PEER}/api/v1/videos/{remote}/stats/overall")
+            q = parse_qs(urlsplit(url).query)
+            self.assertRegex(q['startDate'][0], r'^\d{4}-01-01T00:00:00(?:\.000000)?\+00:00$')
+            self.assertRegex(q['endDate'][0], r'^\d{4}-01-02T23:59:59\.999000\+00:00$')
+            h = upstream.call_args.kwargs['headers']
+            self.assertEqual(h['Authorization'], 'Bearer fixture-provider')
+            forbidden = requests.Response()
+            forbidden.status_code = 403
+            forbidden.raw = BytesIO(b'{}')
+            upstream.return_value = forbidden
+            self.assertEqual(self.client.get(path, headers=self.auth).status_code, 502)
+
+        with patch("event_peer.audience_stats", return_value={
+            "totalViewers": 7, "viewersPeak": 3, "totalWatchTime": 140.5,
+            "averageWatchTime": None,
+        }):
+            response = self.client.get(path + "&format=csv", headers=self.auth)
+            self.assertIn("hosted-analytics", response.headers.get("Content-Disposition", ""))
+            rows = list(csv.reader(StringIO(response.get_data(as_text=True))))
+            self.assertEqual(rows, [
+                ["provider", "date_from", "date_to", "totalViewers", "viewersPeak", "totalWatchTime", "averageWatchTime"],
+                ["PeerTube", "2026-01-01", "2026-01-02", "7", "3", "140.5", ""],
+            ])
+            server = make_server("127.0.0.1", 0, self.app, threaded=True, request_handler=QuietHandler)
+            self.enterContext(service_worker(server))
+            base = f"http://127.0.0.1:{server.server_port}"
+
+            with sync_playwright() as playwright, chromium(playwright) as browser:
+                operator = browser.new_page(accept_downloads=True)
+                operator.add_init_script(
+                    f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.auth['Authorization'].removeprefix('Bearer '))})"
+                )
+                operator.goto(base + "/operator/live-events")
+                operator.get_by_role("button", name="Open production for Private rehearsal").click()
+                operator.locator("#eventAnalytics summary").click()
+                operator.locator("#eventHostedAnalytics [name=from]").fill("2026-01-01")
+                operator.locator("#eventHostedAnalytics [name=to]").fill("2026-01-02")
+                operator.get_by_role("button", name="Load PeerTube analytics", exact=True).click()
+                expect(operator.locator("#eventHostedAnalyticsRows")).to_contain_text("140.5 s")
+                expect(operator.locator("#eventHostedAnalyticsStatus")).to_contain_text("Loaded PeerTube")
+                with operator.expect_download() as download_info:
+                    operator.locator("#downloadHostedAnalytics").click()
+                download = download_info.value
+                assert download.suggested_filename.endswith(".csv")
 
     def test_private_live_and_replay_require_active_team(self):
         created = self.create_event("private-rehearsal", "private")

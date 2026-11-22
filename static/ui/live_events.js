@@ -355,6 +355,9 @@ function choose(event, instance) {
     analytics.open = false;
     analyticsRows.replaceChildren();
     analyticsStatus.textContent = "";
+    hostedAnalyticsGeneration += 1;
+    hostedAnalyticsRows.replaceChildren();
+    hostedAnalyticsStatus.textContent = "";
     captionSettings.open = false;
     captionStatus.textContent = "";
     replayCaptions.open = false;
@@ -1756,6 +1759,86 @@ button("downloadEventAnalytics").onclick = () => void action(async () => {
 });
 window.setInterval(() => { if (analytics.open && !document.hidden)
     void refreshAnalytics(); }, 5000);
+let hostedAnalyticsGeneration = 0;
+const hostedAnalyticsForm = element("eventHostedAnalytics");
+const hostedAnalyticsRows = element("eventHostedAnalyticsRows");
+const hostedAnalyticsStatus = element("eventHostedAnalyticsStatus");
+const hostedAnalyticsDownload = button("downloadHostedAnalytics");
+function readHostedAnalyticsDates() {
+    const fromField = hostedAnalyticsForm.elements.namedItem("from");
+    const toField = hostedAnalyticsForm.elements.namedItem("to");
+    return {
+        from: fromField?.value.trim() ?? "",
+        to: toField?.value.trim() ?? "",
+    };
+}
+function buildHostedAnalyticsSuffix(extra) {
+    const { from, to } = readHostedAnalyticsDates();
+    const params = new URLSearchParams();
+    if (from)
+        params.set("from", from);
+    if (to)
+        params.set("to", to);
+    if (extra)
+        for (const [key, value] of Object.entries(extra))
+            params.set(key, value);
+    const query = params.toString();
+    return query ? `hosted-analytics?${query}` : "hosted-analytics";
+}
+function renderHostedAnalytics(data) {
+    hostedAnalyticsRows.replaceChildren();
+    const rows = [
+        ["Source", data.source],
+        ["From (UTC)", data.date_from || "—"],
+        ["To (UTC)", data.date_to || "—"],
+        ["Total viewers", data.totalViewers == null ? "—" : String(data.totalViewers)],
+        ["Peak viewers", data.viewersPeak == null ? "—" : String(data.viewersPeak)],
+        ["Total watch time", data.totalWatchTime == null ? "—" : `${data.totalWatchTime.toLocaleString()} s`],
+        ["Average watch time", data.averageWatchTime == null ? "—" : `${data.averageWatchTime.toLocaleString()} s`],
+    ];
+    for (const [label, value] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = label;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        hostedAnalyticsRows.append(dt, dd);
+    }
+}
+async function runHostedAnalytics() {
+    const selection = active;
+    if (!selection)
+        return;
+    const generation = ++hostedAnalyticsGeneration;
+    const path = mediaPath(buildHostedAnalyticsSuffix());
+    hostedAnalyticsStatus.textContent = "Loading…";
+    try {
+        const data = await request(path);
+        if (generation !== hostedAnalyticsGeneration || selection !== active)
+            return;
+        renderHostedAnalytics(data);
+        hostedAnalyticsStatus.textContent =
+            `Loaded ${data.source} analytics for ${data.date_from || "?"} – ${data.date_to || "?"}.`;
+    }
+    catch (error) {
+        if (generation !== hostedAnalyticsGeneration || selection !== active)
+            return;
+        hostedAnalyticsRows.replaceChildren();
+        hostedAnalyticsStatus.textContent =
+            error instanceof Error ? error.message : "Could not load hosted analytics.";
+    }
+}
+hostedAnalyticsForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void action(runHostedAnalytics);
+});
+hostedAnalyticsDownload.addEventListener("click", () => {
+    void action(async () => {
+        const suffix = buildHostedAnalyticsSuffix({ format: "csv" });
+        const { from, to } = readHostedAnalyticsDates();
+        const filename = `hosted-analytics_${from || "start"}_${to || "end"}.csv`;
+        await downloadEventFile(mediaPath(suffix), filename);
+    });
+});
 async function updateCaptionSettings(update = false) {
     const value = { enabled: captionEnabled.checked, language: captionLanguage.value };
     const result = await request(mediaPath("captions"), update ? "PUT" : "GET", update ? value : undefined);

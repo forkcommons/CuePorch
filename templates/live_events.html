@@ -460,6 +460,18 @@
         <p id="eventAnalyticsStatus" role="status"></p>
         <button type="button" id="refreshEventAnalytics">Refresh analytics</button>
         <button type="button" id="downloadEventAnalytics">Download audience analytics CSV</button>
+        <h3>PeerTube audience</h3>
+        <p>Viewers and watch time reported by PeerTube for the selected occurrence’s hosted copy.</p>
+        <form id="eventHostedAnalytics">
+          <label for="eventHostedAnalyticsFrom">From (UTC)</label>
+          <input id="eventHostedAnalyticsFrom" name="from" type="date">
+          <label for="eventHostedAnalyticsTo">To (UTC)</label>
+          <input id="eventHostedAnalyticsTo" name="to" type="date">
+          <button type="submit">Load PeerTube analytics</button>
+        </form>
+        <dl id="eventHostedAnalyticsRows"></dl>
+        <p id="eventHostedAnalyticsStatus" role="status"></p>
+        <button id="downloadHostedAnalytics" type="button">Download PeerTube analytics</button>
       </details>
       <details id="eventCaptionSettings">
         <summary>Live captions</summary>
