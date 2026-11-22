@@ -901,9 +901,13 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     if con.execute(linkedin_live_job.INGEST, key).fetchone():
                         return False
                     announcement = con.execute(linkedin_live_job.READ, key).fetchone()
-                    if announcement and (announcement["state"], announcement["revision"], announcement["event_revision"]) != (
-                            "scheduled", series["revision"], event_revision):
-                        return False
+                    if announcement:
+                        if (announcement["revision"], announcement["event_revision"]) != (
+                                series["revision"], event_revision):
+                            return False
+                        if announcement["state"] == "created":
+                            return bool(announcement["video"]) and announcement["post"] is None
+                        return announcement["state"] == "scheduled"
                 return True
 
             if request.method == "GET":
