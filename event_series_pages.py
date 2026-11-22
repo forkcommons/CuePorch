@@ -18,6 +18,7 @@ import event_series_locale
 import event_series_presentation
 import event_series_team_access
 import library_events
+from library_folders import visible_folders
 import library_privacy
 from browser_account_security import private, secure_site, workspace_session
 from library_analytics import source_origin
@@ -405,7 +406,7 @@ def register(app, tx, staff, action, signing_key, enforce_sharing, team_origin):
                             for row in con.execute("SELECT * FROM live_series_page ORDER BY created DESC")],
                     events=choice_list(con),
                     recordings=replay_choices(con),
-                    collections=event_series_collections.folders(con),
+                    collections=visible_folders(con),
                 )
             uid = uuid.uuid4().hex
             con.execute("INSERT INTO live_series_page VALUES(?,?,?,?,NULL,?)",

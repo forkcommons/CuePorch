@@ -60,6 +60,17 @@
         </div>
         <details id="reportContent">
           <summary id="reportSelection">All videos</summary>
+          <div class="report-folder">
+            <label for="reportFolder">Folder</label>
+            <select id="reportFolder">
+              <option value="">All content</option>
+            </select>
+
+            <span id="reportFolderCount" role="status"></span>
+
+            <button type="button" id="reportFolderAdd" disabled>Select folder videos</button>
+            <button type="button" id="reportFolderRemove" disabled>Deselect folder videos</button>
+          </div>
           <label><span id="reportSearchLabel">Search library videos</span> <input id="reportSearch" type="search"></label>
           <label id="reportVideoLabel" for="reportVideos">Videos</label>
           <select id="reportVideos" multiple size="7" aria-describedby="reportVideoHelp"></select>
