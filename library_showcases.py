@@ -447,15 +447,24 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                     works = library()
                     for uid in values["videos"]:
                         work = works.get(uid)
-                        if not work or (not internal and library_registration.active(con, "video", uid)):
+                        if not work:
                             continue
+                        member_form = None if internal else library_registration.active(con, "video", uid)
+                        if member_form and member_form["timing"] == "before":
+                            continue
+                        member_revision = member_form["revision"] if member_form else None
                         allowed = content_policy(con, work, permits, values, embed, origin, internal)
                         if not allowed:
                             continue
                         _, sharing = allowed
                         policy = privacy.get_privacy(con, uid)
                         token = media.dumps([row["id"], row["revision"], uid, video_version_key(work),
-                                             policy["revision"] if policy else None, internal, embed, origin, form_revision])
+                                             policy["revision"] if policy else None, internal, embed, origin, form_revision, member_revision])
+                        member_registration = (
+                            dict(timing=member_form["timing"], time_seconds=member_form["time_seconds"],
+                                 url=url_for("showcase_member_registration", token=token))
+                            if member_form else None
+                        )
                         details = library_details.details_for(con, work)
                         sample = telemetry.dumps([token, uuid.uuid4().hex, context]) if context else None
                         questions = (question_session(con, work, token, "embed" if embed else "watch")
@@ -468,6 +477,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
                                             if not internal and values["download"] and sharing.get("download") else None,
                                             analytics=url_for("showcase_analytics_sample", sample=sample) if sample else None,
                                             questions=questions,
+                                            registration=member_registration,
                                             likes=community and values["likes"],
                                             comments=community and values["comments"],
                                             poster=url_for("showcase_file", token=token, poster=1)
@@ -503,7 +513,10 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
 
     def authorized_media(con, token):
         try:
-            uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision = media.loads(token, max_age=3600)
+            uid, version, work_id, cut, privacy_revision, internal, embed, origin, form_revision, *member_tail = media.loads(token, max_age=3600)
+            if len(member_tail) > 1:
+                raise ValueError
+            member_revision = member_tail[0] if member_tail else None
             if internal:
                 media.loads(token, max_age=600)
         except (BadSignature, ValueError):
@@ -513,8 +526,12 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         work = library().get(work_id)
         policy = privacy.get_privacy(con, work_id)
         if (row["revision"] != version or work_id not in values["videos"] or not work
-                or video_version_key(work) != cut or (policy["revision"] if policy else None) != privacy_revision
-                or (not internal and library_registration.active(con, "video", work_id))):
+                or video_version_key(work) != cut or (policy["revision"] if policy else None) != privacy_revision):
+            abort(404)
+        member_form = None if internal else library_registration.active(con, "video", work_id)
+        current_member_revision = member_form["revision"] if member_form else None
+        if (member_revision != current_member_revision
+                or (member_form and member_form["timing"] == "before")):
             abort(404)
         form = None if internal else library_registration.active(con, "showcase", uid)
         if (form["revision"] if form else None) != form_revision:
@@ -522,10 +539,66 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
         allowed = content_policy(con, work, permits, values, embed, origin, internal)
         if not allowed:
             abort(404)
-        return uid, work, values, allowed, internal
+        return uid, work, values, allowed, internal, embed
+
+    @app.route("/showcase-registration/<token>", methods=["GET", "POST"])
+    def showcase_member_registration(token):
+        if request.headers.get("Sec-Fetch-Dest") not in ("iframe", "frame"):
+            abort(404)
+        with tx() as con:
+            _, work, values, _, internal, embed = authorized_media(con, token)
+            if internal:
+                abort(404)
+            form = library_registration.active(con, "video", work["id"])
+            if not form or form["timing"] not in ("during", "after"):
+                abort(404)
+            scope = ["showcase-member", token, form["revision"]]
+            admitted = False
+            sign_on = None
+            error = None
+            if request.method == "POST":
+                try:
+                    enrollment_payload = registration.loads(
+                        request.form.get("enrollment", ""), max_age=1200
+                    )
+                except BadSignature:
+                    abort(403)
+                if enrollment_payload != scope:
+                    abort(403)
+                admitted, sign_on, error = library_registration.admit(
+                    con, "video", work["id"], form, scope
+                )
+            registration_view = None
+            if not admitted:
+                registration_view = library_registration.presentation(
+                    con,
+                    form,
+                    sign_on,
+                    mailchimp_target=("video", work["id"], scope),
+                )
+            html = render_template(
+                "showcase_member_registration.html",
+                complete=admitted,
+                registration=registration_view,
+                enrollment=registration.dumps(scope),
+                registration_error=error,
+            )
+            response = make_response(html, 422 if error else 200)
+            response.headers["Cache-Control"] = "private, no-store"
+            if not embed:
+                frame_ancestors = "'self'"
+            elif values.get("domains"):
+                frame_ancestors = "'self' " + privacy.frame_policy(values["domains"])
+            else:
+                frame_ancestors = "*"
+            response.headers["Content-Security-Policy"] = (
+                "frame-ancestors " + frame_ancestors
+            )
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
 
     def question_work(con, token):
-        _, work, values, _, internal = authorized_media(con, token)
+        _, work, values, _, internal, _ = authorized_media(con, token)
         if internal or not values["questions"]:
             abort(404)
         return work
@@ -543,7 +616,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
             abort(404)
         request.max_content_length = 128 * 1024
         with tx() as con:
-            uid, work, _, _, internal = authorized_media(con, token)
+            uid, work, _, _, internal, _ = authorized_media(con, token)
             if internal:
                 abort(404)
             if library_analytics.permitted():
@@ -555,7 +628,7 @@ def register(app, tx, staff, read_works, title_for, root, operator, permits, pub
     @app.get("/showcase-media/<token>")
     def showcase_file(token):
         with tx() as con:
-            _, work, values, allowed, internal = authorized_media(con, token)
+            _, work, values, allowed, internal, _ = authorized_media(con, token)
             copy, sharing = allowed
             download = request.args.get("download") == "1"
             if download and (internal or not values["download"] or not sharing.get("download")

@@ -67,6 +67,12 @@
           <span id="showcaseCopyVideoStatus" role="status"></span>
           {% endif %}
           {% if not grid_players %}{{ player(active, 'nowPlaying', 'metadata') }}{% endif %}
+          {% if entries | selectattr('registration') | list %}
+            <section id="showcaseMemberRegistration" aria-label="Video registration" hidden>
+              <iframe title="Video registration"></iframe>
+              <button type="button" data-member-registration-dismiss>Dismiss registration</button>
+            </section>
+          {% endif %}
           {% if entries | selectattr("questions") | list %}
             {% with question_id="showcaseQuestions", question_path=url_for("viewer_showcase_questions"),
                     question_label="Ask AI about this video", questions=active.questions %}

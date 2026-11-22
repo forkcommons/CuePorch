@@ -233,6 +233,100 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(embedded_prompt).to_be_hidden()
             self.assertTrue(player.evaluate("video => video.loop"))
 
+    def test_timed_video_registration_showcase(self):
+        uid = work_id("station", "vimeo", "71")
+        endpoint = f"/api/library/work/{uid}/registration"
+        email = "viewer@example.test"
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(f"{self.base}/operator/migration")
+            page.locator("#inventory").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            page.locator("#transfer").click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+            published = self.client.post("/api/migration/public-catalog", headers=self.auth, json=dict(works=[uid]))
+            self.assertEqual(200, published.status_code)
+
+            page.goto(f"{self.base}/operator/videos/{uid}/interactivity")
+            editor = page.locator("#registrationEditor")
+            editor.locator('input[name="enabled"]').check()
+            timing = editor.locator('select[name="timing"]')
+            timing.select_option("during")
+            editor.locator('input[name="time_seconds"]').fill("1")
+            editor.get_by_role("button", name="Save registration").click()
+            expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+
+            resp = self.client.post("/api/showcases", headers=self.auth)
+            self.assertEqual(201, resp.status_code)
+            created = resp.get_json()
+            resp = self.client.put(f"/api/showcases/{created['id']}", headers=self.auth, json=dict(
+                revision=created["revision"],
+                slug=created["slug"],
+                settings=created["settings"] | dict(visibility="public", layout="featured", next_video=True, loop=True, videos=[uid])
+            ))
+            self.assertEqual(200, resp.status_code)
+            watch = f"/showcases/{created['slug']}"
+            preview = self.client.post(f"/api/showcases/{created['id']}/preview", headers=self.auth)
+            self.assertEqual(200, preview.status_code)
+            internal = self.client.get(preview.get_json()["preview"])
+            self.assertNotIn(b'id="showcaseMemberRegistration"', internal.data)
+
+            viewer = browser.new_page()
+            viewer.goto(self.base + watch)
+            video = viewer.locator(".showcase-screen video")
+            prompt = viewer.locator("#showcaseMemberRegistration")
+            form = viewer.frame_locator("#showcaseMemberRegistration iframe")
+            expect(prompt).to_be_hidden()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            expect(prompt).to_be_visible()
+            self.assertTrue(video.evaluate("video => video.paused && video.currentTime >= 1 && video.videoWidth > 0"))
+            member_url = prompt.locator("iframe").get_attribute("src")
+            self.assertEqual(404, self.client.get(member_url).status_code)
+            form.get_by_label("Email").fill(email)
+            form.get_by_role("button", name="Register and watch", exact=True).click()
+            expect(prompt).to_be_hidden()
+            expect(video).to_have_js_property("paused", False)
+            media_path = video.get_attribute("src")
+            registrant, = self.client.get(endpoint, headers=self.auth).get_json()["registrants"]
+            self.assertEqual(email, registrant["email"])
+            with self.client.get(media_path) as response:
+                self.assertEqual(200, response.status_code)
+
+            timing.select_option("after")
+            editor.get_by_role("button", name="Save registration").click()
+            expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+            self.assertEqual(404, self.client.get(media_path).status_code)
+            self.assertEqual(404, self.client.get(member_url, headers={"Sec-Fetch-Dest": "iframe"}).status_code)
+
+            saved = resp.get_json()
+            grid = self.client.put(f"/api/showcases/{saved['id']}", headers=self.auth, json=dict(
+                revision=saved["revision"], slug=saved["slug"],
+                settings=saved["settings"] | dict(layout="grid", grid_media="players"),
+            ))
+            self.assertEqual(200, grid.status_code)
+            viewer.goto(self.base + "/watch")
+            viewer.set_content(f'<iframe title="Embedded gallery" src="{self.base}{watch}/embed"></iframe>')
+            gallery = viewer.frame_locator('iframe[title="Embedded gallery"]')
+            video = gallery.locator(".showcase-playlist video")
+            prompt = gallery.locator("#showcaseMemberRegistration")
+            form = gallery.frame_locator("#showcaseMemberRegistration iframe")
+            expect(prompt).to_be_hidden()
+            video.evaluate("async video => { video.muted = true; await video.play(); }")
+            expect(prompt).to_be_visible()
+            expect(form.get_by_label("Email")).to_be_visible()
+            self.assertTrue(video.evaluate("video => video.ended && video.videoWidth > 0"))
+            prompt.get_by_role("button", name="Dismiss registration").click()
+            expect(prompt).to_be_hidden()
+            expect(video).to_have_js_property("paused", False)
+
+            timing.select_option("before")
+            editor.get_by_role("button", name="Save registration").click()
+            expect(editor.locator("#registrationStatus")).to_have_text("Registration saved.")
+            viewer.goto(self.base + watch)
+            expect(viewer.locator("video")).to_have_count(0)
+
     def test_showcase_style_migration_roundtrip(self):
         self.source.showcase_logo_fixture = "valid"
         self.source.showcase_style_fixture = dict(

@@ -2,6 +2,8 @@ import {playbackObservation} from "./playback_analytics.js";
 import {setupVideoQuestions} from "./video_questions.js";
 import {setupVideoLikes} from "./video_community.js";
 import {setupWatchComments} from "./watch_comments.js";
+import {createShowcaseRegistration} from "./showcase_member_registration.js";
+import type {ShowcaseRegistrationItem} from "./showcase_member_registration.js";
 
 interface Item {
   id: string;
@@ -15,6 +17,7 @@ interface Item {
   comments: boolean;
   poster: string | null;
   captions: { language: string; url: string; key: string }[];
+  registration?: ShowcaseRegistrationItem['registration'];
 }
 
 function copyLink(id: string, makeLink: () => URL, confirmation: string) {
@@ -43,6 +46,7 @@ function videoLink(id: string) {
 const contents = document.querySelector<HTMLScriptElement>("#showcaseContents");
 if (contents) {
   const items: Item[] = JSON.parse(contents.textContent!);
+  const registration = createShowcaseRegistration();
   const cards = Array.from(document.querySelectorAll<HTMLElement>(".showcase-playlist [data-index]"));
   const clips = Array.from(document.querySelectorAll<HTMLVideoElement>(".showcase-playlist video"));
   const video = document.querySelector<HTMLVideoElement>(".showcase-screen video");
@@ -82,6 +86,7 @@ if (contents) {
 
   function setCurrent(index: number) {
     if (index === current) return;
+    registration.closeForSelection();
     cards[current].removeAttribute("aria-current");
     cards[index].setAttribute("aria-current", "true");
     current = index;
@@ -124,7 +129,12 @@ if (contents) {
       void player.play().catch(() => {});
     }
     cards.forEach((card, index) => { card.onclick = () => playItem(index, video); });
-    video.onended = () => advance((index) => playItem(index, video));
+    video.onplay = () => { registration.guardPlay(video); };
+    video.ontimeupdate = () => registration.onProgress(items[current], video);
+    video.onended = () => {
+      const advanceCurrent = () => advance((index) => playItem(index, video));
+      if (!registration.onEnd(items[current], video, advanceCurrent)) advanceCurrent();
+    };
   } else {
     const unsampled = new Map<Element, () => void>();
     const visible = new IntersectionObserver((entries) => {
@@ -142,17 +152,23 @@ if (contents) {
         visible.observe(clip);
       }
       clip.onplay = () => {
+        if (registration.guardPlay(clip)) return;
         unsampled.get(clip)?.();
         for (const other of clips) if (other !== clip) other.pause();
         setCurrent(index);
+        registration.onProgress(items[index], clip);
+      };
+      clip.ontimeupdate = () => {
+        if (current === index) registration.onProgress(items[index], clip);
       };
       clip.onended = () => {
         if (current !== index) return;
-        advance((next) => {
+        const advanceCurrent = () => advance((next) => {
           clips[next].muted = clip.muted;
           clips[next].currentTime = 0;
           void clips[next].play().catch(() => {});
         });
+        if (!registration.onEnd(items[index], clip, advanceCurrent)) advanceCurrent();
       };
     });
   }

@@ -472,6 +472,15 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .showcase-header p, .showcase-feature p { white-space: pre-wrap; max-width: 65ch; }
 .showcase-note { font-weight: 700; font-size: .9rem; }
 .showcase-access { max-width: 30rem; }
+#showcaseMemberRegistration { margin: 1rem 0; }
+#showcaseMemberRegistration iframe {
+  display: block;
+  width: 100%;
+  height: min(70vh, 32rem);
+  border: 1px solid var(--showcase-accent);
+  background: #fff;
+}
+#showcaseMemberRegistration button { margin-top: .5rem; }
 .showcase-feature {
   position: relative;
   border-bottom: .2rem solid var(--showcase-accent);
