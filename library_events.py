@@ -2288,6 +2288,46 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
             ))
         return private(data)
 
+    @app.get("/api/live-events/<uid>/<int:opens>/hosted-analytics")
+    def live_events_hosted_analytics(uid, opens):
+        staff()
+        with tx() as con:
+            _, event = read(con, uid)
+            selected_open(event, opens)
+            target = occurrence(con, uid, opens)
+        if target is None:
+            abort(409, description="Hosted occurrence not found.")
+        if target["delivery"] not in ("ready", "replay"):
+            abort(409, description="Hosted occurrence is not ready for analytics.")
+        first, last, start, end = library_analytics.bounds()
+        try:
+            remote = str(uuid.UUID(target["remote"]))
+            summary = event_peer.audience_stats(
+                media, target["origin"], remote, start, end
+            )
+        except (ValueError, requests.RequestException):
+            abort(502, description="Analytics provider request failed.")
+        if request.args.get("format") == "csv":
+            fields = ("totalViewers", "viewersPeak", "totalWatchTime", "averageWatchTime")
+            return csv_download(
+                "hosted-analytics",
+                ("provider", "date_from", "date_to", *fields),
+                (
+                    (
+                        "PeerTube",
+                        first.isoformat(),
+                        last.isoformat(),
+                        *(summary[field] for field in fields),
+                    ),
+                ),
+            )
+        return private(dict(
+            source="PeerTube",
+            date_from=first.isoformat(),
+            date_to=last.isoformat(),
+            **summary,
+        ))
+
     def hls_manifest(delivery, raw, host_private):
         manifest = next(entry["playlistUrl"] for entry in raw["streamingPlaylists"] if entry["type"] == 1)
         directory, filename = root_path(delivery["origin"], manifest, delivery["remote"], host_private)

@@ -1,9 +1,13 @@
 """CuePorch event occurrences backed by the connected PeerTube live API."""
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+import json
+import math
 import os
 from threading import Lock
 from time import monotonic
+from urllib.parse import urlencode
 import uuid
 
 import requests
@@ -64,6 +68,32 @@ def connected_host(expected=None):
         raise
     finally:
         host.session.close()
+
+
+def audience_stats(gateway, origin, remote, start, end):
+    start_utc = datetime.fromtimestamp(start, timezone.utc)
+    end_utc = datetime.fromtimestamp(end, timezone.utc) - timedelta(milliseconds=1)
+    query = urlencode({"startDate": start_utc.isoformat(), "endDate": end_utc.isoformat()})
+    path = f"/api/v1/videos/{uuid.UUID(remote)}/stats/overall?{query}"
+    with gateway.read(origin, path, stream=True) as response:
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            body.extend(chunk)
+            if len(body) > 65536:
+                raise ValueError("response too large")
+    payload = json.loads(body)
+    if not isinstance(payload, dict):
+        raise ValueError("expected object")
+    result = {}
+    for key in ("totalViewers", "viewersPeak", "totalWatchTime", "averageWatchTime"):
+        value = payload.get(key)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"invalid {key}")
+            if (isinstance(value, float) and not math.isfinite(value)) or value < 0:
+                raise ValueError(f"invalid {key}")
+        result[key] = value
+    return result
 
 
 def find_remote(host, marker):
