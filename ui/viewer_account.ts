@@ -2,7 +2,12 @@ import {viewerRequest} from "./audience_api.js";
 import {requestSignInCode, resetSignInCode, signInValues} from "./sign_in_factor.js";
 
 interface Account {name: string; email: string; pronouns: string;}
-interface ViewingPreferences {mode: "all" | "hide_mature" | "custom"; excluded: string[]; autoplay?: boolean;}
+interface ViewingPreferences {
+  mode: "all" | "hide_mature" | "custom";
+  excluded: string[];
+  autoplay?: boolean;
+  language?: string;
+}
 
 interface LikeSharing {
   enabled: boolean;
@@ -24,6 +29,7 @@ const preferenceSection = document.querySelector<HTMLElement>("#viewerPreference
 const preferenceForm = preferenceSection.querySelector<HTMLFormElement>("form")!;
 const preferenceMode = preferenceForm.querySelector<HTMLSelectElement>("select[name=mode]")!;
 const preferenceAutoplay = preferenceForm.querySelector<HTMLSelectElement>("select[name=autoplay]")!;
+const preferenceLanguage = preferenceForm.querySelector<HTMLSelectElement>("select[name=language]")!;
 const preferenceChoices = preferenceForm.querySelector<HTMLFieldSetElement>("fieldset")!;
 const likeSharingSection = document.querySelector<HTMLElement>("#viewerLikeSharing")!;
 const likeSharingInfo = document.querySelector<HTMLElement>("#viewerLikeSharingInfo")!;
@@ -72,6 +78,8 @@ const values = (form: HTMLFormElement) => Object.fromEntries(new FormData(form))
 function showPreferences(preferences: ViewingPreferences) {
   preferenceMode.value = preferences.mode;
   preferenceAutoplay.value = preferences.autoplay === true ? "on" : preferences.autoplay === false ? "off" : "default";
+  preferenceLanguage.value = preferences.language ?? "";
+  preferenceLanguage.dataset.saved = preferenceLanguage.value;
   for (const choice of preferenceChoices.querySelectorAll<HTMLInputElement>("input")) {
     choice.checked = preferences.excluded.includes(choice.value);
   }
@@ -93,8 +101,14 @@ function showLikeSharing(next: LikeSharing | null) {
 async function showSignedIn(account: Account) {
   show(account);
   const [preferences, sharing] = await Promise.all([viewerRequest("preferences"), viewerRequest("like-sharing")]);
-  if (preferences.ok) showPreferences(await preferences.json());
-  else status.textContent = "Could not load viewing preferences. Reload to try again.";
+  if (preferences.ok) {
+    const saved: ViewingPreferences = await preferences.json();
+    if (saved.language && saved.language !== top.dataset.language) {
+      location.reload();
+      return;
+    }
+    showPreferences(saved);
+  } else status.textContent = "Could not load viewing preferences. Reload to try again.";
   if (sharing.ok) showLikeSharing(await sharing.json());
 }
 
@@ -119,13 +133,16 @@ preferenceMode.onchange = () => {
 preferenceForm.onsubmit = event => {
   event.preventDefault();
   void perform(async () => {
+    const before = preferenceLanguage.dataset.saved;
     const response = await viewerRequest("preferences", "PUT", {
       mode: preferenceMode.value, excluded: new FormData(preferenceForm).getAll("excluded"),
       autoplay: preferenceAutoplay.value === "default" ? null : preferenceAutoplay.value === "on",
+      language: preferenceLanguage.value || null,
     });
     if (!response.ok) return failure(response, {...messages, 401: "Sign in to save viewing preferences."});
     showPreferences(await response.json());
     status.textContent = "Viewing preferences saved.";
+    if (preferenceLanguage.value !== before) location.reload();
   });
 };
 
@@ -193,6 +210,7 @@ signOut.onclick = () => {
     if (!response.ok) return failure(response, {});
     show();
     status.textContent = "Signed out.";
+    if (top.dataset.language !== top.dataset.browserLanguage) location.reload();
   });
 };
 

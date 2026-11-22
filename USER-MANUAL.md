@@ -90,6 +90,8 @@ Sign in with a viewer account to **Follow creator** from a public profile or one
 
 Under **Manage your feed**, choose **Videos**, **Appearances**, and **Likes** for each followed creator and select **Save activity preferences**. In the Library, an editor can link a creator to a video through **Creator appearances** in the video details. Enter one public creator profile handle per line. Appearances respect the video's current visibility.
 
+In **Viewer account**, choose a **Language** under **Viewing preferences** to change Feed and its navigation. Choose **Use browser language** to reset the preference. This setting covers Feed and its navigation and leaves video titles, captions and other screens in their original language.
+
 To share likes with followers, sign in to your viewer account and to Team with a published creator profile in the same browser. Open **Viewer account** and select **Share new likes**. Only likes added after you turn on sharing can appear, and only while the videos are public. Select **Stop sharing likes** in your viewer account to remove those likes from followers' feeds.
 
 In **Groups**, select **New group**, enter a name, and choose the members and each folder's access. Folder shares include subfolders. Choose **No access** to remove a folder from the group. You can also remove a member or delete the group. Separate video, folder and group shares still apply. If another administrator saved changes first, use **Reload groups** before editing again.

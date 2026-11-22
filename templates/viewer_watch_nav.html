@@ -1,9 +1,9 @@
-<nav class="viewer-watch-nav" aria-label="Watch">
-  <a href="{{ url_for('catalog') }}">Explore</a>
-  <a href="{{ url_for('viewer_feed') }}">Feed</a>
-  <a href="{{ url_for('watch_later_page') }}">Watch Later</a>
-  <a href="{{ url_for('liked_videos_page') }}">Liked videos</a>
-  <a href="{{ url_for('viewer_collections_page') }}">Collections</a>
-  <a href="{{ url_for('community_groups_page') }}">Groups</a>
-  <a href="{{ url_for('viewer_account_page') }}">Viewer account</a>
+<nav class="viewer-watch-nav" aria-label="Watch"{% if viewer_language is defined %} lang="{{ viewer_language }}"{% endif %}>
+  <a href="{{ url_for('catalog') }}">{{ viewer_labels.explore if viewer_labels is defined else "Explore" }}</a>
+  <a href="{{ url_for('viewer_feed') }}">{{ viewer_labels.feed if viewer_labels is defined else "Feed" }}</a>
+  <a href="{{ url_for('watch_later_page') }}">{{ viewer_labels.watch_later if viewer_labels is defined else "Watch Later" }}</a>
+  <a href="{{ url_for('liked_videos_page') }}">{{ viewer_labels.liked_videos if viewer_labels is defined else "Liked videos" }}</a>
+  <a href="{{ url_for('viewer_collections_page') }}">{{ viewer_labels.collections if viewer_labels is defined else "Collections" }}</a>
+  <a href="{{ url_for('community_groups_page') }}">{{ viewer_labels.groups if viewer_labels is defined else "Groups" }}</a>
+  <a href="{{ url_for('viewer_account_page') }}">{{ viewer_labels.viewer_account if viewer_labels is defined else "Viewer account" }}</a>
 </nav>

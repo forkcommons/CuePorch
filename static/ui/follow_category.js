@@ -1,4 +1,9 @@
 import { viewerRequest } from "./audience_api.js";
+const feedFeedback = document.querySelector("#viewerFeed")?.dataset;
+const updateError = feedFeedback?.updateError || "Could not update your follows.";
+const loadError = feedFeedback?.loadError || "Could not load your follow status.";
+const creatorError = feedFeedback?.creatorError || "Could not unfollow creator.";
+const saveError = feedFeedback?.saveError || "Could not save preferences.";
 for (const widget of document.querySelectorAll("[data-follow-category], [data-follow-channel], [data-follow-group]")) {
     const button = widget.querySelector("button");
     const signIn = widget.querySelector("a");
@@ -26,7 +31,7 @@ for (const widget of document.querySelectorAll("[data-follow-category], [data-fo
             }
             if (!response.ok) {
                 if (method !== "GET")
-                    status.textContent = "Could not update your follows.";
+                    status.textContent = updateError;
                 return;
             }
             if (isPresetRemove) {
@@ -42,7 +47,7 @@ for (const widget of document.querySelectorAll("[data-follow-category], [data-fo
             signIn.hidden = true;
         }
         catch {
-            status.textContent = "Could not load your follow status.";
+            status.textContent = loadError;
         }
         finally {
             button.disabled = false;
@@ -72,14 +77,14 @@ for (const button of document.querySelectorAll("[data-feed-unfollow-creator]")) 
             const response = await viewerRequest("follow/" + encodeURIComponent(handle), "DELETE");
             if (!response.ok) {
                 if (status)
-                    status.textContent = "Could not unfollow creator.";
+                    status.textContent = creatorError;
                 return;
             }
             window.location.reload();
         }
         catch {
             if (status)
-                status.textContent = "Could not unfollow creator.";
+                status.textContent = creatorError;
         }
         finally {
             button.disabled = false;
@@ -100,13 +105,13 @@ for (const form of document.querySelectorAll("[data-creator-activity]")) {
                 videos: fields.has("videos"), appearances: fields.has("appearances"), likes: fields.has("likes"),
             });
             if (!response.ok) {
-                status.textContent = "Could not save preferences.";
+                status.textContent = saveError;
                 return;
             }
             window.location.reload();
         }
         catch {
-            status.textContent = "Could not save preferences.";
+            status.textContent = saveError;
         }
         finally {
             save.disabled = false;

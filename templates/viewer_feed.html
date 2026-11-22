@@ -1,25 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ viewer_language }}">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/static/cueporch.css">
-<title>Feed · CuePorch</title>
+<title>{{ viewer_labels.feed }} · CuePorch</title>
 <body class="watch-catalog">
   {% include "viewer_watch_nav.html" %}
-  <main>
-    <h1>Feed</h1>
+  <main id="viewerFeed" data-update-error="{{ feed_feedback[0] }}" data-load-error="{{ feed_feedback[1] }}"
+        data-creator-error="{{ feed_feedback[2] }}" data-save-error="{{ feed_feedback[3] }}">
+    <h1>{{ viewer_labels.feed }}</h1>
     {% if not signed_in %}
-      <p><a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}">Sign in to see your feed</a></p>
+      <p><a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}">{{ viewer_labels.sign_in_feed }}</a></p>
     {% endif %}
     {% if signed_in %}
       <details id="feed-preferences">
-        <summary>Manage your feed</summary>
+        <summary>{{ viewer_labels.manage_feed }}</summary>
         {% if category_follows %}
           <ul class="feed-follows">
             {% for item in category_follows %}
               <li data-follow-category="{{ item.label }}" data-feed-remove="true">
                 <span>{{ item.label }}</span>
-                <button type="button" aria-pressed="true" aria-label="Unfollow {{ item.label }}">Unfollow {{ item.label }}</button>
-                <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>Sign in to manage</a>
+                <button type="button" aria-pressed="true" aria-label="{{ viewer_labels.unfollow.format(name=item.label) }}">{{ viewer_labels.unfollow.format(name=item.label) }}</button>
+                <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>{{ viewer_labels.sign_in_manage }}</a>
                 <span role="status" aria-live="polite"></span>
               </li>
             {% endfor %}
@@ -30,13 +31,13 @@
             {% for item in creator_follows %}
               <li>
                 <span>{{ item.name }} (@{{ item.handle }})</span>
-                <button type="button" data-feed-unfollow-creator="{{ item.handle }}" aria-label="Unfollow {{ item.name }}">Unfollow {{ item.name }}</button>
+                <button type="button" data-feed-unfollow-creator="{{ item.handle }}" aria-label="{{ viewer_labels.unfollow.format(name=item.name) }}">{{ viewer_labels.unfollow.format(name=item.name) }}</button>
                 <span role="status" aria-live="polite"></span>
                 <form method="post" data-creator-activity="{{ item.handle }}">
-                  <label><input type="checkbox" name="videos"{% if item.videos %} checked{% endif %}> Videos</label>
-                  <label><input type="checkbox" name="appearances"{% if item.appearances %} checked{% endif %}> Appearances</label>
-                  <label><input type="checkbox" name="likes"{% if item.likes %} checked{% endif %}> Likes</label>
-                  <button type="submit">Save activity preferences</button>
+                  <label><input type="checkbox" name="videos"{% if item.videos %} checked{% endif %}> {{ viewer_labels.videos }}</label>
+                  <label><input type="checkbox" name="appearances"{% if item.appearances %} checked{% endif %}> {{ viewer_labels.appearances }}</label>
+                  <label><input type="checkbox" name="likes"{% if item.likes %} checked{% endif %}> {{ viewer_labels.likes }}</label>
+                  <button type="submit">{{ viewer_labels.save_activity }}</button>
                   <span role="status" aria-live="polite"></span>
                 </form>
               </li>
@@ -49,8 +50,8 @@
               <li>
                 <span>{{ item.title }}</span>
                 <div data-follow-channel="{{ item.slug }}" data-feed-remove="true">
-                  <button type="button" aria-pressed="true" aria-label="Unfollow {{ item.title }}">Unfollow {{ item.title }}</button>
-                  <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>Sign in to manage</a>
+                  <button type="button" aria-pressed="true" aria-label="{{ viewer_labels.unfollow.format(name=item.title) }}">{{ viewer_labels.unfollow.format(name=item.title) }}</button>
+                  <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>{{ viewer_labels.sign_in_manage }}</a>
                   <span role="status" aria-live="polite"></span>
                 </div>
               </li>
@@ -63,8 +64,8 @@
               <li>
                 <span>{{ item.title }}</span>
                 <div data-follow-group="{{ item.slug }}" data-feed-remove="true">
-                  <button type="button" aria-pressed="true" aria-label="Unfollow {{ item.title }}">Unfollow {{ item.title }}</button>
-                  <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>Sign in to manage</a>
+                  <button type="button" aria-pressed="true" aria-label="{{ viewer_labels.unfollow.format(name=item.title) }}">{{ viewer_labels.unfollow.format(name=item.title) }}</button>
+                  <a href="{{ url_for('viewer_account_page', next=url_for('viewer_feed')) }}" hidden>{{ viewer_labels.sign_in_manage }}</a>
                   <span role="status" aria-live="polite"></span>
                 </div>
               </li>
@@ -90,15 +91,15 @@
       </ul>
     {% elif signed_in %}
       {% if category_follows or channel_follows or group_follows %}
-        <p>No public videos from your follows.</p>
+        <p>{{ viewer_labels.empty_follows }}</p>
       {% else %}
-        <p>No public videos from creators you follow.</p>
+        <p>{{ viewer_labels.empty_creators }}</p>
       {% endif %}
     {% endif %}
     {% if signed_in and (page > 1 or next_page) %}
-      <nav aria-label="Feed pages">
-        {% if page > 1 %}<a href="{{ url_for('viewer_feed', page=page-1) }}">Previous page</a>{% endif %}
-        {% if next_page %}<a href="{{ url_for('viewer_feed', page=page+1) }}">Next page</a>{% endif %}
+      <nav aria-label="{{ viewer_labels.feed_pages }}">
+        {% if page > 1 %}<a href="{{ url_for('viewer_feed', page=page-1) }}">{{ viewer_labels.previous_page }}</a>{% endif %}
+        {% if next_page %}<a href="{{ url_for('viewer_feed', page=page+1) }}">{{ viewer_labels.next_page }}</a>{% endif %}
       </nav>
     {% endif %}
   </main>

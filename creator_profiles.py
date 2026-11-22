@@ -10,6 +10,7 @@ from flask import abort, make_response, render_template, request, url_for
 import content_rating
 import library_registration
 import library_showcases
+import viewer_locale
 from browser_account_security import private, same_origin, secure_site
 from library_interactivity import text_field, web_link
 from library_trash import hidden
@@ -252,6 +253,7 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
         rows = []
         with tx() as con:
             account = viewer(con, required=False)
+            preference = account_preferences(con, account["id"]) if account else {}
             if account:
                 owned = {row["work"]: row for row in con.execute(f"""
                     SELECT o.work,p.handle,p.name,t.published_at
@@ -305,7 +307,6 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
                 channel_follows.sort(key=lambda item: (item["title"].casefold(), item["slug"]))
                 group_follows, group_works = followed_program(con, account["id"])
                 if owned or category_keys or channel_works or group_works or appearance_works or liked_works:
-                    preference = account_preferences(con, account["id"])
                     entries = ordered(
                         entry for (kind, slug), entry in listing(con).items()
                         if ((kind, slug) in group_works or (kind, slug) in liked_works or (
@@ -328,7 +329,8 @@ def register_audience(app, tx, viewer, mutation, listing, entry_payload, ordered
         return private(render_template("viewer_feed.html", rows=rows[start:start + page_size],
                                        signed_in=bool(account), page=page, next_page=start + page_size < len(rows),
                                        category_follows=category_follows, creator_follows=creator_follows,
-                                       channel_follows=channel_follows, group_follows=group_follows))
+                                       channel_follows=channel_follows, group_follows=group_follows,
+                                       **viewer_locale.template_context(preference)))
 
 
 def register(app, tx, origin, member, mutation, listing, entry_payload, read_works, title_for, note):

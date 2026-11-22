@@ -14,6 +14,7 @@ const preferenceSection = document.querySelector("#viewerPreferences");
 const preferenceForm = preferenceSection.querySelector("form");
 const preferenceMode = preferenceForm.querySelector("select[name=mode]");
 const preferenceAutoplay = preferenceForm.querySelector("select[name=autoplay]");
+const preferenceLanguage = preferenceForm.querySelector("select[name=language]");
 const preferenceChoices = preferenceForm.querySelector("fieldset");
 const likeSharingSection = document.querySelector("#viewerLikeSharing");
 const likeSharingInfo = document.querySelector("#viewerLikeSharingInfo");
@@ -61,6 +62,8 @@ const values = (form) => Object.fromEntries(new FormData(form));
 function showPreferences(preferences) {
     preferenceMode.value = preferences.mode;
     preferenceAutoplay.value = preferences.autoplay === true ? "on" : preferences.autoplay === false ? "off" : "default";
+    preferenceLanguage.value = preferences.language ?? "";
+    preferenceLanguage.dataset.saved = preferenceLanguage.value;
     for (const choice of preferenceChoices.querySelectorAll("input")) {
         choice.checked = preferences.excluded.includes(choice.value);
     }
@@ -81,8 +84,14 @@ function showLikeSharing(next) {
 async function showSignedIn(account) {
     show(account);
     const [preferences, sharing] = await Promise.all([viewerRequest("preferences"), viewerRequest("like-sharing")]);
-    if (preferences.ok)
-        showPreferences(await preferences.json());
+    if (preferences.ok) {
+        const saved = await preferences.json();
+        if (saved.language && saved.language !== top.dataset.language) {
+            location.reload();
+            return;
+        }
+        showPreferences(saved);
+    }
     else
         status.textContent = "Could not load viewing preferences. Reload to try again.";
     if (sharing.ok)
@@ -109,14 +118,18 @@ preferenceMode.onchange = () => {
 preferenceForm.onsubmit = event => {
     event.preventDefault();
     void perform(async () => {
+        const before = preferenceLanguage.dataset.saved;
         const response = await viewerRequest("preferences", "PUT", {
             mode: preferenceMode.value, excluded: new FormData(preferenceForm).getAll("excluded"),
             autoplay: preferenceAutoplay.value === "default" ? null : preferenceAutoplay.value === "on",
+            language: preferenceLanguage.value || null,
         });
         if (!response.ok)
             return failure(response, { ...messages, 401: "Sign in to save viewing preferences." });
         showPreferences(await response.json());
         status.textContent = "Viewing preferences saved.";
+        if (preferenceLanguage.value !== before)
+            location.reload();
     });
 };
 function connect(form, method) {
@@ -187,6 +200,8 @@ signOut.onclick = () => {
             return failure(response, {});
         show();
         status.textContent = "Signed out.";
+        if (top.dataset.language !== top.dataset.browserLanguage)
+            location.reload();
     });
 };
 void perform(async () => {
