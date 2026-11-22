@@ -161,6 +161,12 @@ class VimeoFolderMigration(unittest.TestCase):
             recordings = snapshot["live_event_archives"][0]["recordings"]
             self.assertEqual([("71", uid), ("999", None), ("998", archive_uid)],
                              [(r["source_id"], r["work"]) for r in recordings])
+            self.assertEqual('2026-11-04T01:30:45.125000+00:00', recordings[0]['streamed_on'])
+            for recording in recordings[1:]:
+                self.assertNotIn('streamed_on', recording)
+            streamed = event.locator('li').filter(has_text='Council replay').locator('time')
+            expect(streamed).to_have_attribute('datetime', '2026-11-04T01:30:45.125Z')
+            expect(streamed).to_have_attribute('title', '2026-11-04T01:30:45.125000+00:00')
             self.assertIn("HTTP 404", recordings[1]["issue"])
             expect(page.get_by_role("cell", name="998", exact=True)).to_be_visible()
             self.assertNotIn("fixture-ingest-key", json.dumps(snapshot))
