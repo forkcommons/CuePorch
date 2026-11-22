@@ -683,8 +683,15 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     abort(409)
             return event_revision, title[:100].strip(), slot, saved["revision"]
 
+        def skipped_owners(con):
+            return frozenset(row["owner"] for row in con.execute(
+                "SELECT owner FROM live_destination_series_skip"
+                " WHERE event=? AND provider='youtube-live' AND opens=?", (uid, opens),
+            ))
+
         with tx() as con:
             event_revision, title, slot, revision = access(con)
+            initially_skipped = skipped_owners(con) if restart is not None else frozenset()
             if remember_series:
                 live_destination_series.ensure_recurring(con, uid)
         job_table, job_scope, job_key = (
@@ -697,6 +704,8 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
             if live_revision != event_revision or live_connection != revision:
                 abort(409, "The event or YouTube connection changed. Reload destinations.")
             if restart is not None:
+                if skipped_owners(con) - initially_skipped:
+                    abort(409, "YouTube was skipped for this occurrence. Reload destinations.")
                 old_youtube_destination(con, uid, opens, restart, revision)
 
         def before_send():
@@ -823,6 +832,9 @@ def register(app, tx, staff, event_access, outputs, sharing_access, enforce_shar
                     live_destination_series.save(con, uid, 'youtube-live', job['channel'], revision, event_revision, opens, {'privacy': privacy})
                 advance(con, "complete", destination=destination)
                 if restart is not None:
+                    con.execute("DELETE FROM live_destination_series_skip"
+                                " WHERE event=? AND provider='youtube-live' AND opens=? AND owner=?",
+                                (uid, opens, channel))
                     con.execute("""UPDATE youtube_live_creation SET channel=?,privacy=?,marker=?,broadcast=?,stream=?,destination=?
                         WHERE event=? AND opens=? AND destination=? AND phase='complete'""",
                                 (channel, privacy, marker, broadcast, stream, destination, uid, opens, restart))
