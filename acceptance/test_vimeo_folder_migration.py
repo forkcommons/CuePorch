@@ -162,6 +162,7 @@ class VimeoFolderMigration(unittest.TestCase):
         self.client = app.test_client()
 
     def test_showcase_style_migration_roundtrip(self):
+        self.source.showcase_logo_fixture = "valid"
         self.source.showcase_style_fixture = dict(
             theme="dark", layout="player", brand_color="267ABC",
             web_brand_color=True, embed_brand_color=True, autoplay=True, loop=True,
@@ -182,11 +183,13 @@ class VimeoFolderMigration(unittest.TestCase):
             response = self.client.get("/api/migration", headers=self.auth)
             self.assertNotIn("no-copy-source-password", response.get_data(as_text=True))
             self.assertNotIn("no-copy-source-html", response.get_data(as_text=True))
+            self.assertNotIn("/media/vimeo-logo.png", response.get_data(as_text=True))
             album, = response.get_json()["showcases"]
             uid = album["target"]
             endpoint = f"/api/showcases/{uid}"
             gallery = self.client.get(endpoint, headers=self.auth).get_json()
             settings = gallery["settings"]
+            self.assertRegex(settings["logo"], r"^[0-9a-f]{64}$")
             self.assertEqual("password", album["source_visibility"])
             self.assertEqual("private", settings["visibility"])
             self.assertFalse(settings["indexable"])
@@ -207,11 +210,15 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(frame_body).to_have_attribute("data-next", "yes")
             expect(frame_body).to_have_attribute("data-loop", "yes")
             expect(frame_body).to_have_attribute("style", "--showcase-accent:#267abc")
+            logo = frame_body.locator('img[alt="Publisher logo"]')
+            expect(logo).to_be_visible()
+            expect(logo).to_have_js_property("naturalWidth", 1)
 
             accent.fill("#123456")
             page.get_by_role("button", name="Save showcase").click()
             expect(page.locator("#showcaseStatus")).to_have_text("Showcase saved.")
 
+            self.source.showcase_logo_fixture = "invalid"
             self.source.showcase_style_fixture.update(brand_color="dddddd", embed_brand_color=False)
             page.goto(f"{self.base}/operator/migration")
             page.locator("#inventory").click()
@@ -219,8 +226,10 @@ class VimeoFolderMigration(unittest.TestCase):
             expect(page.locator("#showcaseInventoryRows")).to_contain_text("web and embed accent preferences differ")
             page.locator("#transfer").click()
             expect(page.locator("#status")).to_have_text("transferred", timeout=30000)
+            expect(page.locator("#showcaseInventoryRows")).to_contain_text("invalid_image_type")
             updated = self.client.get(endpoint, headers=self.auth).get_json()
             self.assertEqual("#123456", updated["settings"]["accent"])
+            self.assertEqual(settings["logo"], updated["settings"]["logo"])
 
     def test_reconciliation_csv_export(self):
         self.source.extra_inventory_count = 101

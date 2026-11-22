@@ -82,7 +82,10 @@ def source_logo_blob(root, work, surface, digest):
         or surface != "embed"
     ):
         return None
-    descriptor = work.get("source_embed_logo")
+    return stored_image_blob(root, work.get("source_embed_logo"), digest)
+
+
+def stored_image_blob(root, descriptor, digest):
     if not isinstance(descriptor, dict):
         return None
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):

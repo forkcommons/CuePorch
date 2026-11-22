@@ -1089,7 +1089,44 @@ def showcase_style(album):
     return style
 
 
-def showcase_inventory(institution, source, account, video_ids):
+def transfer_showcase_logo(root, source, item, dry_run, issues):
+    web, embed = item.get("web_custom_logo"), item.get("embed_custom_logo")
+    if type(web) is bool and type(embed) is bool and web != embed:
+        issues.append("The Vimeo web and embed logo preferences differ. Choose a logo in CuePorch.")
+    if web is not True or embed is not True:
+        return {}
+
+    logo = item.get("custom_logo")
+    sizes = logo.get("sizes") if isinstance(logo, dict) else None
+    chosen = None
+    for size in sizes if isinstance(sizes, list) else []:
+        if not isinstance(size, dict):
+            continue
+        width, height, link = size.get("width"), size.get("height"), size.get("link")
+        if (type(width) is not int or type(height) is not int or not 1 <= width <= 1280
+                or not 1 <= height <= 1280 or not isinstance(link, str) or not link):
+            continue
+        if chosen is None or width > chosen["width"]:
+            chosen = size
+    if chosen is None:
+        issues.append("The Vimeo showcase logo did not include a usable image.")
+        return {}
+    if dry_run:
+        return dict(source_logo_available=True)
+
+    try:
+        return dict(source_logo=store(root, source, chosen["link"], None, None,
+                                      max_bytes=4 * 1024 * 1024, check_image=True, vimeo_image=True))
+    except SourceFailure as exc:
+        if exc.status not in (403, 404):
+            raise
+        issues.append(f"Showcase logo returned HTTP {exc.status}.")
+    except MediaFailure as exc:
+        issues.append(f"Showcase logo unavailable ({exc.reason}).")
+    return {}
+
+
+def showcase_inventory(institution, source, account, video_ids, *, root, dry_run):
     path = account + "/albums"
     try:
         albums = list(source.pages(path))
@@ -1133,13 +1170,14 @@ def showcase_inventory(institution, source, account, video_ids):
         if type(web_brand) is bool and type(embed_brand) is bool and web_brand != embed_brand:
             issues.append("The Vimeo web and embed accent preferences differ. Choose the accent in CuePorch.")
         title, description = item.get("name"), item.get("description")
+        logo = transfer_showcase_logo(root, source, item, dry_run, issues)
         result.append(dict(id=work_id(institution, "vimeo-showcase", canonical),
                            uri=canonical, source_id=identifier, source_url=f"https://vimeo.com/showcase/{identifier}",
                            title=(title.strip()[:128] if isinstance(title, str) else "") or "Untitled showcase",
                            description=description.strip()[:5000] if isinstance(description, str) else "",
                            source_visibility=visibility, source_style=showcase_style(item),
                            members=list(dict.fromkeys(recovered)),
-                           missing=list(dict.fromkeys(missing)), issues=issues))
+                           missing=list(dict.fromkeys(missing)), issues=issues, **logo))
     return result, None
 
 
@@ -1408,9 +1446,9 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
     resolve_archive_recordings(institution, source, account, live_event_archives, videos, video_ids)
     if progress:
         progress(0, len(videos))
-    showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids)
-    folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "objects").mkdir(exist_ok=True)
+    showcases, showcase_issue = showcase_inventory(institution, source, account, video_ids, root=root, dry_run=dry_run)
+    folders, folder_map, folder_issue = folder_inventory(institution, source, account, profile, videos)
     (root / "checkpoints").mkdir(exist_ok=True)
     works = []
     for video in videos:
