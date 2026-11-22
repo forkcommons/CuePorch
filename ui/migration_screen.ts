@@ -111,6 +111,24 @@ async function poll(page = currentPage) {
       details.append(summary, list);
       previousCuts.append(details);
     }
+    const audioRecovery = ((w.audio_recovery ?? []) as {version_uri:string;language?:string;kind?:string;state:string;issue?:string}[]);
+    const audioCell = row.insertCell();
+    if (!audioRecovery.length) {
+      audioCell.textContent = "None reported";
+    } else {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `${audioRecovery.length} audio result${audioRecovery.length === 1 ? "" : "s"}`;
+      details.appendChild(summary);
+      const stateLabels: Record<string, string> = { available: "Available to transfer", recovered: "Recovered", disabled: "Disabled on Vimeo", owner_file_needed: "Owner file needed", inventory_unavailable: "Source inventory unavailable" };
+      for (const audio of audioRecovery) {
+        const line = document.createElement("div");
+        const lastSegment = audio.version_uri.split("/").pop() ?? audio.version_uri;
+        line.textContent = [`Vimeo version ${lastSegment}`, audio.language, audio.kind, stateLabels[audio.state] ?? audio.state, audio.issue].filter(Boolean).join(" · ");
+        details.appendChild(line);
+      }
+      audioCell.appendChild(details);
+    }
     const exceptions = [
       ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
       ...(w.transfer_issues || []).map((issue: {role: string; http_status?: number; reason?: string}) =>

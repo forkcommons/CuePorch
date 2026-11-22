@@ -365,6 +365,131 @@ def retain_previous_versions(root, source, video_uri, title, versions, *, dry_ru
     return history, recovery
 
 
+def alternate_audio_asset(row, version_uri):
+    from library_audio import FORMATS
+    from subtitles import LANGUAGE
+
+    uri = folder_field(row, "uri")
+    if not isinstance(uri, str) or not re.fullmatch(re.escape(version_uri) + r"/audiotracks/[A-Za-z0-9-]+", uri):
+        return None
+    code = folder_field(row, "language", "code")
+    language = code.lower() if isinstance(code, str) and LANGUAGE.fullmatch(code) else None
+    audio_type = row.get("type")
+    kinds = {"main": "dubbed", "descriptive": "description", "commentary": "commentary"}
+    kind = kinds.get(audio_type) if isinstance(audio_type, str) else None
+    report = dict(version_uri=version_uri, uri=uri, language=language, kind=kind, state="owner_file_needed")
+    if row.get("active") is False:
+        report["state"] = "disabled"
+        return report, None
+    if not language or not kind or row.get("active") is not True:
+        return report, None
+    downloads = row.get("download")
+    if folder_field(row, "transcode", "status") == "complete" and isinstance(downloads, list):
+        for item in downloads:
+            extension = folder_field(item, "extension")
+            if (isinstance(extension, str) and extension in FORMATS and isinstance(item.get("link"), str)
+                    and item["link"] and item.get("rendition") == "source"):
+                report["state"] = "available"
+                return report, (item["link"], extension)
+    return report, None
+
+
+def vimeo_audio_tracks(source, version_uri):
+    try:
+        rows = list(source.pages(version_uri + "/audiotracks"))
+    except SourceFailure as error:
+        if error.status not in (403, 404, 410):
+            raise
+        yield dict(version_uri=version_uri, state="inventory_unavailable", issue=f"HTTP {error.status}"), None
+        return
+    seen = set()
+    for row in rows:
+        item = alternate_audio_asset(row, version_uri)
+        if item is None:
+            continue
+        report, asset = item
+        if report["uri"] not in seen:
+            seen.add(report["uri"])
+            yield report, asset
+
+
+def recover_alternate_audio(root, source, playback, asset, *, refresh):
+    from subprocess import TimeoutExpired
+
+    import library_audio
+
+    link, format = asset
+    try:
+        raw = dict(store(root, source, link, None, None), format=format)
+    except SourceFailure as error:
+        if error.status == 429:
+            raise
+        if refresh and error.status in (401, 403, 410):
+            raise RefreshLinks() from None
+        return None, f"Source audio unavailable (HTTP {error.status})"
+    except ValueError:
+        return None, "Could not download the source audio"
+
+    scope = f"{playback['sha256']}:{raw['sha256']}:{format}"
+    key = hashlib.sha256(scope.encode()).hexdigest()
+    checkpoint = root / "checkpoints" / f"audio-{key}.json"
+    try:
+        rendition = json.loads(checkpoint.read_text(encoding="utf8"))
+        if verified_version_objects(root, [rendition]):
+            return dict(source=raw, rendition=rendition), None
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    with tempfile.TemporaryDirectory(dir=root) as temp:
+        target = Path(temp) / "audio.mp4"
+        try:
+            library_audio.render_audio(root / "objects" / playback["sha256"],
+                                       root / "objects" / raw["sha256"],
+                                       target, library_audio.FORMATS[format])
+            rendition = library_audio.object_info(target, "mp4")
+            library_audio.store(root, target, rendition)
+        except (OSError, ValueError, TimeoutExpired):
+            return None, "Could not prepare alternate audio"
+    dump(checkpoint, rendition)
+    return dict(source=raw, rendition=rendition), None
+
+
+def attach_version_audio(root, source, record, versions, *, dry_run, refresh):
+    from catalog import video_version_key
+    from library_privacy import playback
+
+    cuts = {cut.get("source_version"): cut for cut in [record, *record.get("versions_history", [])]}
+    video_uri = "/videos/" + record["source_id"]
+    version_uris = dict.fromkeys(canonical_version_uri(video_uri, version.get("uri")) for version in versions)
+    reports = []
+    for uri in version_uris:
+        if uri is None:
+            continue
+        cut = cuts.get(uri)
+        for report, asset in vimeo_audio_tracks(source, uri):
+            reports.append(report)
+            if dry_run or asset is None:
+                continue
+            selected = playback(cut) if cut else None
+            if selected is None:
+                report.update(state="owner_file_needed", issue="This cut needs a playback file first")
+                continue
+            key = video_version_key(cut)
+            edit = record.setdefault("language_edits", {}).setdefault(key, {})
+            slot = [report["language"], report["kind"]]
+            if slot in edit.get("vimeo_audio_slots", []):
+                report.update(state="owner_file_needed", issue="This cut already has audio with that language and type")
+                continue
+            parts, issue = recover_alternate_audio(root, source, selected, asset, refresh=refresh)
+            if parts is None:
+                report.update(state="owner_file_needed", issue=issue)
+                continue
+            edit.setdefault("audio", []).append(dict(parts, language=slot[0], kind=slot[1]))
+            edit.setdefault("vimeo_audio_slots", []).append(slot)
+            report["state"] = "recovered"
+    if reports:
+        record["audio_recovery"] = reports
+
+
 def original_url(video, vid):
     fallback = "https://vimeo.com/" + vid
     link = video.get("link")
@@ -767,6 +892,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             active_time = active.get("upload_date") or active.get("created_time")
             if isinstance(active_time, str):
                 record["version_saved_at"] = active_time
+        attach_version_audio(root, source, record, versions, dry_run=dry_run, refresh=refresh)
         works.append(record)
         if progress:
             progress(len(works), len(videos))

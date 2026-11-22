@@ -8,7 +8,22 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 
-def build_server(directory, port=0, *, version_fixture=False):
+def version_audio_fixture(directory):
+    files = {}
+    for name, frequency, codec in (
+            ("version-203-es.wav", 880, "pcm_s16le"),
+            ("version-202-en.mp3", 660, "libmp3lame")):
+        target = directory / name
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-f", "lavfi",
+            "-i", f"sine=frequency={frequency}:duration=2",
+            "-c:a", codec, str(target),
+        ], check=True)
+        files[name] = target
+    return files
+
+
+def build_server(directory, port=0, *, version_fixture=False, audio_fixture=False):
     directory.mkdir(parents=True, exist_ok=True)
     clip = directory / "meeting.mp4"
     if not clip.exists():
@@ -53,6 +68,7 @@ def build_server(directory, port=0, *, version_fixture=False):
                     "-c:v", video_codec, "-pix_fmt", "yuv420p", "-c:a", audio_codec, str(target),
                 ], check=True)
             previous[extension] = target.read_bytes()
+    audio = version_audio_fixture(directory) if audio_fixture else {}
     caption = (
         b"WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nThe public meeting is in session.\n"
     )
@@ -73,6 +89,12 @@ def build_server(directory, port=0, *, version_fixture=False):
                 extension = path.rsplit(".", 1)[1]
                 content_type = "video/" + extension
                 data = previous[extension]
+            elif audio_fixture and path.rsplit("/", 1)[0] == "/media" and path.rsplit("/", 1)[1] in audio:
+                if self.headers.get("Authorization"):
+                    return self.send_error(400)
+                name = path.rsplit("/", 1)[1]
+                data = audio[name].read_bytes()
+                content_type = "audio/wav" if name.endswith(".wav") else "audio/mpeg"
             elif path.startswith("/media/"):
                 content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
@@ -108,6 +130,31 @@ def build_server(directory, port=0, *, version_fixture=False):
                     return
                 if version_fixture and path == "/videos/71/versions/201":
                     return self.send_error(403)
+                if audio_fixture and path.endswith("/audiotracks"):
+                    if path == "/videos/71/versions/201/audiotracks":
+                        return self.send_error(403)
+                    specs = {
+                        "/videos/71/versions/203/audiotracks": [
+                            ("main", "es", "version-203-es.wav"), ("descriptive", "en", None),
+                        ],
+                        "/videos/71/versions/202/audiotracks": [("commentary", "en", "version-202-en.mp3")],
+                    }
+                    if path not in specs and path != "/videos/71/versions/200/audiotracks":
+                        return self.send_error(404)
+                    data = json.dumps([
+                        dict(uri=f"{path}/fixture-{kind}-{lang}", type=kind, language=dict(code=lang),
+                             active=True, transcode=dict(status="complete"), download=[
+                                 dict(rendition="source", extension=name.rsplit(".", 1)[1],
+                                      link=f"{origin}/media/{name}?fixture-signature=short-lived")
+                             ] if name else [])
+                        for kind, lang, name in specs.get(path, [])
+                    ]).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 following = None
                 total = None
                 if path == "/users/10/albums":
@@ -141,7 +188,7 @@ def build_server(directory, port=0, *, version_fixture=False):
                         dict(
                             uri="/videos/71",
                             name="Station meeting",
-                            privacy=dict(view="anybody", embed="public"),
+                            privacy=dict(view="password" if audio_fixture else "anybody", embed="public"),
                             duration=4,
                             user=dict(name="Station team"),
                             modified_time="2026-11-03",

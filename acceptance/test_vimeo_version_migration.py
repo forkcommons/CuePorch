@@ -15,6 +15,7 @@ from werkzeug.serving import make_server
 from browser import chromium
 from cueporch import work_id
 from demo_source import build_server
+from installed_audio_tracks import SAMPLE_AUDIO
 from institution import create_app
 from test_drive_import import QuietHandler, service_worker
 
@@ -27,7 +28,7 @@ class VimeoVersionMigration(unittest.TestCase):
         (home / "manifest.json").write_text(
             json.dumps(dict(institution="station", schema=1, works=[])), encoding="utf8",
         )
-        source = self.enterContext(build_server(self.temp / "vimeo", version_fixture=True))
+        source = self.enterContext(build_server(self.temp / "vimeo", version_fixture=True, audio_fixture=True))
         self.requests = Counter()
         self.denied = set()
         handler = source.RequestHandlerClass
@@ -130,5 +131,86 @@ class VimeoVersionMigration(unittest.TestCase):
             self.assertEqual(mp4_key, after[0]["key"])
             self.assertEqual({item["key"] for item in before}, {item["key"] for item in after})
             self.assertEqual([1, 1], [self.requests[path] for path in external_media])
+            for manifest in self.temp.rglob("*.json"):
+                self.assertNotIn("fixture-signature", manifest.read_text(encoding="utf8"))
+
+    def test_migration_preserves_version_alternate_audio(self):
+        uid = work_id("station", "vimeo", "71")
+        work = f"/api/library/work/{uid}"
+        audio = work + "/audio-tracks"
+        source_paths = ("version-203-es.wav", "version-202-en.mp3")
+        password = "fixture-screening-audio"
+
+        def get_tracks():
+            response = self.client.get(audio, headers=self.auth)
+            self.assertEqual(200, response.status_code)
+            return response.get_json()
+
+        def confirm_source(kind, language, filename):
+            path = f"{audio}/{kind}/{language}"
+            with self.client.get(path, headers=self.auth) as response:
+                self.assertEqual(200, response.status_code)
+                self.assertEqual((self.temp / "vimeo" / filename).read_bytes(), response.data)
+            self.assertEqual(403, self.client.get(path).status_code)
+
+        def play_track(browser, value, tone, width):
+            viewer = browser.new_page()
+            viewer.goto(self.base + f"/watch/work/{uid}")
+            viewer.get_by_label("Video password").fill(password)
+            viewer.get_by_role("button", name="Watch video").click()
+            player = viewer.locator("video")
+            player.click(position={"x": 12, "y": 12})
+            selector = viewer.get_by_role("combobox", name="Audio track", exact=True)
+            selector.select_option(value)
+            expect(player).to_have_attribute("data-audio-track", value)
+            self.assertAlmostEqual(tone, player.evaluate(SAMPLE_AUDIO), delta=24)
+            self.assertEqual(width, player.evaluate("video => video.videoWidth"))
+            viewer.close()
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            page.get_by_role("button", name="Preview transfer").click()
+            expect(page.locator("#status")).to_have_text("inventoried", timeout=15000)
+            results = page.get_by_text("4 audio results", exact=True)
+            results.click()
+            expect(page.get_by_text("Vimeo version 203 · es · dubbed · Available to transfer")).to_be_visible()
+            expect(page.get_by_text("Vimeo version 203 · en · description · Owner file needed")).to_be_visible()
+            expect(page.get_by_text("Vimeo version 201 · Source inventory unavailable · HTTP 403")).to_be_visible()
+            self.assertEqual([0, 0], [self.requests[f"/media/{name}"] for name in source_paths])
+
+            transfer = page.get_by_role("button", name="Transfer privately")
+            transfer.click()
+            expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            results.click()
+            expect(page.get_by_text("Vimeo version 203 · es · dubbed · Recovered")).to_be_visible()
+            self.assertEqual(404, self.client.get(f"/watch/work/{uid}").status_code)
+            current = get_tracks()
+            self.assertEqual([("es", "dubbed")], [(item["language"], item["kind"]) for item in current["tracks"]])
+            confirm_source("dubbed", "es", source_paths[0])
+            published = self.client.put(work + "/source-privacy", headers=self.auth, json={"password": password})
+            self.assertEqual(200, published.status_code, published.get_data(as_text=True))
+            play_track(browser, "dubbed:es", 880, 320)
+
+            versions = self.client.get(work + "/versions", headers=self.auth).get_json()
+            old = next(version for version in versions if version["source_version"] == "/videos/71/versions/202")
+            restored = self.client.post(work + "/versions/restore", headers=self.auth, json={
+                "current": current["version"], "restore": old["key"],
+            })
+            self.assertEqual(200, restored.status_code, restored.get_data(as_text=True))
+            summary = get_tracks()
+            self.assertEqual([("en", "commentary")], [(item["language"], item["kind"]) for item in summary["tracks"]])
+            confirm_source("commentary", "en", source_paths[1])
+            play_track(browser, "commentary:en", 660, 256)
+
+            removed = self.client.delete(audio + "/commentary/en", headers=self.auth, json={
+                "version": old["key"], "revision": summary["tracks"][0]["revision"],
+            })
+            self.assertEqual(200, removed.status_code, removed.get_data(as_text=True))
+            with patch("library_audio.render_audio", side_effect=AssertionError("Cached rendition was rendered again")):
+                transfer.click()
+                expect(page.locator("#status")).to_have_text("transferred", timeout=20000)
+            self.assertEqual({"version": old["key"], "tracks": [], "available": True}, get_tracks())
             for manifest in self.temp.rglob("*.json"):
                 self.assertNotIn("fixture-signature", manifest.read_text(encoding="utf8"))
