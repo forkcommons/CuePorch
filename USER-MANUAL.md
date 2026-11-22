@@ -500,6 +500,8 @@ Use Speaker lineup on the Event landing page to create or edit speaker profiles,
 
 In **Event page languages**, choose the base language, select a translation language, and enter the translated title and description. Save and select **Preview** to see the draft, then select **Published** and save so viewers can see it. Missing translated fields use the original event text, and to change the base language clear and save all translations first.
 
+For each language, enter translated roles and bios for the speakers on the lineup. Speaker names come from the shared profile. If an original role or bio changes, CuePorch flags the translation. Edit it or select **Mark current** to keep the existing wording, then save.
+
 Add a **Player logo** and **Player byline** to identify the event during live playback and replay. **Show live badge** and **Show current viewer count** are optional and appear during the live broadcast. The count represents CuePorch players currently watching, with privacy opt-outs excluded. To remove the logo from open players and revoke its address, choose **Remove logo** and save.
 
 Turn on **Customize viewer controls** to choose the play button position, primary, accent and icon colors, and whether viewers see the event title, progress, volume, picture-in-picture and fullscreen controls. Viewers can seek through the available live DVR window or a replay when progress is shown. Browser support determines whether picture-in-picture and fullscreen appear. The same settings apply to the watch page and its embeds. Turn the switch off to restore the standard player.

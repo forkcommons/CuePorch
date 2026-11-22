@@ -1,4 +1,4 @@
-export function setupSpeakerLineup(onEdit) {
+export function setupSpeakerLineup(onEdit, onChange) {
     const select = document.querySelector('#eventLandingSpeakerChoice');
     const addButton = document.querySelector('#eventLandingSpeakerAdd');
     const rows = document.querySelector('#eventLandingSpeakerRows');
@@ -61,6 +61,7 @@ export function setupSpeakerLineup(onEdit) {
             li.append(remove, up, down);
             rows.append(li);
         });
+        onChange?.();
     };
     addButton.addEventListener('click', () => {
         const id = select.value;
@@ -81,6 +82,12 @@ export function setupSpeakerLineup(onEdit) {
             renderRows();
         },
         selected() { return [...ids]; },
+        selectedProfiles() {
+            return ids.flatMap((id) => {
+                const profile = get(id);
+                return profile ? [profile] : [];
+            });
+        },
         upsert(profile) {
             const index = profiles.findIndex((p) => p.id === profile.id);
             if (index < 0)

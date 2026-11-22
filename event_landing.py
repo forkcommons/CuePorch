@@ -78,7 +78,7 @@ def _valid_settings(con, data, current_settings):
         abort(422)
     settings["speaker_ids"] = event_landing_speakers.validate_ids(con, settings["speaker_ids"])
     settings["localization"] = event_landing_locale.validate(
-        settings["localization"], current_settings["localization"]
+        settings["localization"], current_settings["localization"], settings["speaker_ids"]
     )
     return settings
 

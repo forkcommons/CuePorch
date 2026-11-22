@@ -11,10 +11,10 @@ export function setupEventLandingEditor(request) {
     const get = (n) => form.elements.namedItem(n);
     const speakerFields = document.querySelector("#eventLandingSpeakerFields");
     const localeFields = document.querySelector("#eventLandingLocale");
-    const lineup = setupSpeakerLineup((profile) => editor.open(profile));
+    const lineup = setupSpeakerLineup((profile) => editor.open(profile), () => locale.refreshSpeakers());
     const editor = setupSpeakerProfileEditor(request, (profile) => lineup.upsert(profile));
     document.querySelector("#eventLandingSpeakerNew")?.addEventListener("click", () => editor.open());
-    const locale = setupLandingLocalization();
+    const locale = setupLandingLocalization(() => lineup.selectedProfiles());
     let uid = null;
     let gen = 0;
     let cache = null;

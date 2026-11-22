@@ -1,6 +1,16 @@
+import { renderSpeakerTranslations } from "./event_landing_speaker_translations.js";
+import type { SpeakerProfile } from "./event_landing_speaker_lineup.js";
+
+export type LandingTranslation = {
+  title: string;
+  description: string;
+  published: boolean;
+  speakers?: Record<string, { role: string; bio: string; base_role: string; base_bio: string }>;
+};
+
 export type LandingLocalization = {
   base: string;
-  translations: Record<string, { title: string; description: string; published: boolean }>;
+  translations: Record<string, LandingTranslation>;
 };
 
 const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -9,7 +19,8 @@ const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
   return node as T;
 };
 
-export function setupLandingLocalization() {
+export function setupLandingLocalization(profiles: () => SpeakerProfile[]) {
+  const speakerContainer = document.querySelector<HTMLElement>("#eventLandingTranslatedSpeakers");
   const baseEl = byId<HTMLSelectElement>("eventLandingBase");
   const langEl = byId<HTMLSelectElement>("eventLandingLanguage");
   const fieldsEl = byId<HTMLDivElement>("eventLandingTranslationFields");
@@ -45,7 +56,22 @@ export function setupLandingLocalization() {
     baseEl.disabled = hasAnyTranslations(persisted) || hasAnyTranslations(state);
   };
 
+  function refreshSpeakers() {
+    if (!speakerContainer) return;
+    const lang = active();
+    if (!lang) {
+      speakerContainer.replaceChildren();
+      return;
+    }
+    renderSpeakerTranslations(speakerContainer, profiles(), state.translations[lang], () => {
+      const translation = ensureEntry(lang);
+      syncBaseLock();
+      return translation;
+    });
+  }
+
   const syncFields = () => {
+    refreshSpeakers();
     const lang = active();
     fieldsEl.hidden = !lang;
     if (!lang) {
@@ -144,5 +170,5 @@ export function setupLandingLocalization() {
 
   const payload = (): LandingLocalization => structuredClone(state);
 
-  return { populate, reset, payload };
+  return { populate, reset, payload, refreshSpeakers };
 }

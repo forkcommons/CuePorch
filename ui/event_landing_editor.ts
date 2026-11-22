@@ -27,10 +27,10 @@ export function setupEventLandingEditor(request: Request) {
 
   const speakerFields = document.querySelector<HTMLFieldSetElement>("#eventLandingSpeakerFields")!;
   const localeFields = document.querySelector<HTMLFieldSetElement>("#eventLandingLocale")!;
-  const lineup = setupSpeakerLineup((profile) => editor.open(profile));
+  const lineup = setupSpeakerLineup((profile) => editor.open(profile), () => locale.refreshSpeakers());
   const editor = setupSpeakerProfileEditor(request, (profile) => lineup.upsert(profile));
   document.querySelector("#eventLandingSpeakerNew")?.addEventListener("click", () => editor.open());
-  const locale = setupLandingLocalization();
+  const locale = setupLandingLocalization(() => lineup.selectedProfiles());
 
   let uid: string | null = null;
   let gen = 0;

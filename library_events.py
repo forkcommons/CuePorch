@@ -2694,7 +2694,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                     landing_previews, preview_token, [row["id"], row["revision"], landing["_revision"]], 600,
                 ):
                     landing_preview_token = preview_token
-                landing_locale = event_landing_locale.resolve(landing["localization"], event, bool(landing_preview_token))
+                landing_locale = event_landing_locale.resolve(landing["localization"], event, landing["speakers"], bool(landing_preview_token))
                 for option in landing_locale["language_options"]:
                     option["href"] = url_for(
                         "event_page", slug=slug,

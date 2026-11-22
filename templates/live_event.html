@@ -49,11 +49,11 @@
       </ul>
     </nav>
     {% endif %}
-    {% if landing and landing.speakers %}
+    {% if landing_locale and landing_locale.speakers %}
     <section class="event-landing event-speakers" aria-labelledby="eventSpeakersHeading">
       <h2 id="eventSpeakersHeading">{{ landing_locale.labels.speakers if landing_locale and landing_locale.labels and landing_locale.labels.speakers else 'Speakers' }}</h2>
       <ol class="event-speakers-list">
-        {% for speaker in landing.speakers %}
+        {% for speaker in landing_locale.speakers %}
           <li class="event-speaker">
             <p class="event-speaker-name">{{ speaker.name }}</p>
             {% if speaker.role %}<p class="event-speaker-role">{{ speaker.role }}</p>{% endif %}

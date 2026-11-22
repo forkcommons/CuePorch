@@ -2,7 +2,10 @@ export interface SpeakerProfile {
   id: string; revision: string; name: string; role: string; bio: string;
 }
 
-export function setupSpeakerLineup(onEdit: (profile: SpeakerProfile) => void) {
+export function setupSpeakerLineup(
+  onEdit: (profile: SpeakerProfile) => void,
+  onChange?: () => void,
+) {
   const select = document.querySelector<HTMLSelectElement>('#eventLandingSpeakerChoice')!;
   const addButton = document.querySelector<HTMLButtonElement>('#eventLandingSpeakerAdd')!;
   const rows = document.querySelector<HTMLOListElement>('#eventLandingSpeakerRows')!;
@@ -53,6 +56,7 @@ export function setupSpeakerLineup(onEdit: (profile: SpeakerProfile) => void) {
       down.disabled = index === ids.length - 1;
       li.append(remove, up, down); rows.append(li);
     });
+    onChange?.();
   };
 
   addButton.addEventListener('click', () => {
@@ -67,6 +71,12 @@ export function setupSpeakerLineup(onEdit: (profile: SpeakerProfile) => void) {
       ids = [...nextIds]; profiles = [...nextProfiles]; renderChoices(); renderRows();
     },
     selected(): string[] { return [...ids]; },
+    selectedProfiles(): SpeakerProfile[] {
+      return ids.flatMap((id) => {
+        const profile = get(id);
+        return profile ? [profile] : [];
+      });
+    },
     upsert(profile: SpeakerProfile): void {
       const index = profiles.findIndex((p) => p.id === profile.id);
       if (index < 0) profiles.push({ ...profile });
