@@ -537,6 +537,7 @@ body:has(>video) { background: #111; color: white; max-width: none; padding: 0; 
 .showcase-playlist li[data-index] video { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; }
 .showcase-page[data-theme="dark"] a { color: #a5e6e5; }
 .showcase-operator [hidden], .showcase-page [hidden] { display: none; }
+.showcase-page :is(.showcase-screen, .showcase-playlist) video[hidden] { display: none; }
 .showcase-preview { width: 100%; height: 38rem; box-sizing: border-box; }
 .showcase-preview[data-width="mobile"] { max-width: 23.5rem; }
 .showcase-search-preview { border: 1px solid currentColor; border-radius: .5rem; padding: .75rem; overflow-wrap: anywhere; }

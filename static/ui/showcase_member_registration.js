@@ -21,7 +21,7 @@ export function createShowcaseRegistration() {
         video.pause();
         return true;
     };
-    const show = (item, video, advance) => {
+    const show = (item, video, advance, unlock, trigger) => {
         const registration = item.registration;
         if (!registration || !panel || !frame || active || seen.has(item.id)) {
             return false;
@@ -29,7 +29,7 @@ export function createShowcaseRegistration() {
         const resume = !video.paused;
         if (resume)
             video.pause();
-        active = { itemId: item.id, video, resume, advance };
+        active = { itemId: item.id, video, resume, advance, unlock, trigger };
         frame.src = registration.url;
         panel.hidden = false;
         frame.focus();
@@ -48,10 +48,21 @@ export function createShowcaseRegistration() {
             prior.advance?.();
         }
     };
+    const closeBefore = () => {
+        const prior = hide();
+        if (!prior)
+            return;
+        prior.trigger?.focus();
+    };
     dismiss?.addEventListener("click", (event) => {
         if (!event.isTrusted)
             return;
-        complete();
+        if (active?.unlock) {
+            closeBefore();
+        }
+        else {
+            complete();
+        }
     });
     window.addEventListener("message", (event) => {
         if (!active || !frame)
@@ -62,9 +73,22 @@ export function createShowcaseRegistration() {
             return;
         if (event.source !== frame.contentWindow)
             return;
-        if (event.data !== "cueporch:member-registered")
+        if (event.data === "cueporch:member-registered") {
+            if (!active.unlock)
+                complete();
             return;
-        complete();
+        }
+        const data = event.data;
+        if (data?.type !== "cueporch:member-registered" || !data.entry)
+            return;
+        if (!active.unlock)
+            return;
+        if (data.entry.id !== active.itemId)
+            return;
+        if (typeof data.entry.media !== "string")
+            return;
+        const prior = hide();
+        prior?.unlock?.(data.entry);
     });
     return {
         guardPlay,
@@ -94,6 +118,11 @@ export function createShowcaseRegistration() {
             if (item.registration?.timing !== "after")
                 return false;
             return show(item, video, advance);
+        },
+        before(item, video, trigger, onUnlock) {
+            if (item.registration?.timing !== "before")
+                return false;
+            return show(item, video, undefined, onUnlock, trigger);
         },
         closeForSelection() {
             hide();

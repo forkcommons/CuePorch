@@ -30,6 +30,7 @@ const contents = document.querySelector("#showcaseContents");
 if (contents) {
     const items = JSON.parse(contents.textContent);
     const registration = createShowcaseRegistration();
+    const beforeButton = document.querySelector("#showcaseBeforeRegistration");
     const cards = Array.from(document.querySelectorAll(".showcase-playlist [data-index]"));
     const clips = Array.from(document.querySelectorAll(".showcase-playlist video"));
     const video = document.querySelector(".showcase-screen video");
@@ -76,7 +77,10 @@ if (contents) {
         cards[current].removeAttribute("aria-current");
         cards[index].setAttribute("aria-current", "true");
         current = index;
-        const item = items[index];
+        renderSelection();
+    }
+    function renderSelection() {
+        const item = items[current];
         heading.textContent = item.title;
         description.textContent = item.description;
         description.hidden = !item.description;
@@ -85,6 +89,8 @@ if (contents) {
             download.href = item.download;
         else
             download.removeAttribute("href");
+        if (beforeButton)
+            beforeButton.hidden = !!item.media;
         setQuestions?.(item.questions);
         renderCommunity(item);
     }
@@ -96,6 +102,22 @@ if (contents) {
         else if (document.body.dataset.loop === "yes")
             playItem(0);
     }
+    function applyMedia(player, item) {
+        player.hidden = !item.media;
+        player.poster = item.poster || "";
+        player.replaceChildren(...item.captions.map(({ language, url, key }) => {
+            const track = document.createElement("track");
+            Object.assign(track, { kind: "captions", srclang: language, label: language, src: url });
+            track.dataset.analyticsTrack = key;
+            return track;
+        }));
+        if (item.media)
+            player.src = item.media;
+        else {
+            player.removeAttribute("src");
+            player.load();
+        }
+    }
     if (video) {
         let detach = observe[current]?.(video, true);
         function playItem(index, player) {
@@ -103,22 +125,28 @@ if (contents) {
             if (index !== current) {
                 detach?.();
                 setCurrent(index);
-                player.poster = item.poster || "";
-                player.replaceChildren(...item.captions.map(({ language, url, key }) => {
-                    const track = document.createElement("track");
-                    Object.assign(track, { kind: "captions", srclang: language, label: language, src: url });
-                    track.dataset.analyticsTrack = key;
-                    return track;
-                }));
-                player.src = item.media;
+                applyMedia(player, item);
                 detach = observe[index]?.(player);
             }
-            else if (player.ended) {
-                player.currentTime = 0;
+            if (item.media === null) {
+                registration.before(item, player, beforeButton, (released) => {
+                    items[index] = released;
+                    observe[index] = released.analytics ? playbackObservation(released.analytics, true) : undefined;
+                    renderSelection();
+                    applyMedia(player, released);
+                    detach = observe[index]?.(player);
+                    player.focus();
+                    void player.play().catch(() => { });
+                });
+                return;
             }
+            if (player.ended)
+                player.currentTime = 0;
             void player.play().catch(() => { });
         }
         cards.forEach((card, index) => { card.onclick = () => playItem(index, video); });
+        if (beforeButton)
+            beforeButton.onclick = () => playItem(current, video);
         video.onplay = () => { registration.guardPlay(video); };
         video.ontimeupdate = () => registration.onProgress(items[current], video);
         video.onended = () => {
@@ -128,6 +156,33 @@ if (contents) {
         };
     }
     else {
+        const beforeButtons = clips.map((clip) => clip.parentElement?.querySelector("[data-showcase-before]") ?? null);
+        const playGrid = (index) => {
+            const clip = clips[index];
+            const item = items[index];
+            if (item.media) {
+                clip.currentTime = 0;
+                void clip.play().catch(() => { });
+                return;
+            }
+            setCurrent(index);
+            for (const other of clips)
+                if (other !== clip)
+                    other.pause();
+            const toggle = beforeButtons[index];
+            if (!toggle)
+                return;
+            registration.before(item, clip, toggle, (released) => {
+                items[index] = released;
+                renderSelection();
+                applyMedia(clip, released);
+                if (released.analytics)
+                    playbackObservation(released.analytics, true)(clip, true);
+                toggle.hidden = true;
+                clip.focus();
+                void clip.play().catch(() => { });
+            });
+        };
         const unsampled = new Map();
         const visible = new IntersectionObserver((entries) => {
             for (const entry of entries) {
@@ -163,12 +218,12 @@ if (contents) {
                     return;
                 const advanceCurrent = () => advance((next) => {
                     clips[next].muted = clip.muted;
-                    clips[next].currentTime = 0;
-                    void clips[next].play().catch(() => { });
+                    playGrid(next);
                 });
                 if (!registration.onEnd(items[index], clip, advanceCurrent))
                     advanceCurrent();
             };
+            beforeButtons[index]?.addEventListener("click", () => playGrid(index));
         });
     }
     const search = document.querySelector("#showcaseSearch");

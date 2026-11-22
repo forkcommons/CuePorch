@@ -1,13 +1,13 @@
 export type ShowcaseRegistrationItem = {
   id: string;
   registration?: {
-    timing: "during" | "after";
+    timing: "before" | "during" | "after";
     time_seconds: number;
     url: string;
   };
 };
 
-export function createShowcaseRegistration() {
+export function createShowcaseRegistration<T extends ShowcaseRegistrationItem>() {
   const panel = document.querySelector<HTMLElement>("#showcaseMemberRegistration");
   const frame =
     panel?.querySelector<HTMLIFrameElement>('iframe[title="Video registration"]') ?? null;
@@ -21,6 +21,8 @@ export function createShowcaseRegistration() {
     video: HTMLVideoElement;
     resume: boolean;
     advance?: () => void;
+    unlock?: (entry: T) => void;
+    trigger?: HTMLElement | null;
   };
 
   let active: Active | null = null;
@@ -41,9 +43,11 @@ export function createShowcaseRegistration() {
   };
 
   const show = (
-    item: ShowcaseRegistrationItem,
+    item: T,
     video: HTMLVideoElement,
-    advance?: () => void
+    advance?: () => void,
+    unlock?: (entry: T) => void,
+    trigger?: HTMLElement | null
   ): boolean => {
     const registration = item.registration;
     if (!registration || !panel || !frame || active || seen.has(item.id)) {
@@ -53,7 +57,7 @@ export function createShowcaseRegistration() {
     const resume = !video.paused;
     if (resume) video.pause();
 
-    active = { itemId: item.id, video, resume, advance };
+    active = { itemId: item.id, video, resume, advance, unlock, trigger };
     frame.src = registration.url;
     panel.hidden = false;
     frame.focus();
@@ -72,9 +76,19 @@ export function createShowcaseRegistration() {
     }
   };
 
+  const closeBefore = () => {
+    const prior = hide();
+    if (!prior) return;
+    prior.trigger?.focus();
+  };
+
   dismiss?.addEventListener("click", (event) => {
     if (!event.isTrusted) return;
-    complete();
+    if (active?.unlock) {
+      closeBefore();
+    } else {
+      complete();
+    }
   });
 
   window.addEventListener("message", (event) => {
@@ -82,14 +96,29 @@ export function createShowcaseRegistration() {
     if (!event.isTrusted) return;
     if (event.origin !== location.origin) return;
     if (event.source !== frame.contentWindow) return;
-    if (event.data !== "cueporch:member-registered") return;
-    complete();
+
+    if (event.data === "cueporch:member-registered") {
+      if (!active.unlock) complete();
+      return;
+    }
+
+    const data = event.data as {
+      type?: unknown;
+      entry?: { id?: unknown; media?: unknown };
+    } | null;
+    if (data?.type !== "cueporch:member-registered" || !data.entry) return;
+    if (!active.unlock) return;
+    if (data.entry.id !== active.itemId) return;
+    if (typeof data.entry.media !== "string") return;
+
+    const prior = hide();
+    prior?.unlock?.(data.entry as T);
   });
 
   return {
     guardPlay,
 
-    onProgress(item: ShowcaseRegistrationItem, video: HTMLVideoElement): void {
+    onProgress(item: T, video: HTMLVideoElement): void {
       const registration = item.registration;
       if (!registration || registration.timing !== "during") return;
       if (seen.has(item.id) || active) return;
@@ -107,7 +136,7 @@ export function createShowcaseRegistration() {
     },
 
     onEnd(
-      item: ShowcaseRegistrationItem,
+      item: T,
       video: HTMLVideoElement,
       advance: () => void
     ): boolean {
@@ -119,6 +148,16 @@ export function createShowcaseRegistration() {
 
       if (item.registration?.timing !== "after") return false;
       return show(item, video, advance);
+    },
+
+    before(
+      item: T,
+      video: HTMLVideoElement,
+      trigger: HTMLElement | null,
+      onUnlock: (entry: T) => void
+    ): boolean {
+      if (item.registration?.timing !== "before") return false;
+      return show(item, video, undefined, onUnlock, trigger);
     },
 
     closeForSelection(): void {
