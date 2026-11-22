@@ -218,3 +218,18 @@ CATALOG_PICKS = {
     "ko": ("이전 선택", "다음 선택", "{total}개 중 {current}"),
     "ja": ("前の選択", "次の選択", "{total}件中{current}件目"),
 }
+
+
+PLAYER_CORE_KEYS = (
+    "controls", "play", "pause", "position", "mute", "unmute", "volume", "captions", "off", "speed", "pip", "fullscreen",
+)
+
+PLAYER_CORE = {
+    "en": ("Video controls", "Play", "Pause", "Position", "Mute", "Unmute", "Volume", "Captions", "Off", "Speed", "Picture in picture", "Fullscreen"),
+    "fr": ("Commandes vidéo", "Lecture", "Pause", "Position", "Couper le son", "Rétablir le son", "Volume", "Sous-titres", "Désactivé", "Vitesse", "Image dans l'image", "Plein écran"),
+    "es": ("Controles de vídeo", "Reproducir", "Pausa", "Posición", "Silenciar", "Activar sonido", "Volumen", "Subtítulos", "Desactivado", "Velocidad", "Imagen en imagen", "Pantalla completa"),
+    "de": ("Videosteuerung", "Wiedergabe", "Pause", "Position", "Stummschalten", "Ton einschalten", "Lautstärke", "Untertitel", "Aus", "Geschwindigkeit", "Bild-in-Bild", "Vollbild"),
+    "pt-BR": ("Controles de vídeo", "Reproduzir", "Pausar", "Posição", "Silenciar", "Ativar som", "Volume", "Legendas", "Desativado", "Velocidade", "Imagem em imagem", "Tela cheia"),
+    "ko": ("동영상 컨트롤", "재생", "일시정지", "위치", "음소거", "음소거 해제", "볼륨", "자막", "꺼짐", "속도", "화면 속 화면", "전체 화면"),
+    "ja": ("動画コントロール", "再生", "一時停止", "位置", "ミュート", "ミュート解除", "音量", "字幕", "オフ", "速度", "ピクチャー イン ピクチャー", "全画面表示"),
+}

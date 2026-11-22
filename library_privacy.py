@@ -30,6 +30,7 @@ import library_hubspot_media_events as media_events
 from browser_account_security import json_mutation, secure_site
 import library_video_questions
 import content_rating
+import viewer_locale
 import stock_assets
 import media_bandwidth
 from catalog import video_version_key
@@ -491,8 +492,9 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
             video = playback(work) if work else None
             if video is None or not permits(work, settings):
                 abort(404)
+            preferences = {} if embed else viewing_preferences(con)
             if mode == "public" and not embed and request.method in ("GET", "HEAD"):
-                notice = content_rating.screening_notice(title_for(con, work), viewing_preferences(con),
+                notice = content_rating.screening_notice(title_for(con, work), preferences,
                                                          details_for(con, work))
                 if notice is not None:
                     return notice
@@ -529,7 +531,7 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                 appearance = library_appearance.surface_defaults(surface)
             options = library_embed.options(request.args if embed else {}, appearance)
             if can_watch and not embed:
-                autoplay = viewing_preferences(con).get("autoplay")
+                autoplay = preferences.get("autoplay")
                 if autoplay is not None:
                     options["autoplay"] = autoplay
                     if autoplay is True:
@@ -618,7 +620,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
                             timed_registration=timing if prompt and timing != "before" else None,
                             registration_time=form["time_seconds"] if prompt else 0,
                             show_timed_registration=bool(enrollment),
-                            enrollment=form_token, registration_error=form_error),
+                            enrollment=form_token, registration_error=form_error,
+                            **(viewer_locale.player_context(preferences) if appearance else {})),
             401 if locked and request.method == "POST" else 422 if form_error else 200,
         )
         response.headers["Content-Security-Policy"] = f"frame-ancestors {ancestors}"
@@ -627,6 +630,8 @@ def register(app, tx, staff, action, read_works, root, title_for, operator, perm
         if analytics or form or questions or not embed:
             response.cache_control.private = True
             response.cache_control.no_store = True
+        if embed and appearance:
+            response.vary.add("Accept-Language")
         return response
 
     @app.route("/v/<slug>", methods=["GET", "POST"])
