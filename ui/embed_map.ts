@@ -1,8 +1,8 @@
-export async function saveEmbedMap(response: Response) {
+export async function saveEmbedMap(response: Response, filename = "cueporch-embed-map.csv") {
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
   link.href = url;
-  link.download = "cueporch-embed-map.csv";
+  link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
