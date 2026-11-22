@@ -129,7 +129,25 @@ def update_video_version(root, uid, expected, replacement=None, restore_key=None
         return work
 
 
-def merge_imported_audio(work, prior):
+def merge_imported_text_tracks(edited, local):
+    incoming = edited.get("tracks", [])
+    if not incoming:
+        return {}
+    tracks = list(local.get("tracks", []))
+    seen = set(local.get("vimeo_text_tracks", []))
+    for t in tracks:
+        if t.get("source_track"):
+            seen.add(t["source_track"])
+    protected = {(t.get("language") or "und").lower() for t in tracks if not t.get("source_track")}
+    for track in incoming:
+        st = track["source_track"]
+        if st not in seen and track["language"].lower() not in protected:
+            tracks.append(track)
+        seen.add(st)
+    return {"tracks": tracks, "vimeo_text_tracks": sorted(seen)}
+
+
+def merge_imported_languages(work, prior):
     incoming = work.get("language_edits", {})
     previous = (prior or {}).get("language_edits", {})
     merged = dict(previous)
@@ -141,8 +159,9 @@ def merge_imported_audio(work, prior):
         if local is None:
             merged[key] = edited
             continue
+        combined = edited | local | merge_imported_text_tracks(edited, local)
         if not edited.get("audio"):
-            merged[key] = edited | local
+            merged[key] = combined
             continue
         audio = list(local.get("audio", []))
         saved_slots = {tuple(pair) for pair in local.get("vimeo_audio_slots", [])}
@@ -153,7 +172,7 @@ def merge_imported_audio(work, prior):
                 audio.append(track)
                 existing.add(slot)
         saved_slots.update(tuple(pair) for pair in edited.get("vimeo_audio_slots", []))
-        merged[key] = edited | local | {"audio": audio, "vimeo_audio_slots": [list(pair) for pair in sorted(saved_slots)]}
+        merged[key] = combined | {"audio": audio, "vimeo_audio_slots": [list(pair) for pair in sorted(saved_slots)]}
     if merged:
         work["language_edits"] = merged
     elif incoming and "language_edits" in work:
@@ -178,7 +197,12 @@ def merge_collection(source, destination):
                 for track in edit.get("audio", [])
                 for field in ("source", "rendition")
             ]
-            for item in work["files"] + history_files + audio_files:
+            caption_files = [
+                item
+                for edit in work.get("language_edits", {}).values()
+                for item in edit.get("tracks", [])
+            ]
+            for item in work["files"] + history_files + audio_files + caption_files:
                 digest = item["sha256"]
                 target = destination / "objects" / digest
                 if target.exists() and checksum(target) == digest:
@@ -230,7 +254,7 @@ def merge_collection(source, destination):
                         seen_sources.add(identity)
                     history.append(version)
                 work["versions_history"] = history
-            merge_imported_audio(work, prior)
+            merge_imported_languages(work, prior)
             works[work["id"]] = work
         current["works"] = list(works.values())
         dump(destination / "manifest.json", current)

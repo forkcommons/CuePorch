@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from cueporch import checksum, dump, verify, work_id
@@ -85,8 +85,8 @@ class Source:
                     raise SourceFailure(code) from None
         raise ValueError("Media redirect limit exceeded")
 
-    def pages(self, path):
-        url = self.base + path + "?per_page=100"
+    def pages(self, path, *, fields=None):
+        url = self.base + path + "?" + urlencode({"per_page": 100, "fields": fields} if fields else {"per_page": 100})
         visited = set()
         count = 0
         total = None
@@ -488,6 +488,154 @@ def attach_version_audio(root, source, record, versions, *, dry_run, refresh):
             report["state"] = "recovered"
     if reports:
         record["audio_recovery"] = reports
+
+
+def previous_text_track(row, version_uri):
+    from subtitles import LANGUAGE
+    if not isinstance(row, dict) or not isinstance(version_uri, str):
+        return None
+    m = re.fullmatch(r"/videos/(\d+)/versions/(\d+)", version_uri)
+    if not m:
+        return None
+    vid, ver = m.groups()
+    uri = row.get("uri")
+    if not isinstance(uri, str):
+        return None
+    m = re.fullmatch(r"/videos/(\d+)/versions/(\d+)/texttracks/(\d+)", uri)
+    if m:
+        if (m.group(1), m.group(2)) != (vid, ver):
+            return None
+    else:
+        m = re.fullmatch(r"/videos/(\d+)/texttracks/(\d+)", uri)
+        if not m or m.group(1) != vid:
+            return None
+    language = folder_field(row, "language")
+    kind = folder_field(row, "type")
+    report = {"uri": uri, "language": language, "kind": kind}
+    if not isinstance(language, str) or not LANGUAGE.fullmatch(language):
+        report["state"] = "owner_file_needed"
+        return report, None
+    language = language.lower()
+    report["language"] = language
+    if kind not in ("captions", "subtitles"):
+        report["state"] = "owner_file_needed"
+        return report, None
+    active = row.get("active")
+    if active is False:
+        report["state"] = "disabled"
+        return report, None
+    if active is not True:
+        report["state"] = "owner_file_needed"
+        return report, None
+    vtt = folder_field(row, "download_links", "vtt")
+    if isinstance(vtt, str) and vtt.strip():
+        report["state"] = "available"
+        return report, (vtt.strip(), "vtt")
+    link = folder_field(row, "link")
+    if isinstance(link, str) and link.strip():
+        report["state"] = "available"
+        return report, (link.strip(), "vtt")
+    srt = folder_field(row, "download_links", "srt")
+    if isinstance(srt, str) and srt:
+        report["state"] = "available"
+        return report, (srt.strip(), "srt")
+    report["state"] = "owner_file_needed"
+    return report, None
+
+
+def previous_text_tracks(source, uri):
+    try:
+        rows = list(source.pages(uri + "/texttracks", fields="uri,language,type,active,link,download_links"))
+    except SourceFailure as error:
+        if error.status not in (403, 404, 410):
+            raise
+        yield dict(state="inventory_unavailable", issue=f"HTTP {error.status}"), None
+        return
+    seen = set()
+    for row in rows:
+        item = previous_text_track(row, uri)
+        if item is None:
+            continue
+        report, asset = item
+        if report["uri"] not in seen:
+            seen.add(report["uri"])
+            yield report, asset
+
+
+def recover_previous_text_track(root, source, asset, *, refresh):
+    import subtitles
+    from library_languages import save_blob
+
+    link, format = asset
+    limit = 8 * 1024 * 1024
+
+    try:
+        with source.open(link) as response:
+            content = response.read(limit + 1)
+    except SourceFailure as exc:
+        status = exc.status
+        if status == 429:
+            raise
+        if refresh and status in (401, 403, 410):
+            raise RefreshLinks() from None
+        return (None, f"HTTP {status}")
+    except ValueError:
+        return (None, "source unavailable")
+
+    if len(content) > limit:
+        return (None, "text track too large")
+
+    try:
+        parsed = subtitles.parse(content, format)
+        if format.lower() == "srt":
+            content = subtitles.serialize(parsed)
+    except ValueError:
+        return (None, "invalid subtitle content")
+
+    return (save_blob(root, content), None)
+
+
+def attach_previous_text_tracks(root, source, record, *, dry_run, refresh):
+    from catalog import video_version_key
+
+    cuts = {cut["source_version"]: cut for cut in record.get("versions_history", [])}
+
+    for entry in record.get("version_recovery", []):
+        uri = entry["uri"]
+        if uri is None:
+            continue
+
+        for report, asset in previous_text_tracks(source, uri):
+            entry.setdefault("text_tracks", []).append(report)
+
+            if dry_run or asset is None:
+                continue
+
+            cut = cuts.get(uri)
+            if cut is None:
+                report["state"] = "owner_file_needed"
+                continue
+
+            blob, issue = recover_previous_text_track(root, source, asset, refresh=refresh)
+            if blob is None:
+                report.update(state="owner_file_needed", issue=issue)
+                continue
+
+            edits = record.setdefault("language_edits", {}).setdefault(
+                video_version_key(cut), {}
+            )
+            edits.setdefault("tracks", []).append(
+                dict(
+                    blob,
+                    role="caption",
+                    format="vtt",
+                    language=report["language"],
+                    text_kind=report["kind"],
+                    source_track=report["uri"],
+                )
+            )
+            edits.setdefault("vimeo_text_tracks", []).append(report["uri"])
+            report["state"] = "recovered"
 
 
 def original_url(video, vid):
@@ -893,6 +1041,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
             if isinstance(active_time, str):
                 record["version_saved_at"] = active_time
         attach_version_audio(root, source, record, versions, dry_run=dry_run, refresh=refresh)
+        attach_previous_text_tracks(root, source, record, dry_run=dry_run, refresh=refresh)
         works.append(record)
         if progress:
             progress(len(works), len(videos))

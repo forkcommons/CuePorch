@@ -95,6 +95,16 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                 name = path.rsplit("/", 1)[1]
                 data = audio[name].read_bytes()
                 content_type = "audio/wav" if name.endswith(".wav") else "audio/mpeg"
+            elif path == "/media/previous-fr.vtt":
+                if self.headers.get("Authorization"):
+                    return self.send_error(400)
+                content_type = "text/vtt; charset=utf-8"
+                data = b"WEBVTT\n\n00:00:00.100 --> 00:00:02.500\nEarlier cut caption\n"
+            elif path == "/media/previous-en.srt":
+                if self.headers.get("Authorization"):
+                    return self.send_error(400)
+                content_type = "application/x-subrip"
+                data = b"1\n00:00:00,100 --> 00:00:02,500\nEarlier cut English\n\n"
             elif path.startswith("/media/"):
                 content_type = "text/vtt" if path.endswith(".vtt") else "video/mp4"
                 data = caption if path.endswith(".vtt") else media
@@ -271,6 +281,51 @@ def build_server(directory, port=0, *, version_fixture=False, audio_fixture=Fals
                     values = [{"domain": "museum.example"}]
                 elif path in ("/videos/75/privacy/domains", "/videos/76/privacy/domains") and getattr(self.server, "privacy_fixture", None):
                     values = [{"domain": self.server.privacy_domain}]
+                elif version_fixture and path == "/videos/71/versions/202/texttracks":
+                    values = [
+                        {
+                            "uri": "/videos/71/versions/202/texttracks/401",
+                            "language": "fr",
+                            "type": "subtitles",
+                            "display_language": "French",
+                            "active": True,
+                            "download_links": {
+                                "vtt": origin + "/media/previous-fr.vtt?fixture-signature=timed"
+                            },
+                        },
+                        {
+                            "uri": "/videos/71/versions/202/texttracks/402",
+                            "language": "es",
+                            "type": "captions",
+                            "display_language": "Spanish",
+                            "active": True,
+                        },
+                        {
+                            "uri": "/videos/71/versions/202/texttracks/403",
+                            "language": "de",
+                            "type": "subtitles",
+                            "display_language": "German",
+                            "active": False,
+                            "download_links": {
+                                "vtt": origin + "/media/disabled-de.vtt"
+                            },
+                        },
+                        {
+                            "uri": "/videos/71/versions/200/texttracks/401",
+                            "language": "fr",
+                            "type": "subtitles",
+                            "active": False,
+                        },
+                        {
+                            "uri": "/videos/71/texttracks/404",
+                            "language": "en",
+                            "type": "captions",
+                            "active": True,
+                            "download_links": {"srt": origin + "/media/previous-en.srt"},
+                        },
+                    ]
+                elif version_fixture and path.startswith("/videos/71/versions/") and path.endswith("/texttracks"):
+                    values = []
                 elif path.endswith("/texttracks"):
                     values = (
                         [

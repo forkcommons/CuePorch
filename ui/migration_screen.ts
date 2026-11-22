@@ -87,7 +87,8 @@ async function poll(page = currentPage) {
     const folder = w.source_folder_path ?? (w.source_folder_unavailable ? "Folder unavailable" : "Unfiled");
     for (const v of [w.title, w.source_id, folder, w.disposition, w.source_privacy])
       row.insertCell().textContent = v;
-    const versions: { uri?: string; number?: number; state: string; issue?: string }[] = w.version_recovery || [];
+    type TextTrackRecovery = { language?: string; kind?: string; state: string; issue?: string };
+    const versions: { uri?: string; number?: number; state: string; issue?: string; text_tracks?: TextTrackRecovery[] }[] = w.version_recovery || [];
     const previousCuts = row.insertCell();
     if (!versions.length) {
       previousCuts.textContent = w.unavailable_metadata?.["/versions"] ? "Unavailable" : "None reported";
@@ -106,6 +107,27 @@ async function poll(page = currentPage) {
           version.state === "available" ? "Available to transfer" :
           version.state === "retained" ? "Already in Library" : "Owner file needed";
         item.textContent = [label, status, version.issue].filter(Boolean).join(" · ");
+        if (version.text_tracks?.length) {
+          const trackList = document.createElement("ul");
+          const statusLabels: Record<string, string> = {
+            available: "Available to transfer",
+            recovered: "Recovered",
+            owner_file_needed: "Owner file needed",
+            inventory_unavailable: "Source inventory unavailable",
+            disabled: "Disabled on Vimeo",
+          };
+          for (const track of version.text_tracks) {
+            const trackItem = document.createElement("li");
+            trackItem.textContent = [
+              track.language,
+              track.kind,
+              statusLabels[track.state] ?? track.state,
+              track.issue,
+            ].filter(Boolean).join(" · ");
+            trackList.append(trackItem);
+          }
+          item.append(trackList);
+        }
         list.append(item);
       }
       details.append(summary, list);
