@@ -49,6 +49,40 @@
         <legend>Events in this series</legend>
       </fieldset>
 
+      <fieldset id="seriesPresentation">
+        <legend>Presentation</legend>
+        <label>Accent color
+          <input type="color" name="seriesAccent" value="#2b7e7d">
+        </label>
+        <label>
+          <input type="checkbox" name="seriesDark"> Dark
+        </label>
+        <label>Date label
+          <input type="text" name="seriesDateLabel" maxlength="100">
+        </label>
+        <label>Timezone label
+          <input type="text" name="seriesTimezoneLabel" maxlength="100">
+        </label>
+        <label>Logo
+          <input type="file" accept="image/jpeg,image/png,image/webp" data-series-image="logo">
+        </label>
+        <button type="button" data-series-clear="logo">Clear logo</button>
+        <span data-series-image-status="logo" aria-live="polite"></span>
+        <label>Hero image
+          <input type="file" accept="image/jpeg,image/png,image/webp" data-series-image="hero_image">
+        </label>
+        <button type="button" data-series-clear="hero_image">Clear hero image</button>
+        <span data-series-image-status="hero_image" aria-live="polite"></span>
+        <h3>Blocks</h3>
+        <ol id="seriesBlocks"></ol>
+        <h4>Navigation links</h4>
+        <button type="button" data-series-add="navigation">Add navigation link</button>
+        <ol id="seriesNavigation"></ol>
+        <h4>FAQ</h4>
+        <button type="button" data-series-add="faq">Add FAQ</button>
+        <ol id="seriesFaq"></ol>
+      </fieldset>
+
       <button type="submit">Save Event Series</button>
       <button type="button" id="seriesPreview">Preview</button>
       <button type="button" id="seriesDelete">Delete Event Series</button>

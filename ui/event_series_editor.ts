@@ -1,4 +1,6 @@
 import { checked, sessionMarker } from "./team_api.js";
+import { setupSeriesPresentation } from "./event_series_presentation.js";
+import type { Presentation } from "./event_series_presentation.js";
 
 export type Visibility = "private" | "public";
 
@@ -7,6 +9,7 @@ export interface Settings {
   description: string;
   visibility: Visibility;
   events: string[];
+  presentation: Presentation;
 }
 
 export interface Series {
@@ -45,6 +48,22 @@ const watchLink = byId<HTMLAnchorElement>("seriesWatchLink");
 let credential =
   sessionStorage.getItem("cueporchOperator") || sessionMarker;
 
+const presentation = setupSeriesPresentation(
+  document.querySelector<HTMLElement>("#seriesPresentation")!,
+  async file => {
+    const data = new FormData();
+    data.set("logo", file);
+    const response = await checked(
+      await fetch("/api/review-logos", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + credential },
+        body: data,
+      }),
+    );
+    return (await response.json() as { logo: string }).logo;
+  },
+);
+
 async function api<T>(path: string, method = "GET", body?: object): Promise<T> {
   const headers: Record<string, string> = {};
   if (credential) headers.Authorization = `Bearer ${credential}`;
@@ -75,6 +94,7 @@ function renderEditor(entry: Series | null) {
   form.hidden = !entry;
   if (!entry) return;
 
+  presentation.populate(entry.settings.presentation);
   editorHeading.textContent = entry.settings.title;
   (field("title") as HTMLInputElement).value = entry.settings.title;
   (field("description") as HTMLTextAreaElement).value =
@@ -142,9 +162,7 @@ const seriesPreview = document.querySelector<HTMLButtonElement>("#seriesPreview"
 
 const setBusy = (v: boolean) => {
   busy = v;
-  form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>(
-    "button,input,select,textarea",
-  ).forEach(el => (el.disabled = v));
+  form.inert = v;
   seriesNew.disabled = v;
   list.inert = identify.inert = v;
 };
@@ -200,6 +218,7 @@ form.addEventListener("submit", e => {
         events: Array.from(
           eventChoices.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked'),
         ).map(el => el.value),
+        presentation: await presentation.payload(),
       },
     };
     current = await api<Series>(`/${target.id}`, "PUT", {
