@@ -1278,10 +1278,21 @@ async function mediaTicket(work: Work, sha256: string) {
 
 async function reviewLinksDialog(work: Work) {
   const endpoint = workEndpoint(work) + "/review-links";
-  const [linkResponse, defaultResponse] = await Promise.all([
+  const sourcesEndpoint = workEndpoint(work) + "/vimeo-review-links";
+  const [linkResponse, defaultResponse, reviewSourceResponse] = await Promise.all([
     request(endpoint).then(completed),
     request("/api/review-defaults").then(completed),
+    request(sourcesEndpoint).then(completed),
   ]);
+  const reviewSources: { links: {
+    id: string;
+    name: string;
+    enabled: boolean;
+    expires: number | null;
+    needs_password: boolean;
+    logo_required: boolean;
+    replacement?: string | null;
+  }[] } = await reviewSourceResponse.json();
   const links: ReviewLink[] = await linkResponse.json();
   const defaults: ReviewDefaults = await defaultResponse.json();
   openWorkDialog("Review links");
@@ -1464,6 +1475,78 @@ async function reviewLinksDialog(work: Work) {
       row.append(button);
     }
     list.append(row);
+  }
+  if (reviewSources.links.length > 0) {
+    const section = document.createElement('section');
+    const heading = document.createElement('h2');
+    heading.textContent = 'Vimeo review settings';
+    section.append(heading);
+
+    for (const link of reviewSources.links) {
+      const row = document.createElement('div');
+      const name = document.createElement('div');
+      name.textContent = link.name;
+      const status = document.createElement('div');
+      const now = Date.now() / 1000;
+      const eligible =
+        link.enabled &&
+        link.expires !== null &&
+        link.expires > now &&
+        link.replacement === undefined;
+
+      if (link.replacement === null) {
+        status.textContent = 'Locally removed';
+      } else if (link.replacement !== undefined) {
+        status.textContent = 'Previously replaced';
+      } else if (!link.enabled) {
+        status.textContent = 'Disabled';
+      } else if (link.expires === null) {
+        status.textContent = 'Expiration unavailable';
+      } else if (link.expires <= now) {
+        status.textContent = 'Expired';
+      }
+      if (link.logo_required) {
+        status.textContent = [status.textContent, 'Add the review logo in CuePorch'].filter(Boolean).join(' · ');
+      }
+
+      row.append(name, status);
+
+      if (eligible) {
+        let passwordInput: HTMLInputElement | undefined;
+        if (link.needs_password) {
+          const passwordField = reviewField('Password for replacement of ' + link.name, 'password');
+          passwordField.input.maxLength = 256;
+          passwordField.input.autocomplete = 'new-password';
+          passwordInput = passwordField.input;
+          row.append(passwordField.label);
+        }
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Create replacement for ' + link.name;
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await completed(await request(
+              sourcesEndpoint + '/' + encodeURIComponent(link.id),
+              'POST',
+              { password: passwordInput ? passwordInput.value : '' }
+            ));
+            await reopen();
+            workDialogStatus.textContent = `Replacement created for ${link.name}.`;
+          } catch (error) {
+            workDialogStatus.textContent = error instanceof Error ? error.message : String(error);
+          } finally {
+            button.disabled = false;
+          }
+        });
+        row.append(button);
+      }
+
+      section.append(row);
+    }
+
+    workDialogBody.append(section);
   }
   workDialogBody.append(list, editor);
 }

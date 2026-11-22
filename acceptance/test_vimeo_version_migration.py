@@ -57,6 +57,114 @@ class VimeoVersionMigration(unittest.TestCase):
         self.client = app.test_client()
         self.base = f"http://127.0.0.1:{server.server_port}"
 
+    def test_migration_replaces_vimeo_review_links(self):
+        from installed_cards import select_action
+
+        uid = work_id("station", "vimeo", "71")
+        work = f"/api/library/work/{uid}"
+        source_links = work + "/vimeo-review-links"
+        original_password = "fixture-sensitive-review-password"
+        local_password = "local-replacement-123"
+        secrets_to_exclude = (
+            original_password, "fixture-sensitive-vimeo-access",
+            "7f4f9c2e-3b1a-4c8d-9e2f-6a5b4c3d2e1f",
+        )
+
+        def inventory():
+            response = self.client.get("/api/migration", headers=self.auth)
+            self.assertEqual(200, response.status_code)
+            for value in secrets_to_exclude:
+                self.assertNotIn(value, response.text)
+            return {item["source_id"]: item["source_review"] for item in response.json["works"]}
+
+        def presets():
+            response = self.client.get(source_links, headers=self.auth)
+            self.assertEqual(200, response.status_code, response.text)
+            for value in secrets_to_exclude:
+                self.assertNotIn(value, response.text)
+            return {link["name"]: link for link in response.json["links"]}
+
+        with sync_playwright() as playwright, chromium(playwright) as browser:
+            page = browser.new_page()
+            page.add_init_script(f"sessionStorage.setItem('cueporchOperator', {json.dumps(self.operator)})")
+            page.goto(self.base + "/operator/migration")
+            preview = page.get_by_role("button", name="Preview transfer")
+            transfer = page.get_by_role("button", name="Transfer privately")
+            status = page.locator("#status")
+            preview.click()
+            expect(status).to_have_text("inventoried", timeout=20000)
+            expect(page.get_by_text("Needs review · 2 Vimeo review links")).to_be_visible()
+            records = inventory()
+            self.assertEqual(("available", "needs_review"), (records["71"]["state"], records["71"]["status"]))
+            self.assertEqual({"Panel feedback", "Expired panel feedback"},
+                             {link["name"] for link in records["71"]["links"]})
+            self.assertEqual(("available", []), (records["72"]["state"], records["72"]["links"]))
+            self.assertEqual(0, self.requests["/media/71.mp4"])
+
+            transfer.click()
+            expect(status).to_have_text("transferred", timeout=20000)
+            self.assertEqual(403, self.client.get(source_links).status_code)
+            saved = presets()
+            issue = source_links + "/" + saved["Panel feedback"]["id"]
+            old = source_links + "/" + saved["Expired panel feedback"]["id"]
+            other = work_id("station", "vimeo", "72")
+            cross = f"/api/library/work/{other}/vimeo-review-links/" + saved["Panel feedback"]["id"]
+            self.assertEqual(400, self.client.post(issue, headers=self.auth, json={"password": ""}).status_code)
+            self.assertEqual(400, self.client.post(old, headers=self.auth, json={"password": local_password}).status_code)
+            self.assertEqual(404, self.client.post(cross, headers=self.auth, json={"password": local_password}).status_code)
+            self.assertEqual([], self.client.get(work + "/review-links", headers=self.auth).json)
+
+            page.goto(self.base + "/operator/library")
+            page.get_by_role("button", name="Load library").click()
+            select_action(page, "Station meeting", "Review link", uid)
+            expect(page.get_by_role("heading", name="Vimeo review settings")).to_be_visible()
+            expect(page.get_by_role("button", name="Create replacement for Expired panel feedback")).to_have_count(0)
+            page.get_by_label("Password for replacement of Panel feedback").fill(local_password)
+            page.get_by_role("button", name="Create replacement for Panel feedback", exact=True).click()
+            expect(page.locator("#workDialogStatus")).to_have_text("Replacement created for Panel feedback.")
+            replacement_path = presets()["Panel feedback"]["replacement"]
+
+            repeat = self.client.post(issue, headers=self.auth, json={})
+            self.assertEqual(200, repeat.status_code, repeat.text)
+            link = repeat.json
+            self.assertEqual((replacement_path, saved["Panel feedback"]["expires"]), (link["path"], link["expires"]))
+            for flag in ("password", "allow_versions", "allow_comment", "allow_status", "allow_resolved", "dark"):
+                self.assertTrue(link[flag], flag)
+            for flag in ("allow_download", "show_other_videos"):
+                self.assertFalse(link[flag], flag)
+            self.assertIsNone(link["logo"])
+            self.assertEqual(1, len(self.client.get(work + "/review-links", headers=self.auth).json))
+
+            viewer = browser.new_page()
+            viewer.goto(self.base + replacement_path)
+            secret = viewer.get_by_label("Review password")
+            secret.fill(original_password)
+            viewer.get_by_role("button", name="Open review").click()
+            expect(viewer.get_by_role("alert")).to_have_text("That password did not open the review.")
+            secret.fill(local_password)
+            viewer.get_by_role("button", name="Open review").click()
+            player = viewer.locator("#reviewTourPlayer")
+            expect(player).to_be_visible()
+            player.evaluate("async video => { video.muted = true; await video.play(); }")
+            viewer.wait_for_function("document.querySelector('#reviewTourPlayer').currentTime > .2")
+
+            response = self.client.delete(work + "/review-links/" + link["id"], headers=self.auth)
+            self.assertEqual(204, response.status_code)
+            self.assertEqual(404, viewer.request.get(self.base + replacement_path).status)
+            page.goto(self.base + "/operator/migration")
+            self.denied.add("/videos/72")
+            preview.click()
+            expect(status).to_have_text("inventoried", timeout=20000)
+            self.assertEqual("unavailable", inventory()["72"]["state"])
+            transfer.click()
+            expect(status).to_have_text("transferred", timeout=20000)
+            self.assertIsNone(presets()["Panel feedback"]["replacement"])
+            self.assertEqual(404, self.client.post(issue, headers=self.auth, json={"password": local_password}).status_code)
+            for path in self.temp.rglob("*.json"):
+                contents = path.read_text(encoding="utf8")
+                for value in (*secrets_to_exclude, local_password):
+                    self.assertNotIn(value, contents, str(path))
+
     def test_private_version_transfer_recovers_earlier_cuts(self):
         uid = work_id("station", "vimeo", "71")
         work = f"/api/library/work/{uid}"

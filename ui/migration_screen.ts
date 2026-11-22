@@ -151,6 +151,19 @@ async function poll(page = currentPage) {
       }
       audioCell.appendChild(details);
     }
+    const review = w.source_review;
+    const reviewCell = row.insertCell();
+    reviewCell.textContent = review?.state === "available"
+      ? (review.links.length
+        ? `${review.links.length} Vimeo review ${review.links.length === 1 ? "link" : "links"}`
+        : "None reported")
+      : "Source settings unavailable";
+    const reviewStatuses: Record<string, string> = {
+      approved: "Approved", needs_review: "Needs review", in_progress: "In progress",
+    };
+    if (review?.status && reviewStatuses[review.status]) {
+      reviewCell.textContent = `${reviewStatuses[review.status]} · ${reviewCell.textContent}`;
+    }
     const exceptions = [
       ...Object.entries(w.unavailable_metadata || {}).map(([resource, status]) => `${resource.slice(1)} (${status})`),
       ...(w.transfer_issues || []).map((issue: {role: string; http_status?: number; reason?: string}) =>

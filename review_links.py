@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS review_preview(
  digest TEXT PRIMARY KEY, link TEXT NOT NULL, expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS review_unlock_limit(
  link TEXT PRIMARY KEY, since REAL NOT NULL, attempts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS vimeo_review_replacement (work TEXT NOT NULL, source TEXT NOT NULL, link TEXT NOT NULL, PRIMARY KEY (work, source));
 """
     + review_feedback.SCHEMA
     + review_notifications.SCHEMA
@@ -201,6 +202,65 @@ def register(app, tx, staff, get_work, title_for, root, replace_video, read_work
         with tx() as con:
             get_work(con, work)
             new_review_link(con, uid, work, body)
+            return project(con, locate(con, work, uid)), 201
+
+    @app.get("/api/library/work/<work>/vimeo-review-links")
+    def list_vimeo_review_links(work):
+        staff()
+        with tx() as con:
+            inventory = get_work(con, work).get("source_review", {
+                "state": "unavailable", "status": None, "links": [],
+            })
+            replacements = {
+                source: "/review/" + uid if uid else None
+                for source, uid in con.execute(
+                    """SELECT v.source, r.id FROM vimeo_review_replacement v
+                       LEFT JOIN review_link r ON r.id=v.link AND r.work=v.work
+                       WHERE v.work=?""",
+                    (work,),
+                )
+            }
+            return inventory | {
+                "links": [
+                    row | {"replacement": replacements[row["id"]]}
+                    if row["id"] in replacements else row
+                    for row in inventory["links"]
+                ],
+            }
+
+    @app.post("/api/library/work/<work>/vimeo-review-links/<source>")
+    def create_vimeo_review_link(work, source):
+        staff()
+        request.max_content_length = 16384
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        with tx() as con:
+            inventory = get_work(con, work).get("source_review", {})
+            previous = con.execute(
+                "SELECT link FROM vimeo_review_replacement WHERE work=? AND source=?",
+                (work, source),
+            ).fetchone()
+            if previous:
+                return project(con, locate(con, work, previous["link"]))
+
+            preset = next((row for row in inventory.get("links", []) if row["id"] == source), None)
+            if preset is None:
+                abort(404)
+            if not preset["enabled"] or preset["expires"] is None or preset["expires"] <= time.time():
+                abort(400, "This Vimeo link needs a new review link with a future expiration.")
+            password = body.get("password")
+            if preset["needs_password"] and (not isinstance(password, str) or not password):
+                abort(400, "Set a new password for this replacement review link.")
+            choices = {
+                key: preset[key] for key in (
+                    "name", "expires", "allow_download", "allow_versions", "allow_comment",
+                    "allow_status", "allow_resolved", "dark", "show_other_videos",
+                )
+            } | {"password": password, "logo": None}
+            uid = secrets.token_urlsafe(32)
+            new_review_link(con, uid, work, choices)
+            con.execute("INSERT INTO vimeo_review_replacement VALUES(?,?,?)", (work, source, uid))
             return project(con, locate(con, work, uid)), 201
 
     @app.put("/api/library/work/<work>/review-links/<uid>")

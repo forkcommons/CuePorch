@@ -1,6 +1,7 @@
 """Read-only Vimeo API transport and private, checkpointed collection migration."""
 
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 import hashlib
 from http.client import HTTPException
 import json
@@ -112,6 +113,88 @@ class Source:
             url = urljoin(url, following) if following else None
         if count != total:
             raise ValueError("Source count mismatch")
+
+
+def vimeo_review_settings(row, video_uri):
+    uri = row.get("uri")
+    if not isinstance(uri, str) or not isinstance(video_uri, str):
+        return None
+
+    base = video_uri.rstrip("/")
+    pat = re.compile(
+        r"^" + re.escape(base) + r"/review_links/"
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.I,
+    )
+    if not pat.fullmatch(uri):
+        return None
+
+    raw_name = row.get("name")
+    if not isinstance(raw_name, str):
+        return None
+    name = raw_name.strip()
+    if not 1 <= len(name) <= 128:
+        return None
+
+    expires = None
+    eo = row.get("expires_on")
+    if isinstance(eo, str):
+        try:
+            dt = datetime.fromisoformat(eo.replace("Z", "+00:00") if eo.endswith("Z") else eo)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            expires = dt.timestamp()
+        except (ValueError, OverflowError, OSError):
+            pass
+
+    pw = row.get("password")
+    return {
+        "id": hashlib.sha256(uri.lower().encode()).hexdigest(),
+        "name": name,
+        "enabled": row.get("is_enabled") is True,
+        "needs_password": not ("password" in row and (pw is None or pw == "")),
+        "logo_required": row.get("show_my_logo") is True,
+        "allow_download": row.get("allow_downloads") is True,
+        "allow_versions": row.get("show_all_versions") is True,
+        "allow_comment": row.get("allow_comments") is True,
+        "allow_status": row.get("allow_status_change") is True,
+        "allow_resolved": row.get("show_resolved_comments") is True,
+        "dark": row.get("is_dark") is True,
+        "show_other_videos": row.get("hide_end_cards") is False,
+        "expires": expires,
+    }
+
+def video_review_inventory(source, video_uri):
+    link_fields = (
+        "uri", "name", "is_enabled", "password", "expires_on",
+        "allow_downloads", "show_all_versions", "allow_comments",
+        "allow_status_change", "show_resolved_comments", "is_dark",
+        "hide_end_cards", "show_my_logo",
+    )
+    fields = ",".join(("review_status", *(f"review_links.{field}" for field in link_fields)))
+    url = source.base + video_uri + "?" + urlencode({"fields": fields})
+    inventory = dict(state="unavailable", links=[], status=None)
+    try:
+        with source.open(url, True) as response:
+            payload = json.load(response)
+    except SourceFailure as exc:
+        if exc.status not in (403, 404):
+            raise
+        return inventory
+
+    if not isinstance(payload, dict):
+        return inventory
+    status = payload.get("review_status")
+    if status in ("in_progress", "needs_review", "approved"):
+        inventory["status"] = status
+    rows = payload.get("review_links")
+    if not isinstance(rows, list):
+        return inventory
+    by_id = {}
+    for row in rows:
+        if isinstance(row, dict) and (settings := vimeo_review_settings(row, video_uri)):
+            by_id.setdefault(settings["id"], settings)
+    return inventory | dict(state="available", links=list(by_id.values()))
 
 
 def assets(video, tracks):
@@ -1042,6 +1125,7 @@ def _migrate(institution, root, source, dry_run, refresh, progress):
                 record["version_saved_at"] = active_time
         attach_version_audio(root, source, record, versions, dry_run=dry_run, refresh=refresh)
         attach_previous_text_tracks(root, source, record, dry_run=dry_run, refresh=refresh)
+        record["source_review"] = video_review_inventory(source, uri)
         works.append(record)
         if progress:
             progress(len(works), len(videos))
