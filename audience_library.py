@@ -185,5 +185,7 @@ def register(app, tx, viewer, mutation, listing, private):
                 abort(404)
             if not entry.get("allow_viewer_collections", True):
                 abort(403)
+            if creator_blocks.video_blocked(con, account["id"], kind, slug):
+                abort(403, "You cannot add this video to a collection.")
             con.execute("INSERT OR IGNORE INTO audience_collection_video VALUES(?,?,?,?)", (uid, kind, slug, time.time()))
             return private(dict(included=True))

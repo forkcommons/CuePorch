@@ -667,6 +667,23 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             comment_path = f"{base}/api/viewer/comments/work/{second_work}"
             before = guest.request.get(like_path).json()["likes"]
             assert guest.request.put(like_path, headers=marker, data={}).json()["likes"] == before + 1
+            collection = guest.request.post(base + "/api/viewer/collections", headers=marker,
+                                            data={"title": "Block collection"})
+            assert collection.status == 201
+            saved_collection = collection.json()
+            collection_video = f"{base}/api/viewer/collections/{saved_collection['id']}/videos/work/{second_work}"
+            assert guest.request.put(collection_video, headers=marker, data={}).json()["included"]
+            group = guest.request.post(base + "/api/viewer/groups", headers=marker, data={
+                "slug": "block-preview-test", "title": "Block group", "description": "", "access": "public",
+            })
+            assert group.status == 201
+            saved_group = group.json()
+            group_video = f"{base}/api/viewer/groups/{saved_group['slug']}/videos/work/{second_work}"
+            assert guest.request.put(group_video, headers=marker, data={}).status == 204
+            placement = guest.new_page()
+            for destination in (saved_collection["url"], saved_group["url"]):
+                placement.goto(base + destination)
+                expect(placement.get_by_role("link", name=second_title, exact=True)).to_be_visible()
             earlier_comment = "A public screening note"
             assert guest.request.post(comment_path, headers=marker, data={"body": earlier_comment}).status == 201
             assert earlier_comment in [item["body"] for item in guest.request.get(comment_path).json()["comments"]]
@@ -674,6 +691,12 @@ def check_team_accounts(page, browser, base, auth, replacement, migrated):
             contributor_page.get_by_role("button", name="Block Arts audience", exact=True).click()
             expect(contributor_page.get_by_role("button", name="Unblock Arts audience", exact=True)).to_be_visible()
             assert guest.request.put(follow_path, headers=marker, data={}).status == 403
+            assert guest.request.put(collection_video, headers=marker, data={}).status == 403
+            assert guest.request.put(group_video, headers=marker, data={}).status == 403
+            for destination in (saved_collection["url"], saved_group["url"]):
+                placement.goto(base + destination)
+                expect(placement.get_by_role("link", name=second_title, exact=True)).to_have_count(0)
+            placement.close()
             assert guest.request.put(like_path, headers=marker, data={}).status == 403
             assert guest.request.post(comment_path, headers=marker, data={"body": "Blocked note"}).status == 403
             assert guest.request.get(like_path).json() == {"liked": False, "likes": before}
