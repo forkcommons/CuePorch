@@ -293,7 +293,8 @@ def operator_sharing(con, work, permits):
 
 
 def editable(work):
-    return work["provider"] in ("cueporch-upload", "cueporch-live-recording") and playback(work) is not None
+    return (work["provider"] in ("cueporch-upload", "cueporch-live-recording", "cueporch-timeline")
+            and playback(work) is not None)
 
 
 def actor_defaults(con, actor):

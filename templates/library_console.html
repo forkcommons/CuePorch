@@ -35,6 +35,15 @@
       <h2 id="folderTitle">Library</h2>
       <div id="workBrowse">
       <button type="button" id="uploadLibrary">Upload</button>
+      <form id="timelineProjectCreate" class="library-tools">
+        <label for="timelineProjectTitle">Project title</label>
+        <input id="timelineProjectTitle" name="title" type="text" value="Untitled video" maxlength="128" required>
+        <button type="submit" id="timelineProjectSubmit">Create video</button>
+      </form>
+      <details id="timelineProjectDrafts" hidden>
+        <summary>Draft video projects</summary>
+        <ul id="timelineProjectList"></ul>
+      </details>
       <button type="button" id="uploadDefaults">Upload defaults</button>
       <button type="button" id="translationBatches">Subtitle translation batches</button>
       <p id="uploadHint">Drop files into this folder or choose Upload.</p>

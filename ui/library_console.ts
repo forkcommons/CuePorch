@@ -243,6 +243,45 @@ function action(button: HTMLButtonElement, run: () => Promise<void>) {
   };
 }
 
+type TimelineProject = { id: string; title: string };
+
+const timelineProjectCreate = document.querySelector<HTMLFormElement>("#timelineProjectCreate")!;
+const timelineProjectTitle = document.querySelector<HTMLInputElement>("#timelineProjectTitle")!;
+const timelineProjectSubmit = document.querySelector<HTMLButtonElement>("#timelineProjectSubmit")!;
+const timelineProjectDrafts = document.querySelector<HTMLDetailsElement>("#timelineProjectDrafts")!;
+const timelineProjectList = document.querySelector<HTMLUListElement>("#timelineProjectList")!;
+
+timelineProjectCreate.onsubmit = async (event) => {
+  event.preventDefault();
+  timelineProjectSubmit.disabled = true;
+  try {
+    const response = await request("/api/library/timeline-projects", "POST", {
+      title: timelineProjectTitle.value.trim(),
+    }).then(completed);
+    const { id } = await response.json() as { id: string };
+    location.assign("/operator/videos/" + encodeURIComponent(id) + "/timeline");
+  } catch (error) {
+    result.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    timelineProjectSubmit.disabled = false;
+  }
+};
+
+async function loadTimelineProjects() {
+  const credential = key.value;
+  const { projects } = await request("/api/library/timeline-projects").then(completed).then(response => response.json()) as {projects: TimelineProject[]};
+  if (credential !== key.value) return;
+  timelineProjectList.replaceChildren();
+  for (const project of projects) {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.href = `/operator/videos/${encodeURIComponent(project.id)}/timeline`;
+    link.textContent = project.title;
+    item.appendChild(link);
+    timelineProjectList.appendChild(item);
+  }
+  timelineProjectDrafts.hidden = projects.length === 0;
+}
 function folderOptions(select: HTMLSelectElement) {
   folderChoices(select, folders, select === folderParent ? editing?.id : undefined);
 }
@@ -2130,6 +2169,8 @@ async function load(refreshTrash = true) {
   library.hidden = false;
   renderTree();
   renderWorks();
+  timelineProjectDrafts.hidden = true;
+  void loadTimelineProjects().catch(error => { result.textContent = String(error); });
   if (section === "Recently deleted" && refreshTrash) await loadTrash();
 }
 

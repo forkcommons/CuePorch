@@ -18,7 +18,7 @@ function isMedia(clip: Clip | undefined): clip is MediaClip & {graphic?: Timelin
 interface Music { work: string; cut?: string; start: number; gain: number }
 interface Settings { ratio: string; color: string; clips: Clip[]; music: Music | null; brand?: BrandKit | null }
 interface Job { id: string; state: "queued" | "rendering" | "saved" | "failed"; result: string | null; error: string | null }
-interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null }
+interface Project { revision: string | null; current: string; draft: boolean; settings: Settings; job?: Job | null; standalone?: boolean; title?: string }
 interface Media { id: string; title: string; asset_type?: string; source_cut?: string | null; folder: string | null; stock_asset?: StockRights | null }
 interface Cue { start: number; end: number; text: string }
 
@@ -29,6 +29,10 @@ const select = (id: string) => node<HTMLSelectElement>(id);
 const identity = node<HTMLFormElement>("timelineIdentity");
 const key = input("timelineKey");
 const status = node("timelineStatus");
+const heading = node<HTMLHeadingElement>("timelineEditorHeading");
+const detailsLink = node<HTMLAnchorElement>("videoDetailsLink");
+const trimLink = node<HTMLAnchorElement>("trimGifLink");
+const libraryLink = node<HTMLAnchorElement>("libraryNavLink");
 const video = node<HTMLVideoElement>("timelinePreview");
 const trackList = node<HTMLOListElement>("timelineClips");
 const recorderDialog = node<HTMLDialogElement>("timelineRecordDialog");
@@ -424,11 +428,23 @@ async function inspect(index: number) {
   await transcript();
 }
 
+function applyProjectChrome(standalone: boolean, title?: string) {
+  const renderButton = button("renderTimeline");
+
+  detailsLink.hidden = trimLink.hidden = standalone;
+  libraryLink.hidden = !standalone;
+  renderButton.textContent = standalone ? "Render video" : "Render as a new version";
+  if (title) heading.textContent = title;
+}
 function showJob(job: Job, fromReload = false) {
   running = job;
   controls();
   if (job.state === "saved") {
     if (job.result && !fromReload) project.current = job.result;
+    if (project.standalone) {
+      project.standalone = false;
+      applyProjectChrome(false);
+    }
     status.textContent = "New version saved.";
     return;
   }
@@ -658,6 +674,7 @@ async function open() {
     ...kits.map(kit => new Option(kit.name, kit.id)));
   media = new Map(items.map(item => [item.id, item]));
   project = loaded;
+  applyProjectChrome(Boolean(project.standalone), project.title);
   state = project.settings;
   const music = select("timelineMusic");
   for (const item of items) if (item.asset_type === "audio") music.add(new Option(item.title, item.id));
