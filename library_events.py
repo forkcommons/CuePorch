@@ -788,7 +788,7 @@ def register(app, tx, staff, action, database, public_url, signing_key, root, re
                 revision = uuid.uuid4().hex
                 con.execute("UPDATE live_event SET revision=?,settings=?,publication=? WHERE id=?",
                             (revision, json.dumps(changed), approval, uid))
-                if changed == (prior | {"title": changed["title"]}) and access == previous_access:
+                if changed == (prior | {"title": changed["title"], "description": changed["description"]}) and access == previous_access:
                     con.execute("UPDATE live_destination_series SET event_revision=? WHERE event=? AND event_revision=?",
                                 (revision, uid, row["revision"]))
                     con.execute("UPDATE facebook_live_series SET event_revision=? WHERE event=? AND event_revision=?",
